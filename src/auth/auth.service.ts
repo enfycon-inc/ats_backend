@@ -501,6 +501,12 @@ export class AuthService implements OnModuleInit {
       [userId]
     );
 
+    // Approve the tenant (activate status)
+    await this.db.query(
+      "UPDATE tenants SET status = 'ACTIVE' WHERE id = $1",
+      [tenantId]
+    );
+
     // Configure tenant market if provided
     if (market && (market === 'US' || market === 'IN')) {
       await this.db.query(
