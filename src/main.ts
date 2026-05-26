@@ -15,6 +15,7 @@ async function bootstrap() {
       'The Applicant Tracking System (ATS) core REST backend containing candidate management, talent sourcing, and partner integrations (Dice / Monster).',
     )
     .setVersion('1.0')
+    .addBearerAuth()
     .addTag('Talent Sourcing & Job Board Integrations')
     .build();
 

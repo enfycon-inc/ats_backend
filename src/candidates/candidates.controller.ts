@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Delete, Body, Query, Param, ParseIntPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Query, Param, Headers, ParseIntPipe, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { CandidatesService } from './candidates.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
 import { CandidateQueryDto } from './dtos/candidate-query.dto';
 import { CandidateProfile } from './interfaces/candidate.interface';
+
+const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
 @ApiTags('ATS Candidate Management')
 @Controller('api/candidates')
@@ -20,8 +22,12 @@ export class CandidatesController {
     status: 201,
     description: 'Candidate profile and resume record created successfully in the shared database.',
   })
-  async create(@Body() dto: CreateCandidateDto): Promise<CandidateProfile> {
-    return this.candidatesService.createCandidate(dto);
+  async create(
+    @Body() dto: CreateCandidateDto,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<CandidateProfile> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.candidatesService.createCandidate(dto, activeTenantId);
   }
 
   @Get()
@@ -33,8 +39,12 @@ export class CandidatesController {
     status: 200,
     description: 'Candidate profiles fetched successfully.',
   })
-  async findAll(@Query() query: CandidateQueryDto): Promise<CandidateProfile[]> {
-    return this.candidatesService.findAll(query);
+  async findAll(
+    @Query() query: CandidateQueryDto,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<CandidateProfile[]> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.candidatesService.findAll(query, activeTenantId);
   }
 
   @Get(':id')
@@ -51,8 +61,12 @@ export class CandidatesController {
     status: 404,
     description: 'The candidate profile with the specified database ID was not found.',
   })
-  async findOne(@Param('id', ParseIntPipe) id: number): Promise<CandidateProfile> {
-    return this.candidatesService.findOne(id);
+  async findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<CandidateProfile> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.candidatesService.findOne(id, activeTenantId);
   }
 
   @Delete(':id')
@@ -69,7 +83,12 @@ export class CandidatesController {
     status: 404,
     description: 'Candidate not found.',
   })
-  async delete(@Param('id', ParseIntPipe) id: number): Promise<{ message: string }> {
-    return this.candidatesService.deleteCandidate(id);
+  async delete(
+    @Param('id', ParseIntPipe) id: number,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<{ message: string }> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.candidatesService.deleteCandidate(id, activeTenantId);
   }
 }
+

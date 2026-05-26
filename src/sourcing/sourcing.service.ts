@@ -140,9 +140,9 @@ export class SourcingService {
    * Downloads a candidate resume profile from Dice/Monster, unlocks contact information,
    * delegates database creation to CandidatesService to import and index correctly.
    */
-  async downloadAndImportCandidate(dto: SourcingDownloadDto): Promise<InternalCandidateProfile> {
+  async downloadAndImportCandidate(dto: SourcingDownloadDto, tenantId: string): Promise<InternalCandidateProfile> {
     this.logger.log(
-      `[PRODUCTION LOG] Initiating profile unlock & purchase for Provider=${dto.provider.toUpperCase()} | ExternalId=${dto.externalId}`,
+      `[PRODUCTION LOG] Initiating profile unlock & purchase for Provider=${dto.provider.toUpperCase()} | ExternalId=${dto.externalId} | Tenant=${tenantId}`,
     );
 
     // 1. Find candidate in external pool
@@ -170,7 +170,7 @@ export class SourcingService {
     this.logger.log(`[PRODUCTION LOG] Successfully unlocked profile. Mapped real email=${unlockedEmail} | phone=${unlockedPhone}`);
 
     // 3. De-duplication check: call CandidatesService to check if candidate is already in Supabase
-    const existing = await this.candidatesService.findByEmail(unlockedEmail);
+    const existing = await this.candidatesService.findByEmail(unlockedEmail, tenantId);
     if (existing) {
       this.logger.log(`Candidate with email ${unlockedEmail} is already imported. Returning existing profile.`);
       return existing as InternalCandidateProfile;
@@ -188,7 +188,7 @@ export class SourcingService {
       workAuthorization: externalCandidate.workAuthorization,
       skills: externalCandidate.skills,
       rawText: externalCandidate.resumeText,
-    });
+    }, tenantId);
 
     return createdProfile as InternalCandidateProfile;
   }
@@ -198,8 +198,8 @@ export class SourcingService {
    * the FastAPI Python parsing queue, polls the Celery task synchronously, and syncs
    * candidate records to Supabase.
    */
-  async parseAndImportCandidateViaPython(dto: SourcingDownloadDto): Promise<InternalCandidateProfile> {
-    this.logger.log(`[AI PARSER PIPELINE] Initiating AI parsing pipeline for ExternalId=${dto.externalId} on provider=${dto.provider.toUpperCase()}`);
+  async parseAndImportCandidateViaPython(dto: SourcingDownloadDto, tenantId: string): Promise<InternalCandidateProfile> {
+    this.logger.log(`[AI PARSER PIPELINE] Initiating AI parsing pipeline for ExternalId=${dto.externalId} on provider=${dto.provider.toUpperCase()} under tenant=${tenantId}`);
 
     // 1. Find candidate in external pool
     const externalCandidate = this.externalPool.find(
@@ -223,7 +223,7 @@ export class SourcingService {
     this.logger.log(`[AI PARSER PIPELINE] Unlocked details: email=${unlockedEmail} | phone=${unlockedPhone}`);
 
     // 3. De-duplication check: call CandidatesService to check if candidate is already in Supabase
-    const existing = await this.candidatesService.findByEmail(unlockedEmail);
+    const existing = await this.candidatesService.findByEmail(unlockedEmail, tenantId);
     if (existing) {
       this.logger.log(`Candidate with email ${unlockedEmail} is already imported. Returning existing profile.`);
       return existing as InternalCandidateProfile;
@@ -331,7 +331,7 @@ Bachelor of Science in Computer Science or equivalent technical field.
       try {
         // Sleep briefly to let worker transactions fully commit
         await new Promise((resolve) => setTimeout(resolve, 500));
-        const dbCandidate = await this.candidatesService.findByEmail(unlockedEmail);
+        const dbCandidate = await this.candidatesService.findByEmail(unlockedEmail, tenantId);
         if (dbCandidate) {
           this.logger.log(`[AI PARSER PIPELINE] Successfully synced and loaded parsed profile for ${unlockedEmail} from Supabase DB.`);
           return dbCandidate as InternalCandidateProfile;
@@ -354,7 +354,7 @@ Bachelor of Science in Computer Science or equivalent technical field.
       workAuthorization: externalCandidate.workAuthorization,
       skills: externalCandidate.skills,
       rawText: externalCandidate.resumeText,
-    });
+    }, tenantId);
 
     return createdProfile as InternalCandidateProfile;
   }
@@ -362,11 +362,11 @@ Bachelor of Science in Computer Science or equivalent technical field.
   /**
    * Retrieves all imported external profiles saved in our shared PostgreSQL database.
    */
-  async getImportedProfiles(): Promise<InternalCandidateProfile[]> {
-    this.logger.log('Fetching imported external candidates from CandidatesService...');
+  async getImportedProfiles(tenantId: string): Promise<InternalCandidateProfile[]> {
+    this.logger.log(`Fetching imported external candidates from CandidatesService for tenant: ${tenantId}...`);
     try {
-      const diceCandidates = await this.candidatesService.findAll({ source: 'Dice' });
-      const monsterCandidates = await this.candidatesService.findAll({ source: 'Monster' });
+      const diceCandidates = await this.candidatesService.findAll({ source: 'Dice' }, tenantId);
+      const monsterCandidates = await this.candidatesService.findAll({ source: 'Monster' }, tenantId);
       
       const combined = [...diceCandidates, ...monsterCandidates];
       return combined as InternalCandidateProfile[];

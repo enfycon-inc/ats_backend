@@ -13,8 +13,8 @@ export class CandidatesService {
   /**
    * Safe SQL transaction to create a candidate and link their resume record in one step
    */
-  async createCandidate(dto: CreateCandidateDto): Promise<CandidateProfile> {
-    this.logger.log(`Creating database records for candidate: ${dto.fullName} (${dto.email})`);
+  async createCandidate(dto: CreateCandidateDto, tenantId: string): Promise<CandidateProfile> {
+    this.logger.log(`Creating database records for candidate: ${dto.fullName} (${dto.email}) for tenant: ${tenantId}`);
     
     const client = await this.db.getClient();
     try {
@@ -47,10 +47,10 @@ export class CandidatesService {
       );
       const resumeRecordId = resumeResult.rows[0].id;
 
-      // 2. Insert into candidates table
+      // 2. Insert into candidates table with tenant_id
       const candidateResult = await client.query(
-        `INSERT INTO candidates (full_name, email, phone, raw_current_location, total_experience_years, raw_current_designation, created_at, source, work_authorization, resume_record_id)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9)
+        `INSERT INTO candidates (full_name, email, phone, raw_current_location, total_experience_years, raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)
          RETURNING id, created_at`,
         [
           dto.fullName,
@@ -62,6 +62,7 @@ export class CandidatesService {
           dto.source,
           dto.workAuthorization,
           resumeRecordId,
+          tenantId,
         ]
       );
       
@@ -101,19 +102,19 @@ export class CandidatesService {
   }
 
   /**
-   * Fetches and maps candidates using filters, dynamic keywords, and limits
+   * Fetches and maps candidates using filters, dynamic keywords, and limits, scoped by tenant
    */
-  async findAll(query: CandidateQueryDto): Promise<CandidateProfile[]> {
-    this.logger.log(`Fetching candidates from Supabase DB. Filters q="${query.q || 'None'}"`);
+  async findAll(query: CandidateQueryDto, tenantId: string): Promise<CandidateProfile[]> {
+    this.logger.log(`Fetching candidates from Supabase DB for tenant: ${tenantId}. Filters q="${query.q || 'None'}"`);
     
     let baseSql = `
       SELECT c.*, r.raw_text, r.parsed_json
       FROM candidates c
       LEFT JOIN resumes r ON c.resume_record_id = r.id
-      WHERE 1=1
+      WHERE c.tenant_id = $1
     `;
-    const params: any[] = [];
-    let paramIndex = 1;
+    const params: any[] = [tenantId];
+    let paramIndex = 2;
 
     if (query.source) {
       baseSql += ` AND c.source = $${paramIndex}`;
@@ -151,17 +152,17 @@ export class CandidatesService {
   }
 
   /**
-   * Retrieves a single candidate with joined resumes details
+   * Retrieves a single candidate with joined resumes details, scoped by tenant
    */
-  async findOne(id: number): Promise<CandidateProfile> {
-    this.logger.log(`Fetching candidate detail for ID=${id}`);
+  async findOne(id: number, tenantId: string): Promise<CandidateProfile> {
+    this.logger.log(`Fetching candidate detail for ID=${id} and tenant=${tenantId}`);
 
     const result = await this.db.query(
       `SELECT c.*, r.raw_text, r.parsed_json
        FROM candidates c
        LEFT JOIN resumes r ON c.resume_record_id = r.id
-       WHERE c.id = $1 LIMIT 1`,
-      [id]
+       WHERE c.id = $1 AND c.tenant_id = $2 LIMIT 1`,
+      [id, tenantId]
     );
 
     if (result.rows.length === 0) {
@@ -172,15 +173,15 @@ export class CandidatesService {
   }
 
   /**
-   * Finds a candidate by their email address for de-duplication checks
+   * Finds a candidate by their email address for de-duplication checks, scoped by tenant
    */
-  async findByEmail(email: string): Promise<CandidateProfile | null> {
+  async findByEmail(email: string, tenantId: string): Promise<CandidateProfile | null> {
     const result = await this.db.query(
       `SELECT c.*, r.raw_text, r.parsed_json
        FROM candidates c
        LEFT JOIN resumes r ON c.resume_record_id = r.id
-       WHERE c.email = $1 LIMIT 1`,
-      [email]
+       WHERE c.email = $1 AND c.tenant_id = $2 LIMIT 1`,
+      [email, tenantId]
     );
 
     if (result.rows.length === 0) {
@@ -191,12 +192,12 @@ export class CandidatesService {
   }
 
   /**
-   * Deletes a candidate by ID
+   * Deletes a candidate by ID, scoped by tenant
    */
-  async deleteCandidate(id: number): Promise<{ message: string }> {
-    this.logger.log(`Initiating deletion for Candidate ID=${id}`);
+  async deleteCandidate(id: number, tenantId: string): Promise<{ message: string }> {
+    this.logger.log(`Initiating deletion for Candidate ID=${id} for tenant: ${tenantId}`);
     
-    const candidate = await this.db.query('SELECT resume_record_id FROM candidates WHERE id = $1', [id]);
+    const candidate = await this.db.query('SELECT resume_record_id FROM candidates WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
     if (candidate.rows.length === 0) {
       throw new NotFoundException(`Candidate profile with ID ${id} was not found.`);
     }
@@ -213,7 +214,7 @@ export class CandidatesService {
       await client.query('DELETE FROM candidate_skills WHERE candidate_id = $1', [id]);
       
       // Delete from candidates
-      await client.query('DELETE FROM candidates WHERE id = $1', [id]);
+      await client.query('DELETE FROM candidates WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
       
       // Delete from resumes
       if (resumeRecordId) {

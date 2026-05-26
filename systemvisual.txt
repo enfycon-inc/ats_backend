@@ -1,0 +1,110 @@
+===============================================================================
+                       🚀 MULTI-TENANT SAAS ATS ARCHITECTURE
+                   US IT STAFFING  vs.  INDIAN IT STAFFING
+===============================================================================
+
+This visual blueprint outlines how your single database powers multiple global 
+tenants, allowing selective, dynamic screen customization for US IT or Indian IT 
+markets instantly without duplicating any logic or columns!
+
+===============================================================================
+1. 🗄️ THE SINGLE SHARED DATABASE & SCHEMA LAYOUT
+===============================================================================
+All tenants (e.g. 5 separate recruitment firms) share a single physical Postgres
+database. Data separation is strictly enforced via a 'tenant_id' UUID.
+
+               ┌─────────────────────────────────────────────────┐
+               │         POSTGRESQL DATABASE (SUPABASE)          │
+               └─────────────────────────────────────────────────┘
+                                        │
+      ┌─────────────────────────────────┴─────────────────────────────────┐
+      ▼                                                                   ▼
+┌──────────────┐                                                    ┌──────────────┐
+│  TENANTS TBL │                                                    │   JOBS TBL   │
+├──────────────┤                                                    ├──────────────┤
+│ id (UUID) ───┼──┐                                            ┌───►│ id (UUID)    │
+│ name         │  │                                            │    │ tenant_id ───┤
+│ domain       │  │                                            │    │ job_code     │
+│ def_market ──│  │                                            │    │ job_title    │
+└──────────────┘  │                                            │    │ market ──────┤
+                  │                                            │    └──────────────┘
+                  │             ┌────────────────┐             │
+                  ├────────────►│ CANDIDATES TBL │             │
+                  │             ├────────────────┤             │
+                  │             │ id (INT)       │             │
+                  │             │ tenant_id ─────┼─────────────┘
+                  └────────────►│ full_name      │
+                                │ current_ctc    │ ◄── [Indian Market Field]
+                                │ expected_ctc   │ ◄── [Indian Market Field]
+                                │ notice_period  │ ◄── [Indian Market Field]
+                                │ visa_type      │ ◄── [US Market Field]
+                                └────────────────┘
+
+===============================================================================
+2. 🔄 STEP-BY-STEP DYNAMIC SCREEN SWITCHING WORKFLOW
+===============================================================================
+
+Recruiter logs in ──► Fetch Tenant Metadata ──► Save market type in Client Context
+                                                       │
+                                                       ▼
+                              ┌───────────────────────────────────┐
+                              │ Is tenant.default_market == 'IN'? │
+                              └─────────────────┬─────────────────┘
+                                                │
+                       ┌────────────────────────┴────────────────────────┐
+                       ▼ YES                                             ▼ NO
+          🇮🇳 INDIAN IT RECRUITER FORM                       🇺🇸 US IT RECRUITER FORM
+     ┌───────────────────────────────────┐             ┌───────────────────────────────────┐
+     │ • Full Name       • Email         │             │ • Full Name       • Email         │
+     │ • Phone           • Metro Tech Hub│             │ • Phone           • ZIP / City    │
+     │                                   │             │                                   │
+     │ 💸 Current CTC    💸 Expected CTC │             │ 💳 Visa Type      💳 Tax Terms    │
+     │   (Ex: 12.5 LPA)    (Ex: 18.0 LPA)│             │   (Ex: H1B / GC)    (Ex: C2C / W2)│
+     │                                   │             │                                   │
+     │ ⏳ Notice Period  🆔 PAN Number   │             │ 💵 Client Bill    💵 Pay Rate     │
+     │   (Ex: 30 Days)     (For Deduplication)         │   (Ex: $100/hr)     (Ex: $85/hr)  │
+     └───────────────────────────────────┘             └───────────────────────────────────┘
+
+===============================================================================
+3. 🏎️ INDEXING & FULL-TEXT SEARCH SCALING BLUEPRINT (MILLIONS OF RECORDS)
+===============================================================================
+To ensure searches take milliseconds, even with millions of candidates:
+
+A. ROW ACCESS ACCELERATION (GIN / B-TREE INDEXING):
+   We create index pointers so PostgreSQL skips checking other tenants' data.
+   
+    [Recruiter searches Candidates]
+                  │
+                  ▼
+         [Postgres Index]  ───(B-Tree Jump)───►  [Tenant Data Block] (1-3ms)
+                  │
+                  ▼
+         (Skips other 99% of database rows!)
+
+B. RESUME SEARCH ACCELERATION (FULL-TEXT INVERTED INDEX):
+   Raw resume HTML/Text parsed by Python/Node is converted to a 'tsvector' tokenized 
+   index. GIN index speeds up matching words instantly.
+   
+    Resume Content: "Expert in Spring Boot, AWS, Kubernetes and Microservices..."
+                                        │
+                                        ▼
+    Tokenized Index: 'aws':2 'boot':1 'kubernetes':3 'microservic':4 'spring':5
+                                        │
+                                        ▼
+    GIN Inverted Index Search Match ──► Instant Match inside pg! (5-10ms)
+
+===============================================================================
+4. 🤖 AI-POWERED SEMANTIC SEARCH (FUTURE SCALING)
+===============================================================================
+Using Supabase's `pgvector` extension, we generate AI embeddings for candidates 
+to match jobs conceptually instead of raw string matches.
+
+    "Experienced Cloud Architect with focus on high traffic APIs"
+                                 │ (AI Embedding)
+                                 ▼
+                     Vector: [0.12, -0.42, 0.91, ...]
+                                 │ (Vector Cosine Distance Match)
+                                 ▼
+           Matches Candidate resumes with: "AWS DevOps", "Azure API Expert",
+           or "Kubernetes Architect" without exact word matches!
+===============================================================================

@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Body, Query, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, Headers, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBody } from '@nestjs/swagger';
 import { SourcingService } from './sourcing.service';
 import { SourcingSearchQueryDto } from './dtos/search-query.dto';
 import { SourcingDownloadDto } from './dtos/download-candidate.dto';
 import { ExternalCandidate, InternalCandidateProfile } from './interfaces/candidate.interface';
+
+const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
 @ApiTags('Talent Sourcing & Job Board Integrations')
 @Controller('api/sourcing')
@@ -78,8 +80,12 @@ export class SourcingController {
     status: 404,
     description: 'The specified candidate ID was not found on the job board provider registry.',
   })
-  async downloadCandidate(@Body() dto: SourcingDownloadDto): Promise<InternalCandidateProfile> {
-    return this.sourcingService.downloadAndImportCandidate(dto);
+  async downloadCandidate(
+    @Body() dto: SourcingDownloadDto,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<InternalCandidateProfile> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.sourcingService.downloadAndImportCandidate(dto, activeTenantId);
   }
 
   @Post('parse-resume')
@@ -95,8 +101,12 @@ export class SourcingController {
     status: 201,
     description: 'Candidate purchased, parsed via AI pipeline, and imported successfully.',
   })
-  async parseResume(@Body() dto: SourcingDownloadDto): Promise<InternalCandidateProfile> {
-    return this.sourcingService.parseAndImportCandidateViaPython(dto);
+  async parseResume(
+    @Body() dto: SourcingDownloadDto,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<InternalCandidateProfile> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.sourcingService.parseAndImportCandidateViaPython(dto, activeTenantId);
   }
 
   @Get('imported')
@@ -108,7 +118,9 @@ export class SourcingController {
     status: 200,
     description: 'Successfully retrieved imported candidate profiles.',
   })
-  async getImported(): Promise<InternalCandidateProfile[]> {
-    return this.sourcingService.getImportedProfiles();
+  async getImported(@Headers('x-tenant-id') tenantId?: string): Promise<InternalCandidateProfile[]> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.sourcingService.getImportedProfiles(activeTenantId);
   }
 }
+
