@@ -18,4 +18,6 @@ export interface AuthUser {
   tenantId: string;
   /** True if account is active */
   isActive: boolean;
+  /** Granular permission strings for this user's custom role */
+  permissions?: string[];
 }

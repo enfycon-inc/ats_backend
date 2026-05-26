@@ -71,6 +71,26 @@ export class AuthService implements OnModuleInit {
 
   private async ensureUsersTable() {
     const ddl = `
+      -- 1. Create custom_roles table
+      CREATE TABLE IF NOT EXISTS custom_roles (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id     UUID NOT NULL DEFAULT 'd3b07384-d113-49c3-a555-9ee75c13ca33',
+        name          VARCHAR(100) NOT NULL,
+        description   TEXT,
+        is_system     BOOLEAN NOT NULL DEFAULT false,
+        created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(tenant_id, name)
+      );
+
+      -- 2. Create role_permissions table
+      CREATE TABLE IF NOT EXISTS role_permissions (
+        role_id       UUID NOT NULL REFERENCES custom_roles(id) ON DELETE CASCADE,
+        permission    VARCHAR(100) NOT NULL,
+        PRIMARY KEY (role_id, permission)
+      );
+
+      -- 3. Create users table
       CREATE TABLE IF NOT EXISTS users (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_id     UUID NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
@@ -87,6 +107,9 @@ export class AuthService implements OnModuleInit {
         updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
+      -- 4. Add role_id to users if not exists
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES custom_roles(id) ON DELETE SET NULL;
+
       -- Ensure is_approved column exists on older tables
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
 
@@ -95,9 +118,9 @@ export class AuthService implements OnModuleInit {
     `;
     try {
       await this.db.query(ddl);
-      this.logger.log('Users table verified/created.');
+      this.logger.log('Users and RBAC tables verified/created.');
     } catch (err) {
-      this.logger.error(`Failed to create users table: ${err.message}`);
+      this.logger.error(`Failed to create users/RBAC tables: ${err.message}`);
     }
   }
 
@@ -115,6 +138,10 @@ export class AuthService implements OnModuleInit {
     }
 
     try {
+      // Seed roles first for master tenant
+      const roleMap = await this.seedTenantRoles(DEFAULT_TENANT_ID);
+      const superAdminRoleId = roleMap['SUPER_ADMIN'];
+
       const exists = await this.db.query(
         'SELECT id, roles FROM users WHERE email = $1 LIMIT 1',
         [adminEmail],
@@ -126,13 +153,13 @@ export class AuthService implements OnModuleInit {
         if (!roles.includes('SUPER_ADMIN')) {
           this.logger.log(`Updating existing user ${adminEmail} to have SUPER_ADMIN role.`);
           await this.db.query(
-            `UPDATE users SET roles = array_append(roles, 'SUPER_ADMIN'), is_approved = true, is_active = true WHERE id = $1`,
-            [user.id],
+            `UPDATE users SET roles = array_append(roles, 'SUPER_ADMIN'), is_approved = true, is_active = true, role_id = $1 WHERE id = $2`,
+            [superAdminRoleId, user.id],
           );
         } else {
           await this.db.query(
-            `UPDATE users SET is_approved = true, is_active = true WHERE id = $1`,
-            [user.id],
+            `UPDATE users SET is_approved = true, is_active = true, role_id = $1 WHERE id = $2`,
+            [superAdminRoleId, user.id],
           );
         }
         this.logger.log(`✅ Platform SUPER_ADMIN already exists in DB (${adminEmail}) — skipping seed.`);
@@ -142,16 +169,14 @@ export class AuthService implements OnModuleInit {
       // First boot only: create the platform super admin
       const { hash, salt } = this.hashPassword(adminPassword);
       await this.db.query(
-        `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
-         VALUES ($1, $2, $3, $4, $5, $6, true, true)`,
-        [DEFAULT_TENANT_ID, adminEmail, adminName, hash, salt, ['SUPER_ADMIN']],
+        `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
+         VALUES ($1, $2, $3, $4, $5, $6, true, true, $7)`,
+        [DEFAULT_TENANT_ID, adminEmail, adminName, hash, salt, ['SUPER_ADMIN'], superAdminRoleId],
       );
       this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
     } catch (err) {
       this.logger.warn(`Could not seed SUPER_ADMIN: ${err.message}`);
     }
-    // NOTE: All other users (ADMIN, RECRUITER, etc.) are created via the Admin UI
-    // after tenant self-registration and approval. No hardcoded seeds needed.
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -161,7 +186,7 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Login attempt: ${dto.email}`);
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, t.default_market, t.domain as tenant_domain
+      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, t.default_market, t.domain as tenant_domain
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        WHERE u.email = $1 LIMIT 1`,
@@ -191,6 +216,16 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
+    // Fetch dynamic permissions assigned to the custom role
+    let permissions: string[] = [];
+    if (user.role_id) {
+      const permsResult = await this.db.query(
+        'SELECT permission FROM role_permissions WHERE role_id = $1',
+        [user.role_id]
+      );
+      permissions = permsResult.rows.map((row) => row.permission);
+    }
+
     const token = this.signJwt({
       sub: user.id,
       email: user.email,
@@ -199,6 +234,7 @@ export class AuthService implements OnModuleInit {
       tenantId: user.tenant_id || DEFAULT_TENANT_ID,
       defaultMarket: user.default_market || 'US',
       tenantDomain: user.tenant_domain || '',
+      permissions,
     });
 
     return {
@@ -213,6 +249,7 @@ export class AuthService implements OnModuleInit {
         tenantId: user.tenant_id || DEFAULT_TENANT_ID,
         defaultMarket: user.default_market || 'US',
         tenantDomain: user.tenant_domain || '',
+        permissions,
       },
     };
   }
@@ -233,23 +270,27 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const validRoles = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'SUPER_ADMIN', 'TRACKER'];
-    const role = dto.role?.toUpperCase();
-    if (!validRoles.includes(role)) {
-      throw new BadRequestException(
-        `Invalid role "${dto.role}". Must be one of: ${validRoles.join(', ')}`,
-      );
+    const role = dto.role?.toUpperCase() || 'RECRUITER';
+    const tenantId = dto.tenantId || DEFAULT_TENANT_ID;
+
+    // Find the dynamic role ID corresponding to the requested role name
+    let roleId = null;
+    const roleResult = await this.db.query(
+      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
+      [tenantId, role]
+    );
+    if (roleResult.rows.length > 0) {
+      roleId = roleResult.rows[0].id;
     }
 
-    const tenantId = dto.tenantId || DEFAULT_TENANT_ID;
     const { hash, salt } = this.hashPassword(dto.password);
 
     // New user registrations default to unapproved (is_approved = false)
     const result = await this.db.query(
-      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
-       VALUES ($1, $2, $3, $4, $5, $6, true, false)
-       RETURNING id, email, full_name, roles, tenant_id, created_at`,
-      [tenantId, dto.email, dto.fullName, hash, salt, [role]],
+      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
+       VALUES ($1, $2, $3, $4, $5, $6, true, false, $7)
+       RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
+      [tenantId, dto.email, dto.fullName, hash, salt, [role], roleId],
     );
 
     const user = result.rows[0];
@@ -305,13 +346,17 @@ export class AuthService implements OnModuleInit {
     );
     const tenant = tenantResult.rows[0];
 
-    // 5. Create the first admin user for this tenant (is_approved = false)
+    // 5. Seed the default custom roles & permissions for this new company tenant
+    const roleMap = await this.seedTenantRoles(tenant.id);
+    const adminRoleId = roleMap['ADMIN'];
+
+    // 6. Create the first admin user for this tenant (is_approved = false)
     const { hash, salt } = this.hashPassword(dto.password);
     const userResult = await this.db.query(
-      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
-       VALUES ($1, $2, $3, $4, $5, $6, true, false)
-       RETURNING id, email, full_name, roles, tenant_id, created_at`,
-      [tenant.id, dto.email, dto.fullName, hash, salt, ['ADMIN']],
+      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
+       VALUES ($1, $2, $3, $4, $5, $6, true, false, $7)
+       RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
+      [tenant.id, dto.email, dto.fullName, hash, salt, ['ADMIN'], adminRoleId],
     );
     const user = userResult.rows[0];
 
@@ -353,7 +398,7 @@ export class AuthService implements OnModuleInit {
 
     // Preserve internal roles that Keycloak doesn't manage
     const existing = await this.db.query(
-      'SELECT id, roles, tenant_id, is_active FROM users WHERE keycloak_id = $1 LIMIT 1',
+      'SELECT id, roles, tenant_id, is_active, role_id FROM users WHERE keycloak_id = $1 LIMIT 1',
       [data.keycloakId],
     );
 
@@ -368,25 +413,54 @@ export class AuthService implements OnModuleInit {
       ? existing.rows[0].tenant_id
       : DEFAULT_TENANT_ID;
 
+    // Synchronize Keycloak role name to dynamic custom role ID
+    let roleId = existing.rows.length > 0 ? existing.rows[0].role_id : null;
+    if (!roleId && mergedRoles.length > 0) {
+      const primaryRole = mergedRoles.includes('ADMIN') ? 'ADMIN' : mergedRoles[0];
+      const roleResult = await this.db.query(
+        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
+        [tenantId, primaryRole]
+      );
+      if (roleResult.rows.length > 0) {
+        roleId = roleResult.rows[0].id;
+      }
+    }
+
     const result = await this.db.query(
-      `INSERT INTO users (keycloak_id, tenant_id, email, full_name, roles, is_active, is_approved)
-       VALUES ($1, $2, $3, $4, $5, true, true)
+      `INSERT INTO users (keycloak_id, tenant_id, email, full_name, roles, is_active, is_approved, role_id)
+       VALUES ($1, $2, $3, $4, $5, true, true, $6)
        ON CONFLICT (keycloak_id) DO UPDATE SET
          email      = EXCLUDED.email,
          full_name  = EXCLUDED.full_name,
          roles      = $5,
+         role_id    = COALESCE(users.role_id, $6),
          updated_at = NOW()
-       RETURNING id, email, full_name, roles, tenant_id, is_active`,
-      [data.keycloakId, tenantId, data.email, data.fullName, mergedRoles],
+       RETURNING id, email, full_name, roles, tenant_id, is_active, role_id`,
+      [data.keycloakId, tenantId, data.email, data.fullName, mergedRoles, roleId],
     );
 
-    return result.rows[0];
+    const dbUser = result.rows[0];
+
+    // Load custom role permissions dynamically
+    let permissions: string[] = [];
+    if (dbUser.role_id) {
+      const permsRes = await this.db.query(
+        'SELECT permission FROM role_permissions WHERE role_id = $1',
+        [dbUser.role_id]
+      );
+      permissions = permsRes.rows.map(row => row.permission);
+    }
+
+    return {
+      ...dbUser,
+      permissions
+    };
   }
 
   // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, t.default_market, t.domain as tenant_domain
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, t.default_market, t.domain as tenant_domain
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        WHERE u.id = $1 LIMIT 1`,
@@ -396,11 +470,34 @@ export class AuthService implements OnModuleInit {
       throw new NotFoundException('User profile not found.');
     }
     const u = result.rows[0];
+
+    // Load custom role details and permissions
+    let roleName = u.roles[0] || 'RECRUITER';
+    let permissions: string[] = [];
+    if (u.role_id) {
+      const roleRes = await this.db.query(
+        'SELECT name FROM custom_roles WHERE id = $1 LIMIT 1',
+        [u.role_id]
+      );
+      if (roleRes.rows.length > 0) {
+        roleName = roleRes.rows[0].name;
+      }
+
+      const permsRes = await this.db.query(
+        'SELECT permission FROM role_permissions WHERE role_id = $1',
+        [u.role_id]
+      );
+      permissions = permsRes.rows.map(row => row.permission);
+    }
+
     return {
       id: u.id,
       email: u.email,
       fullName: u.full_name,
       roles: u.roles,
+      roleId: u.role_id,
+      roleName,
+      permissions,
       tenantId: u.tenant_id,
       isActive: u.is_active,
       createdAt: u.created_at,
@@ -414,8 +511,10 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listUsers(tenantId: string) {
     const result = await this.db.query(
-      `SELECT id, email, full_name, roles, is_active, created_at
-       FROM users WHERE tenant_id = $1 ORDER BY full_name ASC`,
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.created_at, u.role_id, r.name as role_name
+       FROM users u 
+       LEFT JOIN custom_roles r ON u.role_id = r.id
+       WHERE u.tenant_id = $1 ORDER BY u.full_name ASC`,
       [tenantId],
     );
     return result.rows.map((u) => ({
@@ -423,6 +522,8 @@ export class AuthService implements OnModuleInit {
       email: u.email,
       fullName: u.full_name,
       roles: u.roles,
+      roleId: u.role_id,
+      roleName: u.role_name || u.roles[0] || 'RECRUITER',
       isActive: u.is_active,
       createdAt: u.created_at,
     }));
@@ -446,17 +547,215 @@ export class AuthService implements OnModuleInit {
   // Update user roles (admin utility)
   // ─────────────────────────────────────────────────────────────
   async updateUserRoles(userId: string, roles: string[]) {
-    const validRoles = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'SUPER_ADMIN', 'TRACKER'];
     const normalized = roles.map((r) => r.toUpperCase());
-    const invalid = normalized.filter((r) => !validRoles.includes(r));
-    if (invalid.length > 0) {
-      throw new BadRequestException(`Invalid roles: ${invalid.join(', ')}`);
-    }
     await this.db.query(
       `UPDATE users SET roles = $1, updated_at = NOW() WHERE id = $2`,
       [normalized, userId],
     );
     return { message: 'User roles updated successfully.', roles: normalized };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // ENTERPRISE GRANULAR RBAC CRUD & PERMISSIONS MANAGEMENT (Ceipal style)
+  // ─────────────────────────────────────────────────────────────
+  async seedTenantRoles(tenantId: string): Promise<Record<string, string>> {
+    const DEFAULT_PERMISSIONS = {
+      ADMIN: [
+        'job:create', 'job:edit', 'job:view',
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:edit',
+        'tenant:settings', 'user:manage'
+      ],
+      RECRUITER: [
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view',
+        'job:view'
+      ],
+      ACCOUNT_MANAGER: [
+        'job:create', 'job:edit', 'job:view',
+        'candidate:view', 'submission:view', 'submission:edit'
+      ],
+      DELIVERY_HEAD: [
+        'job:view', 'candidate:view', 'submission:view', 'submission:edit'
+      ],
+      TRACKER: [
+        'submission:view', 'candidate:view'
+      ],
+      SUPER_ADMIN: [
+        'job:create', 'job:edit', 'job:view',
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:edit',
+        'tenant:settings', 'user:manage', 'platform:manage'
+      ]
+    };
+
+    const roleMap: Record<string, string> = {};
+
+    for (const [roleName, permissions] of Object.entries(DEFAULT_PERMISSIONS)) {
+      // 1. Insert role
+      const roleRes = await this.db.query(`
+        INSERT INTO custom_roles (tenant_id, name, description, is_system)
+        VALUES ($1, $2, $3, true)
+        ON CONFLICT (tenant_id, name) DO UPDATE SET name = EXCLUDED.name
+        RETURNING id
+      `, [tenantId, roleName, `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`]);
+      
+      const roleId = roleRes.rows[0].id;
+      roleMap[roleName] = roleId;
+
+      // 2. Insert permissions
+      await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+      for (const perm of permissions) {
+        await this.db.query(`
+          INSERT INTO role_permissions (role_id, permission)
+          VALUES ($1, $2)
+        `, [roleId, perm]);
+      }
+    }
+
+    return roleMap;
+  }
+
+  async listRoles(tenantId: string) {
+    const rolesRes = await this.db.query(
+      'SELECT id, name, description, is_system as "isSystem" FROM custom_roles WHERE tenant_id = $1 ORDER BY name ASC',
+      [tenantId]
+    );
+    const roles = rolesRes.rows;
+
+    const result = [];
+    for (const role of roles) {
+      const permsRes = await this.db.query(
+        'SELECT permission FROM role_permissions WHERE role_id = $1',
+        [role.id]
+      );
+      result.push({
+        ...role,
+        permissions: permsRes.rows.map(row => row.permission)
+      });
+    }
+    return result;
+  }
+
+  async createCustomRole(tenantId: string, name: string, description: string, permissions: string[]) {
+    const nameUpper = name.toUpperCase().trim();
+    if (['SUPER_ADMIN', 'ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'TRACKER'].includes(nameUpper)) {
+      throw new BadRequestException('Role name conflicts with a default system role.');
+    }
+
+    const exists = await this.db.query(
+      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
+      [tenantId, nameUpper]
+    );
+    if (exists.rows.length > 0) {
+      throw new ConflictException(`A role with name "${name}" already exists.`);
+    }
+
+    const roleRes = await this.db.query(
+      `INSERT INTO custom_roles (tenant_id, name, description, is_system)
+       VALUES ($1, $2, $3, false)
+       RETURNING id, name, description, is_system as "isSystem"`,
+      [tenantId, name, description]
+    );
+    const role = roleRes.rows[0];
+
+    for (const perm of permissions) {
+      await this.db.query(
+        'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
+        [role.id, perm]
+      );
+    }
+
+    return {
+      ...role,
+      permissions
+    };
+  }
+
+  async updateRolePermissions(tenantId: string, roleId: string, permissions: string[]) {
+    const roleResult = await this.db.query(
+      'SELECT id, is_system FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [roleId, tenantId]
+    );
+    if (roleResult.rows.length === 0) {
+      throw new NotFoundException('Role not found.');
+    }
+
+    // Update permissions in database
+    await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+    for (const perm of permissions) {
+      await this.db.query(
+        'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
+        [roleId, perm]
+      );
+    }
+
+    return { message: 'Permissions updated successfully.', permissions };
+  }
+
+  async deleteCustomRole(tenantId: string, roleId: string) {
+    const roleResult = await this.db.query(
+      'SELECT id, is_system FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [roleId, tenantId]
+    );
+    if (roleResult.rows.length === 0) {
+      throw new NotFoundException('Role not found.');
+    }
+    if (roleResult.rows[0].is_system) {
+      throw new BadRequestException('You cannot delete default system roles.');
+    }
+
+    // Re-assign users under this role to RECRUITER fallback role
+    const fallbackRes = await this.db.query(
+      "SELECT id FROM custom_roles WHERE tenant_id = $1 AND name = 'RECRUITER' LIMIT 1",
+      [tenantId]
+    );
+    const fallbackRoleId = fallbackRes.rows[0]?.id;
+
+    if (fallbackRoleId) {
+      await this.db.query(
+        'UPDATE users SET role_id = $1 WHERE role_id = $2',
+        [fallbackRoleId, roleId]
+      );
+    }
+
+    await this.db.query('DELETE FROM custom_roles WHERE id = $1', [roleId]);
+    return { message: 'Custom role deleted successfully.' };
+  }
+
+  async assignUserRole(tenantId: string, userId: string, roleId: string) {
+    const roleResult = await this.db.query(
+      'SELECT id, name FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [roleId, tenantId]
+    );
+    if (roleResult.rows.length === 0) {
+      throw new NotFoundException('Role not found.');
+    }
+    const roleName = roleResult.rows[0].name;
+
+    // Update user: link role_id and synchronize standard roles list for backward-compatibility
+    await this.db.query(
+      `UPDATE users 
+       SET role_id = $1, roles = $2, updated_at = NOW() 
+       WHERE id = $3 AND tenant_id = $4`,
+      [roleId, [roleName], userId, tenantId]
+    );
+
+    return { message: 'User role assigned successfully.', role: roleName };
+  }
+
+  listAllPermissions() {
+    return [
+      { id: 'job:create', name: 'Create Jobs', group: 'Jobs Management' },
+      { id: 'job:edit', name: 'Edit Jobs', group: 'Jobs Management' },
+      { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
+      { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates' },
+      { id: 'candidate:view', name: 'View Candidates', group: 'Candidates' },
+      { id: 'submission:create', name: 'Create Submissions', group: 'Submissions' },
+      { id: 'submission:edit', name: 'Edit Submissions', group: 'Submissions' },
+      { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
+      { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
+    ];
   }
 
   // ─────────────────────────────────────────────────────────────

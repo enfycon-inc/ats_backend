@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Patch,
+  Delete,
   Body,
   Param,
   UseGuards,
@@ -24,6 +25,8 @@ import { RegisterTenantDto } from './dtos/register-tenant.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
+import { RequirePermissions } from './decorators/permissions.decorator';
+import { PermissionsGuard } from './guards/permissions.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { AuthUser } from './interfaces/auth-user.interface';
 
@@ -248,5 +251,89 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { subdomain: string },
   ) {
     return this.authService.updateTenantSubdomain(user.tenantId, body.subdomain);
+  }
+
+  // ─── GET /api/auth/rbac/permissions ──────────────────────────
+  @Get('rbac/permissions')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List all system permissions',
+  })
+  async listAllPermissions() {
+    return this.authService.listAllPermissions();
+  }
+
+  // ─── GET /api/auth/rbac/roles ────────────────────────────────
+  @Get('rbac/roles')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List all company roles and permissions',
+  })
+  async listRoles(@CurrentUser() user: AuthUser) {
+    return this.authService.listRoles(user.tenantId);
+  }
+
+  // ─── POST /api/auth/rbac/roles ───────────────────────────────
+  @Post('rbac/roles')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Create a new custom company role [ADMIN only]',
+  })
+  async createCustomRole(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { name: string; description: string; permissions: string[] },
+  ) {
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions);
+  }
+
+  // ─── PATCH /api/auth/rbac/roles/:id/permissions ──────────────
+  @Patch('rbac/roles/:id/permissions')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update dynamic permissions for a custom role [ADMIN only]',
+  })
+  async updateRolePermissions(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roleId: string,
+    @Body() body: { permissions: string[] },
+  ) {
+    return this.authService.updateRolePermissions(user.tenantId, roleId, body.permissions);
+  }
+
+  // ─── DELETE /api/auth/rbac/roles/:id ──────────────────────────
+  @Delete('rbac/roles/:id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Delete a custom company role [ADMIN only]',
+  })
+  async deleteCustomRole(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roleId: string,
+  ) {
+    return this.authService.deleteCustomRole(user.tenantId, roleId);
+  }
+
+  // ─── POST /api/auth/rbac/users/:id/role ──────────────────────
+  @Post('rbac/users/:id/role')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Assign a custom role to a user [ADMIN only]',
+  })
+  async assignUserRole(
+    @CurrentUser() user: AuthUser,
+    @Param('id') targetUserId: string,
+    @Body() body: { roleId: string },
+  ) {
+    return this.authService.assignUserRole(user.tenantId, targetUserId, body.roleId);
   }
 }

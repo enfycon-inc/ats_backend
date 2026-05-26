@@ -116,6 +116,7 @@ export class JwtAuthGuard implements CanActivate {
       roles: decoded.roles || [],
       tenantId: decoded.tenantId || DEFAULT_TENANT_ID,
       isActive: true,
+      permissions: decoded.permissions || [],
     };
 
     return true;
@@ -193,10 +194,11 @@ export class JwtAuthGuard implements CanActivate {
       roles: mergedRoles,
       tenantId: dbUser.tenant_id || DEFAULT_TENANT_ID,
       isActive: dbUser.is_active,
+      permissions: dbUser.permissions || [],
     };
 
     this.logger.debug(
-      `[Keycloak] ✓ ${request.user.email} | Roles: [${mergedRoles.join(', ')}]`,
+      `[Keycloak] ✓ ${request.user.email} | Roles: [${mergedRoles.join(', ')}] | Perms: ${dbUser.permissions ? dbUser.permissions.length : 0}`,
     );
 
     return true;

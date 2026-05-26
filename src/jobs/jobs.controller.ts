@@ -8,6 +8,8 @@ import {
 import { JobsService, JobProfile } from './jobs.service';
 import { CreateJobDto } from './dtos/create-job.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
@@ -20,7 +22,8 @@ export class JobsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:create')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Create new job requisition',
@@ -38,7 +41,8 @@ export class JobsController {
   }
 
   @Get()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:view')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Retrieve all job openings',
@@ -54,7 +58,8 @@ export class JobsController {
   }
 
   @Get(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:view')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get job detail by ID or code',
