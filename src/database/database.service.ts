@@ -62,7 +62,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       -- 2. Insert default tenant
       INSERT INTO tenants (id, name, domain, status, default_market)
       VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'Default Enfy SaaS Tenant', 'enfycon.com', 'ACTIVE', 'US')
-      ON CONFLICT (domain) DO UPDATE SET name = EXCLUDED.name;
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, default_market = COALESCE(tenants.default_market, 'US');
 
       -- 3. Create jobs table if not exists (migrating jobs database-backed)
       CREATE TABLE IF NOT EXISTS jobs (

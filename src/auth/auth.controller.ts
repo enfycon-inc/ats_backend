@@ -20,6 +20,7 @@ import {
 import { AuthService } from './auth.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
+import { RegisterTenantDto } from './dtos/register-tenant.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
@@ -27,7 +28,7 @@ import { CurrentUser } from './decorators/current-user.decorator';
 import type { AuthUser } from './interfaces/auth-user.interface';
 
 
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
 @ApiTags('Auth & Identity')
 @Controller('api/auth')
@@ -83,6 +84,23 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.register(dto);
   }
 
+  // ─── POST /api/auth/register-tenant ─────────────────────────
+  @Post('register-tenant')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Register a new company tenant (SaaS self-signup)',
+    description:
+      'Public endpoint. Creates a new isolated tenant workspace and the first ADMIN user for that company. ' +
+      'The user account is created with is_approved=false and must be approved by the Enfycon platform admin. ' +
+      'The subdomain chosen becomes the company\'s workspace URL: subdomain.enfycon.com',
+  })
+  @ApiResponse({ status: 201, description: 'Tenant and admin user created, pending approval.' })
+  @ApiResponse({ status: 409, description: 'Subdomain or email already taken.' })
+  @ApiResponse({ status: 400, description: 'Invalid subdomain format.' })
+  async registerTenant(@Body() dto: RegisterTenantDto) {
+    return this.authService.registerTenant(dto);
+  }
+
   // ─── GET /api/auth/me ───────────────────────────────────────
   @Get('me')
   @UseGuards(JwtAuthGuard)
@@ -107,7 +125,7 @@ Validates email + password and returns a signed JWT access token.
   // ─── GET /api/auth/users ────────────────────────────────────
   @Get('users')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'DELIVERY_HEAD')
+  @Roles('SUPER_ADMIN', 'ADMIN', 'DELIVERY_HEAD')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'List all users in the tenant [ADMIN, DELIVERY_HEAD]',
@@ -157,5 +175,78 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { roles: string[] },
   ) {
     return this.authService.updateUserRoles(userId, body.roles);
+  }
+
+  // ─── GET /api/auth/approvals/pending ────────────────────────
+  @Get('approvals/pending')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List users pending administrator approval [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Pending user list returned.' })
+  async listPendingApprovals() {
+    return this.authService.listPendingApprovals();
+  }
+
+  // ─── POST /api/auth/approvals/approve/:id ───────────────────
+  @Post('approvals/approve/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Approve a user registration and configure market [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'User approved and tenant market updated.' })
+  async approveUser(
+    @Param('id') userId: string,
+    @Body() body: { market: string },
+  ) {
+    return this.authService.approveUser(userId, body.market);
+  }
+
+  // ─── GET /api/auth/tenants ──────────────────────────────────
+  @Get('tenants')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List all tenants in the system [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant list returned.' })
+  async listTenants() {
+    return this.authService.listTenants();
+  }
+
+  // ─── PATCH /api/auth/tenants/:id/market ─────────────────────
+  @Patch('tenants/:id/market')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant default staffing market [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant market updated.' })
+  async updateTenantMarket(
+    @Param('id') tenantId: string,
+    @Body() body: { market: string },
+  ) {
+    return this.authService.updateTenantMarket(tenantId, body.market);
+  }
+
+  // ─── PATCH /api/auth/tenants/my-subdomain ───────────────────
+  @Patch('tenants/my-subdomain')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant subdomain identifier [Tenant admin/user]',
+  })
+  @ApiResponse({ status: 200, description: 'Subdomain updated successfully.' })
+  async updateMySubdomain(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { subdomain: string },
+  ) {
+    return this.authService.updateTenantSubdomain(user.tenantId, body.subdomain);
   }
 }

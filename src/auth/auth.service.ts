@@ -11,8 +11,9 @@ import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
+import { RegisterTenantDto } from './dtos/register-tenant.dto';
 
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
 // Token TTL: 8 hours for mock (matches a typical work day)
 const TOKEN_TTL_SECONDS = 60 * 60 * 8;
@@ -85,6 +86,12 @@ export class AuthService implements OnModuleInit {
         created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      -- Ensure is_approved column exists on older tables
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
+
+      -- Update any existing users with null value to true
+      UPDATE users SET is_approved = true WHERE is_approved IS NULL;
     `;
     try {
       await this.db.query(ddl);
@@ -95,42 +102,56 @@ export class AuthService implements OnModuleInit {
   }
 
   private async seedDefaultUsers() {
-    const seeds = [
-      { email: 'admin@enfycon.com',     fullName: 'Enfy Admin',        password: 'enfycon123', role: 'ADMIN' },
-      { email: 'recruiter@enfycon.com', fullName: 'Enfy Recruiter',    password: 'enfycon123', role: 'RECRUITER' },
-      { email: 'am@enfycon.com',        fullName: 'Enfy Acct Manager', password: 'enfycon123', role: 'ACCOUNT_MANAGER' },
-      { email: 'dh@enfycon.com',        fullName: 'Enfy Delivery Head',password: 'enfycon123', role: 'DELIVERY_HEAD' },
-      { email: 'tracker@enfycon.com',   fullName: 'Enfy Tracker',      password: 'enfycon123', role: 'TRACKER' },
-    ];
+    // ─── Platform SUPER_ADMIN — credentials come from .env, never from source code ───
+    const adminEmail    = process.env.PLATFORM_ADMIN_EMAIL;
+    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+    const adminName     = process.env.PLATFORM_ADMIN_NAME || 'Enfy Super Admin';
 
-    for (const seed of seeds) {
-      try {
-        const exists = await this.db.query(
-          'SELECT id FROM users WHERE email = $1 LIMIT 1',
-          [seed.email],
-        );
-        
-        const { hash, salt } = this.hashPassword(seed.password);
-
-        if (exists.rows.length > 0) {
-          // If seed user exists, update password hash to ensure sync
-          await this.db.query(
-            'UPDATE users SET password_hash = $1, salt = $2, roles = $3 WHERE email = $4',
-            [hash, salt, [seed.role], seed.email]
-          );
-          continue;
-        }
-
-        await this.db.query(
-          `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
-           VALUES ($1, $2, $3, $4, $5, $6, true, true)`,
-          [DEFAULT_TENANT_ID, seed.email, seed.fullName, hash, salt, [seed.role]],
-        );
-        this.logger.log(`Seeded user: ${seed.email} [${seed.role}]`);
-      } catch (err) {
-        this.logger.warn(`Could not seed ${seed.email}: ${err.message}`);
-      }
+    if (!adminEmail || !adminPassword) {
+      this.logger.warn(
+        '⚠️  PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_PASSWORD not set in .env — skipping SUPER_ADMIN seed.',
+      );
+      return;
     }
+
+    try {
+      const exists = await this.db.query(
+        'SELECT id, roles FROM users WHERE email = $1 LIMIT 1',
+        [adminEmail],
+      );
+
+      if (exists.rows.length > 0) {
+        const user = exists.rows[0];
+        const roles = user.roles || [];
+        if (!roles.includes('SUPER_ADMIN')) {
+          this.logger.log(`Updating existing user ${adminEmail} to have SUPER_ADMIN role.`);
+          await this.db.query(
+            `UPDATE users SET roles = array_append(roles, 'SUPER_ADMIN'), is_approved = true, is_active = true WHERE id = $1`,
+            [user.id],
+          );
+        } else {
+          await this.db.query(
+            `UPDATE users SET is_approved = true, is_active = true WHERE id = $1`,
+            [user.id],
+          );
+        }
+        this.logger.log(`✅ Platform SUPER_ADMIN already exists in DB (${adminEmail}) — skipping seed.`);
+        return;
+      }
+
+      // First boot only: create the platform super admin
+      const { hash, salt } = this.hashPassword(adminPassword);
+      await this.db.query(
+        `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
+         VALUES ($1, $2, $3, $4, $5, $6, true, true)`,
+        [DEFAULT_TENANT_ID, adminEmail, adminName, hash, salt, ['SUPER_ADMIN']],
+      );
+      this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
+    } catch (err) {
+      this.logger.warn(`Could not seed SUPER_ADMIN: ${err.message}`);
+    }
+    // NOTE: All other users (ADMIN, RECRUITER, etc.) are created via the Admin UI
+    // after tenant self-registration and approval. No hardcoded seeds needed.
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -140,8 +161,10 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Login attempt: ${dto.email}`);
 
     const result = await this.db.query(
-      `SELECT id, email, full_name, password_hash, salt, roles, is_active, tenant_id
-       FROM users WHERE email = $1 LIMIT 1`,
+      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, t.default_market, t.domain as tenant_domain
+       FROM users u
+       LEFT JOIN tenants t ON u.tenant_id = t.id
+       WHERE u.email = $1 LIMIT 1`,
       [dto.email],
     );
 
@@ -157,6 +180,12 @@ export class AuthService implements OnModuleInit {
       );
     }
 
+    if (!user.is_approved) {
+      throw new UnauthorizedException(
+        'Your account is pending approval by the administrator.',
+      );
+    }
+
     const { hash } = this.hashPassword(dto.password, user.salt);
     if (hash !== user.password_hash) {
       throw new UnauthorizedException('Invalid email or password.');
@@ -168,6 +197,8 @@ export class AuthService implements OnModuleInit {
       fullName: user.full_name,
       roles: user.roles,
       tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+      defaultMarket: user.default_market || 'US',
+      tenantDomain: user.tenant_domain || '',
     });
 
     return {
@@ -180,6 +211,8 @@ export class AuthService implements OnModuleInit {
         fullName: user.full_name,
         roles: user.roles,
         tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+        defaultMarket: user.default_market || 'US',
+        tenantDomain: user.tenant_domain || '',
       },
     };
   }
@@ -200,7 +233,7 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const validRoles = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'TRACKER'];
+    const validRoles = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'SUPER_ADMIN', 'TRACKER'];
     const role = dto.role?.toUpperCase();
     if (!validRoles.includes(role)) {
       throw new BadRequestException(
@@ -211,16 +244,86 @@ export class AuthService implements OnModuleInit {
     const tenantId = dto.tenantId || DEFAULT_TENANT_ID;
     const { hash, salt } = this.hashPassword(dto.password);
 
+    // New user registrations default to unapproved (is_approved = false)
     const result = await this.db.query(
       `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
-       VALUES ($1, $2, $3, $4, $5, $6, true, true)
+       VALUES ($1, $2, $3, $4, $5, $6, true, false)
        RETURNING id, email, full_name, roles, tenant_id, created_at`,
       [tenantId, dto.email, dto.fullName, hash, salt, [role]],
     );
 
     const user = result.rows[0];
     return {
-      message: 'User registered successfully.',
+      message: 'User registered successfully. Pending administrator approval.',
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        roles: user.roles,
+        tenantId: user.tenant_id,
+        createdAt: user.created_at,
+      },
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // SAAS TENANT SELF-REGISTRATION
+  // Creates a new tenant + first admin user, both pending approval
+  // ─────────────────────────────────────────────────────────────
+  async registerTenant(dto: RegisterTenantDto) {
+    this.logger.log(`New tenant registration: ${dto.companyName} [${dto.subdomain}] by ${dto.email}`);
+
+    // 1. Validate subdomain format
+    if (!dto.subdomain || !/^[a-z0-9-]+$/.test(dto.subdomain)) {
+      throw new BadRequestException('Subdomain must contain only lowercase letters, numbers, and hyphens.');
+    }
+
+    // 2. Check subdomain uniqueness
+    const subdomainExists = await this.db.query(
+      'SELECT id FROM tenants WHERE domain = $1 LIMIT 1',
+      [dto.subdomain],
+    );
+    if (subdomainExists.rows.length > 0) {
+      throw new ConflictException(`Subdomain "${dto.subdomain}" is already taken. Please choose another.`);
+    }
+
+    // 3. Check email uniqueness
+    const emailExists = await this.db.query(
+      'SELECT id FROM users WHERE email = $1 LIMIT 1',
+      [dto.email],
+    );
+    if (emailExists.rows.length > 0) {
+      throw new ConflictException(`Email "${dto.email}" is already registered.`);
+    }
+
+    // 4. Create the new tenant (status = PENDING until admin approves)
+    const tenantResult = await this.db.query(
+      `INSERT INTO tenants (name, domain, status, default_market)
+       VALUES ($1, $2, 'PENDING', 'US')
+       RETURNING id, name, domain, status`,
+      [dto.companyName, dto.subdomain],
+    );
+    const tenant = tenantResult.rows[0];
+
+    // 5. Create the first admin user for this tenant (is_approved = false)
+    const { hash, salt } = this.hashPassword(dto.password);
+    const userResult = await this.db.query(
+      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved)
+       VALUES ($1, $2, $3, $4, $5, $6, true, false)
+       RETURNING id, email, full_name, roles, tenant_id, created_at`,
+      [tenant.id, dto.email, dto.fullName, hash, salt, ['ADMIN']],
+    );
+    const user = userResult.rows[0];
+
+    return {
+      message: 'Company registered successfully! Your account is pending platform administrator approval. You will be notified once approved.',
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        subdomain: tenant.domain,
+        workspaceUrl: `${tenant.domain}.enfycon.com`,
+        status: tenant.status,
+      },
       user: {
         id: user.id,
         email: user.email,
@@ -281,12 +384,12 @@ export class AuthService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Get current user profile from DB
-  // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
     const result = await this.db.query(
-      `SELECT id, email, full_name, roles, tenant_id, is_active, created_at, updated_at
-       FROM users WHERE id = $1 LIMIT 1`,
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, t.default_market, t.domain as tenant_domain
+       FROM users u
+       LEFT JOIN tenants t ON u.tenant_id = t.id
+       WHERE u.id = $1 LIMIT 1`,
       [userId],
     );
     if (result.rows.length === 0) {
@@ -301,6 +404,8 @@ export class AuthService implements OnModuleInit {
       tenantId: u.tenant_id,
       isActive: u.is_active,
       createdAt: u.created_at,
+      defaultMarket: u.default_market || 'US',
+      tenantDomain: u.tenant_domain || '',
     };
   }
 
@@ -341,7 +446,7 @@ export class AuthService implements OnModuleInit {
   // Update user roles (admin utility)
   // ─────────────────────────────────────────────────────────────
   async updateUserRoles(userId: string, roles: string[]) {
-    const validRoles = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'TRACKER'];
+    const validRoles = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'SUPER_ADMIN', 'TRACKER'];
     const normalized = roles.map((r) => r.toUpperCase());
     const invalid = normalized.filter((r) => !validRoles.includes(r));
     if (invalid.length > 0) {
@@ -352,6 +457,110 @@ export class AuthService implements OnModuleInit {
       [normalized, userId],
     );
     return { message: 'User roles updated successfully.', roles: normalized };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // List all users pending approval (admin utility)
+  // ─────────────────────────────────────────────────────────────
+  async listPendingApprovals() {
+    const result = await this.db.query(
+      `SELECT u.id, u.email, u.full_name, u.roles, u.created_at, u.tenant_id, t.name as tenant_name, t.default_market
+       FROM users u
+       LEFT JOIN tenants t ON u.tenant_id = t.id
+       WHERE u.is_approved = false
+       ORDER BY u.created_at DESC`
+    );
+    return result.rows.map(row => ({
+      id: row.id,
+      email: row.email,
+      fullName: row.full_name,
+      roles: row.roles,
+      createdAt: row.created_at,
+      tenantId: row.tenant_id,
+      tenantName: row.tenant_name || 'N/A',
+      defaultMarket: row.default_market || 'US',
+    }));
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Approve user and set tenant's market settings (admin utility)
+  // ─────────────────────────────────────────────────────────────
+  async approveUser(userId: string, market: string) {
+    const userResult = await this.db.query(
+      'SELECT tenant_id FROM users WHERE id = $1 LIMIT 1',
+      [userId]
+    );
+    if (userResult.rows.length === 0) {
+      throw new NotFoundException(`User with ID ${userId} was not found.`);
+    }
+    const tenantId = userResult.rows[0].tenant_id;
+
+    // Approve the user
+    await this.db.query(
+      'UPDATE users SET is_approved = true, is_active = true WHERE id = $1',
+      [userId]
+    );
+
+    // Configure tenant market if provided
+    if (market && (market === 'US' || market === 'IN')) {
+      await this.db.query(
+        'UPDATE tenants SET default_market = $1 WHERE id = $2',
+        [market, tenantId]
+      );
+    }
+
+    return { message: 'User approved successfully and tenant market configured.' };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // List all tenants in the system (admin utility)
+  // ─────────────────────────────────────────────────────────────
+  async listTenants() {
+    const result = await this.db.query(
+      `SELECT id, name, domain, status, default_market as "defaultMarket", created_at as "createdAt"
+       FROM tenants
+       ORDER BY name ASC`
+    );
+    return result.rows;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Update a tenant's default market preference (admin utility)
+  // ─────────────────────────────────────────────────────────────
+  async updateTenantMarket(tenantId: string, market: string) {
+    if (market !== 'US' && market !== 'IN') {
+      throw new BadRequestException('Invalid market type. Must be US or IN.');
+    }
+    await this.db.query(
+      'UPDATE tenants SET default_market = $1, updated_at = NOW() WHERE id = $2',
+      [market, tenantId]
+    );
+    return { message: 'Tenant staffing market updated successfully.', market };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Update tenant's subdomain/domain (tenant admin utility)
+  // ─────────────────────────────────────────────────────────────
+  async updateTenantSubdomain(tenantId: string, subdomain: string) {
+    if (!subdomain || !/^[a-z0-9-]+$/.test(subdomain)) {
+      throw new BadRequestException('Subdomain must contain alphanumeric characters and hyphens only.');
+    }
+
+    // Check if subdomain is already taken by another tenant
+    const exists = await this.db.query(
+      'SELECT id FROM tenants WHERE domain = $1 AND id <> $2 LIMIT 1',
+      [subdomain, tenantId]
+    );
+    if (exists.rows.length > 0) {
+      throw new ConflictException('Subdomain is already taken by another company.');
+    }
+
+    await this.db.query(
+      'UPDATE tenants SET domain = $1, updated_at = NOW() WHERE id = $2',
+      [subdomain, tenantId]
+    );
+
+    return { message: 'Subdomain updated successfully.', subdomain };
   }
 
   // ─────────────────────────────────────────────────────────────
