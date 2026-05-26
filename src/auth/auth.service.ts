@@ -623,7 +623,7 @@ export class AuthService implements OnModuleInit {
     );
     const roles = rolesRes.rows;
 
-    const result = [];
+    const result: any[] = [];
     for (const role of roles) {
       const permsRes = await this.db.query(
         'SELECT permission FROM role_permissions WHERE role_id = $1',
