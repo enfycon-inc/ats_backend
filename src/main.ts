@@ -1,18 +1,22 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import * as dns from 'dns';
+import * as dns from 'node:dns';
+import { json, urlencoded } from 'express';
 
 if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
 }
-
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Enable CORS so the recruiter dashboard front-end can communicate with backend endpoints
   app.enableCors();
+  
+  // Increase payload limit for large CSV uploads (mass mail)
+  app.use(json({ limit: '50mb' }));
+  app.use(urlencoded({ extended: true, limit: '50mb' }));
 
   // Configure Swagger OpenAPI document metadata
   const config = new DocumentBuilder()

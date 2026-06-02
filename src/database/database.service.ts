@@ -148,6 +148,83 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      -- 8. Create mass_mail schema and tables
+      CREATE SCHEMA IF NOT EXISTS mass_mail;
+
+      CREATE TABLE IF NOT EXISTS mass_mail.campaigns (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        subject VARCHAR(255),
+        body_template TEXT,
+        status VARCHAR(50) DEFAULT 'Draft',
+        created_by VARCHAR(255),
+        scheduled_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      ALTER TABLE mass_mail.campaigns ADD COLUMN IF NOT EXISTS rate_per_minute INT DEFAULT 0;
+      ALTER TABLE mass_mail.campaigns ADD COLUMN IF NOT EXISTS rate_per_hour INT DEFAULT 0;
+      ALTER TABLE mass_mail.campaigns ADD COLUMN IF NOT EXISTS randomize_delay BOOLEAN DEFAULT FALSE;
+      ALTER TABLE mass_mail.campaigns ADD COLUMN IF NOT EXISTS email_account_id UUID;
+
+      CREATE TABLE IF NOT EXISTS mass_mail.email_accounts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(255),
+        provider VARCHAR(50) NOT NULL,
+        email_address VARCHAR(255) NOT NULL,
+        access_token TEXT,
+        refresh_token TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS profile_name VARCHAR(255);
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS password TEXT;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS smtp_host VARCHAR(255);
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS smtp_port INT;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS imap_host VARCHAR(255);
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS imap_port INT;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS require_ssl BOOLEAN DEFAULT FALSE;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS require_tls BOOLEAN DEFAULT FALSE;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
+
+      CREATE TABLE IF NOT EXISTS mass_mail.email_preferences (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID REFERENCES public.tenants(id) ON DELETE CASCADE,
+        action_name VARCHAR(255) NOT NULL UNIQUE,
+        email_account_id UUID REFERENCES mass_mail.email_accounts(id) ON DELETE SET NULL,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS mass_mail.recipients (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        campaign_id UUID NOT NULL REFERENCES mass_mail.campaigns(id) ON DELETE CASCADE,
+        candidate_id INT NOT NULL REFERENCES public.candidates(id) ON DELETE CASCADE,
+        email VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'Pending',
+        opened_at TIMESTAMP WITH TIME ZONE,
+        clicked_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      ALTER TABLE mass_mail.recipients ALTER COLUMN candidate_id DROP NOT NULL;
+      ALTER TABLE mass_mail.recipients ADD COLUMN IF NOT EXISTS first_name VARCHAR(255);
+      ALTER TABLE mass_mail.recipients ADD COLUMN IF NOT EXISTS last_name VARCHAR(255);
+      ALTER TABLE mass_mail.recipients ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE mass_mail.recipients ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP WITH TIME ZONE;
+
+      CREATE TABLE IF NOT EXISTS mass_mail.templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        subject VARCHAR(255),
+        body TEXT,
+        created_by VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
     `;
 
     try {
@@ -166,8 +243,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     const start = Date.now();
     try {
       const res = await this.pool.query<T>(text, params);
-      const duration = Date.now() - start;
-      this.logger.debug(`Executed query: ${text.slice(0, 100)}... in ${duration}ms`);
+      // const duration = Date.now() - start;
+      // this.logger.debug(`Executed query: ${text.slice(0, 100)}... in ${duration}ms`);
       return res;
     } catch (error) {
       this.logger.error(`Query error: ${error.message} | Query: ${text}`, error.stack);
