@@ -1,5 +1,9 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import * as dns from 'dns';
+import { promisify } from 'util';
+
+const dnsLookup = promisify(dns.lookup);
 
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
@@ -7,13 +11,25 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private pool: Pool;
 
   async onModuleInit() {
-    const connectionString = process.env.DATABASE_URL;
+    let connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
       this.logger.error('DATABASE_URL environment variable is missing!');
       throw new Error('DATABASE_URL environment variable is required');
     }
 
-    this.logger.log('Initializing PostgreSQL connection pool with Supabase DATABASE_URL...');
+    // Manually resolve hostname to IPv4 to bypass Docker IPv6 ENETUNREACH routing issues
+    try {
+      const parsedUrl = new URL(connectionString);
+      const host = parsedUrl.hostname;
+      const lookupResult = await dnsLookup(host, { family: 4 });
+      parsedUrl.hostname = lookupResult.address;
+      connectionString = parsedUrl.toString();
+      this.logger.log(`Resolved database hostname ${host} to IPv4 ${lookupResult.address}`);
+    } catch (err) {
+      this.logger.warn(`Failed to resolve hostname to IPv4: ${err.message}. Using original connection string.`);
+    }
+
+    this.logger.log('Initializing PostgreSQL connection pool...');
     
     this.pool = new Pool({
       connectionString,
