@@ -98,6 +98,7 @@ export class JobsService implements OnModuleInit {
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS exp_min INT DEFAULT 0`,
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS exp_max INT DEFAULT 10`,
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT 'System'`,
+      `ALTER TABLE jobs ALTER COLUMN visa_type TYPE VARCHAR(500)`,
     ];
 
     for (const stmt of alterStatements) {

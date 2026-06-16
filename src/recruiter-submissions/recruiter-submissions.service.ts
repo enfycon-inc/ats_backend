@@ -60,7 +60,7 @@ export class RecruiterSubmissionsService {
     }
     const job = jobResult.rows[0];
 
-    if (job.status !== 'ACTIVE') {
+    if (job.status?.toUpperCase() !== 'ACTIVE') {
       throw new ForbiddenException(
         `Submissions are blocked. This job is currently in '${job.status}' status and only ACTIVE jobs accept new submissions.`
       );
