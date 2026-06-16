@@ -12,4 +12,11 @@ export class LoginDto {
     description: 'User password',
   })
   password: string;
+
+  @ApiProperty({
+    example: 'tenant1',
+    description: 'The tenant subdomain or custom domain context from which the login is requested',
+    required: false,
+  })
+  subdomain?: string;
 }

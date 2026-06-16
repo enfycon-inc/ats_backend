@@ -250,6 +250,27 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         ('DEGREE', 'btech', 31),
         ('DEGREE', 'mca', 14)
       ON CONFLICT (raw_value) DO NOTHING;
+
+      -- 9. Create tenant_domains table to map multiple domains/subdomains to a tenant
+      CREATE TABLE IF NOT EXISTS tenant_domains (
+        id SERIAL PRIMARY KEY,
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        domain_name VARCHAR(255) UNIQUE NOT NULL,
+        is_primary BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      -- Seed the default tenant domain
+      INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
+      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'enfycon.com', TRUE)
+      ON CONFLICT (domain_name) DO NOTHING;
+
+      -- Backfill existing tenants' default subdomain slugs into tenant_domains table
+      INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
+      SELECT id, domain, TRUE
+      FROM tenants
+      WHERE domain IS NOT NULL AND domain <> '' AND domain <> 'enfycon.com'
+      ON CONFLICT (domain_name) DO NOTHING;
     `;
 
     try {

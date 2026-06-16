@@ -208,9 +208,9 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 200, description: 'User approved and tenant market updated.' })
   async approveUser(
     @Param('id') userId: string,
-    @Body() body: { market: string },
+    @Body() body: { market: string; subdomain?: string },
   ) {
-    return this.authService.approveUser(userId, body.market);
+    return this.authService.approveUser(userId, body.market, body.subdomain);
   }
 
   // ─── GET /api/auth/tenants ──────────────────────────────────
@@ -371,5 +371,38 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { roleIds: string[] },
   ) {
     return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles);
+  }
+
+  // ─── GET /api/auth/tenants/my-domains ───────────────────────
+  @Get('tenants/my-domains')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List custom domains for active tenant [Tenant Admin/User]' })
+  async getMyDomains(@CurrentUser() user: AuthUser) {
+    return this.authService.getTenantDomains(user.tenantId);
+  }
+
+  // ─── POST /api/auth/tenants/my-domains ──────────────────────
+  @Post('tenants/my-domains')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Add custom domain for active tenant [Tenant Admin/User]' })
+  async addMyDomain(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { domainName: string },
+  ) {
+    return this.authService.addTenantDomain(user.tenantId, body.domainName);
+  }
+
+  // ─── DELETE /api/auth/tenants/my-domains/:id ─────────────────
+  @Delete('tenants/my-domains/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete custom domain for active tenant [Tenant Admin/User]' })
+  async deleteMyDomain(
+    @CurrentUser() user: AuthUser,
+    @Param('id') domainId: string,
+  ) {
+    return this.authService.deleteTenantDomain(user.tenantId, domainId);
   }
 }

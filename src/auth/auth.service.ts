@@ -236,6 +236,29 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Invalid email or password.');
     }
 
+    // Validate subdomain/custom domain context if provided
+    const isSuperAdmin = user.roles && user.roles.includes('SUPER_ADMIN');
+    
+    // Enforce that Super Admins can only log in from the main domain
+    if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
+      throw new UnauthorizedException('Super Administrators can only log in from the main domain.');
+    }
+
+    if (!isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
+      const domainMapping = await this.db.query(
+        'SELECT tenant_id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
+        [dto.subdomain]
+      );
+      if (domainMapping.rows.length > 0) {
+        const mappedTenantId = domainMapping.rows[0].tenant_id;
+        if (user.tenant_id !== mappedTenantId) {
+          throw new UnauthorizedException('User does not belong to this company workspace.');
+        }
+      } else {
+        throw new UnauthorizedException('Workspace not found.');
+      }
+    }
+
     // Fetch dynamic permissions assigned to the custom role
     let permissions: string[] = [];
     if (user.role_id) {
@@ -404,7 +427,7 @@ export class AuthService implements OnModuleInit {
 
     // 2. Check subdomain uniqueness
     const subdomainExists = await this.db.query(
-      'SELECT id FROM tenants WHERE domain = $1 LIMIT 1',
+      'SELECT id FROM tenants WHERE domain = $1 UNION SELECT tenant_id as id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
       [dto.subdomain],
     );
     if (subdomainExists.rows.length > 0) {
@@ -428,6 +451,13 @@ export class AuthService implements OnModuleInit {
       [dto.companyName, dto.subdomain],
     );
     const tenant = tenantResult.rows[0];
+
+    // Map default subdomain in tenant_domains
+    await this.db.query(
+      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
+       VALUES ($1, $2, TRUE)`,
+      [tenant.id, dto.subdomain]
+    );
 
     // 5. Seed the default custom roles & permissions for this new company tenant
     const roleMap = await this.seedTenantRoles(tenant.id);
@@ -1000,7 +1030,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listPendingApprovals() {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.created_at, u.tenant_id, t.name as tenant_name, t.default_market
+      `SELECT u.id, u.email, u.full_name, u.roles, u.created_at, u.tenant_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        WHERE u.is_approved = false
@@ -1015,13 +1045,14 @@ export class AuthService implements OnModuleInit {
       tenantId: row.tenant_id,
       tenantName: row.tenant_name || 'N/A',
       defaultMarket: row.default_market || 'US',
+      tenantSubdomain: row.tenant_domain || '',
     }));
   }
 
   // ─────────────────────────────────────────────────────────────
   // Approve user and set tenant's market settings (admin utility)
   // ─────────────────────────────────────────────────────────────
-  async approveUser(userId: string, market: string) {
+  async approveUser(userId: string, market: string, subdomain?: string) {
     const userResult = await this.db.query(
       'SELECT tenant_id FROM users WHERE id = $1 LIMIT 1',
       [userId]
@@ -1049,6 +1080,35 @@ export class AuthService implements OnModuleInit {
         'UPDATE tenants SET default_market = $1 WHERE id = $2',
         [market, tenantId]
       );
+    }
+
+    // Update/assign subdomain if provided
+    if (subdomain) {
+      const cleanSubdomain = subdomain.toLowerCase().trim().replace(/[^a-z0-9-]/g, "");
+      if (cleanSubdomain) {
+        // Check if subdomain is already taken by another tenant
+        const exists = await this.db.query(
+          'SELECT id FROM tenant_domains WHERE domain_name = $1 AND tenant_id <> $2 LIMIT 1',
+          [cleanSubdomain, tenantId]
+        );
+        if (exists.rows.length > 0) {
+          throw new ConflictException('Subdomain is already taken by another company.');
+        }
+
+        // Update tenants table
+        await this.db.query(
+          'UPDATE tenants SET domain = $1 WHERE id = $2',
+          [cleanSubdomain, tenantId]
+        );
+
+        // Update or insert primary subdomain mapping in tenant_domains
+        await this.db.query(
+          `UPDATE tenant_domains 
+           SET domain_name = $1 
+           WHERE tenant_id = $2 AND is_primary = TRUE`,
+          [cleanSubdomain, tenantId]
+        );
+      }
     }
 
     return { message: 'User approved successfully and tenant market configured.' };
@@ -1119,7 +1179,7 @@ export class AuthService implements OnModuleInit {
 
     // Check if subdomain is already taken by another tenant
     const exists = await this.db.query(
-      'SELECT id FROM tenants WHERE domain = $1 AND id <> $2 LIMIT 1',
+      'SELECT id FROM tenant_domains WHERE domain_name = $1 AND tenant_id <> $2 LIMIT 1',
       [subdomain, tenantId]
     );
     if (exists.rows.length > 0) {
@@ -1128,6 +1188,12 @@ export class AuthService implements OnModuleInit {
 
     await this.db.query(
       'UPDATE tenants SET domain = $1, updated_at = NOW() WHERE id = $2',
+      [subdomain, tenantId]
+    );
+
+    // Update primary subdomain mapping
+    await this.db.query(
+      'UPDATE tenant_domains SET domain_name = $1 WHERE tenant_id = $2 AND is_primary = TRUE',
       [subdomain, tenantId]
     );
 
@@ -1248,5 +1314,58 @@ export class AuthService implements OnModuleInit {
         );
       }
     }
+  }
+
+  // ─── Custom Domain Helpers ────────────────────────────────────
+  async getTenantDomains(tenantId: string) {
+    const res = await this.db.query(
+      'SELECT id, domain_name, is_primary, created_at FROM tenant_domains WHERE tenant_id = $1 ORDER BY created_at ASC',
+      [tenantId]
+    );
+    return res.rows;
+  }
+
+  async addTenantDomain(tenantId: string, domainName: string) {
+    const normalizedDomain = domainName.toLowerCase().trim();
+    if (!normalizedDomain || !/^[a-z0-9.-]+$/.test(normalizedDomain) || normalizedDomain.includes('..')) {
+      throw new BadRequestException('Invalid domain name format. Do not include http://, https://, or paths.');
+    }
+
+    // Check if domain is already mapped anywhere
+    const exists = await this.db.query(
+      'SELECT id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
+      [normalizedDomain]
+    );
+    if (exists.rows.length > 0) {
+      throw new ConflictException('Domain name is already registered by another workspace.');
+    }
+
+    const res = await this.db.query(
+      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
+       VALUES ($1, $2, FALSE)
+       RETURNING id, domain_name, is_primary, created_at`,
+      [tenantId, normalizedDomain]
+    );
+    return res.rows[0];
+  }
+
+  async deleteTenantDomain(tenantId: string, domainId: string) {
+    // Check if it's the primary subdomain (cannot delete primary)
+    const check = await this.db.query(
+      'SELECT is_primary FROM tenant_domains WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [domainId, tenantId]
+    );
+    if (check.rows.length === 0) {
+      throw new NotFoundException('Domain mapping not found.');
+    }
+    if (check.rows[0].is_primary) {
+      throw new BadRequestException('Cannot delete the primary subdomain of the company workspace.');
+    }
+
+    await this.db.query(
+      'DELETE FROM tenant_domains WHERE id = $1 AND tenant_id = $2',
+      [domainId, tenantId]
+    );
+    return { message: 'Domain mapping deleted successfully.' };
   }
 }
