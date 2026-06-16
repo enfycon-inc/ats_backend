@@ -108,3 +108,80 @@ to match jobs conceptually instead of raw string matches.
            Matches Candidate resumes with: "AWS DevOps", "Azure API Expert",
            or "Kubernetes Architect" without exact word matches!
 ===============================================================================
+===============================================================================
+5. ✉️ AI-POWERED MASS MAIL CAMPAIGN ARCHITECTURE
+===============================================================================
+This visual blueprint outlines how mass mail campaigns are created, queued, 
+throttled, and securely dispatched using Redis, BullMQ, and OAuth integrations.
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                         👤 RECRUITER CLIENT UI                         │
+  │   • Uploads CSV Recipient List        • Configures Subject & Body      │
+  │   • Selects Linked Email Account      • Sets Rate Limit & Jitter       │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │
+                                      │ (POST /api/email/campaigns)
+                                      ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                         🚀 NESTJS CORE BACKEND                         │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │  • 💾 Saves Campaign details to Postgres (mass_mail.campaigns)         │
+  │  • 📝 Parses CSV and inserts recipients (mass_mail.recipients)        │
+  │  • ⏱️ Computes individual rate delays per recipient                    │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │
+                                      │ (Enqueues jobs with staggered delay offsets)
+                                      ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                     🔴 REDIS QUEUE STORAGE (BULLMQ)                     │
+  │  [Job: send_email #1] -> [Job: send_email #2] -> [Job: send_email #3]  │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │
+                                      │ (Workers pull jobs dynamically based on delay)
+                                      ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                    ⚙️ BULLMQ EMAIL WORKER PROCESSOR                    │
+  ├────────────────────────────────────────────────────────────────────────┤
+  │  • 🔍 Checks if recipient was cancelled (ignores job silently)         │
+  │  • 📝 Replaces template tokens: {{Candidate_Name}} -> "John Doe"        │
+  │  • 🔐 Fetches/validates OAuth credentials from mass_mail.email_accounts │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                      │
+               ┌──────────────────────┴──────────────────────┐
+               ▼ (Microsoft Account)                         ▼ (SMTP / Google Account)
+  ┌───────────────────────────────┐              ┌───────────────────────────────┐
+  │     🌐 MICROSOFT GRAPH API    │              │      📧 SMTP/GMAIL CLIENT     │
+  │  (HTTPS sendMail Endpoint)    │              │  (Nodemailer Transport)       │
+  └──────────────┬────────────────┘              └──────────────┬────────────────┘
+                 │                                              │
+                 ▼                                              ▼
+  ┌───────────────────────────────┐              ┌───────────────────────────────┐
+  │     🔐 OAUTH RESILIENCY       │              │    🌍 NETWORK RESOLUTION      │
+  │  If 401: Intercepts & sends   │              │  Forces IPv4 ({ family: 4 })  │
+  │  refresh token request to     │              │  to prevent ENETUNREACH in    │
+  │  login.microsoftonline.com    │              │  isolated Docker containers   │
+  └──────────────┬────────────────┘              └──────────────┬────────────────┘
+                 │                                              │
+                 └──────────────────────┬───────────────────────┘
+                                        ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                      📊 POSTGRES CAMPAIGN REPORT                       │
+  │  Updates Recipient status: 🟢 Sent  /  🔴 Failed  /  🟡 Pending        │
+  │  Auto-completes Campaign in DB once all queued jobs resolve            │
+  └────────────────────────────────────────────────────────────────────────┘
+
+A. ⏳ RATE THROTTLING & JITTER MECHANISM:
+   To protect your email domain reputation and prevent spam filters, mail 
+   delivery is dynamically staggered:
+   * Base Delay: Computed as (60 / Rate_Per_Minute) * 1000 ms.
+   * Jitter: An optional +/- 50% random time delta added to the base delay,
+     ensuring emails are sent in organic-looking intervals rather than exact
+     robotic bursts.
+
+B. 🔐 AUTO-REFRESHING TOKENS:
+   Access tokens expire every 60 minutes. The email service catches token-expiration
+   exceptions, automatically executes a secure background token refresh call, and
+   saves the updated credentials to the database before retrying the email send.
+
+===============================================================================
+

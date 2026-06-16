@@ -83,8 +83,11 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 201, description: 'User registered successfully.' })
   @ApiResponse({ status: 409, description: 'Email already registered.' })
   @ApiResponse({ status: 400, description: 'Invalid role or missing fields.' })
-  async register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  async register(
+    @Body() dto: RegisterDto,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    return this.authService.register(dto, authHeader);
   }
 
   // ─── POST /api/auth/register-tenant ─────────────────────────
@@ -176,8 +179,9 @@ Validates email + password and returns a signed JWT access token.
   async updateRoles(
     @Param('id') userId: string,
     @Body() body: { roles: string[] },
+    @CurrentUser() currentUser: AuthUser,
   ) {
-    return this.authService.updateUserRoles(userId, body.roles);
+    return this.authService.updateUserRoles(userId, body.roles, currentUser.roles);
   }
 
   // ─── GET /api/auth/approvals/pending ────────────────────────
@@ -220,6 +224,38 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 200, description: 'Tenant list returned.' })
   async listTenants() {
     return this.authService.listTenants();
+  }
+
+  // ─── PATCH /api/auth/tenants/:id/status ─────────────────────
+  @Patch('tenants/:id/status')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant status (ACTIVE/INACTIVE/PENDING) [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant status updated.' })
+  async updateTenantStatus(
+    @Param('id') tenantId: string,
+    @Body() body: { status: string },
+  ) {
+    return this.authService.updateTenantStatus(tenantId, body.status);
+  }
+
+  // ─── PATCH /api/auth/tenants/:id/user-limit ─────────────────
+  @Patch('tenants/:id/user-limit')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant active user/seats limit [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant user limit updated.' })
+  async updateTenantUserLimit(
+    @Param('id') tenantId: string,
+    @Body() body: { limit: number },
+  ) {
+    return this.authService.updateTenantUserLimit(tenantId, body.limit);
   }
 
   // ─── PATCH /api/auth/tenants/:id/market ─────────────────────
@@ -285,9 +321,9 @@ Validates email + password and returns a signed JWT access token.
   })
   async createCustomRole(
     @CurrentUser() user: AuthUser,
-    @Body() body: { name: string; description: string; permissions: string[] },
+    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string },
   ) {
-    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions);
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole);
   }
 
   // ─── PATCH /api/auth/rbac/roles/:id/permissions ──────────────
@@ -321,19 +357,19 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.deleteCustomRole(user.tenantId, roleId);
   }
 
-  // ─── POST /api/auth/rbac/users/:id/role ──────────────────────
-  @Post('rbac/users/:id/role')
+  // ─── POST /api/auth/rbac/users/:id/roles ─────────────────────
+  @Post('rbac/users/:id/roles')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Assign a custom role to a user [ADMIN only]',
+    summary: 'Assign custom roles to a user [ADMIN only]',
   })
-  async assignUserRole(
+  async assignUserRoles(
     @CurrentUser() user: AuthUser,
     @Param('id') targetUserId: string,
-    @Body() body: { roleId: string },
+    @Body() body: { roleIds: string[] },
   ) {
-    return this.authService.assignUserRole(user.tenantId, targetUserId, body.roleId);
+    return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles);
   }
 }

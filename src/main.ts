@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as dns from 'node:dns';
-import { json, urlencoded } from 'express';
+import * as express from 'express';
 
 if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
@@ -15,8 +15,8 @@ async function bootstrap() {
   app.enableCors();
   
   // Increase payload limit for large CSV uploads (mass mail)
-  app.use(json({ limit: '50mb' }));
-  app.use(urlencoded({ extended: true, limit: '50mb' }));
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
   // Configure Swagger OpenAPI document metadata
   const config = new DocumentBuilder()

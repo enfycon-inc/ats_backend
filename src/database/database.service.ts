@@ -68,17 +68,20 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         domain VARCHAR(255) UNIQUE,
         status VARCHAR(50) DEFAULT 'ACTIVE',
         default_market VARCHAR(50) DEFAULT 'US',
+        user_limit INT DEFAULT 5,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
       -- Ensure default_market column exists on older tenants tables
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS default_market VARCHAR(50) DEFAULT 'US';
+      -- Ensure user_limit column exists on older tenants tables
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_limit INT DEFAULT 5;
 
       -- 2. Insert default tenant
-      INSERT INTO tenants (id, name, domain, status, default_market)
-      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'Default Enfy SaaS Tenant', 'enfycon.com', 'ACTIVE', 'US')
-      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, default_market = COALESCE(tenants.default_market, 'US');
+      INSERT INTO tenants (id, name, domain, status, default_market, user_limit)
+      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'Default Enfy SaaS Tenant', 'enfycon.com', 'ACTIVE', 'US', 10)
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, default_market = COALESCE(tenants.default_market, 'US'), user_limit = COALESCE(tenants.user_limit, 10);
 
       -- 3. Create jobs table if not exists (migrating jobs database-backed)
       CREATE TABLE IF NOT EXISTS jobs (
@@ -225,6 +228,28 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         created_by VARCHAR(255),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS pending_normalizations (
+        id SERIAL PRIMARY KEY,
+        category VARCHAR(50) NOT NULL,
+        raw_value VARCHAR(255) UNIQUE NOT NULL,
+        detected_count INT DEFAULT 1,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      INSERT INTO pending_normalizations (category, raw_value, detected_count)
+      VALUES 
+        ('SKILL', 'ReactJS', 28),
+        ('SKILL', 'AWS Cloud', 15),
+        ('SKILL', 'Next.js', 19),
+        ('DESIGNATION', 'sde II', 12),
+        ('DESIGNATION', 'qa lead', 8),
+        ('COMPANY', 'Infosys Ltd', 24),
+        ('COMPANY', 'Capgemini India', 9),
+        ('LOCATION', 'Herndon, VA', 7),
+        ('DEGREE', 'btech', 31),
+        ('DEGREE', 'mca', 14)
+      ON CONFLICT (raw_value) DO NOTHING;
     `;
 
     try {

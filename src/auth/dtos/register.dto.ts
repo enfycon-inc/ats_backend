@@ -36,4 +36,10 @@ export class RegisterDto {
       'Tenant UUID. Defaults to the primary Enfy tenant when omitted.',
   })
   tenantId?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Auto-approve user (for direct tenant admin registration)',
+  })
+  isApproved?: boolean;
 }

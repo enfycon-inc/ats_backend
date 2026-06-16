@@ -194,12 +194,15 @@ export class EmailService {
       code,
       grant_type: 'authorization_code',
       redirect_uri: redirectUri,
+    }, {
+      httpsAgent: new (require('https').Agent)({ family: 4 })
     });
 
     const { access_token, refresh_token } = tokenResponse.data;
 
     const userInfoResponse = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${access_token}` },
+      httpsAgent: new (require('https').Agent)({ family: 4 })
     });
 
     const email = userInfoResponse.data.email;
@@ -219,13 +222,15 @@ export class EmailService {
     params.append('redirect_uri', redirectUri!);
 
     const tokenResponse = await axios.post('https://login.microsoftonline.com/common/oauth2/v2.0/token', params.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      httpsAgent: new (require('https').Agent)({ family: 4 })
     });
 
     const { access_token, refresh_token } = tokenResponse.data;
 
     const userInfoResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
       headers: { Authorization: `Bearer ${access_token}` },
+      httpsAgent: new (require('https').Agent)({ family: 4 })
     });
 
     const email = userInfoResponse.data.mail || userInfoResponse.data.userPrincipalName;

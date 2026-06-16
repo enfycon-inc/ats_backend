@@ -1,0 +1,49 @@
+===============================================================================
+                📌 REMINDER: DYNAMIC NAVIGATION FILTERING BY ROLE
+===============================================================================
+
+Goal: Filter the top navigation bar items (both on desktop and mobile viewports)
+dynamically based on the user's logged-in systemRole and permissions.
+
+-------------------------------------------------------------------------------
+1. TARGETED TABS FOR RECRUITERS
+-------------------------------------------------------------------------------
+Recruiters should ONLY see:
+- Dashboard (tailored Recruiter metrics, pipeline funnel)
+- Job Posting (to view available requisitions to source candidates)
+- Applicants (All Candidates, Pipeline, Resume Search, Interviews)
+- Talent Bench (internal candidate bench hotlist)
+- Mass Mail / Campaigns (move "Email" out of the "More" dropdown into the primary navbar)
+
+Recruiters should NOT see:
+- Clients (contracts, agreements, invoicing details)
+- Vendors (vendor list, vendor portal)
+- Onboarding (new hires, HR paperwork, background check status)
+- Placements (timesheets, expenses, closed margins)
+- Reports (company revenue metrics)
+
+-------------------------------------------------------------------------------
+2. TARGETED TABS FOR ACCOUNT MANAGERS (BDMs)
+-------------------------------------------------------------------------------
+Account Managers / BDMs should see:
+- Dashboard (Job requirement metrics, high priority placements)
+- Job Posting (Create and manage client job requirements)
+- Applicants (Review candidate submissions)
+- Clients (Add new clients, agreements, contacts)
+- Placements (View placements, approve timesheets / expenses)
+- Reports (Basic closure ratios, submittal metrics)
+
+Account Managers should NOT see:
+- Vendors
+- Onboarding
+
+-------------------------------------------------------------------------------
+3. TECHNICAL IMPLEMENTATION DETAILS
+-------------------------------------------------------------------------------
+- Files to Modify:
+  * ats_frontend_main/components/layout/top-navbar.tsx
+  * ats_frontend_main/components/layout/mobile-navbar.tsx
+- Action Plan:
+  * Fetch user profile via `atsApi.auth.me()` in the navbar components.
+  * Conditionally filter `PRIMARY_NAV_ITEMS` and `MORE_NAV_ITEMS` based on `profile.systemRole` (e.g. 'RECRUITER', 'ACCOUNT_MANAGER') and permissions before passing them to `<NavbarMenu />` and `<MobileNavbar />`.
+  * Elevate the "Email" icon/item to the primary items list specifically for Recruiters.
