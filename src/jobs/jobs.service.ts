@@ -124,7 +124,7 @@ export class JobsService implements OnModuleInit {
     const date = new Date();
     const yy = date.getFullYear().toString().slice(-2);
     const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const prefix = `${tenantPrefix}JOB-${yy}${mm}-`;
+    const prefix = `${tenantPrefix}-JOB-${yy}${mm}-`;
 
     const jobsRes = await this.db.query(
       'SELECT job_code FROM jobs WHERE tenant_id = $1 AND job_code LIKE $2',

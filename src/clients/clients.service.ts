@@ -38,14 +38,14 @@ export class ClientsService {
         display_on_job_posting, created_by, federal_id, email_id, fax,
         payment_terms, address, client_lead, postal_code, country, practice,
         required_documents, tag, client_short_name, geopolitical_zone,
-        primary_business_unit, facility_management, modified_by
+        primary_business_unit, facility_management, modified_by, about_company, stop_notifications
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, $11, $12, $13,
         $14, $15, $16, $17, $18,
         $19, $20, $21, $22, $23, $24,
         $25, $26, $27, $28,
-        $29, $30, $31
+        $29, $30, $31, $32, $33
       ) RETURNING *`,
       [
         tenantId,
@@ -78,7 +78,9 @@ export class ClientsService {
         dto.geopolitical_zone,
         dto.primary_business_unit,
         dto.facility_management,
-        createdBy
+        createdBy,
+        dto.about_company,
+        dto.stop_notifications || false
       ]
     );
     return res.rows[0];
