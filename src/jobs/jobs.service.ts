@@ -155,6 +155,9 @@ export class JobsService implements OnModuleInit {
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
+    const tenantRes = await this.db.query('SELECT name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+    const tenantName = tenantRes.rows[0]?.name || 'enfysync Inc';
+
     // Generate unique sequential PREFIXJOB-YYMM-XXXXX job code using the exact logic from enfysync_backend
     let jobCode = '';
     let isUnique = false;
@@ -208,7 +211,7 @@ export class JobsService implements OnModuleInit {
       dto.skillsRequired || [],                                      // $7
       dto.secondarySkills || [],                                     // $8
       dto.status || 'Active',                                        // $9
-      dto.businessUnit || 'enfysync Inc',                            // $10
+      dto.businessUnit || tenantName,                                // $10
       dto.state || '',                                               // $11
       dto.country || 'United States',                                // $12
       dto.clientJobId || 'N/A',                                      // $13
