@@ -61,6 +61,7 @@ export interface JobProfile {
   submissionsCount: number;
   agingDays: number;
   pipeline: { applied: number; interviewing: number; offered: number };
+  market?: string;
 }
 
 @Injectable()
@@ -181,6 +182,7 @@ export class JobsService implements OnModuleInit {
         remote_job, start_date, end_date, hours_per_week, duration,
         account_manager_id, recruitment_manager_id, primary_recruiter_id, assigned_to,
         industry, degree, exp_min, exp_max, created_by,
+        market,
         created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
@@ -191,7 +193,7 @@ export class JobsService implements OnModuleInit {
         $20, $21, 0, $22,
         $23, $24, $25, $26, $27,
         $28, $29, $30, $31,
-        $32, $33, $34, $35, $36,
+        $32, $33, $34, $35, $36, $37,
         NOW(), NOW()
       ) RETURNING *
     `;
@@ -233,6 +235,7 @@ export class JobsService implements OnModuleInit {
       dto.expMin ?? 0,                                               // $34
       dto.expMax ?? 10,                                              // $35
       createdByEmail || 'System',                                    // $36
+      dto.market || 'US',                                            // $37
     ];
 
     try {
@@ -253,10 +256,12 @@ export class JobsService implements OnModuleInit {
     const sql = `
       SELECT j.*,
              rm.full_name AS recruitment_manager_name,
-             pr.full_name AS primary_recruiter_name
+             pr.full_name AS primary_recruiter_name,
+             uc.full_name AS creator_name
       FROM jobs j
       LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      LEFT JOIN users uc ON uc.id::text = j.created_by
       WHERE j.tenant_id = $1
       ORDER BY j.created_at DESC
     `;
@@ -280,11 +285,17 @@ export class JobsService implements OnModuleInit {
     const isUuid = uuidRegex.test(idOrCode);
 
     const sql = isUuid
-      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name
-         FROM jobs j LEFT JOIN users rm ON rm.id = j.recruitment_manager_id LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name, uc.full_name AS creator_name
+         FROM jobs j
+         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
+         LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN users uc ON uc.id::text = j.created_by
          WHERE j.tenant_id = $1 AND (j.id = $2 OR j.job_code = $2) LIMIT 1`
-      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name
-         FROM jobs j LEFT JOIN users rm ON rm.id = j.recruitment_manager_id LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name, uc.full_name AS creator_name
+         FROM jobs j
+         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
+         LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN users uc ON uc.id::text = j.created_by
          WHERE j.tenant_id = $1 AND j.job_code = $2 LIMIT 1`;
 
     try {
@@ -353,7 +364,7 @@ export class JobsService implements OnModuleInit {
       primaryRecruiterId: row.primary_recruiter_id || '',
       primaryRecruiter: row.primary_recruiter_name || 'N/A',
       assignedTo: row.assigned_to || 'N/A',
-      createdBy: row.created_by || 'System',
+      createdBy: row.creator_name || row.created_by || 'System',
 
       industry: row.industry || '',
       degree: row.degree || '',
@@ -364,6 +375,7 @@ export class JobsService implements OnModuleInit {
       submissionsCount: row.submission_done || 0,
       agingDays,
       pipeline: { applied: 0, interviewing: 0, offered: 0 }, // TODO: aggregate from submissions table
+      market: row.market || 'US',
     };
   }
 }

@@ -101,4 +101,7 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: 8, description: 'Maximum years of experience' })
   expMax?: number;
+
+  @ApiPropertyOptional({ example: 'US', enum: ['US', 'IN'], description: 'Staffing market/shift context' })
+  market?: string;
 }
