@@ -576,7 +576,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        WHERE u.id = $1 LIMIT 1`,
@@ -626,6 +626,10 @@ export class AuthService implements OnModuleInit {
       defaultMarket: u.default_market || 'US',
       tenantDomain: u.tenant_domain || '',
       userLimit: u.user_limit || 5,
+      tenant: {
+        name: u.tenant_name || '',
+        domain: u.tenant_domain || '',
+      },
     };
   }
 

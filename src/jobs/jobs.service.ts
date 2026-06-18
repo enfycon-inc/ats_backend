@@ -112,6 +112,41 @@ export class JobsService implements OnModuleInit {
 
     this.logger.log('Jobs table V2 schema verified (all Ceipal fields present).');
   }
+  async getNextJobCode(tenantId: string, offset = 0): Promise<string> {
+    const tenantRes = await this.db.query('SELECT domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+    let tenantPrefix = 'ENFY';
+    if (tenantRes.rows.length > 0) {
+      const domain = tenantRes.rows[0].domain || 'enfy';
+      const cleanDomain = domain.toLowerCase().endsWith('.com') ? domain.slice(0, -4) : domain;
+      tenantPrefix = (cleanDomain === 'temp' || !cleanDomain) ? 'ENFY' : cleanDomain.substring(0, 4).toUpperCase();
+    }
+
+    const date = new Date();
+    const yy = date.getFullYear().toString().slice(-2);
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const prefix = `${tenantPrefix}JOB-${yy}${mm}-`;
+
+    const jobsRes = await this.db.query(
+      'SELECT job_code FROM jobs WHERE tenant_id = $1 AND job_code LIKE $2',
+      [tenantId, `${prefix}%`]
+    );
+
+    let maxSequence = 0;
+    for (const row of jobsRes.rows) {
+      const jobCodeStr = row.job_code;
+      const sequenceStr = jobCodeStr.split('-').pop();
+      if (sequenceStr && !isNaN(parseInt(sequenceStr, 10))) {
+        const seq = parseInt(sequenceStr, 10);
+        if (seq > maxSequence) {
+          maxSequence = seq;
+        }
+      }
+    }
+
+    const nextSeq = maxSequence + 1 + offset;
+    const seqStr = String(nextSeq).padStart(5, '0');
+    return `${prefix}${seqStr}`;
+  }
 
   /**
    * Create a new job requisition
@@ -119,18 +154,21 @@ export class JobsService implements OnModuleInit {
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
-    // Generate unique JPC-XXXX job code (Ceipal format)
+    // Generate unique sequential PREFIXJOB-YYMM-XXXXX job code using the exact logic from enfysync_backend
     let jobCode = '';
     let isUnique = false;
     let attempts = 0;
 
     while (!isUnique && attempts < 10) {
-      jobCode = `JPC - ${Math.floor(1000 + Math.random() * 9000)}`;
+      jobCode = await this.getNextJobCode(tenantId, attempts);
       const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
-      if (check.rows.length === 0) isUnique = true;
-      attempts++;
+      if (check.rows.length === 0) {
+        isUnique = true;
+      } else {
+        attempts++;
+      }
     }
-    if (!isUnique) throw new Error('Failed to generate unique job code.');
+    if (!isUnique) throw new Error('Failed to generate unique sequential job code.');
 
     const sql = `
       INSERT INTO jobs (
