@@ -54,7 +54,7 @@ export class JwtAuthGuard implements CanActivate {
     this.provider = (process.env.AUTH_PROVIDER || 'mock').toLowerCase();
     this.mockSecret =
       process.env.MOCK_JWT_SECRET ||
-      'enfy-ats-dev-jwt-secret-change-me-in-prod';
+      'enfy-ats-dev-secret-change-in-prod';
 
     if (this.provider === 'keycloak') {
       if (!process.env.KEYCLOAK_ISSUER) {

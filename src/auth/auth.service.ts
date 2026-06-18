@@ -443,12 +443,26 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException(`Email "${dto.email}" is already registered.`);
     }
 
+    // 3.5 Generate prefix code from company name
+    let basePrefix = dto.companyName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 4).toUpperCase();
+    if (basePrefix.length < 2) basePrefix = 'COMP';
+    
+    // Check uniqueness of prefix, append number if needed
+    let prefixCode = basePrefix;
+    let counter = 1;
+    while (true) {
+      const prefixExists = await this.db.query('SELECT id FROM tenants WHERE prefix_code = $1 LIMIT 1', [prefixCode]);
+      if (prefixExists.rows.length === 0) break;
+      prefixCode = `${basePrefix.substring(0, 3)}${counter}`;
+      counter++;
+    }
+
     // 4. Create the new tenant (status = PENDING until admin approves)
     const tenantResult = await this.db.query(
-      `INSERT INTO tenants (name, domain, status, default_market)
-       VALUES ($1, $2, 'PENDING', 'US')
-       RETURNING id, name, domain, status`,
-      [dto.companyName, dto.subdomain],
+      `INSERT INTO tenants (name, domain, status, default_market, prefix_code)
+       VALUES ($1, $2, 'PENDING', 'US', $3)
+       RETURNING id, name, domain, status, prefix_code`,
+      [dto.companyName, dto.subdomain, prefixCode],
     );
     const tenant = tenantResult.rows[0];
 

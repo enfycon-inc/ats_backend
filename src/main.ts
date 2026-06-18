@@ -36,7 +36,7 @@ async function bootstrap() {
 
   // Bind to port 5000 as configured in docker-compose.yml
   const port = process.env.PORT ?? 5000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   
   console.log(`[ATS BACKEND] NestJS Core API server started on port ${port}`);
   console.log(`[ATS BACKEND] Swagger UI Documentation available at http://localhost:${port}/docs`);

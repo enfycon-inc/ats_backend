@@ -77,11 +77,25 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS default_market VARCHAR(50) DEFAULT 'US';
       -- Ensure user_limit column exists on older tenants tables
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_limit INT DEFAULT 5;
+      -- Ensure prefix_code column exists for unique ID generation
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prefix_code VARCHAR(10) UNIQUE;
 
       -- 2. Insert default tenant
-      INSERT INTO tenants (id, name, domain, status, default_market, user_limit)
-      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'Default Enfy SaaS Tenant', 'enfycon.com', 'ACTIVE', 'US', 10)
-      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, default_market = COALESCE(tenants.default_market, 'US'), user_limit = COALESCE(tenants.user_limit, 10);
+      INSERT INTO tenants (id, name, domain, status, default_market, user_limit, prefix_code)
+      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'Default Enfy SaaS Tenant', 'enfycon.com', 'ACTIVE', 'US', 10, 'ENFY')
+      ON CONFLICT (id) DO UPDATE SET 
+        name = EXCLUDED.name, 
+        default_market = COALESCE(tenants.default_market, 'US'), 
+        user_limit = COALESCE(tenants.user_limit, 10),
+        prefix_code = COALESCE(tenants.prefix_code, 'ENFY');
+
+      -- 2.5 Create tenant counters table
+      CREATE TABLE IF NOT EXISTS tenant_counters (
+        tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+        entity_type VARCHAR(50) NOT NULL,
+        current_value INT DEFAULT 0,
+        PRIMARY KEY (tenant_id, entity_type)
+      );
 
       -- 3. Create jobs table if not exists (migrating jobs database-backed)
       CREATE TABLE IF NOT EXISTS jobs (
@@ -271,6 +285,48 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       FROM tenants
       WHERE domain IS NOT NULL AND domain <> '' AND domain <> 'enfycon.com'
       ON CONFLICT (domain_name) DO NOTHING;
+
+      -- 10. Create clients table
+      CREATE TABLE IF NOT EXISTS clients (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        client_code VARCHAR(100),
+        client_name VARCHAR(255) NOT NULL,
+        contact_number VARCHAR(100),
+        website VARCHAR(255),
+        industry VARCHAR(100),
+        state VARCHAR(100),
+        city VARCHAR(100),
+        status VARCHAR(50) DEFAULT 'Active',
+        category VARCHAR(100),
+        primary_owner VARCHAR(255),
+        business_unit VARCHAR(100),
+        ownership VARCHAR(100),
+        display_on_job_posting BOOLEAN DEFAULT TRUE,
+        created_by VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        federal_id VARCHAR(100),
+        email_id VARCHAR(255),
+        fax VARCHAR(100),
+        payment_terms VARCHAR(100),
+        address TEXT,
+        client_lead VARCHAR(255),
+        postal_code VARCHAR(50),
+        country VARCHAR(100),
+        practice VARCHAR(100),
+        required_documents TEXT,
+        tag VARCHAR(100),
+        client_short_name VARCHAR(100),
+        modified_by VARCHAR(255),
+        geopolitical_zone VARCHAR(100),
+        primary_business_unit VARCHAR(100),
+        facility_management VARCHAR(100)
+      );
+      
+      -- ensure unique client_code per tenant
+      ALTER TABLE clients DROP CONSTRAINT IF EXISTS unique_client_code_per_tenant;
+      ALTER TABLE clients ADD CONSTRAINT unique_client_code_per_tenant UNIQUE (tenant_id, client_code);
     `;
 
     try {

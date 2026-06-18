@@ -8,8 +8,8 @@ import { SourcingModule } from './sourcing/sourcing.module';
 import { JobsModule } from './jobs/jobs.module';
 import { RecruiterSubmissionsModule } from './recruiter-submissions/recruiter-submissions.module';
 import { EmailModule } from './email/email.module';
-
 import { BullModule } from '@nestjs/bullmq';
+import { ClientsModule } from './clients/clients.module';
 
 @Module({
   imports: [
@@ -26,6 +26,7 @@ import { BullModule } from '@nestjs/bullmq';
     JobsModule,
     RecruiterSubmissionsModule,
     EmailModule,
+    ClientsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
