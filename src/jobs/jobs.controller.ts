@@ -57,6 +57,22 @@ export class JobsController {
     return this.jobsService.findAllJobs(tid);
   }
 
+  @Get('next-code')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:view')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get next sequential job code preview',
+  })
+  async getNextJobCode(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<{ code: string }> {
+    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const code = await this.jobsService.getNextJobCode(tid);
+    return { code };
+  }
+
   @Get(':id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('job:view')
