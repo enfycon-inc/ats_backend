@@ -96,6 +96,23 @@ export class RecruiterSubmissionsService {
       l3Date = null;
     } else if (l3Status === 'REJECTED') {
       finalStatus = 'REJECTED';
+    } else if (finalStatus !== 'REJECTED' && finalStatus !== 'OFFER' && finalStatus !== 'JOIN') {
+      // Check recruiter role and pod for PENDING_APPROVAL workflow
+      const recruiterRes = await this.db.query(
+        'SELECT role_id, pod_id, (SELECT system_role FROM custom_roles WHERE id = users.role_id) as system_role FROM users WHERE id = $1 AND tenant_id = $2',
+        [dto.recruiterId, tenantId]
+      );
+      
+      if (recruiterRes.rows.length > 0) {
+        const recruiter = recruiterRes.rows[0];
+        const podId = recruiter.pod_id;
+        const systemRole = recruiter.system_role;
+
+        // If user is a regular RECRUITER (not POD_LEAD, not ACCOUNT_MANAGER) and belongs to a pod
+        if (systemRole === 'RECRUITER' && podId) {
+          finalStatus = 'PENDING_APPROVAL';
+        }
+      }
     }
 
     const client = await this.db.getClient();

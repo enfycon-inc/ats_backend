@@ -60,7 +60,7 @@ export class CreateSubmissionDto {
 
   @ApiPropertyOptional({
     example: 'SUBMITTED',
-    enum: ['SUBMITTED', 'REJECTED', 'OFFER', 'JOIN'],
+    enum: ['PENDING_APPROVAL', 'SUBMITTED', 'REJECTED', 'OFFER', 'JOIN'],
     description: 'Final status of candidate submission',
   })
   finalStatus?: string;

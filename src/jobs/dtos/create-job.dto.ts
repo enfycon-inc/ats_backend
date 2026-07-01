@@ -101,4 +101,13 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: 8, description: 'Maximum years of experience' })
   expMax?: number;
+
+  @ApiPropertyOptional({ example: 'pod-uuid-123', description: 'Assigned Recruitment Pod ID' })
+  podId?: string;
+
+  @ApiPropertyOptional({ example: '2026-07-31', description: 'Job submission deadline date' })
+  respondBy?: string;
+
+  @ApiPropertyOptional({ example: '30 Days', description: 'Maximum acceptable candidate notice period' })
+  noticePeriod?: string;
 }

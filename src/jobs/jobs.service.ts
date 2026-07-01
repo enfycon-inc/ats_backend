@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { CreateJobDto } from './dtos/create-job.dto';
 
@@ -61,6 +61,11 @@ export interface JobProfile {
   submissionsCount: number;
   agingDays: number;
   pipeline: { applied: number; interviewing: number; offered: number };
+
+  podId?: string;
+  podName?: string;
+  respondBy?: string | null;
+  noticePeriod?: string;
 }
 
 @Injectable()
@@ -99,6 +104,8 @@ export class JobsService implements OnModuleInit {
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS exp_max INT DEFAULT 10`,
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT 'System'`,
       `ALTER TABLE jobs ALTER COLUMN visa_type TYPE VARCHAR(500)`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS respond_by DATE`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT ''`,
     ];
 
     for (const stmt of alterStatements) {
@@ -181,6 +188,7 @@ export class JobsService implements OnModuleInit {
         remote_job, start_date, end_date, hours_per_week, duration,
         account_manager_id, recruitment_manager_id, primary_recruiter_id, assigned_to,
         industry, degree, exp_min, exp_max, created_by,
+        respond_by, notice_period,
         created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
@@ -192,6 +200,7 @@ export class JobsService implements OnModuleInit {
         $23, $24, $25, $26, $27,
         $28, $29, $30, $31,
         $32, $33, $34, $35, $36,
+        $37, $38,
         NOW(), NOW()
       ) RETURNING *
     `;
@@ -233,11 +242,58 @@ export class JobsService implements OnModuleInit {
       dto.expMin ?? 0,                                               // $34
       dto.expMax ?? 10,                                              // $35
       createdByEmail || 'System',                                    // $36
+      dto.respondBy || null,                                         // $37
+      dto.noticePeriod || '',                                        // $38
     ];
 
     try {
       const result = await this.db.query(sql, params);
-      return this.mapRowToProfile(result.rows[0]);
+      const job = result.rows[0];
+      const jobId = job.id;
+
+      // Assign Pod (Explicit or Round-Robin)
+      let assignedPodId = dto.podId;
+      if (!assignedPodId) {
+        // Find next available pod for round-robin
+        let podRes = await this.db.query(
+          "SELECT id FROM pods WHERE tenant_id = $1 AND is_available_for_assignment = TRUE ORDER BY name ASC LIMIT 1",
+          [tenantId]
+        );
+        if (podRes.rows.length === 0) {
+          // Reset cycle
+          await this.db.query(
+            "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1",
+            [tenantId]
+          );
+          podRes = await this.db.query(
+            "SELECT id FROM pods WHERE tenant_id = $1 AND is_available_for_assignment = TRUE ORDER BY name ASC LIMIT 1",
+            [tenantId]
+          );
+        }
+        if (podRes.rows.length > 0) {
+          assignedPodId = podRes.rows[0].id;
+          // Set is_available_for_assignment = FALSE
+          await this.db.query(
+            "UPDATE pods SET is_available_for_assignment = FALSE WHERE id = $1",
+            [assignedPodId]
+          );
+        }
+      }
+
+      if (assignedPodId) {
+        // Link job to pod in junction table
+        await this.db.query(
+          "INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [jobId, assignedPodId]
+        );
+        // Log assignment
+        await this.db.query(
+          "INSERT INTO job_assignment_logs (tenant_id, job_id, pod_id, assigned_by) VALUES ($1, $2, $3, $4)",
+          [tenantId, jobId, assignedPodId, createdByEmail || 'System']
+        );
+      }
+
+      return this.findOneJob(jobId, tenantId);
     } catch (err) {
       this.logger.error(`Failed to create job: ${err.message}`, err.stack);
       throw err;
@@ -253,10 +309,14 @@ export class JobsService implements OnModuleInit {
     const sql = `
       SELECT j.*,
              rm.full_name AS recruitment_manager_name,
-             pr.full_name AS primary_recruiter_name
+             pr.full_name AS primary_recruiter_name,
+             p.id AS pod_id,
+             p.name AS pod_name
       FROM jobs j
       LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      LEFT JOIN job_pods jp ON jp.job_id = j.id
+      LEFT JOIN pods p ON p.id = jp.pod_id
       WHERE j.tenant_id = $1
       ORDER BY j.created_at DESC
     `;
@@ -280,11 +340,21 @@ export class JobsService implements OnModuleInit {
     const isUuid = uuidRegex.test(idOrCode);
 
     const sql = isUuid
-      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name
-         FROM jobs j LEFT JOIN users rm ON rm.id = j.recruitment_manager_id LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
+                p.id AS pod_id, p.name AS pod_name
+         FROM jobs j 
+         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id 
+         LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN job_pods jp ON jp.job_id = j.id
+         LEFT JOIN pods p ON p.id = jp.pod_id
          WHERE j.tenant_id = $1 AND (j.id = $2 OR j.job_code = $2) LIMIT 1`
-      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name
-         FROM jobs j LEFT JOIN users rm ON rm.id = j.recruitment_manager_id LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
+                p.id AS pod_id, p.name AS pod_name
+         FROM jobs j 
+         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id 
+         LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN job_pods jp ON jp.job_id = j.id
+         LEFT JOIN pods p ON p.id = jp.pod_id
          WHERE j.tenant_id = $1 AND j.job_code = $2 LIMIT 1`;
 
     try {
@@ -364,6 +434,172 @@ export class JobsService implements OnModuleInit {
       submissionsCount: row.submission_done || 0,
       agingDays,
       pipeline: { applied: 0, interviewing: 0, offered: 0 }, // TODO: aggregate from submissions table
+      podId: row.pod_id || '',
+      podName: row.pod_name || '',
+      respondBy: row.respond_by ? new Date(row.respond_by).toISOString().split('T')[0] : null,
+      noticePeriod: row.notice_period || '',
     };
+  }
+
+  /**
+   * Update job details (including recruiter assignments with permissions validation)
+   */
+  async updateJob(
+    id: string,
+    dto: any,
+    tenantId: string,
+    user: any
+  ): Promise<JobProfile> {
+    this.logger.log(`Updating job: ${id} for tenant: ${tenantId}`);
+
+    // Fetch the job first to verify existence
+    const jobRes = await this.db.query(
+      "SELECT * FROM jobs WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+      [id, tenantId]
+    );
+    if (jobRes.rows.length === 0) {
+      throw new NotFoundException(`Job not found.`);
+    }
+
+    // If updating primary_recruiter_id, apply validation rules
+    if (dto.primaryRecruiterId !== undefined) {
+      const newRecruiterId = dto.primaryRecruiterId;
+
+      // Fetch user permissions & roles
+      const userPermissions = user.permissions || [];
+      const userSystemRole = user.systemRole || 'RECRUITER';
+      const isSuperAdmin = user.roles && user.roles.includes('SUPER_ADMIN');
+
+      // Check if user has pod:edit (Delivery Head / Admin) or is Super Admin
+      const hasOverridePermission = userPermissions.includes('pod:edit') || isSuperAdmin;
+
+      if (hasOverridePermission) {
+        // Delivery Head / Admin can assign ANY recruiter in the tenant
+        if (newRecruiterId) {
+          const recruiterRes = await this.db.query(
+            "SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+            [newRecruiterId, tenantId]
+          );
+          if (recruiterRes.rows.length === 0) {
+            throw new NotFoundException("Selected recruiter does not exist in this tenant.");
+          }
+        }
+      } else if (userSystemRole === 'POD_LEAD' || userPermissions.includes('job:edit')) {
+        // Pod Head (POD_LEAD) can only assign recruiters from within their own pod
+        const userPodRes = await this.db.query(
+          "SELECT pod_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+          [user.dbId, tenantId]
+        );
+        const userPodId = userPodRes.rows[0]?.pod_id;
+        if (!userPodId) {
+          throw new BadRequestException("You are designated as a Pod Head but you are not assigned to any pod.");
+        }
+
+        // Verify if this job is assigned to the user's pod
+        const jobPodRes = await this.db.query(
+          "SELECT 1 FROM job_pods WHERE job_id = $1 AND pod_id = $2 LIMIT 1",
+          [id, userPodId]
+        );
+        if (jobPodRes.rows.length === 0) {
+          throw new BadRequestException("You can only assign recruiters to jobs mapped to your pod.");
+        }
+
+        // Verify if the selected recruiter belongs to the user's pod
+        if (newRecruiterId) {
+          const recruiterPodRes = await this.db.query(
+            "SELECT pod_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+            [newRecruiterId, tenantId]
+          );
+          if (recruiterPodRes.rows.length === 0 || recruiterPodRes.rows[0].pod_id !== userPodId) {
+            throw new BadRequestException("You can only assign recruiters belonging to your own pod.");
+          }
+        }
+      } else {
+        throw new BadRequestException("You do not have permission to assign recruiters to this job.");
+      }
+    }
+
+    // Prepare fields to update dynamically
+    const fields: string[] = [];
+    const params: any[] = [id, tenantId];
+    let paramIndex = 3;
+
+    const addField = (dbCol: string, val: any) => {
+      if (val !== undefined) {
+        fields.push(`${dbCol} = $${paramIndex}`);
+        params.push(val);
+        paramIndex++;
+      }
+    };
+
+    addField('job_title', dto.title);
+    addField('job_location', dto.location);
+    addField('job_type', dto.type);
+    addField('job_description', dto.description);
+    addField('skills_required', dto.skillsRequired);
+    addField('secondary_skills', dto.secondarySkills);
+    addField('status', dto.status);
+    addField('business_unit', dto.businessUnit);
+    addField('state', dto.state);
+    addField('country', dto.country);
+    addField('client_job_id', dto.clientJobId);
+    addField('visa_type', dto.visaType);
+    addField('client_bill_rate', dto.clientBillRate);
+    addField('pay_rate', dto.payRate);
+    addField('tax_terms', dto.taxTerms);
+    addField('client_name', dto.client);
+    addField('end_client_name', dto.endClientName);
+    addField('no_of_positions', dto.noOfPositions);
+    addField('submission_required', dto.submissionRequired);
+    addField('urgency', dto.priority);
+    addField('remote_job', dto.remoteJob);
+    addField('start_date', dto.startDate);
+    addField('end_date', dto.endDate);
+    addField('hours_per_week', dto.hoursPerWeek);
+    addField('duration', dto.duration);
+    addField('account_manager_id', dto.accountManagerId);
+    addField('recruitment_manager_id', dto.recruitmentManagerId);
+    addField('primary_recruiter_id', dto.primaryRecruiterId);
+    addField('assigned_to', dto.assignedTo);
+    addField('industry', dto.industry);
+    addField('degree', dto.degree);
+    addField('exp_min', dto.expMin);
+    addField('exp_max', dto.expMax);
+    addField('respond_by', dto.respondBy);
+    addField('notice_period', dto.noticePeriod);
+
+    if (fields.length > 0) {
+      const updateSql = `
+        UPDATE jobs
+        SET ${fields.join(', ')}, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $2
+      `;
+      await this.db.query(updateSql, params);
+    }
+
+    // If updating pod assignment (e.g. for Admins/Delivery Heads re-routing jobs)
+    if (dto.podId !== undefined) {
+      const userPermissions = user?.permissions || [];
+      const isSuperAdmin = user?.roles && user.roles.includes('SUPER_ADMIN');
+      const hasOverridePermission = userPermissions.includes('pod:edit') || isSuperAdmin;
+
+      if (!hasOverridePermission) {
+        throw new ForbiddenException('You do not have permission to modify job pod assignments.');
+      }
+
+      await this.db.query("DELETE FROM job_pods WHERE job_id = $1", [id]);
+      if (dto.podId) {
+        await this.db.query(
+          "INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          [id, dto.podId]
+        );
+        await this.db.query(
+          "INSERT INTO job_assignment_logs (tenant_id, job_id, pod_id, assigned_by) VALUES ($1, $2, $3, $4)",
+          [tenantId, id, dto.podId, user?.email || 'System']
+        );
+      }
+    }
+
+    return this.findOneJob(id, tenantId);
   }
 }

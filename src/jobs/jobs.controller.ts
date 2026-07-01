@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, Headers,
+  Controller, Get, Post, Patch, Body, Param, Headers,
   HttpStatus, HttpCode, UseGuards,
 } from '@nestjs/common';
 import {
@@ -91,5 +91,22 @@ export class JobsController {
   ): Promise<JobProfile> {
     const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
     return this.jobsService.findOneJob(id, tid);
+  }
+
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:edit')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update job details and recruiter assignment',
+  })
+  async update(
+    @Param('id') id: string,
+    @Body() dto: any,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<JobProfile> {
+    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    return this.jobsService.updateJob(id, dto, tid, user);
   }
 }

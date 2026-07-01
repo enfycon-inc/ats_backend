@@ -327,6 +327,53 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       -- ensure unique client_code per tenant
       ALTER TABLE clients DROP CONSTRAINT IF EXISTS unique_client_code_per_tenant;
       ALTER TABLE clients ADD CONSTRAINT unique_client_code_per_tenant UNIQUE (tenant_id, client_code);
+
+      -- 11. Create pods table
+      CREATE TABLE IF NOT EXISTS pods (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        pod_head_id UUID,
+        description TEXT,
+        is_available_for_assignment BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(tenant_id, name)
+      );
+
+      ALTER TABLE pods ADD COLUMN IF NOT EXISTS description TEXT;
+
+      -- 12. Add pod_id to users referencing pods
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS pod_id UUID REFERENCES pods(id) ON DELETE SET NULL;
+
+      -- Add foreign key constraint to pods.pod_head_id referencing users(id) ON DELETE SET NULL
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.table_constraints 
+          WHERE constraint_name = 'fk_pods_pod_head' AND table_name = 'pods'
+        ) THEN
+          ALTER TABLE pods ADD CONSTRAINT fk_pods_pod_head FOREIGN KEY (pod_head_id) REFERENCES users(id) ON DELETE SET NULL;
+        END IF;
+      END $$;
+
+      -- 13. Create job_pods junction table
+      CREATE TABLE IF NOT EXISTS job_pods (
+        job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        pod_id UUID NOT NULL REFERENCES pods(id) ON DELETE CASCADE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        PRIMARY KEY (job_id, pod_id)
+      );
+
+      -- 14. Create job_assignment_logs table
+      CREATE TABLE IF NOT EXISTS job_assignment_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        pod_id UUID REFERENCES pods(id) ON DELETE SET NULL,
+        assigned_by VARCHAR(255) DEFAULT 'System',
+        assigned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
     `;
 
     try {

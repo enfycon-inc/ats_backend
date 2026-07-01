@@ -10,6 +10,7 @@ import { RecruiterSubmissionsModule } from './recruiter-submissions/recruiter-su
 import { EmailModule } from './email/email.module';
 import { BullModule } from '@nestjs/bullmq';
 import { ClientsModule } from './clients/clients.module';
+import { PodsModule } from './pods/pods.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { ClientsModule } from './clients/clients.module';
     RecruiterSubmissionsModule,
     EmailModule,
     ClientsModule,
+    PodsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

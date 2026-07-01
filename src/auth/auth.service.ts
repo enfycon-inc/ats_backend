@@ -65,6 +65,18 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async onModuleInit() {
     await this.ensureUsersTable();
+    
+    // Sync all existing tenants with new system permissions
+    try {
+      const tenantsResult = await this.db.query('SELECT id FROM tenants');
+      for (const tenant of tenantsResult.rows) {
+        await this.seedTenantRoles(tenant.id);
+      }
+      this.logger.log('All tenant default roles and permissions successfully synchronized.');
+    } catch (err) {
+      this.logger.error(`Failed to synchronize tenant roles: ${err.message}`);
+    }
+
     if (this.provider === 'mock') {
       await this.seedDefaultUsers();
     }
@@ -93,6 +105,7 @@ export class AuthService implements OnModuleInit {
       UPDATE custom_roles SET system_role = 'ACCOUNT_MANAGER' WHERE name = 'ACCOUNT_MANAGER';
       UPDATE custom_roles SET system_role = 'DELIVERY_HEAD' WHERE name = 'DELIVERY_HEAD';
       UPDATE custom_roles SET system_role = 'TRACKER' WHERE name = 'TRACKER';
+      UPDATE custom_roles SET system_role = 'POD_LEAD' WHERE name = 'POD_LEAD';
 
       -- 2. Create role_permissions table
       CREATE TABLE IF NOT EXISTS role_permissions (
@@ -197,7 +210,7 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Login attempt: ${dto.email}`);
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, cr.system_role
+      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, cr.system_role
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
@@ -285,6 +298,7 @@ export class AuthService implements OnModuleInit {
       tenantDomain: user.tenant_domain || '',
       permissions,
       systemRole,
+      podId: user.pod_id,
     });
 
     return {
@@ -301,6 +315,7 @@ export class AuthService implements OnModuleInit {
         tenantDomain: user.tenant_domain || '',
         permissions,
         systemRole,
+        podId: user.pod_id,
       },
     };
   }
@@ -590,7 +605,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        WHERE u.id = $1 LIMIT 1`,
@@ -640,6 +655,7 @@ export class AuthService implements OnModuleInit {
       defaultMarket: u.default_market || 'US',
       tenantDomain: u.tenant_domain || '',
       userLimit: u.user_limit || 5,
+      podId: u.pod_id,
       tenant: {
         name: u.tenant_name || '',
         domain: u.tenant_domain || '',
@@ -652,7 +668,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listUsers(tenantId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.created_at, u.role_id, r.name as role_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.created_at, u.role_id, u.pod_id, r.name as role_name
        FROM users u 
        LEFT JOIN custom_roles r ON u.role_id = r.id
        WHERE u.tenant_id = $1 ORDER BY u.full_name ASC`,
@@ -667,6 +683,7 @@ export class AuthService implements OnModuleInit {
       roleName: u.role_name || u.roles[0] || 'RECRUITER',
       isActive: u.is_active,
       createdAt: u.created_at,
+      podId: u.pod_id,
     }));
   }
 
@@ -769,22 +786,30 @@ export class AuthService implements OnModuleInit {
         'job:create', 'job:edit', 'job:view',
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:edit',
-        'tenant:settings', 'user:manage'
+        'tenant:settings', 'user:manage',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view',
-        'job:view'
+        'job:view',
+        'pod:view'
       ],
       ACCOUNT_MANAGER: [
         'job:create', 'job:edit', 'job:view',
-        'candidate:view', 'submission:view', 'submission:edit'
+        'candidate:view', 'submission:view', 'submission:edit',
+        'pod:view'
       ],
       DELIVERY_HEAD: [
-        'job:view', 'candidate:view', 'submission:view', 'submission:edit'
+        'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
       ],
       TRACKER: [
         'submission:view', 'candidate:view'
+      ],
+      POD_LEAD: [
+        'job:view', 'candidate:view', 'submission:view', 'submission:edit',
+        'pod:view', 'job:edit'
       ]
     };
 
@@ -855,12 +880,12 @@ export class AuthService implements OnModuleInit {
 
   async createCustomRole(tenantId: string, name: string, description: string, permissions: string[], systemRole?: string) {
     const nameUpper = name.toUpperCase().trim();
-    if (['SUPER_ADMIN', 'ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'TRACKER'].includes(nameUpper)) {
+    if (['SUPER_ADMIN', 'ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(nameUpper)) {
       throw new BadRequestException('Role name conflicts with a default system role.');
     }
 
     const resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
-    if (!['ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'TRACKER'].includes(resolvedSystemRole)) {
+    if (!['ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(resolvedSystemRole)) {
       throw new BadRequestException('Invalid base system role selected.');
     }
 
@@ -875,22 +900,30 @@ export class AuthService implements OnModuleInit {
           'job:create', 'job:edit', 'job:view',
           'candidate:create', 'candidate:view',
           'submission:create', 'submission:edit',
-          'tenant:settings', 'user:manage'
+          'tenant:settings', 'user:manage',
+          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
         ],
         RECRUITER: [
           'candidate:create', 'candidate:view',
           'submission:create', 'submission:view',
-          'job:view'
+          'job:view',
+          'pod:view'
         ],
         ACCOUNT_MANAGER: [
           'job:create', 'job:edit', 'job:view',
-          'candidate:view', 'submission:view', 'submission:edit'
+          'candidate:view', 'submission:view', 'submission:edit',
+          'pod:view'
         ],
         DELIVERY_HEAD: [
-          'job:view', 'candidate:view', 'submission:view', 'submission:edit'
+          'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
+          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
         ],
         TRACKER: [
           'submission:view', 'candidate:view'
+        ],
+        POD_LEAD: [
+          'job:view', 'candidate:view', 'submission:view', 'submission:edit',
+          'pod:view', 'job:edit'
         ]
       };
       resolvedPermissions = DEFAULT_PERMISSIONS[resolvedSystemRole] || ['job:view', 'candidate:view'];
@@ -1040,6 +1073,11 @@ export class AuthService implements OnModuleInit {
       { id: 'submission:edit', name: 'Edit Submissions', group: 'Submissions' },
       { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
       { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
+      { id: 'pod:create', name: 'Create Pods', group: 'Pods Management' },
+      { id: 'pod:edit', name: 'Edit Pods', group: 'Pods Management' },
+      { id: 'pod:delete', name: 'Delete Pods', group: 'Pods Management' },
+      { id: 'pod:view', name: 'View Pods', group: 'Pods Management' },
+      { id: 'pod:reset_cycle', name: 'Reset Assignment Cycle', group: 'Pods Management' },
     ];
   }
 
