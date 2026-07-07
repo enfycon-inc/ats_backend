@@ -1,11 +1,11 @@
 import {
-  Controller, Get, Post, Patch, Body, Param, Headers,
+  Controller, Get, Post, Patch, Body, Param, Headers, Query,
   HttpStatus, HttpCode, UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth,
 } from '@nestjs/swagger';
-import { JobsService, JobProfile } from './jobs.service';
+import { JobsService, JobProfile, CandidateMatch } from './jobs.service';
 import { CreateJobDto } from './dtos/create-job.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -71,6 +71,31 @@ export class JobsController {
     const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
     const code = await this.jobsService.getNextJobCode(tid);
     return { code };
+  }
+
+  @Get(':id/matches')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:view')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'AI-ranked candidate matches for a job',
+    description:
+      'Ranks the tenant candidate pool against this job using skill overlap (primary + secondary), experience fit, and resume-text keyword hits. Blends pgvector semantic similarity when the resume parser is online.',
+  })
+  @ApiParam({ name: 'id', description: 'Job UUID or job code', type: String })
+  @ApiResponse({ status: 200, description: 'Ranked candidate matches returned.' })
+  async matches(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Query('limit') limit?: string,
+    @Query('minScore') minScore?: string,
+  ): Promise<{ job: JobProfile; matches: CandidateMatch[]; parserOnline: boolean }> {
+    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    return this.jobsService.findMatchingCandidates(id, tid, {
+      limit: limit ? parseInt(limit, 10) : undefined,
+      minScore: minScore ? parseInt(minScore, 10) : undefined,
+    });
   }
 
   @Get(':id')

@@ -1,3 +1,8 @@
+import * as dotenv from 'dotenv';
+// Load .env for native (non-Docker) local runs. In Docker, env_file already
+// injects these vars, and dotenv is a harmless no-op if the file is absent.
+dotenv.config();
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';

@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Delete, Body, Query, Param, Headers, ParseIntPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Query, Param, Headers, ParseIntPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UseGuards, Res } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { CandidatesService } from './candidates.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
@@ -105,6 +106,42 @@ export class CandidatesController {
     @UploadedFile() file: any,
   ): Promise<any> {
     return this.candidatesService.parseResumeFile(file);
+  }
+
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Upload, parse & save a CV',
+    description:
+      'One-shot CV import: de-duplicates on file hash, parses via the Python service (best-effort), stores the original file bytes, and creates the linked candidate.',
+  })
+  @ApiResponse({ status: 201, description: 'Candidate created (or existing duplicate returned).' })
+  async uploadCv(
+    @UploadedFile() file: any,
+    @Body('source') source?: string,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean }> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    return this.candidatesService.saveUploadedCv(file, activeTenantId, { source });
+  }
+
+  @Get(':id/resume')
+  @ApiOperation({
+    summary: 'Download / preview a candidate CV',
+    description: 'Streams the original stored resume file for the candidate.',
+  })
+  @ApiParam({ name: 'id', description: 'Candidate database ID', type: Number })
+  async downloadResume(
+    @Param('id', ParseIntPipe) id: number,
+    @Res() res: Response,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<void> {
+    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    const cv = await this.candidatesService.getResumeFile(id, activeTenantId);
+    res.setHeader('Content-Type', cv.mime);
+    res.setHeader('Content-Disposition', `inline; filename="${cv.filename.replace(/"/g, '')}"`);
+    res.send(cv.data);
   }
 
   @Get('dictionary/pending')

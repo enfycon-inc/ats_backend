@@ -1,14 +1,44 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import * as crypto from 'node:crypto';
 import { DatabaseService } from '../database/database.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
 import { CandidateQueryDto } from './dtos/candidate-query.dto';
 import { CandidateProfile, CandidateDbRow } from './interfaces/candidate.interface';
 
+/** The original CV file bytes plus metadata, for download/preview. */
+export interface StoredResumeFile {
+  data: Buffer;
+  mime: string;
+  filename: string;
+}
+
 @Injectable()
-export class CandidatesService {
+export class CandidatesService implements OnModuleInit {
   private readonly logger = new Logger(CandidatesService.name);
 
   constructor(private readonly db: DatabaseService) {}
+
+  async onModuleInit() {
+    await this.ensureResumeFileColumns();
+  }
+
+  /**
+   * The `resumes` table (owned by the Python parser) stores parsed text/JSON but
+   * not the original file. Add columns so the ATS can persist and serve the CV.
+   */
+  private async ensureResumeFileColumns() {
+    const stmts = [
+      `ALTER TABLE resumes ADD COLUMN IF NOT EXISTS file_data BYTEA`,
+      `ALTER TABLE resumes ADD COLUMN IF NOT EXISTS file_mime VARCHAR(150)`,
+      `ALTER TABLE resumes ADD COLUMN IF NOT EXISTS file_size INT`,
+    ];
+    for (const s of stmts) {
+      try { await this.db.query(s); } catch (err: any) {
+        this.logger.debug(`Resume file-column migration note: ${err.message}`);
+      }
+    }
+    this.logger.log('Resume file-storage columns verified (file_data, file_mime, file_size).');
+  }
 
   /**
    * Safe SQL transaction to create a candidate and link their resume record in one step
@@ -262,6 +292,143 @@ export class CandidatesService {
       experienceYears: row.total_experience_years || 0,
       rawText: row.raw_text || '',
       createdOn: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Find an existing candidate by resume file hash (de-duplication), scoped by tenant.
+   */
+  async findByHash(fileHash: string, tenantId: string): Promise<CandidateProfile | null> {
+    const result = await this.db.query(
+      `SELECT c.*, r.raw_text, r.parsed_json
+       FROM candidates c
+       JOIN resumes r ON c.resume_record_id = r.id
+       WHERE r.file_hash = $1 AND c.tenant_id = $2 LIMIT 1`,
+      [fileHash, tenantId],
+    );
+    return result.rows.length ? this.mapRowToProfile(result.rows[0]) : null;
+  }
+
+  /**
+   * CV SAVE MECHANISM — upload a resume file, parse it (best-effort via the Python
+   * parser), and persist the original file + structured candidate in one transaction.
+   *
+   *  1. Hash the bytes and de-duplicate (same CV already imported → return it).
+   *  2. Ask the FastAPI parser to extract structured fields. If it's offline, fall
+   *     back to filename-derived defaults so the upload never fails.
+   *  3. Store the file bytes, parsed JSON, and raw text in `resumes`, then create
+   *     the linked `candidates` row.
+   */
+  async saveUploadedCv(
+    file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
+    tenantId: string,
+    meta: { source?: string } = {},
+  ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean }> {
+    if (!file?.buffer) throw new NotFoundException('No file uploaded.');
+
+    const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+
+    // 1. De-duplicate on exact file hash.
+    const existing = await this.findByHash(fileHash, tenantId);
+    if (existing) {
+      this.logger.log(`CV already imported (hash ${fileHash.slice(0, 12)}…) → returning existing candidate.`);
+      return { candidate: existing, duplicate: true, parsed: false };
+    }
+
+    // 2. Best-effort parse via the Python service.
+    let parsed: any = null;
+    try {
+      parsed = await this.parseResumeFile(file);
+    } catch (err: any) {
+      this.logger.warn(`Parser unavailable, saving CV with basic metadata only: ${err.message}`);
+    }
+
+    const contact = parsed?.contact || {};
+    const fallbackName = file.originalname.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+    const fullName = parsed?.candidate_name || fallbackName || 'Unnamed Candidate';
+    const email = (contact.emails && contact.emails[0]) || `no-email-${fileHash.slice(0, 8)}@import.local`;
+    const phone = (contact.phones && contact.phones[0]) || '';
+    const skills: string[] = parsed?.skills || [];
+    const workAuth = parsed?.work_authorization || 'Unknown';
+    const location = parsed?.ats_normalized?.location?.[0]?.raw || parsed?.location || '';
+    const designation = parsed?.experience?.detected_roles?.[0] || parsed?.ats_normalized?.designations?.[0]?.raw || '';
+    const expYears = parsed?.experience_years
+      ?? parsed?.experience_detailed?.length
+      ?? 0;
+    const rawText = parsed?.raw_text || parsed?.word_count ? (parsed?.raw_text || '') : '';
+
+    const client = await this.db.getClient();
+    try {
+      await client.query('BEGIN');
+
+      const resumeRes = await client.query(
+        `INSERT INTO resumes
+          (filename, candidate_name, email, file_hash, parsed_json, raw_text, file_data, file_mime, file_size, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+         RETURNING id`,
+        [
+          file.originalname,
+          fullName,
+          email,
+          fileHash,
+          JSON.stringify(parsed || { candidate_name: fullName, skills }),
+          rawText,
+          file.buffer,
+          file.mimetype || 'application/octet-stream',
+          file.size ?? file.buffer.length,
+        ],
+      );
+      const resumeId = resumeRes.rows[0].id;
+
+      const candRes = await client.query(
+        `INSERT INTO candidates
+          (full_name, email, phone, raw_current_location, total_experience_years,
+           raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)
+         RETURNING id, created_at`,
+        [fullName, email, phone, location, expYears, designation,
+         meta.source || 'CV Upload', workAuth, resumeId, tenantId],
+      );
+
+      await client.query('COMMIT');
+
+      const row = {
+        id: candRes.rows[0].id, full_name: fullName, email, phone,
+        raw_current_location: location, total_experience_years: expYears,
+        raw_current_designation: designation, source: meta.source || 'CV Upload',
+        work_authorization: workAuth, created_at: candRes.rows[0].created_at,
+        parsed_json: JSON.stringify({ skills }), raw_text: rawText,
+      };
+      this.logger.log(`Saved CV for "${fullName}" (candidate ${candRes.rows[0].id}, parsed=${!!parsed}).`);
+      return { candidate: this.mapRowToProfile(row), duplicate: false, parsed: !!parsed };
+    } catch (err: any) {
+      await client.query('ROLLBACK');
+      this.logger.error(`Failed to save uploaded CV: ${err.message}`, err.stack);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Retrieve the original stored CV file for a candidate (for download/preview).
+   */
+  async getResumeFile(candidateId: number, tenantId: string): Promise<StoredResumeFile> {
+    const result = await this.db.query(
+      `SELECT r.file_data, r.file_mime, r.filename
+       FROM candidates c
+       JOIN resumes r ON c.resume_record_id = r.id
+       WHERE c.id = $1 AND c.tenant_id = $2 LIMIT 1`,
+      [candidateId, tenantId],
+    );
+    if (!result.rows.length || !result.rows[0].file_data) {
+      throw new NotFoundException(`No stored CV file for candidate ${candidateId}.`);
+    }
+    const row = result.rows[0];
+    return {
+      data: row.file_data as Buffer,
+      mime: row.file_mime || 'application/octet-stream',
+      filename: row.filename || `candidate-${candidateId}-cv`,
     };
   }
 

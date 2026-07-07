@@ -68,6 +68,31 @@ export interface JobProfile {
   noticePeriod?: string;
 }
 
+/** A single candidate ranked against a job requisition. */
+export interface CandidateMatch {
+  candidateId: number;
+  fullName: string;
+  email: string;
+  phone: string;
+  location: string;
+  currentTitle: string;
+  source: string;
+  workAuthorization: string;
+  experienceYears: number;
+  /** 0-100 overall fit. */
+  matchScore: number;
+  matchTier: 'Strong' | 'Good' | 'Fair' | 'Low';
+  matchedSkills: string[];
+  missingSkills: string[];
+  /** How the score was composed, for transparency in the UI. */
+  breakdown: {
+    primarySkills: string;   // e.g. "4/5"
+    secondarySkills: string; // e.g. "1/3"
+    experienceFit: number;   // 0-100
+    semantic: number | null; // 0-100 or null if parser offline
+  };
+}
+
 @Injectable()
 export class JobsService implements OnModuleInit {
   private readonly logger = new Logger(JobsService.name);
@@ -601,5 +626,168 @@ export class JobsService implements OnModuleInit {
     }
 
     return this.findOneJob(id, tenantId);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  //  AI CANDIDATE MATCHING
+  //  Ranks candidates in the tenant's pool against a job requisition.
+  //  Runs entirely off the shared Supabase DB (skill overlap + experience
+  //  fit + resume-text keyword hits) and, when the Python parser is
+  //  reachable, blends in pgvector semantic similarity.
+  // ─────────────────────────────────────────────────────────────
+
+  /** Normalize a skill/keyword for comparison: lowercase, collapse punctuation. */
+  private normalizeTerm(s: string): string {
+    return (s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9+#. ]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /** True if a required skill is evidenced in the candidate's skills or resume text. */
+  private skillIsPresent(skill: string, candidateSkillSet: Set<string>, rawText: string): boolean {
+    const norm = this.normalizeTerm(skill);
+    if (!norm) return false;
+    if (candidateSkillSet.has(norm)) return true;
+    // Word-boundary match against the raw resume text (catches skills the parser missed).
+    const escaped = norm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').test(rawText || '');
+  }
+
+  async findMatchingCandidates(
+    jobIdOrCode: string,
+    tenantId: string,
+    opts: { limit?: number; minScore?: number } = {},
+  ): Promise<{ job: JobProfile; matches: CandidateMatch[]; parserOnline: boolean }> {
+    const job = await this.findOneJob(jobIdOrCode, tenantId);
+    const limit = Math.min(opts.limit ?? 25, 100);
+    const minScore = opts.minScore ?? 0;
+
+    const primarySkills = (job.skillsRequired || []).filter(Boolean);
+    const secondarySkills = (job.secondarySkills || []).filter(Boolean);
+
+    // Pull the tenant's candidate pool with parsed skills + raw resume text.
+    const candRes = await this.db.query(
+      `SELECT c.id, c.full_name, c.email, c.phone, c.raw_current_location,
+              c.raw_current_designation, c.source, c.work_authorization,
+              c.total_experience_years, r.raw_text, r.parsed_json
+       FROM candidates c
+       LEFT JOIN resumes r ON c.resume_record_id = r.id
+       WHERE c.tenant_id = $1`,
+      [tenantId],
+    );
+
+    // Optional semantic layer: ask the parser to rank the pool by the job's
+    // title + skills. Best-effort — skipped silently if the parser is offline.
+    const semanticByEmail = await this.fetchSemanticScores(job);
+    const parserOnline = semanticByEmail !== null;
+
+    const matches: CandidateMatch[] = candRes.rows.map((row: any) => {
+      let candidateSkills: string[] = [];
+      if (row.parsed_json) {
+        const parsed = typeof row.parsed_json === 'string' ? JSON.parse(row.parsed_json) : row.parsed_json;
+        candidateSkills = parsed?.skills || [];
+      }
+      const skillSet = new Set(candidateSkills.map((s) => this.normalizeTerm(s)));
+      const rawText = row.raw_text || '';
+
+      const matchedPrimary = primarySkills.filter((s) => this.skillIsPresent(s, skillSet, rawText));
+      const missingPrimary = primarySkills.filter((s) => !matchedPrimary.includes(s));
+      const matchedSecondary = secondarySkills.filter((s) => this.skillIsPresent(s, skillSet, rawText));
+
+      const primaryRatio = primarySkills.length ? matchedPrimary.length / primarySkills.length : 0;
+      const secondaryRatio = secondarySkills.length ? matchedSecondary.length / secondarySkills.length : 0;
+
+      // Experience fit: full credit inside [expMin, expMax]; scaled below min; no penalty above max.
+      const years = Number(row.total_experience_years) || 0;
+      let expFit = 1;
+      if (job.expMin && years < job.expMin) expFit = job.expMin > 0 ? years / job.expMin : 0;
+      const expScore = Math.max(0, Math.min(1, expFit));
+
+      // Weighting: primary skills dominate; secondary and experience refine.
+      // If a job has no secondary skills, that weight folds into primary.
+      const hasSecondary = secondarySkills.length > 0;
+      const wPrimary = hasSecondary ? 0.7 : 0.85;
+      const wSecondary = hasSecondary ? 0.15 : 0;
+      const wExp = 0.15;
+      let score01 = wPrimary * primaryRatio + wSecondary * secondaryRatio + wExp * expScore;
+
+      // Blend semantic similarity (30%) when available.
+      const semantic = semanticByEmail?.get((row.email || '').toLowerCase()) ?? null;
+      if (semantic !== null && semantic !== undefined) {
+        score01 = 0.7 * score01 + 0.3 * semantic;
+      }
+
+      const matchScore = Math.round(score01 * 100);
+      const matchTier: CandidateMatch['matchTier'] =
+        matchScore >= 75 ? 'Strong' : matchScore >= 50 ? 'Good' : matchScore >= 25 ? 'Fair' : 'Low';
+
+      return {
+        candidateId: row.id,
+        fullName: row.full_name,
+        email: row.email,
+        phone: row.phone,
+        location: row.raw_current_location || '',
+        currentTitle: row.raw_current_designation || 'Unknown',
+        source: row.source || 'Direct Upload',
+        workAuthorization: row.work_authorization || 'Unknown',
+        experienceYears: years,
+        matchScore,
+        matchTier,
+        matchedSkills: matchedPrimary,
+        missingSkills: missingPrimary,
+        breakdown: {
+          primarySkills: `${matchedPrimary.length}/${primarySkills.length}`,
+          secondarySkills: `${matchedSecondary.length}/${secondarySkills.length}`,
+          experienceFit: Math.round(expScore * 100),
+          semantic: semantic !== null && semantic !== undefined ? Math.round(semantic * 100) : null,
+        },
+      };
+    });
+
+    const ranked = matches
+      .filter((m) => m.matchScore >= minScore)
+      .sort((a, b) => b.matchScore - a.matchScore)
+      .slice(0, limit);
+
+    this.logger.log(
+      `Matched ${ranked.length}/${candRes.rows.length} candidates for job ${job.jobCode} (parser ${parserOnline ? 'online' : 'offline'}).`,
+    );
+    return { job, matches: ranked, parserOnline };
+  }
+
+  /**
+   * Best-effort call to the Python parser's semantic search. Returns a map of
+   * lowercased email -> similarity (0-1), or null if the parser is unreachable.
+   */
+  private async fetchSemanticScores(job: JobProfile): Promise<Map<string, number> | null> {
+    const query = [job.jobTitle, ...(job.skillsRequired || [])].filter(Boolean).join(', ');
+    if (!query) return null;
+
+    const hosts = ['http://api:8000', 'http://localhost:8000'];
+    for (const host of hosts) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2500);
+        const url = `${host}/api/v1/search?query=${encodeURIComponent(query)}&top_k=100&threshold=0`;
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const data: any = await res.json();
+        const results: any[] = data?.results || data?.candidates || [];
+        const map = new Map<string, number>();
+        for (const r of results) {
+          const email = (r.email || r.contact_email || '').toLowerCase();
+          const sim = typeof r.similarity === 'number' ? r.similarity
+            : typeof r.score === 'number' ? r.score : null;
+          if (email && sim !== null) map.set(email, Math.max(0, Math.min(1, sim)));
+        }
+        return map;
+      } catch {
+        // try next host
+      }
+    }
+    return null; // parser offline — matching proceeds without semantic blend
   }
 }
