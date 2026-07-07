@@ -37,7 +37,7 @@ export class JobsController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<JobProfile> {
     const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
-    return this.jobsService.createJob(dto, tid, user?.email || 'System');
+    return this.jobsService.createJob(dto, tid, user?.dbId || 'System');
   }
 
   @Get()

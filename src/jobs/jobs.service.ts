@@ -66,6 +66,7 @@ export interface JobProfile {
   podName?: string;
   respondBy?: string | null;
   noticePeriod?: string;
+  market?: string;
 }
 
 /** A single candidate ranked against a job requisition. */
@@ -186,6 +187,9 @@ export class JobsService implements OnModuleInit {
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
+    const tenantRes = await this.db.query('SELECT name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+    const tenantName = tenantRes.rows[0]?.name || 'enfysync Inc';
+
     // Generate unique sequential PREFIXJOB-YYMM-XXXXX job code using the exact logic from enfysync_backend
     let jobCode = '';
     let isUnique = false;
@@ -213,7 +217,7 @@ export class JobsService implements OnModuleInit {
         remote_job, start_date, end_date, hours_per_week, duration,
         account_manager_id, recruitment_manager_id, primary_recruiter_id, assigned_to,
         industry, degree, exp_min, exp_max, created_by,
-        respond_by, notice_period,
+        respond_by, notice_period, market,
         created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
@@ -225,7 +229,7 @@ export class JobsService implements OnModuleInit {
         $23, $24, $25, $26, $27,
         $28, $29, $30, $31,
         $32, $33, $34, $35, $36,
-        $37, $38,
+        $37, $38, $39,
         NOW(), NOW()
       ) RETURNING *
     `;
@@ -240,7 +244,7 @@ export class JobsService implements OnModuleInit {
       dto.skillsRequired || [],                                      // $7
       dto.secondarySkills || [],                                     // $8
       dto.status || 'Active',                                        // $9
-      dto.businessUnit || 'enfysync Inc',                            // $10
+      dto.businessUnit || tenantName,                                // $10
       dto.state || '',                                               // $11
       dto.country || 'United States',                                // $12
       dto.clientJobId || 'N/A',                                      // $13
@@ -269,6 +273,7 @@ export class JobsService implements OnModuleInit {
       createdByEmail || 'System',                                    // $36
       dto.respondBy || null,                                         // $37
       dto.noticePeriod || '',                                        // $38
+      dto.market || 'US',                                            // $39
     ];
 
     try {
@@ -336,12 +341,14 @@ export class JobsService implements OnModuleInit {
              rm.full_name AS recruitment_manager_name,
              pr.full_name AS primary_recruiter_name,
              p.id AS pod_id,
-             p.name AS pod_name
+             p.name AS pod_name,
+             uc.full_name AS creator_name
       FROM jobs j
       LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
       LEFT JOIN job_pods jp ON jp.job_id = j.id
       LEFT JOIN pods p ON p.id = jp.pod_id
+      LEFT JOIN users uc ON uc.id::text = j.created_by
       WHERE j.tenant_id = $1
       ORDER BY j.created_at DESC
     `;
@@ -366,20 +373,22 @@ export class JobsService implements OnModuleInit {
 
     const sql = isUuid
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
-                p.id AS pod_id, p.name AS pod_name
-         FROM jobs j 
-         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id 
+                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
+         FROM jobs j
+         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
+         LEFT JOIN users uc ON uc.id::text = j.created_by
          WHERE j.tenant_id = $1 AND (j.id = $2 OR j.job_code = $2) LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
-                p.id AS pod_id, p.name AS pod_name
-         FROM jobs j 
-         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id 
+                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
+         FROM jobs j
+         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
+         LEFT JOIN users uc ON uc.id::text = j.created_by
          WHERE j.tenant_id = $1 AND j.job_code = $2 LIMIT 1`;
 
     try {
@@ -448,7 +457,7 @@ export class JobsService implements OnModuleInit {
       primaryRecruiterId: row.primary_recruiter_id || '',
       primaryRecruiter: row.primary_recruiter_name || 'N/A',
       assignedTo: row.assigned_to || 'N/A',
-      createdBy: row.created_by || 'System',
+      createdBy: row.creator_name || row.created_by || 'System',
 
       industry: row.industry || '',
       degree: row.degree || '',
@@ -463,6 +472,7 @@ export class JobsService implements OnModuleInit {
       podName: row.pod_name || '',
       respondBy: row.respond_by ? new Date(row.respond_by).toISOString().split('T')[0] : null,
       noticePeriod: row.notice_period || '',
+      market: row.market || 'US',
     };
   }
 

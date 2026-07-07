@@ -10,11 +10,24 @@ export class ClientsService {
   async createClient(dto: any, tenantId: string, createdBy: string) {
     this.logger.log(`Creating client for tenant ${tenantId}`);
 
+    // Fetch tenant details first
+    const tenantRes = await this.db.query('SELECT prefix_code, name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+    const tenant = tenantRes.rows[0];
+
     let clientCode = dto.client_code;
     if (!clientCode) {
-      // Fetch tenant prefix
-      const tenantRes = await this.db.query('SELECT prefix_code FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
-      const prefix = tenantRes.rows[0]?.prefix_code || 'CL';
+      let prefix = tenant?.prefix_code;
+      if (!prefix) {
+        const rawName = tenant?.name || '';
+        const cleanName = rawName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        if (cleanName.length >= 2) {
+          prefix = cleanName.substring(0, 4);
+        } else {
+          const rawDomain = tenant?.domain || '';
+          const cleanDomain = rawDomain.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+          prefix = cleanDomain.substring(0, 4) || 'CL';
+        }
+      }
 
       // Atomic counter increment
       const counterRes = await this.db.query(`
@@ -58,8 +71,8 @@ export class ClientsService {
         dto.city,
         dto.status || 'Active',
         dto.category,
-        dto.primary_owner,
-        dto.business_unit,
+        createdBy, // primary_owner gets the creator's user UUID
+        dto.business_unit || tenant?.name || 'Default',
         dto.ownership,
         dto.display_on_job_posting !== undefined ? dto.display_on_job_posting : true,
         createdBy,
@@ -88,21 +101,35 @@ export class ClientsService {
 
   async findAllClients(tenantId: string) {
     const res = await this.db.query(
-      `SELECT * FROM clients WHERE tenant_id = $1 ORDER BY created_at DESC`,
+      `SELECT c.*, po.full_name AS primary_owner_name
+       FROM clients c
+       LEFT JOIN users po ON po.id::text = c.primary_owner
+       WHERE c.tenant_id = $1
+       ORDER BY c.created_at DESC`,
       [tenantId]
     );
-    return res.rows;
+    return res.rows.map(row => ({
+      ...row,
+      primary_owner: row.primary_owner_name || row.primary_owner || 'N/A'
+    }));
   }
 
   async findOneClient(id: string, tenantId: string) {
     const res = await this.db.query(
-      `SELECT * FROM clients WHERE id = $1 AND tenant_id = $2`,
+      `SELECT c.*, po.full_name AS primary_owner_name
+       FROM clients c
+       LEFT JOIN users po ON po.id::text = c.primary_owner
+       WHERE c.id = $1 AND c.tenant_id = $2`,
       [id, tenantId]
     );
     if (res.rows.length === 0) {
       throw new NotFoundException(`Client with ID ${id} not found`);
     }
-    return res.rows[0];
+    const row = res.rows[0];
+    return {
+      ...row,
+      primary_owner: row.primary_owner_name || row.primary_owner || 'N/A'
+    };
   }
 
   async updateClient(id: string, dto: any, tenantId: string, modifiedBy: string) {

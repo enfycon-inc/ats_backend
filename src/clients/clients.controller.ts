@@ -43,7 +43,7 @@ export class ClientsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
-    return this.clientsService.createClient(dto, tid, user?.email || 'System');
+    return this.clientsService.createClient(dto, tid, user?.dbId || 'System');
   }
 
   @Get()
@@ -82,7 +82,7 @@ export class ClientsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
-    return this.clientsService.updateClient(id, dto, tid, user?.email || 'System');
+    return this.clientsService.updateClient(id, dto, tid, user?.dbId || 'System');
   }
 
   @Delete(':id')

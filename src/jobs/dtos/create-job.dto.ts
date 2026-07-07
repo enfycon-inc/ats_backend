@@ -110,4 +110,7 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: '30 Days', description: 'Maximum acceptable candidate notice period' })
   noticePeriod?: string;
+
+  @ApiPropertyOptional({ example: 'US', enum: ['US', 'IN'], description: 'Staffing market/shift context' })
+  market?: string;
 }
