@@ -676,22 +676,49 @@ export class JobsService implements OnModuleInit {
 
     const primarySkills = (job.skillsRequired || []).filter(Boolean);
     const secondarySkills = (job.secondarySkills || []).filter(Boolean);
+    const allSkills = [...primarySkills, ...secondarySkills];
 
-    // Pull the tenant's candidate pool with parsed skills + raw resume text.
+    // 1. Fetch semantic scores (embeddings-based search) first to optimize the DB query pool
+    const semanticByEmail = await this.fetchSemanticScores(job);
+    const parserOnline = semanticByEmail !== null;
+    const semanticEmails = semanticByEmail ? Array.from(semanticByEmail.keys()) : [];
+
+    // 2. Pull the tenant's candidate pool using indexed pre-filtering to scale to 100,000+ candidates
+    let filterSql = `
+      FROM candidates c
+      LEFT JOIN resumes r ON c.resume_record_id = r.id
+      WHERE c.tenant_id = $1
+    `;
+    const queryParams: any[] = [tenantId];
+    let paramIndex = 2;
+    const orConditions: string[] = [];
+
+    if (semanticEmails.length > 0) {
+      orConditions.push(`c.email = ANY($${paramIndex})`);
+      queryParams.push(semanticEmails);
+      paramIndex++;
+    }
+
+    if (allSkills.length > 0) {
+      orConditions.push(`r.parsed_json::jsonb->'skills' ?| $${paramIndex}`);
+      queryParams.push(allSkills);
+      paramIndex++;
+    }
+
+    if (orConditions.length > 0) {
+      filterSql += ` AND (${orConditions.join(' OR ')})`;
+    } else {
+      // Safety limit if there are absolutely no skills and vector matching is offline
+      filterSql += ` LIMIT 1000`;
+    }
+
     const candRes = await this.db.query(
       `SELECT c.id, c.full_name, c.email, c.phone, c.raw_current_location,
               c.raw_current_designation, c.source, c.work_authorization,
               c.total_experience_years, r.raw_text, r.parsed_json
-       FROM candidates c
-       LEFT JOIN resumes r ON c.resume_record_id = r.id
-       WHERE c.tenant_id = $1`,
-      [tenantId],
+       ${filterSql}`,
+      queryParams,
     );
-
-    // Optional semantic layer: ask the parser to rank the pool by the job's
-    // title + skills. Best-effort — skipped silently if the parser is offline.
-    const semanticByEmail = await this.fetchSemanticScores(job);
-    const parserOnline = semanticByEmail !== null;
 
     const matches: CandidateMatch[] = candRes.rows.map((row: any) => {
       let candidateSkills: string[] = [];
