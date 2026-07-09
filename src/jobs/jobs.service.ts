@@ -806,7 +806,7 @@ export class JobsService implements OnModuleInit {
     for (const host of hosts) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 2500);
+        const timer = setTimeout(() => controller.abort(), 8000); // Increased timeout to 8 seconds
         const url = `${host}/api/v1/search?query=${encodeURIComponent(query)}&top_k=100&threshold=0`;
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timer);
