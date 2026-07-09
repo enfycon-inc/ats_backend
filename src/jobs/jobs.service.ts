@@ -380,7 +380,7 @@ export class JobsService implements OnModuleInit {
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
          LEFT JOIN users uc ON uc.id::text = j.created_by
-         WHERE j.tenant_id = $1 AND (j.id = $2 OR j.job_code = $2) LIMIT 1`
+         WHERE j.tenant_id = $1 AND j.id = $2::uuid LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
          FROM jobs j
@@ -799,5 +799,28 @@ export class JobsService implements OnModuleInit {
       }
     }
     return null; // parser offline — matching proceeds without semantic blend
+  }
+
+  async parseJobDescription(text: string): Promise<any> {
+    const hosts = ['http://api:8000', 'http://localhost:8000'];
+    for (const host of hosts) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000); // 10s timeout
+        const url = `${host}/api/v1/parse-jd`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        return await res.json();
+      } catch (err) {
+        this.logger.warn(`Failed to connect to parser at ${host}: ${err.message}`);
+      }
+    }
+    throw new BadRequestException('FastAPI parser service is offline or unreachable.');
   }
 }

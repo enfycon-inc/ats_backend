@@ -134,4 +134,18 @@ export class JobsController {
     const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
     return this.jobsService.updateJob(id, dto, tid, user);
   }
+
+  @Post('parse-jd')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:create')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Parse job description text using AI parser',
+  })
+  async parseJd(
+    @Body() body: { text: string },
+  ): Promise<any> {
+    return this.jobsService.parseJobDescription(body.text);
+  }
 }
