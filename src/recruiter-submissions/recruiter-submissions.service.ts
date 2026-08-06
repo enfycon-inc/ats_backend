@@ -4,10 +4,12 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
+import { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 export interface SubmissionDetails {
   id: number;
@@ -24,6 +26,14 @@ export interface SubmissionDetails {
   finalStatus: string;
   remarks: string | null;
   recruiterComment: string | null;
+  podLeadRemarks?: string | null;
+  l1Remarks?: string | null;
+  l1Interviewer?: string | null;
+  l2Remarks?: string | null;
+  l2Interviewer?: string | null;
+  l3Remarks?: string | null;
+  l3Interviewer?: string | null;
+  meetingLink?: string | null;
   createdAt: string;
   updatedAt: string;
   
@@ -32,22 +42,55 @@ export interface SubmissionDetails {
   candidateEmail?: string;
   candidatePhone?: string;
   candidateCurrentLocation?: string;
+  candidateExperience?: number | null;
+  candidateDesignation?: string | null;
+  candidateWorkAuth?: string | null;
+  candidateSource?: string | null;
+  candidateCurrentCtc?: string | null;
+  candidateExpectedCtc?: string | null;
+  candidateNoticePeriod?: number | null;
   jobCode?: string;
   jobTitle?: string;
   clientName?: string;
   endClientName?: string;
+  recruiterName?: string;
+  podHeadName?: string;
+  accountManagerName?: string;
+  submittedRate?: string | null;
+  market?: string;
 }
 
 @Injectable()
-export class RecruiterSubmissionsService {
+export class RecruiterSubmissionsService implements OnModuleInit {
   private readonly logger = new Logger(RecruiterSubmissionsService.name);
 
   constructor(private readonly db: DatabaseService) {}
 
+  async onModuleInit() {
+    await this.ensureSubmittedRateColumn();
+  }
+
+  private async ensureSubmittedRateColumn() {
+    try {
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS submitted_rate VARCHAR(100)');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS meeting_link TEXT');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_remarks TEXT');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_interviewer VARCHAR(255)');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_remarks TEXT');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_interviewer VARCHAR(255)');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_remarks TEXT');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_interviewer VARCHAR(255)');
+      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT');
+      this.logger.log('recruiter_submissions database verified (interview & meeting_link columns check).');
+    } catch (err: any) {
+      this.logger.error(`Database migration check note: ${err.message}`);
+    }
+  }
+
   /**
    * Create a new recruiter submission
    */
-  async create(dto: CreateSubmissionDto, tenantId: string): Promise<SubmissionDetails> {
+  async create(dto: CreateSubmissionDto, tenantId: string, user?: AuthUser, activeBranchId?: string | null): Promise<SubmissionDetails> {
     this.logger.log(`Creating submission for Candidate ID=${dto.candidateId} against Job ID=${dto.jobId} under tenant: ${tenantId}`);
 
     // 1. Verify job exists and belongs to the tenant, and check if it is active
@@ -124,8 +167,8 @@ export class RecruiterSubmissionsService {
         INSERT INTO recruiter_submissions (
           tenant_id, job_id, candidate_id, recruiter_id,
           l1_status, l1_date, l2_status, l2_date, l3_status, l3_date,
-          final_status, remarks, recruiter_comment, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+          final_status, remarks, recruiter_comment, submitted_rate, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())
         RETURNING *
       `;
 
@@ -143,6 +186,7 @@ export class RecruiterSubmissionsService {
         finalStatus,
         dto.remarks || null,
         dto.recruiterComment || null,
+        dto.submittedRate || null,
       ];
 
       const insertResult = await client.query(sql, params);
@@ -178,6 +222,7 @@ export class RecruiterSubmissionsService {
    */
   async findAll(
     tenantId: string,
+    user: AuthUser,
     filters: {
       page?: number;
       limit?: number;
@@ -189,9 +234,10 @@ export class RecruiterSubmissionsService {
       finalStatus?: string;
       jobId?: string;
       candidateId?: number;
+      branchId?: string;
     }
   ) {
-    this.logger.log(`Listing submissions for tenant: ${tenantId}`);
+    this.logger.log(`Listing submissions for tenant: ${tenantId} under user role visibility`);
 
     let baseSql = `
       SELECT 
@@ -200,18 +246,67 @@ export class RecruiterSubmissionsService {
         c.email AS candidate_email,
         c.phone AS candidate_phone,
         c.raw_current_location AS candidate_current_location,
+        c.total_experience_years AS candidate_experience,
+        c.raw_current_designation AS candidate_designation,
+        c.work_authorization AS candidate_work_auth,
+        c.source AS candidate_source,
+        c.current_ctc AS candidate_current_ctc,
+        c.expected_ctc AS candidate_expected_ctc,
+        c.notice_period_days AS candidate_notice_period,
         j.job_code,
         j.job_title,
         j.client_name,
-        j.end_client_name
+        j.end_client_name,
+        j.market,
+        r.full_name AS recruiter_name,
+        ph.full_name AS pod_head_name,
+        am.full_name AS am_name
       FROM recruiter_submissions s
       LEFT JOIN candidates c ON s.candidate_id = c.id
       LEFT JOIN jobs j ON s.job_id = j.id
+      LEFT JOIN users r ON s.recruiter_id = r.id::text
+      LEFT JOIN pods p ON r.pod_id = p.id
+      LEFT JOIN users ph ON p.pod_head_id = ph.id
+      LEFT JOIN users am ON j.account_manager_id = am.id::text
       WHERE s.tenant_id = $1
     `;
 
     const params: any[] = [tenantId];
     let paramIndex = 2;
+
+    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
+    const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
+    const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
+    const isRecruiter = user.roles?.includes('RECRUITER');
+    const isPodLead = user.roles?.includes('POD_LEAD');
+
+    if (!isAdmin && !isDeliveryHead) {
+      const roleConditions: string[] = [];
+
+      if (isRecruiter) {
+        roleConditions.push(`s.recruiter_id = $${paramIndex}`);
+        params.push(user.dbId);
+        paramIndex++;
+      }
+
+      if (isPodLead) {
+        roleConditions.push(`s.recruiter_id IN (SELECT id::text FROM users WHERE pod_id IN (SELECT id FROM pods WHERE pod_head_id = $${paramIndex}))`);
+        params.push(user.dbId);
+        paramIndex++;
+      }
+
+      if (isAm) {
+        roleConditions.push(`j.account_manager_id = $${paramIndex}`);
+        params.push(user.dbId);
+        paramIndex++;
+      }
+
+      if (roleConditions.length > 0) {
+        baseSql += ` AND (${roleConditions.join(' OR ')})`;
+      } else {
+        baseSql += ` AND 1=0`;
+      }
+    }
 
     if (filters.jobId) {
       baseSql += ` AND s.job_id = $${paramIndex}`;
@@ -222,6 +317,12 @@ export class RecruiterSubmissionsService {
     if (filters.candidateId) {
       baseSql += ` AND s.candidate_id = $${paramIndex}`;
       params.push(filters.candidateId);
+      paramIndex++;
+    }
+
+    if (filters.branchId) {
+      baseSql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL)`;
+      params.push(filters.branchId);
       paramIndex++;
     }
 
@@ -249,18 +350,23 @@ export class RecruiterSubmissionsService {
       paramIndex++;
     }
 
-    if (filters.startDate) {
-      baseSql += ` AND s.created_at >= $${paramIndex}`;
-      params.push(new Date(filters.startDate));
-      paramIndex++;
+    if (filters.startDate && filters.startDate !== 'undefined' && filters.startDate !== 'null') {
+      const start = new Date(filters.startDate);
+      if (!isNaN(start.getTime())) {
+        baseSql += ` AND s.created_at >= $${paramIndex}`;
+        params.push(start);
+        paramIndex++;
+      }
     }
 
-    if (filters.endDate) {
+    if (filters.endDate && filters.endDate !== 'undefined' && filters.endDate !== 'null') {
       const end = new Date(filters.endDate);
-      end.setHours(23, 59, 59, 999);
-      baseSql += ` AND s.created_at <= $${paramIndex}`;
-      params.push(end);
-      paramIndex++;
+      if (!isNaN(end.getTime())) {
+        end.setHours(23, 59, 59, 999);
+        baseSql += ` AND s.created_at <= $${paramIndex}`;
+        params.push(end);
+        paramIndex++;
+      }
     }
 
     baseSql += ' ORDER BY s.created_at DESC';
@@ -277,6 +383,9 @@ export class RecruiterSubmissionsService {
     const retrieveParams = [...params, limit, offset];
 
     try {
+      this.logger.debug(`[findAll] countSql: ${countSql}`);
+      this.logger.debug(`[findAll] params: ${JSON.stringify(params)}`);
+      this.logger.debug(`[findAll] user.dbId=${user.dbId}, roles=${JSON.stringify(user.roles)}`);
       const [countRes, retrieveRes] = await Promise.all([
         this.db.query(countSql, params),
         this.db.query(retrieveSql, retrieveParams),
@@ -299,7 +408,7 @@ export class RecruiterSubmissionsService {
   }
 
   /**
-   * Fetch single recruiter submission detail, scoped by tenant
+   * Find a single recruiter submission by ID
    */
   async findOne(id: number, tenantId: string): Promise<SubmissionDetails> {
     this.logger.log(`Fetching submission ID=${id} for tenant: ${tenantId}`);
@@ -311,33 +420,51 @@ export class RecruiterSubmissionsService {
         c.email AS candidate_email,
         c.phone AS candidate_phone,
         c.raw_current_location AS candidate_current_location,
+        c.total_experience_years AS candidate_experience,
+        c.raw_current_designation AS candidate_designation,
+        c.work_authorization AS candidate_work_auth,
+        c.source AS candidate_source,
+        c.current_ctc AS candidate_current_ctc,
+        c.expected_ctc AS candidate_expected_ctc,
+        c.notice_period_days AS candidate_notice_period,
         j.job_code,
         j.job_title,
         j.client_name,
-        j.end_client_name
+        j.end_client_name,
+        j.market,
+        r.full_name AS recruiter_name,
+        ph.full_name AS pod_head_name,
+        am.full_name AS am_name
       FROM recruiter_submissions s
       LEFT JOIN candidates c ON s.candidate_id = c.id
       LEFT JOIN jobs j ON s.job_id = j.id
-      WHERE s.id = $1 AND s.tenant_id = $2 LIMIT 1
+      LEFT JOIN users r ON s.recruiter_id = r.id::text
+      LEFT JOIN pods p ON r.pod_id = p.id
+      LEFT JOIN users ph ON p.pod_head_id = ph.id
+      LEFT JOIN users am ON j.account_manager_id = am.id::text
+      WHERE s.id = $1 AND s.tenant_id = $2
+      LIMIT 1
     `;
 
-    const result = await this.db.query(sql, [id, tenantId]);
-    if (result.rows.length === 0) {
+    const res = await this.db.query(sql, [id, tenantId]);
+    if (res.rows.length === 0) {
       throw new NotFoundException(`Recruiter submission with ID ${id} was not found.`);
     }
 
-    return this.mapRowToDetails(result.rows[0]);
+    return this.mapRowToDetails(res.rows[0]);
   }
+
+
 
   /**
    * Update submission statuses with auto-rejection logic
    */
-  async update(id: number, dto: UpdateSubmissionDto, tenantId: string): Promise<SubmissionDetails> {
+  async update(id: number, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser): Promise<SubmissionDetails> {
     this.logger.log(`Updating submission ID=${id} for tenant: ${tenantId}`);
 
-    // Retrieve existing submission
+    // Retrieve existing submission and AM ID
     const existingResult = await this.db.query(
-      'SELECT * FROM recruiter_submissions WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT s.*, j.account_manager_id FROM recruiter_submissions s LEFT JOIN jobs j ON s.job_id = j.id WHERE s.id = $1 AND s.tenant_id = $2 LIMIT 1',
       [id, tenantId]
     );
 
@@ -346,6 +473,51 @@ export class RecruiterSubmissionsService {
     }
 
     const existing = existingResult.rows[0];
+
+    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
+    const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
+    const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
+    const isRecruiter = user.roles?.includes('RECRUITER');
+    const isPodLead = user.roles?.includes('POD_LEAD');
+
+    if (!isAdmin && !isDeliveryHead) {
+      if (isAm && !isRecruiter && !isPodLead) {
+        // Must be the account manager for this exact job
+        if (existing.account_manager_id !== user.dbId) {
+          throw new ForbiddenException(
+            'You can only modify submissions for jobs you created / own.',
+          );
+        }
+      }
+
+      if (isPodLead && !isRecruiter && !isAm) {
+        // Verify recruiter belongs to a pod led by this user
+        const podCheck = await this.db.query(
+          `SELECT 1 FROM users 
+           WHERE id::text = $1 
+             AND pod_id IN (SELECT id FROM pods WHERE pod_head_id = $2) LIMIT 1`,
+          [existing.recruiter_id, user.dbId]
+        );
+        if (podCheck.rows.length === 0) {
+          throw new ForbiddenException(
+            'You can only modify submissions for recruiters within your pod.',
+          );
+        }
+      }
+
+      if (isRecruiter) {
+        // Recruiters cannot update interview statuses, dates, finalStatus, or remarks
+        // They can only update recruiterComment
+        delete dto.l1Status;
+        delete dto.l1Date;
+        delete dto.l2Status;
+        delete dto.l2Date;
+        delete dto.l3Status;
+        delete dto.l3Date;
+        delete dto.finalStatus;
+        delete dto.remarks;
+      }
+    }
 
     // Evaluate merged status changes
     const mergedL1Status = dto.l1Status !== undefined ? dto.l1Status : existing.l1_status;
@@ -401,6 +573,15 @@ export class RecruiterSubmissionsService {
 
     if (dto.remarks !== undefined) addField('remarks', dto.remarks);
     if (dto.recruiterComment !== undefined) addField('recruiter_comment', dto.recruiterComment);
+    if (dto.submittedRate !== undefined) addField('submitted_rate', dto.submittedRate);
+    if (dto.podLeadRemarks !== undefined) addField('pod_lead_remarks', dto.podLeadRemarks);
+    if (dto.l1Remarks !== undefined) addField('l1_remarks', dto.l1Remarks);
+    if (dto.l1Interviewer !== undefined) addField('l1_interviewer', dto.l1Interviewer);
+    if (dto.l2Remarks !== undefined) addField('l2_remarks', dto.l2Remarks);
+    if (dto.l2Interviewer !== undefined) addField('l2_interviewer', dto.l2Interviewer);
+    if (dto.l3Remarks !== undefined) addField('l3_remarks', dto.l3Remarks);
+    if (dto.l3Interviewer !== undefined) addField('l3_interviewer', dto.l3Interviewer);
+    if (dto.meetingLink !== undefined) addField('meeting_link', dto.meetingLink);
     
     updates.push('updated_at = NOW()');
 
@@ -492,20 +673,58 @@ export class RecruiterSubmissionsService {
   /**
    * Retrieve aggregate status counts for recruiter tracker, scoped by tenant
    */
-  async getTrackerStats(tenantId: string) {
+  async getTrackerStats(tenantId: string, user: AuthUser) {
     this.logger.log(`Retrieving aggregate tracker stats for tenant: ${tenantId}`);
 
-    const totalSql = 'SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1';
-    const l1Sql = "SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1 AND l1_status = 'PENDING'";
-    const l2Sql = "SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1 AND l2_status = 'PENDING'";
-    const l3Sql = "SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1 AND l3_status = 'PENDING'";
+    let baseFilter = 'WHERE tenant_id = $1';
+    const params: any[] = [tenantId];
+    let paramIndex = 2;
+
+    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
+    const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
+    const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
+    const isRecruiter = user.roles?.includes('RECRUITER');
+    const isPodLead = user.roles?.includes('POD_LEAD');
+
+    if (!isAdmin && !isDeliveryHead) {
+      const roleConditions: string[] = [];
+
+      if (isRecruiter) {
+        roleConditions.push(`recruiter_id = $${paramIndex}`);
+        params.push(user.dbId);
+        paramIndex++;
+      }
+
+      if (isPodLead) {
+        roleConditions.push(`recruiter_id IN (SELECT id::text FROM users WHERE pod_id IN (SELECT id FROM pods WHERE pod_head_id = $${paramIndex}))`);
+        params.push(user.dbId);
+        paramIndex++;
+      }
+
+      if (isAm) {
+        roleConditions.push(`job_id IN (SELECT id FROM jobs WHERE account_manager_id = $${paramIndex})`);
+        params.push(user.dbId);
+        paramIndex++;
+      }
+
+      if (roleConditions.length > 0) {
+        baseFilter += ` AND (${roleConditions.join(' OR ')})`;
+      } else {
+        baseFilter += ` AND 1=0`;
+      }
+    }
+
+    const totalSql = `SELECT COUNT(*) FROM recruiter_submissions ${baseFilter}`;
+    const l1Sql = `SELECT COUNT(*) FROM recruiter_submissions ${baseFilter} AND l1_status = 'PENDING'`;
+    const l2Sql = `SELECT COUNT(*) FROM recruiter_submissions ${baseFilter} AND l2_status = 'PENDING'`;
+    const l3Sql = `SELECT COUNT(*) FROM recruiter_submissions ${baseFilter} AND l3_status = 'PENDING'`;
 
     try {
       const [totalRes, l1Res, l2Res, l3Res] = await Promise.all([
-        this.db.query(totalSql, [tenantId]),
-        this.db.query(l1Sql, [tenantId]),
-        this.db.query(l2Sql, [tenantId]),
-        this.db.query(l3Sql, [tenantId]),
+        this.db.query(totalSql, params),
+        this.db.query(l1Sql, params),
+        this.db.query(l2Sql, params),
+        this.db.query(l3Sql, params),
       ]);
 
       return {
@@ -539,6 +758,14 @@ export class RecruiterSubmissionsService {
       finalStatus: row.final_status,
       remarks: row.remarks,
       recruiterComment: row.recruiter_comment,
+      podLeadRemarks: row.pod_lead_remarks || null,
+      l1Remarks: row.l1_remarks || null,
+      l1Interviewer: row.l1_interviewer || null,
+      l2Remarks: row.l2_remarks || null,
+      l2Interviewer: row.l2_interviewer || null,
+      l3Remarks: row.l3_remarks || null,
+      l3Interviewer: row.l3_interviewer || null,
+      meetingLink: row.meeting_link || null,
       createdAt: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
       updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : new Date().toISOString(),
       
@@ -546,10 +773,22 @@ export class RecruiterSubmissionsService {
       candidateEmail: row.candidate_email,
       candidatePhone: row.candidate_phone,
       candidateCurrentLocation: row.candidate_current_location,
+      candidateExperience: row.candidate_experience,
+      candidateDesignation: row.candidate_designation,
+      candidateWorkAuth: row.candidate_work_auth,
+      candidateSource: row.candidate_source,
+      candidateCurrentCtc: row.candidate_current_ctc,
+      candidateExpectedCtc: row.candidate_expected_ctc,
+      candidateNoticePeriod: row.candidate_notice_period,
       jobCode: row.job_code,
       jobTitle: row.job_title,
       clientName: row.client_name,
       endClientName: row.end_client_name,
+      recruiterName: row.recruiter_name,
+      podHeadName: row.pod_head_name,
+      accountManagerName: row.am_name,
+      submittedRate: row.submitted_rate,
+      market: row.market,
     };
   }
 }

@@ -13,8 +13,7 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
-
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+import { resolveTenantId } from '../auth/utils/tenant-resolver';
 
 @ApiTags('ATS Recruitment Pods')
 @Controller('api/pods')
@@ -33,7 +32,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.create(dto, tid);
   }
 
@@ -45,7 +44,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse[]> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.findAll(tid);
   }
 
@@ -56,7 +55,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<any[]> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.getAvailableRecruiters(tid);
   }
 
@@ -67,7 +66,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.findMyTeam(user.dbId, tid);
   }
 
@@ -80,7 +79,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.findOne(id, tid);
   }
 
@@ -94,7 +93,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.update(id, dto, tid);
   }
 
@@ -107,7 +106,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.remove(id, tid);
   }
 
@@ -119,7 +118,7 @@ export class PodsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.podsService.resetCycle(tid);
   }
 }

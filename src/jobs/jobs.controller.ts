@@ -12,8 +12,8 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
-
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+import { resolveTenantId } from '../auth/utils/tenant-resolver';
+import { resolveBranchId } from '../auth/utils/branch-resolver';
 
 @ApiTags('ATS Job Openings & Requirements')
 @Controller('api/jobs')
@@ -35,9 +35,24 @@ export class JobsController {
     @Body() dto: CreateJobDto,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<JobProfile> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
-    return this.jobsService.createJob(dto, tid, user?.dbId || 'System');
+    const tid = resolveTenantId(user, tenantId);
+    const bid = resolveBranchId(user, branchHeaderId);
+    return this.jobsService.createJob(dto, tid, user?.dbId || 'System', bid);
+  }
+
+  @Post('parse-jd')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Parse job description text using AI parser',
+  })
+  async parseJd(
+    @Body() body: { text: string },
+  ): Promise<any> {
+    return this.jobsService.parseJobDescription(body?.text || '');
   }
 
   @Get()
@@ -52,9 +67,11 @@ export class JobsController {
   async findAll(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<JobProfile[]> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
-    return this.jobsService.findAllJobs(tid);
+    const tid = resolveTenantId(user, tenantId);
+    const bid = resolveBranchId(user, branchHeaderId);
+    return this.jobsService.findAllJobs(tid, user, bid);
   }
 
   @Get('next-code')
@@ -68,7 +85,7 @@ export class JobsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<{ code: string }> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     const code = await this.jobsService.getNextJobCode(tid);
     return { code };
   }
@@ -91,7 +108,7 @@ export class JobsController {
     @Query('limit') limit?: string,
     @Query('minScore') minScore?: string,
   ): Promise<{ job: JobProfile; matches: CandidateMatch[]; parserOnline: boolean }> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.jobsService.findMatchingCandidates(id, tid, {
       limit: limit ? parseInt(limit, 10) : undefined,
       minScore: minScore ? parseInt(minScore, 10) : undefined,
@@ -114,7 +131,7 @@ export class JobsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<JobProfile> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.jobsService.findOneJob(id, tid);
   }
 
@@ -131,21 +148,7 @@ export class JobsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<JobProfile> {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.jobsService.updateJob(id, dto, tid, user);
-  }
-
-  @Post('parse-jd')
-  @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:create')
-  @ApiBearerAuth()
-  @ApiOperation({
-    summary: 'Parse job description text using AI parser',
-  })
-  async parseJd(
-    @Body() body: { text: string },
-  ): Promise<any> {
-    return this.jobsService.parseJobDescription(body.text);
   }
 }

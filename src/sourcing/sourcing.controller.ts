@@ -1,14 +1,18 @@
-import { Controller, Get, Post, Body, Query, Headers, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBody } from '@nestjs/swagger';
+import { Controller, Get, Post, Body, Query, Headers, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
 import { SourcingService } from './sourcing.service';
 import { SourcingSearchQueryDto } from './dtos/search-query.dto';
 import { SourcingDownloadDto } from './dtos/download-candidate.dto';
 import { ExternalCandidate, InternalCandidateProfile } from './interfaces/candidate.interface';
-
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { resolveTenantId } from '../auth/utils/tenant-resolver';
 
 @ApiTags('Talent Sourcing & Job Board Integrations')
 @Controller('api/sourcing')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class SourcingController {
   constructor(private readonly sourcingService: SourcingService) {}
 
@@ -21,25 +25,6 @@ export class SourcingController {
   @ApiResponse({
     status: 200,
     description: 'Successfully fetched list of matching candidate profiles from the external job board.',
-    schema: {
-      type: 'array',
-      items: {
-        example: {
-          externalId: 'DICE-48168',
-          fullName: 'Manoj Duggi',
-          email: 'm-duggi-dice-obfuscated@dice.com',
-          phone: '334-XXX-XXXX',
-          location: 'Herndon, VA',
-          currentTitle: 'Email Security Engineer',
-          currentCompany: 'IronBow Technologies',
-          skills: ['Email Security', 'Proofpoint', 'Cybersecurity'],
-          experienceYears: 6,
-          workAuthorization: 'Have H1 Visa',
-          source: 'dice',
-          resumeHtml: '<h1>Manoj Duggi</h1><p>Email Security Specialist...</p>',
-        },
-      },
-    },
   })
   async searchCandidates(@Query() query: SourcingSearchQueryDto): Promise<ExternalCandidate[]> {
     return this.sourcingService.searchExternalCandidates(query);
@@ -56,25 +41,6 @@ export class SourcingController {
   @ApiResponse({
     status: 201,
     description: 'Candidate purchased successfully and imported as a New Lead into the internal ATS.',
-    schema: {
-      example: {
-        id: 'INT-DICE-DICE-48168',
-        applicantId: 'APP-65912',
-        fullName: 'Manoj Duggi',
-        email: 'manojduggi@gmail.com',
-        phone: '+1 (334) 555-4816',
-        city: 'Herndon',
-        state: 'VA',
-        source: 'Dice',
-        status: 'New lead',
-        jobTitle: 'Email Security Engineer',
-        skills: ['Email Security', 'Proofpoint', 'Cybersecurity'],
-        workAuthorization: 'Have H1 Visa',
-        experienceYears: 6,
-        rawText: 'Manoj Duggi\nEmail Security Specialist with 6 years experience...',
-        createdOn: '2026-05-20T05:20:00.000Z',
-      },
-    },
   })
   @ApiResponse({
     status: 404,
@@ -82,9 +48,10 @@ export class SourcingController {
   })
   async downloadCandidate(
     @Body() dto: SourcingDownloadDto,
+    @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<InternalCandidateProfile> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    const activeTenantId = resolveTenantId(user, tenantId);
     return this.sourcingService.downloadAndImportCandidate(dto, activeTenantId);
   }
 
@@ -103,9 +70,10 @@ export class SourcingController {
   })
   async parseResume(
     @Body() dto: SourcingDownloadDto,
+    @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<InternalCandidateProfile> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+    const activeTenantId = resolveTenantId(user, tenantId);
     return this.sourcingService.parseAndImportCandidateViaPython(dto, activeTenantId);
   }
 
@@ -118,8 +86,11 @@ export class SourcingController {
     status: 200,
     description: 'Successfully retrieved imported candidate profiles.',
   })
-  async getImported(@Headers('x-tenant-id') tenantId?: string): Promise<InternalCandidateProfile[]> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
+  async getImported(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<InternalCandidateProfile[]> {
+    const activeTenantId = resolveTenantId(user, tenantId);
     return this.sourcingService.getImportedProfiles(activeTenantId);
   }
 }

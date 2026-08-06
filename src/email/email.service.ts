@@ -24,8 +24,8 @@ export class EmailService {
     });
   }
 
-  async createCampaign(dto: any) {
-    this.logger.log(`Creating mass mail campaign: ${dto.name}`);
+  async createCampaign(dto: any, tenantId: string) {
+    this.logger.log(`Creating mass mail campaign: ${dto.name} for tenant ${tenantId}`);
     this.logger.log(`DTO: ${JSON.stringify({ ...dto, recipients: dto.recipients?.length + ' recipients' })}`);
     
     try {
@@ -35,14 +35,14 @@ export class EmailService {
         `INSERT INTO mass_mail.campaigns (tenant_id, name, subject, body_template, rate_per_minute, rate_per_hour, randomize_delay, email_account_id, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Processing') RETURNING id`,
         [
-          'd3b07384-d113-49c3-a555-9ee75c13ca33', // Default Tenant
+          tenantId,
           dto.name || 'Untitled Campaign',
           dto.subject,
           dto.body,
           dto.ratePerMinute || 30,
           dto.ratePerHour || 500,
           dto.randomizeDelay || false,
-          dto.accountId || null, // FIX: Fallback to null instead of undefined!
+          dto.accountId || null,
         ]
       );
       const campaignId = campRes.rows[0].id;
@@ -139,7 +139,7 @@ export class EmailService {
     return { activeCampaignId: null };
   }
 
-  async getCampaigns() {
+  async getCampaigns(tenantId: string) {
     const res = await this.db.query(`
       SELECT 
         c.id, 
@@ -157,9 +157,10 @@ export class EmailService {
         SUM(CASE WHEN r.status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled_count
       FROM mass_mail.campaigns c
       LEFT JOIN mass_mail.recipients r ON c.id = r.campaign_id
+      WHERE c.tenant_id = $1
       GROUP BY c.id
       ORDER BY c.created_at DESC
-    `);
+    `, [tenantId]);
     return res.rows;
   }
 
@@ -173,9 +174,9 @@ export class EmailService {
     return res.rows;
   }
 
-  async getTemplates() {
+  async getTemplates(tenantId: string) {
     try {
-      const res = await this.db.query('SELECT * FROM mass_mail.templates');
+      const res = await this.db.query('SELECT * FROM mass_mail.templates WHERE tenant_id = $1', [tenantId]);
       return res.rows;
     } catch (e) {
       this.logger.error('Failed to get templates', e);
@@ -183,7 +184,7 @@ export class EmailService {
     }
   }
 
-  async handleGoogleCallback(code: string) {
+  async handleGoogleCallback(code: string, tenantId: string = 'd3b07384-d113-49c3-a555-9ee75c13ca33') {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     const redirectUri = process.env.GOOGLE_REDIRECT_URI;
@@ -206,10 +207,10 @@ export class EmailService {
     });
 
     const email = userInfoResponse.data.email;
-    await this.saveEmailAccount('google', email, access_token, refresh_token);
+    await this.saveEmailAccount('google', email, access_token, tenantId, refresh_token);
   }
 
-  async handleMicrosoftCallback(code: string) {
+  async handleMicrosoftCallback(code: string, tenantId: string = 'd3b07384-d113-49c3-a555-9ee75c13ca33') {
     const clientId = process.env.MICROSOFT_CLIENT_ID;
     const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
     const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
@@ -234,62 +235,60 @@ export class EmailService {
     });
 
     const email = userInfoResponse.data.mail || userInfoResponse.data.userPrincipalName;
-    await this.saveEmailAccount('microsoft', email, access_token, refresh_token);
+    await this.saveEmailAccount('microsoft', email, access_token, tenantId, refresh_token);
   }
 
-  private async saveEmailAccount(provider: string, email: string, accessToken: string, refreshToken?: string) {
+  private async saveEmailAccount(provider: string, email: string, accessToken: string, tenantId: string, refreshToken?: string) {
     const query = `
-      INSERT INTO mass_mail.email_accounts (provider, email_address, access_token, refresh_token)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO mass_mail.email_accounts (provider, email_address, access_token, refresh_token, tenant_id)
+      VALUES ($1, $2, $3, $4, $5)
     `;
-    await this.db.query(query, [provider, email, accessToken, refreshToken || null]);
+    await this.db.query(query, [provider, email, accessToken, refreshToken || null, tenantId]);
   }
   
-  async getConnectedAccounts() {
+  async getConnectedAccounts(tenantId: string) {
     const res = await this.db.query(`
       SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name 
       FROM mass_mail.email_accounts 
-      WHERE is_active = true
-    `);
+      WHERE tenant_id = $1 AND is_active = true
+    `, [tenantId]);
     return res.rows;
   }
 
-  async addCustomAccount(dto: any) {
+  async addCustomAccount(dto: any, tenantId: string) {
     const query = `
       INSERT INTO mass_mail.email_accounts (
         provider, email_address, profile_name, password, 
-        smtp_host, smtp_port, imap_host, imap_port, require_ssl, require_tls
+        smtp_host, smtp_port, imap_host, imap_port, require_ssl, require_tls, tenant_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING id, provider, email_address as email, profile_name
     `;
     const res = await this.db.query(query, [
       'smtp', dto.email, dto.profileName, dto.password, 
       dto.smtpHost, dto.smtpPort, dto.imapHost, dto.imapPort, 
-      dto.requireSsl, dto.requireTls
+      dto.requireSsl, dto.requireTls, tenantId
     ]);
     return res.rows[0];
   }
 
-  async deleteAccount(id: string) {
-    await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1', [id]);
+  async deleteAccount(id: string, tenantId: string) {
+    await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
     return { success: true };
   }
 
-  async setDefaultAccount(id: string) {
-    await this.db.query('UPDATE mass_mail.email_accounts SET is_default = false');
-    await this.db.query('UPDATE mass_mail.email_accounts SET is_default = true WHERE id = $1', [id]);
+  async setDefaultAccount(id: string, tenantId: string) {
+    await this.db.query('UPDATE mass_mail.email_accounts SET is_default = false WHERE tenant_id = $1', [tenantId]);
+    await this.db.query('UPDATE mass_mail.email_accounts SET is_default = true WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
     return { success: true };
   }
 
-  async getPreferences() {
-    const res = await this.db.query('SELECT action_name, email_account_id FROM mass_mail.email_preferences');
+  async getPreferences(tenantId: string) {
+    const res = await this.db.query('SELECT action_name, email_account_id FROM mass_mail.email_preferences WHERE tenant_id = $1', [tenantId]);
     return res.rows;
   }
 
-  async savePreference(actionName: string, accountId: string) {
-    const tenantRes = await this.db.query('SELECT id FROM public.tenants LIMIT 1');
-    const tenantId = tenantRes.rows[0].id;
+  async savePreference(actionName: string, accountId: string, tenantId: string) {
     const query = `
       INSERT INTO mass_mail.email_preferences (tenant_id, action_name, email_account_id)
       VALUES ($1, $2, $3)

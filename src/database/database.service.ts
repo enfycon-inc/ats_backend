@@ -79,6 +79,55 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS user_limit INT DEFAULT 5;
       -- Ensure prefix_code column exists for unique ID generation
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS prefix_code VARCHAR(10) UNIQUE;
+      -- Ensure pod_system_enabled column exists on tenants
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS pod_system_enabled BOOLEAN DEFAULT TRUE;
+      -- Ensure max_branches column exists on tenants (DEFAULT 5)
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_branches INT DEFAULT 5;
+      -- Ensure candidate_pool_mode column exists on tenants (DEFAULT 'COMBINED_MARKET')
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS candidate_pool_mode VARCHAR(50) DEFAULT 'COMBINED_MARKET';
+
+      -- 1.5 Create branches table
+      CREATE TABLE IF NOT EXISTS branches (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        code VARCHAR(50),
+        city VARCHAR(100),
+        state VARCHAR(100),
+        country VARCHAR(100) DEFAULT 'India',
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(tenant_id, name)
+      );
+      -- Ensure manager_id and market columns exist on branches
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS manager_id UUID;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS market VARCHAR(50) DEFAULT 'INDIA';
+
+      -- 1.6 Create business_units table
+      CREATE TABLE IF NOT EXISTS business_units (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        code VARCHAR(50),
+        market VARCHAR(50) DEFAULT 'US',
+        currency VARCHAR(10) DEFAULT 'USD',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(tenant_id, name)
+      );
+
+      -- Add branch_id and business_unit_id columns to jobs
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
+
+      -- Add branch_id and business_unit_id columns to candidates
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
+
+      -- Add branch_id and business_unit_id columns to clients
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
 
       -- 2. Insert default tenant
       INSERT INTO tenants (id, name, domain, status, default_market, user_limit, prefix_code)
@@ -166,6 +215,15 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
+      -- Add stage-specific interviewer names and comments for multi-stage workflow
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT;
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_remarks TEXT;
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_interviewer VARCHAR(255);
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_remarks TEXT;
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_interviewer VARCHAR(255);
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_remarks TEXT;
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_interviewer VARCHAR(255);
+
       -- 8. Create mass_mail schema and tables
       CREATE SCHEMA IF NOT EXISTS mass_mail;
 
@@ -207,6 +265,8 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS require_ssl BOOLEAN DEFAULT FALSE;
       ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS require_tls BOOLEAN DEFAULT FALSE;
       ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES public.tenants(id) ON DELETE CASCADE;
+      UPDATE mass_mail.email_accounts SET tenant_id = 'd3b07384-d113-49c3-a555-9ee75c13ca33' WHERE tenant_id IS NULL;
 
       CREATE TABLE IF NOT EXISTS mass_mail.email_preferences (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -373,6 +433,45 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         pod_id UUID REFERENCES pods(id) ON DELETE SET NULL,
         assigned_by VARCHAR(255) DEFAULT 'System',
         assigned_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      -- 15. Create bulk_uploads and bulk_upload_items tables
+      CREATE TABLE IF NOT EXISTS bulk_uploads (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        created_by VARCHAR(255) NOT NULL,
+        total_files INT NOT NULL DEFAULT 0,
+        processed_files INT NOT NULL DEFAULT 0,
+        failed_files INT NOT NULL DEFAULT 0,
+        status VARCHAR(50) DEFAULT 'pending',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS bulk_upload_items (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        bulk_upload_id UUID NOT NULL REFERENCES bulk_uploads(id) ON DELETE CASCADE,
+        filename VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'queued',
+        error_message TEXT,
+        candidate_id INT REFERENCES candidates(id) ON DELETE SET NULL,
+        candidate_name VARCHAR(255),
+        candidate_email VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      -- 16. Create audit_logs table
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+        actor_id VARCHAR(255) NOT NULL,
+        actor_email VARCHAR(255),
+        action VARCHAR(100) NOT NULL,
+        target_type VARCHAR(100),
+        target_id VARCHAR(255),
+        details JSONB DEFAULT '{}'::jsonb,
+        ip_address VARCHAR(100),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
     `;
 

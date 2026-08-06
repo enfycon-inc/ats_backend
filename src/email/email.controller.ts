@@ -1,13 +1,26 @@
-import { Controller, Post, Body, Get, Param } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Headers, UseGuards } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { EmailService } from './email.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { resolveTenantId } from '../auth/utils/tenant-resolver';
 
+@ApiTags('Mass Email & Campaigns')
 @Controller('email')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
 export class EmailController {
   constructor(private readonly emailService: EmailService) {}
 
   @Post('campaigns')
-  async createCampaign(@Body() dto: any) {
-    return this.emailService.createCampaign(dto);
+  async createCampaign(
+    @Body() dto: any,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.createCampaign(dto, tid);
   }
 
   @Post('campaigns/:id/cancel')
@@ -16,8 +29,12 @@ export class EmailController {
   }
 
   @Get('campaigns')
-  async getCampaigns() {
-    return this.emailService.getCampaigns();
+  async getCampaigns(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.getCampaigns(tid);
   }
 
   @Get('campaigns/active')
@@ -26,38 +43,70 @@ export class EmailController {
   }
 
   @Get('templates')
-  async getTemplates() {
-    return this.emailService.getTemplates();
+  async getTemplates(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.getTemplates(tid);
   }
 
   @Get('accounts')
-  async getAccounts() {
-    return this.emailService.getConnectedAccounts();
+  async getAccounts(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.getConnectedAccounts(tid);
   }
 
   @Post('accounts/custom')
-  async addCustomAccount(@Body() dto: any) {
-    return this.emailService.addCustomAccount(dto);
+  async addCustomAccount(
+    @Body() dto: any,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.addCustomAccount(dto, tid);
   }
 
   @Post('accounts/:id/delete')
-  async deleteAccount(@Param('id') id: string) {
-    return this.emailService.deleteAccount(id);
+  async deleteAccount(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.deleteAccount(id, tid);
   }
 
   @Post('accounts/:id/default')
-  async setDefaultAccount(@Param('id') id: string) {
-    return this.emailService.setDefaultAccount(id);
+  async setDefaultAccount(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.setDefaultAccount(id, tid);
   }
 
   @Get('preferences')
-  async getPreferences() {
-    return this.emailService.getPreferences();
+  async getPreferences(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.getPreferences(tid);
   }
 
   @Post('preferences')
-  async savePreference(@Body() dto: { actionName: string, accountId: string }) {
-    return this.emailService.savePreference(dto.actionName, dto.accountId);
+  async savePreference(
+    @Body() dto: { actionName: string; accountId: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.savePreference(dto.actionName, dto.accountId, tid);
   }
 
   @Get('campaigns/:id/status')

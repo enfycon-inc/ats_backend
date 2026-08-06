@@ -30,4 +30,7 @@ export class CreateCandidateDto {
 
   @ApiProperty({ example: 'Manoj Duggi\nEmail Security Specialist with 6 years experience...', description: 'Raw resume text' })
   rawText: string;
+
+  @ApiProperty({ required: false, description: 'Assigned branch UUID' })
+  branchId?: string;
 }

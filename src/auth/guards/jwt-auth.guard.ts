@@ -107,6 +107,8 @@ export class JwtAuthGuard implements CanActivate {
     const decoded = this.decodeBase64Json(parts[1]);
     this.checkExpiry(decoded.exp, 'Session token');
 
+    this.logger.log(`[JwtAuthGuard] Decoded token: email=${decoded.email}, tenantId=${decoded.tenantId}`);
+
     // 3. Attach AuthUser
     request.user = {
       dbId: decoded.sub,
@@ -117,6 +119,10 @@ export class JwtAuthGuard implements CanActivate {
       tenantId: decoded.tenantId || DEFAULT_TENANT_ID,
       isActive: true,
       permissions: decoded.permissions || [],
+      podId: decoded.podId,
+      branchId: decoded.branchId,
+      businessUnitId: decoded.businessUnitId,
+      defaultMarket: decoded.defaultMarket || 'US',
     };
 
     return true;

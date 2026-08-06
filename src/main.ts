@@ -17,7 +17,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // Enable CORS so the recruiter dashboard front-end can communicate with backend endpoints
-  app.enableCors();
+  app.enableCors({
+    origin: true,
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id', 'x-branch-id', 'x-custom-tenant-domain'],
+  });
   
   // Increase payload limit for large CSV uploads (mass mail)
   app.use(express.json({ limit: '50mb' }));

@@ -24,8 +24,7 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
-
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+import { resolveTenantId } from '../auth/utils/tenant-resolver';
 
 @ApiTags('Clients')
 @Controller('api/clients')
@@ -42,7 +41,7 @@ export class ClientsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.clientsService.createClient(dto, tid, user?.dbId || 'System');
   }
 
@@ -54,8 +53,8 @@ export class ClientsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
-    return this.clientsService.findAllClients(tid);
+    const tid = resolveTenantId(user, tenantId);
+    return this.clientsService.findAllClients(tid, user);
   }
 
   @Get(':id')
@@ -67,7 +66,7 @@ export class ClientsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.clientsService.findOneClient(id, tid);
   }
 
@@ -81,7 +80,7 @@ export class ClientsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     return this.clientsService.updateClient(id, dto, tid, user?.dbId || 'System');
   }
 
@@ -95,7 +94,7 @@ export class ClientsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = tenantId || user?.tenantId || DEFAULT_TENANT_ID;
+    const tid = resolveTenantId(user, tenantId);
     await this.clientsService.deleteClient(id, tid);
   }
 }

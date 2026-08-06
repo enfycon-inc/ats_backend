@@ -102,6 +102,7 @@ export class AuthService implements OnModuleInit {
       -- Update system_role mappings for default system roles
       UPDATE custom_roles SET system_role = 'ADMIN' WHERE name = 'ADMIN';
       UPDATE custom_roles SET system_role = 'SUPER_ADMIN' WHERE name = 'SUPER_ADMIN';
+      UPDATE custom_roles SET system_role = 'BRANCH_ADMIN' WHERE name = 'BRANCH_ADMIN';
       UPDATE custom_roles SET system_role = 'ACCOUNT_MANAGER' WHERE name = 'ACCOUNT_MANAGER';
       UPDATE custom_roles SET system_role = 'DELIVERY_HEAD' WHERE name = 'DELIVERY_HEAD';
       UPDATE custom_roles SET system_role = 'TRACKER' WHERE name = 'TRACKER';
@@ -137,12 +138,32 @@ export class AuthService implements OnModuleInit {
       -- Ensure is_approved column exists on older tables
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
 
+      -- Add branch_id and business_unit_id to users
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
+
       -- Update any existing users with null value to true
       UPDATE users SET is_approved = true WHERE is_approved IS NULL;
+
+      -- Compulsory Default HQ Branch Creation for Tenants without branches
+      INSERT INTO branches (id, tenant_id, name, code, market)
+      SELECT gen_random_uuid(), t.id, t.name || ' Headquarters', 'HQ01', COALESCE(t.default_market, 'US')
+      FROM tenants t
+      WHERE NOT EXISTS (SELECT 1 FROM branches b WHERE b.tenant_id = t.id);
+
+      -- Compulsorily assign any unassigned users to their tenant's primary branch
+      UPDATE users u
+      SET branch_id = (
+        SELECT id FROM branches b
+        WHERE b.tenant_id = u.tenant_id
+        ORDER BY CASE WHEN b.name ILIKE '%bbsr%' OR b.name ILIKE '%domestic%' THEN 1 ELSE 2 END, b.created_at ASC
+        LIMIT 1
+      )
+      WHERE u.branch_id IS NULL;
     `;
     try {
       await this.db.query(ddl);
-      this.logger.log('Users and RBAC tables verified/created.');
+      this.logger.log('Users, default compulsory branches, and branch user assignments auto-resolved.');
     } catch (err) {
       this.logger.error(`Failed to create users/RBAC tables: ${err.message}`);
     }
@@ -210,10 +231,12 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Login attempt: ${dto.email}`);
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, cr.system_role
+      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
+       LEFT JOIN branches b ON u.branch_id = b.id
+       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
        WHERE u.email = $1 LIMIT 1`,
       [dto.email],
     );
@@ -258,9 +281,13 @@ export class AuthService implements OnModuleInit {
     }
 
     if (!isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
+      const cleanSubdomain = dto.subdomain.trim().toLowerCase();
       const domainMapping = await this.db.query(
-        'SELECT tenant_id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
-        [dto.subdomain]
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
+         UNION
+         SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1
+         LIMIT 1`,
+        [cleanSubdomain]
       );
       if (domainMapping.rows.length > 0) {
         const mappedTenantId = domainMapping.rows[0].tenant_id;
@@ -299,6 +326,9 @@ export class AuthService implements OnModuleInit {
       permissions,
       systemRole,
       podId: user.pod_id,
+      branchId: user.branch_id,
+      businessUnitId: user.business_unit_id,
+      podSystemEnabled: user.pod_system_enabled !== false,
     });
 
     return {
@@ -316,6 +346,11 @@ export class AuthService implements OnModuleInit {
         permissions,
         systemRole,
         podId: user.pod_id,
+        branchId: user.branch_id,
+        branchName: user.branch_name || null,
+        businessUnitId: user.business_unit_id,
+        businessUnitName: user.business_unit_name || null,
+        podSystemEnabled: user.pod_system_enabled !== false,
       },
     };
   }
@@ -324,15 +359,36 @@ export class AuthService implements OnModuleInit {
   // MOCK MODE: Register new user
   // ─────────────────────────────────────────────────────────────
   async register(dto: RegisterDto, authHeader?: string) {
-    this.logger.log(`Registering user: ${dto.email} [${dto.role}]`);
+    const email = (dto.email || '').trim().toLowerCase();
+    const fullName = (dto.fullName || '').trim();
+    const password = dto.password;
+
+    if (!email || !fullName || !password) {
+      throw new BadRequestException('Email, full name, and password are required and cannot be empty.');
+    }
+
+    if (fullName.length < 2) {
+      throw new BadRequestException('Full name must be at least 2 characters.');
+    }
+
+    const emailParts = email.split('@');
+    if (emailParts.length !== 2 || !emailParts[0] || !emailParts[1]) {
+      throw new BadRequestException('Invalid email address format.');
+    }
+
+    if (password.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters.');
+    }
+
+    this.logger.log(`Registering user: ${email} [${dto.role}]`);
 
     const exists = await this.db.query(
       'SELECT id FROM users WHERE email = $1 LIMIT 1',
-      [dto.email],
+      [email],
     );
     if (exists.rows.length > 0) {
       throw new ConflictException(
-        `Email ${dto.email} is already registered.`,
+        `Email ${email} is already registered.`,
       );
     }
 
@@ -372,8 +428,8 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    // Validate email domain suffix matches tenant domain name for tenant admins (to avoid spoofing competitor domains)
-    if (requesterIsAdmin && !requesterRoles.includes('SUPER_ADMIN')) {
+    // Validate email domain suffix matches tenant domain name (except for SUPER_ADMIN)
+    if (!requesterRoles.includes('SUPER_ADMIN')) {
       const tenantRes = await this.db.query('SELECT domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
       if (tenantRes.rows.length > 0) {
         const tenantDomain = tenantRes.rows[0].domain || '';
@@ -382,7 +438,7 @@ export class AuthService implements OnModuleInit {
           ? tenantDomain.slice(0, -4)
           : tenantDomain;
         const expectedDomain = `@${cleanDomain}.com`.toLowerCase();
-        if (!dto.email.toLowerCase().endsWith(expectedDomain)) {
+        if (!email.endsWith(expectedDomain)) {
           throw new BadRequestException(`Email address must end with the company domain: ${expectedDomain}`);
         }
       }
@@ -402,14 +458,14 @@ export class AuthService implements OnModuleInit {
       roleId = roleResult.rows[0].id;
     }
 
-    const { hash, salt } = this.hashPassword(dto.password);
+    const { hash, salt } = this.hashPassword(password);
 
     // If direct invite, user starts as active & approved immediately. Else pending.
     const result = await this.db.query(
       `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
        VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8)
        RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
-      [tenantId, dto.email, dto.fullName, hash, salt, [role], isApproved, roleId],
+      [tenantId, email, fullName, hash, salt, [role], isApproved, roleId],
     );
 
     const user = result.rows[0];
@@ -433,7 +489,33 @@ export class AuthService implements OnModuleInit {
   // Creates a new tenant + first admin user, both pending approval
   // ─────────────────────────────────────────────────────────────
   async registerTenant(dto: RegisterTenantDto) {
-    this.logger.log(`New tenant registration: ${dto.companyName} [${dto.subdomain}] by ${dto.email}`);
+    const companyName = (dto.companyName || '').trim();
+    const email = (dto.email || '').trim().toLowerCase();
+    const fullName = (dto.fullName || '').trim();
+    const password = dto.password;
+
+    if (!companyName || !email || !fullName || !password) {
+      throw new BadRequestException('All fields (company name, email, full name, password) are required.');
+    }
+
+    if (companyName.length < 2) {
+      throw new BadRequestException('Company name must be at least 2 characters.');
+    }
+
+    if (fullName.length < 2) {
+      throw new BadRequestException('Full name must be at least 2 characters.');
+    }
+
+    const emailParts = email.split('@');
+    if (emailParts.length !== 2 || !emailParts[0] || !emailParts[1]) {
+      throw new BadRequestException('Invalid email address format.');
+    }
+
+    if (password.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters.');
+    }
+
+    this.logger.log(`New tenant registration: ${companyName} [${dto.subdomain}] by ${email}`);
 
     // 1. Validate subdomain format
     if (!dto.subdomain || !/^[a-z0-9-]+$/.test(dto.subdomain)) {
@@ -452,14 +534,14 @@ export class AuthService implements OnModuleInit {
     // 3. Check email uniqueness
     const emailExists = await this.db.query(
       'SELECT id FROM users WHERE email = $1 LIMIT 1',
-      [dto.email],
+      [email],
     );
     if (emailExists.rows.length > 0) {
-      throw new ConflictException(`Email "${dto.email}" is already registered.`);
+      throw new ConflictException(`Email "${email}" is already registered.`);
     }
 
     // 3.5 Generate prefix code from company name
-    let basePrefix = dto.companyName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 4).toUpperCase();
+    let basePrefix = companyName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 4).toUpperCase();
     if (basePrefix.length < 2) basePrefix = 'COMP';
     
     // Check uniqueness of prefix, append number if needed
@@ -477,7 +559,7 @@ export class AuthService implements OnModuleInit {
       `INSERT INTO tenants (name, domain, status, default_market, prefix_code)
        VALUES ($1, $2, 'PENDING', 'US', $3)
        RETURNING id, name, domain, status, prefix_code`,
-      [dto.companyName, dto.subdomain, prefixCode],
+      [companyName, dto.subdomain, prefixCode],
     );
     const tenant = tenantResult.rows[0];
 
@@ -493,12 +575,12 @@ export class AuthService implements OnModuleInit {
     const adminRoleId = roleMap['ADMIN'];
 
     // 6. Create the first admin user for this tenant (is_approved = false)
-    const { hash, salt } = this.hashPassword(dto.password);
+    const { hash, salt } = this.hashPassword(password);
     const userResult = await this.db.query(
       `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
        VALUES ($1, $2, $3, $4, $5, $6, true, false, $7)
        RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
-      [tenant.id, dto.email, dto.fullName, hash, salt, ['ADMIN'], adminRoleId],
+      [tenant.id, email, fullName, hash, salt, ['ADMIN'], adminRoleId],
     );
     const user = userResult.rows[0];
 
@@ -605,9 +687,11 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit, t.pod_system_enabled, t.candidate_pool_mode, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
+       LEFT JOIN branches b ON u.branch_id = b.id
+       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
        WHERE u.id = $1 LIMIT 1`,
       [userId],
     );
@@ -656,6 +740,12 @@ export class AuthService implements OnModuleInit {
       tenantDomain: u.tenant_domain || '',
       userLimit: u.user_limit || 5,
       podId: u.pod_id,
+      branchId: u.branch_id,
+      branchName: u.branch_name || null,
+      businessUnitId: u.business_unit_id,
+      businessUnitName: u.business_unit_name || null,
+      podSystemEnabled: u.pod_system_enabled !== false,
+      candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
       tenant: {
         name: u.tenant_name || '',
         domain: u.tenant_domain || '',
@@ -668,9 +758,11 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listUsers(tenantId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.created_at, u.role_id, u.pod_id, r.name as role_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.created_at, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, r.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u 
        LEFT JOIN custom_roles r ON u.role_id = r.id
+       LEFT JOIN branches b ON u.branch_id = b.id
+       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
        WHERE u.tenant_id = $1 ORDER BY u.full_name ASC`,
       [tenantId],
     );
@@ -684,6 +776,10 @@ export class AuthService implements OnModuleInit {
       isActive: u.is_active,
       createdAt: u.created_at,
       podId: u.pod_id,
+      branchId: u.branch_id,
+      branchName: u.branch_name || null,
+      businessUnitId: u.business_unit_id,
+      businessUnitName: u.business_unit_name || null,
     }));
   }
 
@@ -775,6 +871,69 @@ export class AuthService implements OnModuleInit {
       [normalized, roleId, userId],
     );
     return { message: 'User roles updated successfully.', roles: normalized };
+  }
+
+  async updateUserDetails(
+    userId: string,
+    dto: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roles?: string[] },
+    requester: any
+  ) {
+    const userRes = await this.db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
+    if (userRes.rows.length === 0) {
+      throw new NotFoundException('User not found.');
+    }
+    const user = userRes.rows[0];
+
+    if (!requester.roles?.includes('SUPER_ADMIN') && user.tenant_id !== requester.tenantId) {
+      throw new ForbiddenException('You are not authorized to update users in another company tenant.');
+    }
+
+    let fullName = user.full_name;
+    let email = user.email;
+    let hash = user.password_hash;
+    let salt = user.salt;
+    let branchId = user.branch_id;
+    let businessUnitId = user.business_unit_id;
+
+    if (dto.fullName && dto.fullName.trim().length >= 2) {
+      fullName = dto.fullName.trim();
+    }
+
+    if (dto.email && dto.email.trim().toLowerCase() !== user.email) {
+      const cleanEmail = dto.email.trim().toLowerCase();
+      const dup = await this.db.query('SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1', [cleanEmail, userId]);
+      if (dup.rows.length > 0) {
+        throw new ConflictException(`Email ${cleanEmail} is already registered to another user.`);
+      }
+      email = cleanEmail;
+    }
+
+    if (dto.password && dto.password.length >= 8) {
+      const pwdRes = this.hashPassword(dto.password);
+      hash = pwdRes.hash;
+      salt = pwdRes.salt;
+    }
+
+    if (dto.branchId !== undefined) {
+      branchId = dto.branchId || null;
+    }
+
+    if (dto.businessUnitId !== undefined) {
+      businessUnitId = dto.businessUnitId || null;
+    }
+
+    await this.db.query(
+      `UPDATE users
+       SET full_name = $1, email = $2, password_hash = $3, salt = $4, branch_id = $5, business_unit_id = $6, updated_at = NOW()
+       WHERE id = $7`,
+      [fullName, email, hash, salt, branchId, businessUnitId, userId]
+    );
+
+    if (dto.roles && Array.isArray(dto.roles) && dto.roles.length > 0) {
+      await this.updateUserRoles(userId, dto.roles, requester.roles || []);
+    }
+
+    return this.getProfile(userId);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -880,12 +1039,12 @@ export class AuthService implements OnModuleInit {
 
   async createCustomRole(tenantId: string, name: string, description: string, permissions: string[], systemRole?: string) {
     const nameUpper = name.toUpperCase().trim();
-    if (['SUPER_ADMIN', 'ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(nameUpper)) {
+    if (['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(nameUpper)) {
       throw new BadRequestException('Role name conflicts with a default system role.');
     }
 
     const resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
-    if (!['ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(resolvedSystemRole)) {
+    if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(resolvedSystemRole)) {
       throw new BadRequestException('Invalid base system role selected.');
     }
 
@@ -901,7 +1060,13 @@ export class AuthService implements OnModuleInit {
           'candidate:create', 'candidate:view',
           'submission:create', 'submission:edit',
           'tenant:settings', 'user:manage',
-          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
+          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
+          'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches'
+        ],
+        BRANCH_ADMIN: [
+          'job:view', 'job:edit', 'candidate:create', 'candidate:view',
+          'submission:create', 'submission:view', 'submission:edit',
+          'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
         ],
         RECRUITER: [
           'candidate:create', 'candidate:view',
@@ -916,7 +1081,8 @@ export class AuthService implements OnModuleInit {
         ],
         DELIVERY_HEAD: [
           'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
-          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
+          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
+          'candidate:search_all_branches', 'job:view_all_branches'
         ],
         TRACKER: [
           'submission:view', 'candidate:view'
@@ -1074,10 +1240,15 @@ export class AuthService implements OnModuleInit {
       { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
       { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
       { id: 'pod:create', name: 'Create Pods', group: 'Pods Management' },
-      { id: 'pod:edit', name: 'Edit Pods', group: 'Pods Management' },
+      { id: 'pod:edit', name: 'Edit Pods & Assign Unassigned Jobs', group: 'Pods Management' },
       { id: 'pod:delete', name: 'Delete Pods', group: 'Pods Management' },
       { id: 'pod:view', name: 'View Pods', group: 'Pods Management' },
       { id: 'pod:reset_cycle', name: 'Reset Assignment Cycle', group: 'Pods Management' },
+      { id: 'pod:overlap', name: 'Authorize Pod Assignment Overlaps', group: 'Pods Management' },
+      { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff Roster', group: 'Branch & Multi-Office Management' },
+      { id: 'candidate:search_all_branches', name: 'Search Candidates Across All Branches', group: 'Branch & Multi-Office Management' },
+      { id: 'job:view_all_branches', name: 'View Jobs Across All Branches', group: 'Branch & Multi-Office Management' },
+      { id: 'candidate:search_all_markets', name: 'Search Candidates Across All Markets (US + India)', group: 'Branch & Multi-Office Management' },
     ];
   }
 
@@ -1108,7 +1279,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   // Approve user and set tenant's market settings (admin utility)
   // ─────────────────────────────────────────────────────────────
-  async approveUser(userId: string, market: string, subdomain?: string) {
+  async approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number) {
     const userResult = await this.db.query(
       'SELECT tenant_id FROM users WHERE id = $1 LIMIT 1',
       [userId]
@@ -1118,56 +1289,115 @@ export class AuthService implements OnModuleInit {
     }
     const tenantId = userResult.rows[0].tenant_id;
 
-    // Approve the user
     await this.db.query(
       'UPDATE users SET is_approved = true, is_active = true WHERE id = $1',
       [userId]
     );
 
-    // Approve the tenant (activate status)
     await this.db.query(
       "UPDATE tenants SET status = 'ACTIVE' WHERE id = $1",
       [tenantId]
     );
 
-    // Configure tenant market if provided
     if (market && (market === 'US' || market === 'IN')) {
       await this.db.query(
         'UPDATE tenants SET default_market = $1 WHERE id = $2',
         [market, tenantId]
       );
     }
-
-    // Update/assign subdomain if provided
-    if (subdomain) {
-      const cleanSubdomain = subdomain.toLowerCase().trim().replace(/[^a-z0-9-]/g, "");
-      if (cleanSubdomain) {
-        // Check if subdomain is already taken by another tenant
-        const exists = await this.db.query(
-          'SELECT id FROM tenant_domains WHERE domain_name = $1 AND tenant_id <> $2 LIMIT 1',
-          [cleanSubdomain, tenantId]
-        );
-        if (exists.rows.length > 0) {
-          throw new ConflictException('Subdomain is already taken by another company.');
-        }
-
-        // Update tenants table
-        await this.db.query(
-          'UPDATE tenants SET domain = $1 WHERE id = $2',
-          [cleanSubdomain, tenantId]
-        );
-
-        // Update or insert primary subdomain mapping in tenant_domains
-        await this.db.query(
-          `UPDATE tenant_domains 
-           SET domain_name = $1 
-           WHERE tenant_id = $2 AND is_primary = TRUE`,
-          [cleanSubdomain, tenantId]
-        );
-      }
+    if (userLimit && userLimit > 0) {
+      await this.db.query('UPDATE tenants SET user_limit = $1 WHERE id = $2', [userLimit, tenantId]);
+    }
+    if (maxBranches && maxBranches > 0) {
+      await this.db.query('UPDATE tenants SET max_branches = $1 WHERE id = $2', [maxBranches, tenantId]);
+    }
+    if (subdomain && subdomain.trim()) {
+      await this.updateTenantSubdomain(tenantId, subdomain.trim());
     }
 
-    return { message: 'User approved successfully and tenant market configured.' };
+    return { message: 'User approved and tenant activated successfully.', tenantId };
+  }
+
+  async createManualTenant(dto: {
+    companyName: string;
+    subdomain: string;
+    adminFullName: string;
+    adminEmail: string;
+    adminPassword?: string;
+    userLimit?: number;
+    maxBranches?: number;
+    defaultMarket?: string;
+  }) {
+    const companyName = dto.companyName.trim();
+    const email = dto.adminEmail.trim().toLowerCase();
+    const password = dto.adminPassword || 'Admin@123';
+    const userLimit = dto.userLimit || 20;
+    const maxBranches = dto.maxBranches || 5;
+    const market = dto.defaultMarket || 'US';
+
+    if (!dto.subdomain || !/^[a-z0-9-]+$/.test(dto.subdomain)) {
+      throw new BadRequestException('Subdomain must contain only lowercase letters, numbers, and hyphens.');
+    }
+
+    const subdomainExists = await this.db.query(
+      'SELECT id FROM tenants WHERE domain = $1 UNION SELECT tenant_id as id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
+      [dto.subdomain]
+    );
+    if (subdomainExists.rows.length > 0) {
+      throw new ConflictException(`Subdomain "${dto.subdomain}" is already taken.`);
+    }
+
+    const emailExists = await this.db.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email]);
+    if (emailExists.rows.length > 0) {
+      throw new ConflictException(`Email "${email}" is already registered.`);
+    }
+
+    let basePrefix = companyName.replace(/[^a-zA-Z0-9]/g, '').substring(0, 4).toUpperCase();
+    if (basePrefix.length < 2) basePrefix = 'COMP';
+    let prefixCode = basePrefix;
+    let counter = 1;
+    while (true) {
+      const prefixExists = await this.db.query('SELECT id FROM tenants WHERE prefix_code = $1 LIMIT 1', [prefixCode]);
+      if (prefixExists.rows.length === 0) break;
+      prefixCode = `${basePrefix.substring(0, 3)}${counter}`;
+      counter++;
+    }
+
+    const tenantResult = await this.db.query(
+      `INSERT INTO tenants (name, domain, status, default_market, user_limit, max_branches, prefix_code)
+       VALUES ($1, $2, 'ACTIVE', $3, $4, $5, $6)
+       RETURNING id, name, domain, status, user_limit, max_branches, default_market, prefix_code`,
+      [companyName, dto.subdomain, market, userLimit, maxBranches, prefixCode]
+    );
+    const tenant = tenantResult.rows[0];
+
+    await this.db.query(
+      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1, $2, TRUE)`,
+      [tenant.id, dto.subdomain]
+    );
+
+    const roleMap = await this.seedTenantRoles(tenant.id);
+    const adminRoleId = roleMap['ADMIN'];
+
+    const { hash, salt } = this.hashPassword(password);
+    const userResult = await this.db.query(
+      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
+       VALUES ($1, $2, $3, $4, $5, $6, true, true, $7)
+       RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
+      [tenant.id, email, dto.adminFullName.trim(), hash, salt, ['ADMIN'], adminRoleId]
+    );
+    const user = userResult.rows[0];
+
+    return {
+      message: `Tenant "${companyName}" created and activated successfully!`,
+      tenant,
+      adminUser: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        temporaryPassword: password,
+      },
+    };
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1182,11 +1412,49 @@ export class AuthService implements OnModuleInit {
     return result.rows;
   }
 
+  async getTenantDetails(tenantId: string) {
+    const tenantRes = await this.db.query(
+      `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", created_at as "createdAt"
+       FROM tenants WHERE id = $1 LIMIT 1`,
+      [tenantId]
+    );
+    if (tenantRes.rows.length === 0) {
+      throw new NotFoundException('Tenant not found');
+    }
+    const tenant = tenantRes.rows[0];
+
+    const usersRes = await this.db.query(
+      `SELECT u.id, u.email, u.full_name as "fullName", u.roles, u.is_active as "isActive", u.is_approved as "isApproved", u.created_at as "createdAt", cr.name as "roleName", cr.system_role as "systemRole"
+       FROM users u
+       LEFT JOIN custom_roles cr ON u.role_id = cr.id
+       WHERE u.tenant_id = $1
+       ORDER BY u.created_at DESC`,
+      [tenantId]
+    );
+
+    const statsRes = await Promise.all([
+      this.db.query(`SELECT COUNT(*) FROM jobs WHERE tenant_id = $1`, [tenantId]),
+      this.db.query(`SELECT COUNT(*) FROM candidates WHERE tenant_id = $1`, [tenantId]),
+      this.db.query(`SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1`, [tenantId]),
+    ]);
+
+    return {
+      tenant,
+      users: usersRes.rows,
+      stats: {
+        totalJobs: parseInt(statsRes[0].rows[0].count, 10),
+        totalCandidates: parseInt(statsRes[1].rows[0].count, 10),
+        totalSubmissions: parseInt(statsRes[2].rows[0].count, 10),
+      }
+    };
+  }
+
   // ─────────────────────────────────────────────────────────────
   // Update a tenant's status (admin utility)
   // ─────────────────────────────────────────────────────────────
   async updateTenantStatus(tenantId: string, status: string) {
-    const upperStatus = status.toUpperCase().trim();
+    let upperStatus = status.toUpperCase().trim();
+    if (upperStatus === 'SUSPENDED') upperStatus = 'INACTIVE';
     if (upperStatus !== 'ACTIVE' && upperStatus !== 'INACTIVE' && upperStatus !== 'PENDING') {
       throw new BadRequestException('Invalid tenant status. Must be ACTIVE, INACTIVE, or PENDING.');
     }
@@ -1209,6 +1477,17 @@ export class AuthService implements OnModuleInit {
       [limit, tenantId]
     );
     return { message: 'Tenant user limit updated successfully.', userLimit: limit };
+  }
+
+  async updateTenantBranchLimit(tenantId: string, limit: number) {
+    if (isNaN(limit) || limit < 1) {
+      throw new BadRequestException('Invalid branch limit. Must be a positive integer.');
+    }
+    await this.db.query(
+      'UPDATE tenants SET max_branches = $1, updated_at = NOW() WHERE id = $2',
+      [limit, tenantId]
+    );
+    return { message: 'Tenant max branches limit updated successfully.', maxBranches: limit };
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1423,5 +1702,36 @@ export class AuthService implements OnModuleInit {
       [domainId, tenantId]
     );
     return { message: 'Domain mapping deleted successfully.' };
+  }
+
+  async updateTenantSettings(tenantId: string, settings: { podSystemEnabled?: boolean; candidatePoolMode?: string }) {
+    this.logger.log(`Updating tenant settings for ${tenantId}: ${JSON.stringify(settings)}`);
+    const fields: string[] = [];
+    const params: any[] = [tenantId];
+    let paramIndex = 2;
+    
+    if (settings.podSystemEnabled !== undefined) {
+      fields.push(`pod_system_enabled = $${paramIndex}`);
+      params.push(settings.podSystemEnabled);
+      paramIndex++;
+    }
+
+    if (settings.candidatePoolMode !== undefined) {
+      const mode = settings.candidatePoolMode.trim().toUpperCase();
+      if (!['COMBINED_MARKET', 'STRICT_BRANCH', 'ALL_BRANCHES'].includes(mode)) {
+        throw new BadRequestException('Invalid candidate pool mode. Must be COMBINED_MARKET, STRICT_BRANCH, or ALL_BRANCHES.');
+      }
+      fields.push(`candidate_pool_mode = $${paramIndex}`);
+      params.push(mode);
+      paramIndex++;
+    }
+    
+    if (fields.length === 0) {
+      throw new BadRequestException('No valid setting fields provided.');
+    }
+    
+    const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`;
+    const res = await this.db.query(sql, params);
+    return res.rows[0];
   }
 }

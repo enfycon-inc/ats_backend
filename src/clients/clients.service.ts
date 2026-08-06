@@ -99,15 +99,27 @@ export class ClientsService {
     return res.rows[0];
   }
 
-  async findAllClients(tenantId: string) {
-    const res = await this.db.query(
-      `SELECT c.*, po.full_name AS primary_owner_name
-       FROM clients c
-       LEFT JOIN users po ON po.id::text = c.primary_owner
-       WHERE c.tenant_id = $1
-       ORDER BY c.created_at DESC`,
-      [tenantId]
-    );
+  async findAllClients(tenantId: string, user?: any) {
+    let sql = `
+      SELECT c.*, po.full_name AS primary_owner_name
+      FROM clients c
+      LEFT JOIN users po ON po.id::text = c.primary_owner
+      WHERE c.tenant_id = $1
+    `;
+    const params: any[] = [tenantId];
+    let paramIndex = 2;
+
+    const canViewAll = user?.permissions?.includes('client:view_all_branches') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
+
+    if (user?.branchId && !canViewAll) {
+      sql += ` AND (c.branch_id = $${paramIndex} OR c.branch_id IS NULL)`;
+      params.push(user.branchId);
+      paramIndex++;
+    }
+
+    sql += ' ORDER BY c.created_at DESC';
+
+    const res = await this.db.query(sql, params);
     return res.rows.map(row => ({
       ...row,
       primary_owner: row.primary_owner_name || row.primary_owner || 'N/A'

@@ -11,6 +11,9 @@ import { EmailModule } from './email/email.module';
 import { BullModule } from '@nestjs/bullmq';
 import { ClientsModule } from './clients/clients.module';
 import { PodsModule } from './pods/pods.module';
+import { BranchesModule } from './branches/branches.module';
+import { BusinessUnitsModule } from './business-units/business-units.module';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   imports: [
@@ -21,6 +24,7 @@ import { PodsModule } from './pods/pods.module';
       },
     }),
     DatabaseModule,
+    AuditModule,
     AuthModule,
     CandidatesModule,
     SourcingModule,
@@ -29,6 +33,8 @@ import { PodsModule } from './pods/pods.module';
     EmailModule,
     ClientsModule,
     PodsModule,
+    BranchesModule,
+    BusinessUnitsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

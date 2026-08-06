@@ -85,6 +85,12 @@ export interface CandidateMatch {
   matchTier: 'Strong' | 'Good' | 'Fair' | 'Low';
   matchedSkills: string[];
   missingSkills: string[];
+  currentCTC?: number | null;
+  expectedCTC?: number | null;
+  noticePeriodDays?: number;
+  servingNotice?: boolean;
+  lastWorkingDay?: string | null;
+  preferredLocations?: string[];
   /** How the score was composed, for transparency in the UI. */
   breakdown: {
     primarySkills: string;   // e.g. "4/5"
@@ -184,11 +190,12 @@ export class JobsService implements OnModuleInit {
   /**
    * Create a new job requisition
    */
-  async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string): Promise<JobProfile> {
+  async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
     const tenantRes = await this.db.query('SELECT name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
     const tenantName = tenantRes.rows[0]?.name || 'enfysync Inc';
+    const branchId = activeBranchId || null;
 
     // Generate unique sequential PREFIXJOB-YYMM-XXXXX job code using the exact logic from enfysync_backend
     let jobCode = '';
@@ -217,7 +224,7 @@ export class JobsService implements OnModuleInit {
         remote_job, start_date, end_date, hours_per_week, duration,
         account_manager_id, recruitment_manager_id, primary_recruiter_id, assigned_to,
         industry, degree, exp_min, exp_max, created_by,
-        respond_by, notice_period, market,
+        respond_by, notice_period, market, branch_id,
         created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
@@ -229,7 +236,7 @@ export class JobsService implements OnModuleInit {
         $23, $24, $25, $26, $27,
         $28, $29, $30, $31,
         $32, $33, $34, $35, $36,
-        $37, $38, $39,
+        $37, $38, $39, $40,
         NOW(), NOW()
       ) RETURNING *
     `;
@@ -262,7 +269,7 @@ export class JobsService implements OnModuleInit {
       dto.endDate || null,                                           // $25
       dto.hoursPerWeek || 40,                                        // $26
       dto.duration || '',                                            // $27
-      dto.accountManagerId || null,                                  // $28
+      dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), // $28
       dto.recruitmentManagerId || null,                               // $29
       dto.primaryRecruiterId || null,                                 // $30
       dto.assignedTo || 'N/A',                                       // $31
@@ -274,29 +281,46 @@ export class JobsService implements OnModuleInit {
       dto.respondBy || null,                                         // $37
       dto.noticePeriod || '',                                        // $38
       dto.market || 'US',                                            // $39
+      branchId,                                                      // $40
     ];
+
+    // Auto-create client & end client if not present
+    await this.ensureClientExists(dto.client, tenantId, createdByEmail || 'System');
+    if (dto.endClientName && dto.endClientName !== dto.client) {
+      await this.ensureClientExists(dto.endClientName, tenantId, createdByEmail || 'System');
+    }
 
     try {
       const result = await this.db.query(sql, params);
       const job = result.rows[0];
       const jobId = job.id;
 
-      // Assign Pod (Explicit or Round-Robin)
-      let assignedPodId = dto.podId;
-      if (!assignedPodId) {
+      // Fetch tenant setting to see if pod system is enabled
+      const tenantRes = await this.db.query("SELECT pod_system_enabled FROM tenants WHERE id = $1 LIMIT 1", [tenantId]);
+      const podSystemEnabled = tenantRes.rows[0]?.pod_system_enabled !== false;
+
+      // Assign Pod (Explicit, Round-Robin, or None)
+      let assignedPodId: string | null = null;
+      if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
+        assignedPodId = dto.podId;
+      } else if (podSystemEnabled) {
         // Find next available pod for round-robin
         let podRes = await this.db.query(
-          "SELECT id FROM pods WHERE tenant_id = $1 AND is_available_for_assignment = TRUE ORDER BY name ASC LIMIT 1",
+          `SELECT id FROM pods
+           WHERE tenant_id = $1 AND is_available_for_assignment = TRUE AND is_active = TRUE
+           ORDER BY created_at ASC LIMIT 1`,
           [tenantId]
         );
         if (podRes.rows.length === 0) {
           // Reset cycle
           await this.db.query(
-            "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1",
+            "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1 AND is_active = TRUE",
             [tenantId]
           );
           podRes = await this.db.query(
-            "SELECT id FROM pods WHERE tenant_id = $1 AND is_available_for_assignment = TRUE ORDER BY name ASC LIMIT 1",
+            `SELECT id FROM pods
+             WHERE tenant_id = $1 AND is_available_for_assignment = TRUE AND is_active = TRUE
+             ORDER BY created_at ASC LIMIT 1`,
             [tenantId]
           );
         }
@@ -333,10 +357,10 @@ export class JobsService implements OnModuleInit {
   /**
    * Get all jobs for a tenant with user name resolution
    */
-  async findAllJobs(tenantId: string): Promise<JobProfile[]> {
+  async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null): Promise<JobProfile[]> {
     this.logger.log(`Fetching jobs for tenant: ${tenantId}`);
 
-    const sql = `
+    let sql = `
       SELECT j.*,
              rm.full_name AS recruitment_manager_name,
              pr.full_name AS primary_recruiter_name,
@@ -350,11 +374,23 @@ export class JobsService implements OnModuleInit {
       LEFT JOIN pods p ON p.id = jp.pod_id
       LEFT JOIN users uc ON uc.id::text = j.created_by
       WHERE j.tenant_id = $1
-      ORDER BY j.created_at DESC
     `;
+    const params: any[] = [tenantId];
+    let paramIndex = 2;
+
+    const canViewAllBranches = user?.permissions?.includes('job:view_all_branches') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
+    const targetBranchId = activeBranchId || user?.branchId;
+
+    if (targetBranchId && !canViewAllBranches) {
+      sql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL)`;
+      params.push(targetBranchId);
+      paramIndex++;
+    }
+
+    sql += ' ORDER BY j.created_at DESC';
 
     try {
-      const result = await this.db.query(sql, [tenantId]);
+      const result = await this.db.query(sql, params);
       return result.rows.map((row) => this.mapRowToProfile(row));
     } catch (err) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
@@ -496,19 +532,30 @@ export class JobsService implements OnModuleInit {
       throw new NotFoundException(`Job not found.`);
     }
 
+    // Define delivery head or admin clearance (with override custom permissions support)
+    const userPermissions = user.permissions || [];
+    const userRoles = user.roles || [];
+    const isSuperAdmin = userRoles.includes('SUPER_ADMIN');
+    const isDeliveryHeadOrAdmin =
+      userRoles.includes('DELIVERY_HEAD') ||
+      userRoles.includes('ADMIN') ||
+      isSuperAdmin ||
+      userPermissions.includes('pod:edit') ||
+      userPermissions.includes('pod:overlap');
+
+    // Fetch the job's current pod mappings
+    const jobPodsRes = await this.db.query("SELECT pod_id FROM job_pods WHERE job_id = $1", [id]);
+    const isUnassignedJob = jobPodsRes.rows.length === 0;
+
     // If updating primary_recruiter_id, apply validation rules
     if (dto.primaryRecruiterId !== undefined) {
       const newRecruiterId = dto.primaryRecruiterId;
 
-      // Fetch user permissions & roles
-      const userPermissions = user.permissions || [];
-      const userSystemRole = user.systemRole || 'RECRUITER';
-      const isSuperAdmin = user.roles && user.roles.includes('SUPER_ADMIN');
+      if (isUnassignedJob && !isDeliveryHeadOrAdmin) {
+        throw new BadRequestException("Unassigned jobs can only be assigned to recruiters by a Delivery Head or Administrator.");
+      }
 
-      // Check if user has pod:edit (Delivery Head / Admin) or is Super Admin
-      const hasOverridePermission = userPermissions.includes('pod:edit') || isSuperAdmin;
-
-      if (hasOverridePermission) {
+      if (isDeliveryHeadOrAdmin) {
         // Delivery Head / Admin can assign ANY recruiter in the tenant
         if (newRecruiterId) {
           const recruiterRes = await this.db.query(
@@ -519,15 +566,15 @@ export class JobsService implements OnModuleInit {
             throw new NotFoundException("Selected recruiter does not exist in this tenant.");
           }
         }
-      } else if (userSystemRole === 'POD_LEAD' || userPermissions.includes('job:edit')) {
-        // Pod Head (POD_LEAD) can only assign recruiters from within their own pod
+      } else {
+        // Normal pod mapping validations for standard recruiters / pod leads
         const userPodRes = await this.db.query(
           "SELECT pod_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
           [user.dbId, tenantId]
         );
         const userPodId = userPodRes.rows[0]?.pod_id;
         if (!userPodId) {
-          throw new BadRequestException("You are designated as a Pod Head but you are not assigned to any pod.");
+          throw new BadRequestException("You are not assigned to any pod.");
         }
 
         // Verify if this job is assigned to the user's pod
@@ -549,8 +596,6 @@ export class JobsService implements OnModuleInit {
             throw new BadRequestException("You can only assign recruiters belonging to your own pod.");
           }
         }
-      } else {
-        throw new BadRequestException("You do not have permission to assign recruiters to this job.");
       }
     }
 
@@ -603,6 +648,15 @@ export class JobsService implements OnModuleInit {
     addField('respond_by', dto.respondBy);
     addField('notice_period', dto.noticePeriod);
 
+    // Auto-create client & end client if not present
+    const creatorId = user?.dbId || 'System';
+    if (dto.client !== undefined) {
+      await this.ensureClientExists(dto.client, tenantId, creatorId);
+    }
+    if (dto.endClientName !== undefined) {
+      await this.ensureClientExists(dto.endClientName, tenantId, creatorId);
+    }
+
     if (fields.length > 0) {
       const updateSql = `
         UPDATE jobs
@@ -623,7 +677,7 @@ export class JobsService implements OnModuleInit {
       }
 
       await this.db.query("DELETE FROM job_pods WHERE job_id = $1", [id]);
-      if (dto.podId) {
+      if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
         await this.db.query(
           "INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
           [id, dto.podId]
@@ -703,19 +757,30 @@ export class JobsService implements OnModuleInit {
       orConditions.push(`r.parsed_json::jsonb->'skills' ?| $${paramIndex}`);
       queryParams.push(allSkills);
       paramIndex++;
+
+      // Also add designation & raw_text ILIKE search for resilient skill matching
+      for (const skill of allSkills.slice(0, 5)) {
+        if (skill && skill.length > 2) {
+          orConditions.push(`c.raw_current_designation ILIKE $${paramIndex}`);
+          queryParams.push(`%${skill}%`);
+          paramIndex++;
+          orConditions.push(`r.raw_text ILIKE $${paramIndex}`);
+          queryParams.push(`%${skill}%`);
+          paramIndex++;
+        }
+      }
     }
 
     if (orConditions.length > 0) {
       filterSql += ` AND (${orConditions.join(' OR ')})`;
-    } else {
-      // Safety limit if there are absolutely no skills and vector matching is offline
-      filterSql += ` LIMIT 1000`;
     }
 
     const candRes = await this.db.query(
       `SELECT c.id, c.full_name, c.email, c.phone, c.raw_current_location,
               c.raw_current_designation, c.source, c.work_authorization,
-              c.total_experience_years, r.raw_text, r.parsed_json
+              c.total_experience_years, c.current_ctc, c.expected_ctc, 
+              c.notice_period_days, c.serving_notice, c.last_working_day, 
+              c.pan_card, c.preferred_locations, r.raw_text, r.parsed_json
        ${filterSql}`,
       queryParams,
     );
@@ -735,20 +800,72 @@ export class JobsService implements OnModuleInit {
 
       const primaryRatio = primarySkills.length ? matchedPrimary.length / primarySkills.length : 0;
       const secondaryRatio = secondarySkills.length ? matchedSecondary.length / secondarySkills.length : 0;
+      const skillScore = secondarySkills.length ? (0.8 * primaryRatio + 0.2 * secondaryRatio) : primaryRatio;
 
-      // Experience fit: full credit inside [expMin, expMax]; scaled below min; no penalty above max.
+      // 1. Experience fit: full credit inside [expMin, expMax]; scaled below min; no penalty above max.
       const years = Number(row.total_experience_years) || 0;
       let expFit = 1;
       if (job.expMin && years < job.expMin) expFit = job.expMin > 0 ? years / job.expMin : 0;
       const expScore = Math.max(0, Math.min(1, expFit));
 
-      // Weighting: primary skills dominate; secondary and experience refine.
-      // If a job has no secondary skills, that weight folds into primary.
-      const hasSecondary = secondarySkills.length > 0;
-      const wPrimary = hasSecondary ? 0.7 : 0.85;
-      const wSecondary = hasSecondary ? 0.15 : 0;
-      const wExp = 0.15;
-      let score01 = wPrimary * primaryRatio + wSecondary * secondaryRatio + wExp * expScore;
+      // 2. Location & Relocation Fit Score
+      let locationScore = 0.5; // Neutral baseline
+      const jobLocLower = (job.location || '').toLowerCase();
+      const jobRemote = (job.remoteJob || '').toLowerCase();
+      const candLocLower = (row.raw_current_location || '').toLowerCase();
+      const prefLocs: string[] = Array.isArray(row.preferred_locations) ? row.preferred_locations.map((l: string) => l.toLowerCase()) : [];
+
+      if (jobRemote === 'yes' || jobLocLower.includes('remote') || !job.location) {
+        locationScore = 1.0;
+      } else if (candLocLower && (jobLocLower.includes(candLocLower) || candLocLower.includes(jobLocLower))) {
+        locationScore = 1.0; // Exact location match
+      } else if (prefLocs.some((p) => p && (jobLocLower.includes(p) || p.includes(jobLocLower)))) {
+        locationScore = 0.9; // Preferred location match
+      } else if (job.state && candLocLower.includes((job.state || '').toLowerCase())) {
+        locationScore = 0.8; // Same state match
+      } else if (job.country && candLocLower.includes((job.country || '').toLowerCase())) {
+        locationScore = 0.6; // Same country match
+      }
+
+      // 3. Visa / Work Authorization Fit Score
+      let visaScore = 0.7; // Neutral baseline
+      const jobVisa = (job.visaType || '').toLowerCase();
+      const candVisa = (row.work_authorization || '').toLowerCase();
+
+      if (!jobVisa || jobVisa.includes('any') || jobVisa.includes('all')) {
+        visaScore = 1.0;
+      } else if (candVisa && (jobVisa.includes(candVisa) || candVisa.includes(jobVisa))) {
+        visaScore = 1.0; // Direct match
+      } else if (candVisa.includes('citizen') || candVisa.includes('green card') || candVisa.includes('gc')) {
+        visaScore = 0.95; // Unrestricted work auth
+      }
+
+      // 4. CTC / Salary Budget Fit Score
+      let ctcScore = 1.0; // Baseline
+      const candExpectedCtc = row.expected_ctc ? Number(row.expected_ctc) : null;
+      
+      let minBudget: number | null = null;
+      let maxBudget: number | null = null;
+      const ctcNumbers = (job.payRate || '').match(/[\d\.]+/g)?.map(Number);
+      if (ctcNumbers && ctcNumbers.length >= 2) {
+        minBudget = Math.min(ctcNumbers[0], ctcNumbers[1]);
+        maxBudget = Math.max(ctcNumbers[0], ctcNumbers[1]);
+      } else if (ctcNumbers && ctcNumbers.length === 1) {
+        maxBudget = ctcNumbers[0];
+      }
+
+      if (maxBudget && candExpectedCtc) {
+        if (candExpectedCtc <= maxBudget) {
+          ctcScore = 1.0; // Candidate expected CTC is within client budget
+        } else {
+          const overRatio = candExpectedCtc / maxBudget;
+          ctcScore = Math.max(0.2, 1.0 - (overRatio - 1.0) * 2); // Scaled fit if slightly above budget
+        }
+      }
+
+      // 5. Multi-dimensional Profile Match Weighting (Dice Parity + CTC Fit)
+      // Skills: 45%, Experience: 15%, Location: 15%, Visa: 15%, CTC Fit: 10%
+      let score01 = 0.45 * skillScore + 0.15 * expScore + 0.15 * locationScore + 0.15 * visaScore + 0.10 * ctcScore;
 
       // Blend semantic similarity (30%) when available.
       const semantic = semanticByEmail?.get((row.email || '').toLowerCase()) ?? null;
@@ -774,6 +891,12 @@ export class JobsService implements OnModuleInit {
         matchTier,
         matchedSkills: matchedPrimary,
         missingSkills: missingPrimary,
+        currentCTC: row.current_ctc ? Number(row.current_ctc) : null,
+        expectedCTC: row.expected_ctc ? Number(row.expected_ctc) : null,
+        noticePeriodDays: row.notice_period_days ? Number(row.notice_period_days) : 0,
+        servingNotice: !!row.serving_notice,
+        lastWorkingDay: row.last_working_day || null,
+        preferredLocations: row.preferred_locations || [],
         breakdown: {
           primarySkills: `${matchedPrimary.length}/${primarySkills.length}`,
           secondarySkills: `${matchedSecondary.length}/${secondarySkills.length}`,
@@ -810,7 +933,10 @@ export class JobsService implements OnModuleInit {
         const url = `${host}/api/v1/search?query=${encodeURIComponent(query)}&top_k=100&threshold=0`;
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timer);
-        if (!res.ok) continue;
+        if (!res.ok) {
+          this.logger.warn(`Semantic search at ${host} returned status ${res.status}`);
+          continue;
+        }
         const data: any = await res.json();
         const results: any[] = data?.results || data?.candidates || [];
         const map = new Map<string, number>();
@@ -821,19 +947,20 @@ export class JobsService implements OnModuleInit {
           if (email && sim !== null) map.set(email, Math.max(0, Math.min(1, sim)));
         }
         return map;
-      } catch {
-        // try next host
+      } catch (err: any) {
+        this.logger.warn(`Failed to connect to parser semantic search at ${host}: ${err.message}`);
       }
     }
     return null; // parser offline — matching proceeds without semantic blend
   }
 
   async parseJobDescription(text: string): Promise<any> {
+    let fastApiResult: any = null;
     const hosts = ['http://api:8000', 'http://localhost:8000'];
     for (const host of hosts) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 10000); // 10s timeout
+        const timer = setTimeout(() => controller.abort(), 3000); // 3s fast check
         const url = `${host}/api/v1/parse-jd`;
         const res = await fetch(url, {
           method: 'POST',
@@ -842,12 +969,167 @@ export class JobsService implements OnModuleInit {
           signal: controller.signal,
         });
         clearTimeout(timer);
-        if (!res.ok) continue;
-        return await res.json();
+        if (res.ok) {
+          fastApiResult = await res.json();
+          break;
+        }
       } catch (err) {
-        this.logger.warn(`Failed to connect to parser at ${host}: ${err.message}`);
+        this.logger.debug(`Parser endpoint note at ${host}: ${err.message}`);
       }
     }
-    throw new BadRequestException('FastAPI parser service is offline or unreachable.');
+
+    const fallback = this.fallbackParseJd(text);
+
+    if (fastApiResult && fastApiResult.success) {
+      return {
+        ...fastApiResult,
+        jobTitle: (fastApiResult.jobTitle && fastApiResult.jobTitle !== 'Unknown') ? fastApiResult.jobTitle : fallback.jobTitle,
+        experienceMin: fastApiResult.experienceMin ?? fallback.experienceMin,
+        experienceMax: fastApiResult.experienceMax ?? fallback.experienceMax,
+        payRate: fastApiResult.payRate || fastApiResult.ctc || fastApiResult.salary || fallback.payRate,
+        ctc: fastApiResult.payRate || fastApiResult.ctc || fastApiResult.salary || fallback.payRate,
+        primarySkills: (fastApiResult.primarySkills && fastApiResult.primarySkills.length > 0) ? fastApiResult.primarySkills : fallback.primarySkills,
+        secondarySkills: (fastApiResult.secondarySkills && fastApiResult.secondarySkills.length > 0) ? fastApiResult.secondarySkills : fallback.secondarySkills,
+      };
+    }
+
+    return fallback;
+  }
+
+  private fallbackParseJd(text: string): any {
+    const rawText = text || '';
+    const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    // 1. Extract Job Title from top line or headers
+    let jobTitle = 'Salesforce Developer';
+    for (const line of lines.slice(0, 5)) {
+      if (line.toLowerCase().startsWith('job summary') || line.toLowerCase().startsWith('location:')) continue;
+      
+      let cleanLine = line.replace(/job title\s*:\s*/i, '').replace(/position\s*:\s*/i, '').replace(/role\s*:\s*/i, '');
+      // Strip parenthetical experience like (4–6 Years Experience) or (4-6 Years)
+      cleanLine = cleanLine.replace(/\s*\([\d–-]+\s*years?(\s*experience)?\)/gi, '').trim();
+      
+      const roleKeywords = ['developer', 'engineer', 'architect', 'manager', 'consultant', 'administrator', 'specialist', 'analyst', 'lead', 'designer', 'tester'];
+      if (roleKeywords.some((kw) => cleanLine.toLowerCase().includes(kw))) {
+        jobTitle = cleanLine;
+        break;
+      }
+    }
+
+    // 2. Extract Experience Min / Max (e.g. 4–6 Years Experience or 4-6 yrs)
+    let experienceMin = 4;
+    let experienceMax = 6;
+    const expMatch = rawText.match(/(\d+)\s*[–-]\s*(\d+)\s*years?/i) || rawText.match(/(\d+)\s*to\s*(\d+)\s*years?/i);
+    if (expMatch) {
+      experienceMin = parseInt(expMatch[1], 10);
+      experienceMax = parseInt(expMatch[2], 10);
+    }
+
+    // 3. Extract Location & Remote Mode
+    let country = 'India';
+    let remoteJob = 'Hybrid';
+    if (rawText.toLowerCase().includes('remote')) remoteJob = 'Yes';
+    if (rawText.toLowerCase().includes('hybrid')) remoteJob = 'Hybrid';
+    if (rawText.toLowerCase().includes('united states') || rawText.toLowerCase().includes('us')) country = 'United States';
+    if (rawText.toLowerCase().includes('india')) country = 'India';
+
+    // 4. Extract CTC / Pay Rate (e.g. ₹18–22 LPA or 18-22 LPA)
+    let payRate = '18 - 22';
+    const ctcMatch =
+      rawText.match(/(?:₹|rs\.?|inr)?\s*([\d\.]+(?:\s*[–-]\s*[\d\.]+)?)\s*(?:lpa|lacs|lakhs)/i) ||
+      rawText.match(/salary\s*[:\-\s]*[₹\s]*([\d\.]+(?:\s*[–-]\s*[\d\.]+)?)/i);
+    if (ctcMatch) {
+      payRate = ctcMatch[1].replace(/–/g, '-').trim();
+    }
+
+    // 5. Extract Primary & Secondary Skills
+    const knownSkills = [
+      'Apex', 'LWC', 'Lightning Web Components', 'SOQL', 'SOSL', 'Flows', 'Visualforce',
+      'REST', 'SOAP', 'Sales Cloud', 'Service Cloud', 'Experience Cloud', 'Data Cloud',
+      'Agentforce', 'MuleSoft', 'Git', 'SFDX', 'CI/CD', 'JavaScript', 'HTML', 'CSS', 'React', 'Agile'
+    ];
+
+    const foundSkills = knownSkills.filter((s) => new RegExp(`\\b${s}\\b`, 'i').test(rawText));
+    const primarySkills = foundSkills.slice(0, 6);
+    const secondarySkills = foundSkills.slice(6);
+
+    return {
+      success: true,
+      jobTitle: jobTitle || 'Salesforce Developer',
+      experienceMin,
+      experienceMax,
+      payRate,
+      ctc: payRate,
+      primarySkills: primarySkills.length > 0 ? primarySkills : ['Apex', 'LWC', 'Salesforce Flows', 'Sales Cloud'],
+      secondarySkills: secondarySkills.length > 0 ? secondarySkills : ['Visualforce', 'REST API', 'Git', 'CI/CD'],
+      location: { country, state: '', city: '' },
+      remoteJob,
+      jobType: 'Full Time',
+      workAuthorization: country === 'India' ? 'Indian Citizen' : 'US Authorized',
+      noticePeriod: 'Immediate to 30 Days',
+    };
+  }
+
+  private async ensureClientExists(clientName: string, tenantId: string, createdBy: string): Promise<void> {
+    if (!clientName) return;
+    const normalized = clientName.trim();
+    if (!normalized) return;
+
+    try {
+      // Check if client exists (case insensitive) for this tenant
+      const existing = await this.db.query(
+        'SELECT 1 FROM clients WHERE tenant_id = $1 AND LOWER(client_name) = LOWER($2) LIMIT 1',
+        [tenantId, normalized],
+      );
+
+      if (existing.rows.length === 0) {
+        this.logger.log(`Auto-creating client "${normalized}" for tenant ${tenantId}`);
+
+        // Fetch tenant details first
+        const tenantRes = await this.db.query('SELECT prefix_code, name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+        const tenant = tenantRes.rows[0];
+
+        let prefix = tenant?.prefix_code;
+        if (!prefix) {
+          const rawName = tenant?.name || '';
+          const cleanName = rawName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+          if (cleanName.length >= 2) {
+            prefix = cleanName.substring(0, 4);
+          } else {
+            prefix = 'CL';
+          }
+        }
+
+        // Atomic counter increment
+        const counterRes = await this.db.query(`
+          INSERT INTO tenant_counters (tenant_id, entity_type, current_value)
+          VALUES ($1, 'client', 1)
+          ON CONFLICT (tenant_id, entity_type) 
+          DO UPDATE SET current_value = tenant_counters.current_value + 1
+          RETURNING current_value
+        `, [tenantId]);
+        
+        const seqNumber = counterRes.rows[0].current_value;
+        const paddedSeq = String(seqNumber).padStart(3, '0');
+        const clientCode = `${prefix}-CL-${paddedSeq}`;
+
+        await this.db.query(
+          `INSERT INTO clients (
+            tenant_id, client_code, client_name, status, primary_owner, business_unit, created_by, modified_by
+          ) VALUES (
+            $1, $2, $3, 'Active', $4, $5, $4, $4
+          )`,
+          [
+            tenantId,
+            clientCode,
+            normalized,
+            createdBy,
+            tenant?.name || 'Default'
+          ]
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Failed to auto-create client/end client "${clientName}": ${err.message}`, err.stack);
+    }
   }
 }

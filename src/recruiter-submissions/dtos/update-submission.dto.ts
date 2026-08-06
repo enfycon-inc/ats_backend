@@ -76,4 +76,34 @@ export class UpdateSubmissionDto {
     description: 'Specific notes or comments added by the recruiter',
   })
   recruiterComment?: string;
+
+  @ApiPropertyOptional({
+    example: '$75/hr or 12 Lakh',
+    description: 'The submitted rate or gross salary for the candidate',
+  })
+  submittedRate?: string;
+
+  @ApiPropertyOptional({ description: 'Internal team lead or pod lead approval remarks' })
+  podLeadRemarks?: string;
+
+  @ApiPropertyOptional({ description: 'L1 Interview feedback / client comments' })
+  l1Remarks?: string;
+
+  @ApiPropertyOptional({ description: 'L1 Interviewer name' })
+  l1Interviewer?: string;
+
+  @ApiPropertyOptional({ description: 'L2 Technical interview feedback / client comments' })
+  l2Remarks?: string;
+
+  @ApiPropertyOptional({ description: 'L2 Interviewer name' })
+  l2Interviewer?: string;
+
+  @ApiPropertyOptional({ description: 'L3 Final interview feedback / client comments' })
+  l3Remarks?: string;
+
+  @ApiPropertyOptional({ description: 'L3 Interviewer name' })
+  l3Interviewer?: string;
+
+  @ApiPropertyOptional({ example: 'https://meet.google.com/abc-xyz', description: 'Meeting URL link for Google Meet / Teams / Zoom' })
+  meetingLink?: string;
 }

@@ -4,6 +4,7 @@ import { DatabaseService } from '../database/database.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
 import { CandidateQueryDto } from './dtos/candidate-query.dto';
 import { CandidateProfile, CandidateDbRow } from './interfaces/candidate.interface';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 /** The original CV file bytes plus metadata, for download/preview. */
 export interface StoredResumeFile {
@@ -134,9 +135,20 @@ export class CandidatesService implements OnModuleInit {
   /**
    * Fetches and maps candidates using filters, dynamic keywords, and limits, scoped by tenant
    */
-  async findAll(query: CandidateQueryDto, tenantId: string): Promise<CandidateProfile[]> {
-    this.logger.log(`Fetching candidates from Supabase DB for tenant: ${tenantId}. Filters q="${query.q || 'None'}"`);
+  async findAll(query: CandidateQueryDto, tenantId: string, user?: AuthUser): Promise<CandidateProfile[]> {
+    this.logger.log(`Fetching candidates from Supabase DB for tenant: ${tenantId}. Filters q="${query.q || 'None'}", market="${query.market || 'Auto'}"`);
     
+    // Fetch tenant candidate pool access mode (default 'COMBINED_MARKET')
+    let poolMode = 'COMBINED_MARKET';
+    try {
+      const tenantRes = await this.db.query('SELECT candidate_pool_mode FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+      if (tenantRes.rows.length > 0 && tenantRes.rows[0].candidate_pool_mode) {
+        poolMode = tenantRes.rows[0].candidate_pool_mode;
+      }
+    } catch (err: any) {
+      this.logger.debug(`Could not read tenant candidate_pool_mode: ${err.message}`);
+    }
+
     let baseSql = `
       SELECT c.*, r.raw_text, r.parsed_json
       FROM candidates c
@@ -145,6 +157,43 @@ export class CandidatesService implements OnModuleInit {
     `;
     const params: any[] = [tenantId];
     let paramIndex = 2;
+
+    const canSearchAll = user?.permissions?.includes('candidate:search_all_markets') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
+
+    // 1. Market Scoping Logic:
+    // - In 'ALL_BRANCHES' mode or when user has search_all_markets & allMarkets flag, market filter is bypassed unless query.market is specified.
+    // - In 'COMBINED_MARKET' (DEFAULT) or 'STRICT_BRANCH', scope by market (e.g. Domestic 'INDIA' vs USIT 'US').
+    if (poolMode !== 'ALL_BRANCHES' || !query.allMarkets || !canSearchAll) {
+      let effectiveMarket: string | null = null;
+      if (query.market) {
+        effectiveMarket = query.market.toUpperCase();
+      } else if (!query.allMarkets || !canSearchAll) {
+        effectiveMarket = (user?.defaultMarket || 'US').toUpperCase();
+      }
+
+      if (effectiveMarket && (!query.allMarkets || !canSearchAll)) {
+        baseSql += ` AND (UPPER(c.market) = $${paramIndex} OR (c.market IS NULL AND $${paramIndex} = 'US'))`;
+        params.push(effectiveMarket);
+        paramIndex++;
+      }
+    }
+
+    // 2. Branch Scoping Logic:
+    // - Explicit query.branchId always filters by that branch.
+    // - In 'STRICT_BRANCH' mode: Non-admin recruiters only see candidates assigned to their home branch.
+    // - In 'COMBINED_MARKET' mode (DEFAULT): Candidates are combined across all branches within the market.
+    // - In 'ALL_BRANCHES' mode: Candidates are accessible workspace-wide.
+    const canSearchAllBranches = user?.permissions?.includes('candidate:search_all_branches') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
+
+    if (query.branchId) {
+      baseSql += ` AND c.branch_id = $${paramIndex}`;
+      params.push(query.branchId);
+      paramIndex++;
+    } else if (poolMode === 'STRICT_BRANCH' && user?.branchId && !canSearchAllBranches) {
+      baseSql += ` AND (c.branch_id = $${paramIndex} OR c.branch_id IS NULL)`;
+      params.push(user.branchId);
+      paramIndex++;
+    }
 
     if (query.source) {
       baseSql += ` AND c.source = $${paramIndex}`;
@@ -271,9 +320,10 @@ export class CandidatesService implements OnModuleInit {
     const state = locationParts[1] || 'Unknown';
 
     let skills: string[] = [];
+    let parsedJsonObj: any = null;
     if (row.parsed_json) {
-      const parsed = typeof row.parsed_json === 'string' ? JSON.parse(row.parsed_json) : row.parsed_json;
-      skills = parsed.skills || [];
+      parsedJsonObj = typeof row.parsed_json === 'string' ? JSON.parse(row.parsed_json) : row.parsed_json;
+      skills = parsedJsonObj.skills || [];
     }
 
     return {
@@ -292,6 +342,14 @@ export class CandidatesService implements OnModuleInit {
       experienceYears: row.total_experience_years || 0,
       rawText: row.raw_text || '',
       createdOn: row.created_at ? new Date(row.created_at).toISOString() : new Date().toISOString(),
+      currentCTC: row.current_ctc ? Number(row.current_ctc) : null,
+      expectedCTC: row.expected_ctc ? Number(row.expected_ctc) : null,
+      noticePeriodDays: row.notice_period_days ? Number(row.notice_period_days) : 0,
+      servingNotice: !!row.serving_notice,
+      lastWorkingDay: row.last_working_day || null,
+      panCard: row.pan_card || null,
+      preferredLocations: row.preferred_locations || [],
+      parsedJson: parsedJsonObj,
     };
   }
 
@@ -322,8 +380,8 @@ export class CandidatesService implements OnModuleInit {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { source?: string } = {},
-  ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean }> {
+    meta: { source?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string } = {},
+  ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
 
     const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
@@ -345,9 +403,9 @@ export class CandidatesService implements OnModuleInit {
 
     const contact = parsed?.contact || {};
     const fallbackName = file.originalname.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
-    const fullName = parsed?.candidate_name || fallbackName || 'Unnamed Candidate';
-    const email = (contact.emails && contact.emails[0]) || `no-email-${fileHash.slice(0, 8)}@import.local`;
-    const phone = (contact.phones && contact.phones[0]) || '';
+    const fullName = meta.fullName || parsed?.candidate_name || fallbackName || 'Unnamed Candidate';
+    const email = meta.email || (contact.emails && contact.emails[0]) || `no-email-${fileHash.slice(0, 8)}@import.local`;
+    const phone = meta.phone || (contact.phones && contact.phones[0]) || '';
     const skills: string[] = parsed?.skills || [];
     const workAuth = parsed?.work_authorization || 'Unknown';
     const location = parsed?.ats_normalized?.location?.[0]?.raw || parsed?.location || '';
@@ -356,6 +414,64 @@ export class CandidatesService implements OnModuleInit {
       ?? parsed?.experience_detailed?.length
       ?? 0;
     const rawText = parsed?.raw_text || parsed?.word_count ? (parsed?.raw_text || '') : '';
+
+    // 3. De-duplicate on Email (Option A - Update profile if email exists)
+    const isRealEmail = email && !email.includes('@import.local');
+    if (isRealEmail) {
+      const emailCheck = await this.db.query(
+        'SELECT id FROM candidates WHERE email = $1 AND tenant_id = $2 LIMIT 1',
+        [email, tenantId]
+      );
+      if (emailCheck.rows.length > 0) {
+        const existingCandId = emailCheck.rows[0].id;
+        this.logger.log(`Candidate with email ${email} already exists (ID=${existingCandId}). Updating profile with new CV.`);
+
+        const client = await this.db.getClient();
+        try {
+          await client.query('BEGIN');
+
+          // Insert new resume record
+          const resumeRes = await client.query(
+            `INSERT INTO resumes 
+              (filename, candidate_name, email, file_hash, parsed_json, raw_text, file_data, file_mime, file_size, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+             RETURNING id`,
+            [
+              file.originalname,
+              fullName,
+              email,
+              fileHash,
+              JSON.stringify(parsed || { candidate_name: fullName, skills }),
+              rawText,
+              file.buffer,
+              file.mimetype || 'application/octet-stream',
+              file.size ?? file.buffer.length,
+            ],
+          );
+          const newResumeId = resumeRes.rows[0].id;
+
+          // Update candidate with new resume ID and details
+          await client.query(
+            `UPDATE candidates 
+             SET full_name = $1, phone = $2, raw_current_location = $3, total_experience_years = $4,
+                 raw_current_designation = $5, work_authorization = $6, resume_record_id = $7, updated_at = NOW()
+             WHERE id = $8 AND tenant_id = $9`,
+            [fullName, phone, location, expYears, designation, workAuth, newResumeId, existingCandId, tenantId]
+          );
+
+          await client.query('COMMIT');
+
+          const updatedCandidate = await this.findOne(existingCandId, tenantId);
+          return { candidate: updatedCandidate, duplicate: true, updated: true, parsed: true };
+        } catch (err: any) {
+          await client.query('ROLLBACK');
+          this.logger.error(`Failed to update candidate on duplicate email: ${err.message}`, err.stack);
+          throw err;
+        } finally {
+          client.release();
+        }
+      }
+    }
 
     const client = await this.db.getClient();
     try {
@@ -383,11 +499,11 @@ export class CandidatesService implements OnModuleInit {
       const candRes = await client.query(
         `INSERT INTO candidates
           (full_name, email, phone, raw_current_location, total_experience_years,
-           raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)
+           raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id, branch_id, market)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)
          RETURNING id, created_at`,
         [fullName, email, phone, location, expYears, designation,
-         meta.source || 'CV Upload', workAuth, resumeId, tenantId],
+         meta.source || 'CV Upload', workAuth, resumeId, tenantId, meta.branchId || null, meta.market || 'US'],
       );
 
       await client.query('COMMIT');
@@ -847,6 +963,50 @@ export class CandidatesService implements OnModuleInit {
     } else {
       throw new Error(`Invalid delete type: ${type}`);
     }
+  }
+
+  async updateCandidate(id: number, dto: any, tenantId: string): Promise<CandidateProfile> {
+    this.logger.log(`Updating candidate details for ID=${id} and tenant=${tenantId}`);
+
+    const existCheck = await this.db.query('SELECT 1 FROM candidates WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+    if (existCheck.rows.length === 0) {
+      throw new NotFoundException(`Candidate profile with ID ${id} was not found.`);
+    }
+
+    const fields: string[] = [];
+    const params: any[] = [id, tenantId];
+    let paramIndex = 3;
+
+    const addField = (colName: string, val: any) => {
+      if (val !== undefined) {
+        fields.push(`${colName} = $${paramIndex}`);
+        params.push(val === '' ? null : val);
+        paramIndex++;
+      }
+    };
+
+    addField('full_name', dto.fullName);
+    addField('email', dto.email);
+    addField('phone', dto.phone);
+    addField('raw_current_location', dto.location);
+    addField('raw_current_designation', dto.jobTitle);
+    addField('work_authorization', dto.workAuthorization);
+    addField('total_experience_years', dto.experienceYears);
+    addField('current_ctc', dto.currentCTC);
+    addField('expected_ctc', dto.expectedCTC);
+    addField('notice_period_days', dto.noticePeriodDays);
+    addField('serving_notice', dto.servingNotice);
+
+    if (fields.length > 0) {
+      const updateSql = `
+        UPDATE candidates
+        SET ${fields.join(', ')}, updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $2
+      `;
+      await this.db.query(updateSql, params);
+    }
+
+    return this.findOne(id, tenantId);
   }
 }
 

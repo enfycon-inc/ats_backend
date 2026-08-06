@@ -17,6 +17,14 @@ export interface CandidateProfile {
   experienceYears: number;
   rawText: string;
   createdOn: string;
+  currentCTC?: number | null;
+  expectedCTC?: number | null;
+  noticePeriodDays?: number;
+  servingNotice?: boolean;
+  lastWorkingDay?: string | null;
+  panCard?: string | null;
+  preferredLocations?: string[];
+  parsedJson?: any;
 }
 
 /**

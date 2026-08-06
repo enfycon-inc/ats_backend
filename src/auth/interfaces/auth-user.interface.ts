@@ -22,4 +22,10 @@ export interface AuthUser {
   permissions?: string[];
   /** Assigned pod ID if user is member of a pod */
   podId?: string;
+  /** Assigned branch ID */
+  branchId?: string;
+  /** Assigned business unit ID */
+  businessUnitId?: string;
+  /** Default market segment ('US' vs 'INDIA') */
+  defaultMarket?: string;
 }

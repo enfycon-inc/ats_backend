@@ -9,4 +9,8 @@ export enum Permission {
   TENANT_SETTINGS = 'tenant:settings',
   USER_MANAGE = 'user:manage',
   PLATFORM_MANAGE = 'platform:manage',
+  CANDIDATES_SEARCH_ALL_MARKETS = 'candidate:search_all_markets',
+  CANDIDATES_SEARCH_ALL_BRANCHES = 'candidate:search_all_branches',
+  JOBS_VIEW_ALL_BRANCHES = 'job:view_all_branches',
+  BRANCH_ADMIN_MANAGE = 'branch_admin:manage',
 }

@@ -29,14 +29,16 @@ import { RequirePermissions } from './decorators/permissions.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { AuthUser } from './interfaces/auth-user.interface';
-
-
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+import { resolveTenantId } from './utils/tenant-resolver';
+import { AuditService } from '../audit/audit.service';
 
 @ApiTags('Auth & Identity')
 @Controller('api/auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly auditService: AuditService,
+  ) {}
 
   // ─── POST /api/auth/login ───────────────────────────────────
   @Post('login')
@@ -143,7 +145,7 @@ Validates email + password and returns a signed JWT access token.
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantHeader?: string,
   ) {
-    const tenantId = tenantHeader || user.tenantId || DEFAULT_TENANT_ID;
+    const tenantId = resolveTenantId(user, tenantHeader);
     return this.authService.listUsers(tenantId);
   }
 
@@ -165,23 +167,20 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.setUserActive(userId, body.isActive, currentUser.dbId);
   }
 
-  // ─── PATCH /api/auth/users/:id/roles ────────────────────────
-  @Patch('users/:id/roles')
+  // ─── PATCH /api/auth/users/:id ──────────────────────────────
+  @Patch('users/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Update user roles [ADMIN only]',
-    description:
-      'Assigns or replaces roles for a user. Valid roles: RECRUITER, ACCOUNT_MANAGER, DELIVERY_HEAD, ADMIN, TRACKER.',
+    summary: 'Update user profile details, email typo, password, branch [ADMIN only]',
   })
-  @ApiResponse({ status: 200, description: 'Roles updated successfully.' })
-  async updateRoles(
+  async updateUserDetails(
     @Param('id') userId: string,
-    @Body() body: { roles: string[] },
+    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roles?: string[] },
     @CurrentUser() currentUser: AuthUser,
   ) {
-    return this.authService.updateUserRoles(userId, body.roles, currentUser.roles);
+    return this.authService.updateUserDetails(userId, body, currentUser);
   }
 
   // ─── GET /api/auth/approvals/pending ────────────────────────
@@ -203,14 +202,37 @@ Validates email + password and returns a signed JWT access token.
   @Roles('SUPER_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Approve a user registration and configure market [SUPER_ADMIN only]',
+    summary: 'Approve a user registration and configure market & limits [SUPER_ADMIN only]',
   })
-  @ApiResponse({ status: 200, description: 'User approved and tenant market updated.' })
+  @ApiResponse({ status: 200, description: 'User approved and tenant configured successfully.' })
   async approveUser(
     @Param('id') userId: string,
-    @Body() body: { market: string; subdomain?: string },
+    @Body() body: { market: string; subdomain?: string; userLimit?: number; maxBranches?: number },
   ) {
-    return this.authService.approveUser(userId, body.market, body.subdomain);
+    return this.authService.approveUser(userId, body.market, body.subdomain, body.userLimit, body.maxBranches);
+  }
+
+  @Post('tenants/manual')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Manually create and activate a new company tenant [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 201, description: 'Company tenant and admin user created & activated.' })
+  async createManualTenant(
+    @Body() body: {
+      companyName: string;
+      subdomain: string;
+      adminFullName: string;
+      adminEmail: string;
+      adminPassword?: string;
+      userLimit?: number;
+      maxBranches?: number;
+      defaultMarket?: string;
+    },
+  ) {
+    return this.authService.createManualTenant(body);
   }
 
   // ─── GET /api/auth/tenants ──────────────────────────────────
@@ -224,6 +246,17 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 200, description: 'Tenant list returned.' })
   async listTenants() {
     return this.authService.listTenants();
+  }
+
+  @Get('tenants/:id/details')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get full tenant details, user roster, and usage stats [SUPER_ADMIN only]',
+  })
+  async getTenantDetails(@Param('id') tenantId: string) {
+    return this.authService.getTenantDetails(tenantId);
   }
 
   // ─── PATCH /api/auth/tenants/:id/status ─────────────────────
@@ -258,6 +291,21 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantUserLimit(tenantId, body.limit);
   }
 
+  @Patch('tenants/:id/branch-limit')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant max branches limit [SUPER_ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant max branches limit updated.' })
+  async updateTenantBranchLimit(
+    @Param('id') tenantId: string,
+    @Body() body: { limit: number },
+  ) {
+    return this.authService.updateTenantBranchLimit(tenantId, body.limit);
+  }
+
   // ─── PATCH /api/auth/tenants/:id/market ─────────────────────
   @Patch('tenants/:id/market')
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -276,10 +324,11 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenants/my-subdomain ───────────────────
   @Patch('tenants/my-subdomain')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Update tenant subdomain identifier [Tenant admin/user]',
+    summary: 'Update tenant subdomain identifier [SUPER_ADMIN only]',
   })
   @ApiResponse({ status: 200, description: 'Subdomain updated successfully.' })
   async updateMySubdomain(
@@ -287,6 +336,22 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { subdomain: string },
   ) {
     return this.authService.updateTenantSubdomain(user.tenantId, body.subdomain);
+  }
+
+  // ─── PATCH /api/auth/tenants/my-settings ────────────────────
+  @Patch('tenants/my-settings')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant general settings [ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'Tenant settings updated.' })
+  async updateMySettings(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { podSystemEnabled?: boolean; candidatePoolMode?: string },
+  ) {
+    return this.authService.updateTenantSettings(user.tenantId, body);
   }
 
   // ─── GET /api/auth/rbac/permissions ──────────────────────────
@@ -384,9 +449,10 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── POST /api/auth/tenants/my-domains ──────────────────────
   @Post('tenants/my-domains')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Add custom domain for active tenant [Tenant Admin/User]' })
+  @ApiOperation({ summary: 'Add custom domain for active tenant [ADMIN only]' })
   async addMyDomain(
     @CurrentUser() user: AuthUser,
     @Body() body: { domainName: string },
@@ -396,9 +462,10 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── DELETE /api/auth/tenants/my-domains/:id ─────────────────
   @Delete('tenants/my-domains/:id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Delete custom domain for active tenant [Tenant Admin/User]' })
+  @ApiOperation({ summary: 'Delete custom domain for active tenant [ADMIN only]' })
   async deleteMyDomain(
     @CurrentUser() user: AuthUser,
     @Param('id') domainId: string,

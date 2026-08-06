@@ -11,16 +11,23 @@ import {
   ParseIntPipe,
   HttpStatus,
   HttpCode,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth } from '@nestjs/swagger';
 import { RecruiterSubmissionsService, SubmissionDetails } from './recruiter-submissions.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
-
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { resolveTenantId } from '../auth/utils/tenant-resolver';
+import { resolveBranchId } from '../auth/utils/branch-resolver';
 
 @ApiTags('ATS Recruiter Submissions & Interview Tracking')
 @Controller('api/recruiter-submissions')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@ApiBearerAuth()
 export class RecruiterSubmissionsController {
   constructor(private readonly service: RecruiterSubmissionsService) {}
 
@@ -35,10 +42,13 @@ export class RecruiterSubmissionsController {
   @ApiResponse({ status: 403, description: 'Job status is not ACTIVE or carrying forward.' })
   async create(
     @Body() dto: CreateSubmissionDto,
+    @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<SubmissionDetails> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
-    return this.service.create(dto, activeTenantId);
+    const tid = resolveTenantId(user, tenantId);
+    const bid = resolveBranchId(user, branchHeaderId);
+    return this.service.create(dto, tid, user, bid);
   }
 
   @Get()
@@ -48,6 +58,9 @@ export class RecruiterSubmissionsController {
   })
   @ApiResponse({ status: 200, description: 'Submissions list resolved.' })
   async findAll(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('startDate') startDate?: string,
@@ -58,10 +71,10 @@ export class RecruiterSubmissionsController {
     @Query('finalStatus') finalStatus?: string,
     @Query('jobId') jobId?: string,
     @Query('candidateId') candidateId?: string,
-    @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
-    return this.service.findAll(activeTenantId, {
+    const tid = resolveTenantId(user, tenantId);
+    const bid = resolveBranchId(user, branchHeaderId);
+    return this.service.findAll(tid, user, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       startDate,
@@ -72,6 +85,7 @@ export class RecruiterSubmissionsController {
       finalStatus,
       jobId,
       candidateId: candidateId ? parseInt(candidateId, 10) : undefined,
+      branchId: bid || undefined,
     });
   }
 
@@ -81,9 +95,12 @@ export class RecruiterSubmissionsController {
     description: 'Aggregates total submissions and PENDING status counts for recruiter dashboard.',
   })
   @ApiResponse({ status: 200, description: 'Tracker stats aggregated successfully.' })
-  async getTrackerStats(@Headers('x-tenant-id') tenantId?: string) {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
-    return this.service.getTrackerStats(activeTenantId);
+  async getTrackerStats(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.getTrackerStats(tid, user);
   }
 
   @Get(':id')
@@ -91,15 +108,16 @@ export class RecruiterSubmissionsController {
     summary: 'Fetch Detailed Submission Record',
     description: 'Retrieves a single candidate submission profile with joined candidate and job requisition properties.',
   })
-  @ApiParam({ name: 'id', description: 'Alphanumeric serial database primary key of the submission', type: Number })
+  @ApiParam({ name: 'id', description: 'Alphanumeric database primary key of the submission', type: Number })
   @ApiResponse({ status: 200, description: 'Detailed submission profile resolved successfully.' })
   @ApiResponse({ status: 404, description: 'Submission not found.' })
   async findOne(
     @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<SubmissionDetails> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
-    return this.service.findOne(id, activeTenantId);
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.findOne(id, tid);
   }
 
   @Patch(':id')
@@ -107,16 +125,17 @@ export class RecruiterSubmissionsController {
     summary: 'Update Submission Statuses or Interview Schedules',
     description: 'Modifies active interview stages and remarks, automatically evaluating sequential auto-rejections.',
   })
-  @ApiParam({ name: 'id', description: 'Alphanumeric serial database primary key of the submission', type: Number })
+  @ApiParam({ name: 'id', description: 'Alphanumeric database primary key of the submission', type: Number })
   @ApiResponse({ status: 200, description: 'Submission record successfully updated.' })
   @ApiResponse({ status: 404, description: 'Submission not found.' })
   async update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateSubmissionDto,
+    @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<SubmissionDetails> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
-    return this.service.update(id, dto, activeTenantId);
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.update(id, dto, tid, user);
   }
 
   @Delete(':id')
@@ -125,14 +144,15 @@ export class RecruiterSubmissionsController {
     summary: 'Delete Candidate Submission Record',
     description: 'Removes submission record and decrements submission done counts on the job requisition.',
   })
-  @ApiParam({ name: 'id', description: 'Alphanumeric serial database primary key of the submission', type: Number })
+  @ApiParam({ name: 'id', description: 'Alphanumeric database primary key of the submission', type: Number })
   @ApiResponse({ status: 200, description: 'Submission removed successfully.' })
   @ApiResponse({ status: 404, description: 'Submission not found.' })
   async remove(
     @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<{ message: string }> {
-    const activeTenantId = tenantId || DEFAULT_TENANT_ID;
-    return this.service.remove(id, activeTenantId);
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.remove(id, tid);
   }
 }
