@@ -307,19 +307,19 @@ export class JobsService implements OnModuleInit {
         // Find next available pod for round-robin
         let podRes = await this.db.query(
           `SELECT id FROM pods
-           WHERE tenant_id = $1 AND is_available_for_assignment = TRUE AND is_active = TRUE
+           WHERE tenant_id = $1 AND is_available_for_assignment = TRUE
            ORDER BY created_at ASC LIMIT 1`,
           [tenantId]
         );
         if (podRes.rows.length === 0) {
           // Reset cycle
           await this.db.query(
-            "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1 AND is_active = TRUE",
+            "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1",
             [tenantId]
           );
           podRes = await this.db.query(
             `SELECT id FROM pods
-             WHERE tenant_id = $1 AND is_available_for_assignment = TRUE AND is_active = TRUE
+             WHERE tenant_id = $1 AND is_available_for_assignment = TRUE
              ORDER BY created_at ASC LIMIT 1`,
             [tenantId]
           );
@@ -1000,25 +1000,42 @@ export class JobsService implements OnModuleInit {
     const rawText = text || '';
     const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
 
-    // 1. Extract Job Title from top line or headers
-    let jobTitle = 'Salesforce Developer';
-    for (const line of lines.slice(0, 5)) {
-      if (line.toLowerCase().startsWith('job summary') || line.toLowerCase().startsWith('location:')) continue;
-      
-      let cleanLine = line.replace(/job title\s*:\s*/i, '').replace(/position\s*:\s*/i, '').replace(/role\s*:\s*/i, '');
-      // Strip parenthetical experience like (4–6 Years Experience) or (4-6 Years)
-      cleanLine = cleanLine.replace(/\s*\([\d–-]+\s*years?(\s*experience)?\)/gi, '').trim();
-      
-      const roleKeywords = ['developer', 'engineer', 'architect', 'manager', 'consultant', 'administrator', 'specialist', 'analyst', 'lead', 'designer', 'tester'];
-      if (roleKeywords.some((kw) => cleanLine.toLowerCase().includes(kw))) {
-        jobTitle = cleanLine;
+    // 1. Extract Job Title from explicit labels anywhere, or top lines as fallback
+    let jobTitle = '';
+    let foundExplicitTitle = false;
+    
+    // First pass: look for explicit Role / Job Title tags anywhere in the document
+    for (const line of lines) {
+      const match = line.match(/^(?:role|job title|position)\s*:\s*(.+)/i);
+      if (match && match[1].trim()) {
+        jobTitle = match[1].trim();
+        foundExplicitTitle = true;
         break;
       }
     }
 
+    // Second pass: fallback to top 5 lines if no explicit title found
+    if (!foundExplicitTitle) {
+      for (const line of lines.slice(0, 5)) {
+        if (line.toLowerCase().startsWith('job summary') || line.toLowerCase().startsWith('location:')) continue;
+        
+        let cleanLine = line.replace(/job title\s*:\s*/i, '').replace(/position\s*:\s*/i, '').replace(/role\s*:\s*/i, '');
+        // Strip parenthetical experience like (4–6 Years Experience) or (4-6 Years)
+        cleanLine = cleanLine.replace(/\s*\([\d–-]+\s*years?(\s*experience)?\)/gi, '').trim();
+        
+        const roleKeywords = ['developer', 'engineer', 'architect', 'manager', 'consultant', 'administrator', 'specialist', 'analyst', 'lead', 'designer', 'tester'];
+        
+        // Ensure the line is relatively short (not a full descriptive sentence)
+        if (cleanLine.split(/\s+/).length < 8 && roleKeywords.some((kw) => cleanLine.toLowerCase().includes(kw))) {
+          jobTitle = cleanLine;
+          break;
+        }
+      }
+    }
+
     // 2. Extract Experience Min / Max (e.g. 4–6 Years Experience or 4-6 yrs)
-    let experienceMin = 4;
-    let experienceMax = 6;
+    let experienceMin = 0;
+    let experienceMax = 0;
     const expMatch = rawText.match(/(\d+)\s*[–-]\s*(\d+)\s*years?/i) || rawText.match(/(\d+)\s*to\s*(\d+)\s*years?/i);
     if (expMatch) {
       experienceMin = parseInt(expMatch[1], 10);
@@ -1026,15 +1043,15 @@ export class JobsService implements OnModuleInit {
     }
 
     // 3. Extract Location & Remote Mode
-    let country = 'India';
-    let remoteJob = 'Hybrid';
+    let country = '';
+    let remoteJob = 'No';
     if (rawText.toLowerCase().includes('remote')) remoteJob = 'Yes';
     if (rawText.toLowerCase().includes('hybrid')) remoteJob = 'Hybrid';
     if (rawText.toLowerCase().includes('united states') || rawText.toLowerCase().includes('us')) country = 'United States';
     if (rawText.toLowerCase().includes('india')) country = 'India';
 
     // 4. Extract CTC / Pay Rate (e.g. ₹18–22 LPA or 18-22 LPA)
-    let payRate = '18 - 22';
+    let payRate = '';
     const ctcMatch =
       rawText.match(/(?:₹|rs\.?|inr)?\s*([\d\.]+(?:\s*[–-]\s*[\d\.]+)?)\s*(?:lpa|lacs|lakhs)/i) ||
       rawText.match(/salary\s*[:\-\s]*[₹\s]*([\d\.]+(?:\s*[–-]\s*[\d\.]+)?)/i);
@@ -1048,25 +1065,24 @@ export class JobsService implements OnModuleInit {
       'REST', 'SOAP', 'Sales Cloud', 'Service Cloud', 'Experience Cloud', 'Data Cloud',
       'Agentforce', 'MuleSoft', 'Git', 'SFDX', 'CI/CD', 'JavaScript', 'HTML', 'CSS', 'React', 'Agile'
     ];
-
     const foundSkills = knownSkills.filter((s) => new RegExp(`\\b${s}\\b`, 'i').test(rawText));
     const primarySkills = foundSkills.slice(0, 6);
     const secondarySkills = foundSkills.slice(6);
 
     return {
       success: true,
-      jobTitle: jobTitle || 'Salesforce Developer',
+      jobTitle: jobTitle || '',
       experienceMin,
       experienceMax,
       payRate,
       ctc: payRate,
-      primarySkills: primarySkills.length > 0 ? primarySkills : ['Apex', 'LWC', 'Salesforce Flows', 'Sales Cloud'],
-      secondarySkills: secondarySkills.length > 0 ? secondarySkills : ['Visualforce', 'REST API', 'Git', 'CI/CD'],
+      primarySkills: primarySkills,
+      secondarySkills: secondarySkills,
       location: { country, state: '', city: '' },
       remoteJob,
-      jobType: 'Full Time',
-      workAuthorization: country === 'India' ? 'Indian Citizen' : 'US Authorized',
-      noticePeriod: 'Immediate to 30 Days',
+      jobType: '',
+      workAuthorization: '',
+      noticePeriod: '',
     };
   }
 
