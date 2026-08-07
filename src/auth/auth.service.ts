@@ -1245,7 +1245,7 @@ export class AuthService implements OnModuleInit {
       { id: 'pod:view', name: 'View Pods', group: 'Pods Management' },
       { id: 'pod:reset_cycle', name: 'Reset Assignment Cycle', group: 'Pods Management' },
       { id: 'pod:overlap', name: 'Authorize Pod Assignment Overlaps', group: 'Pods Management' },
-      { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff Roster', group: 'Branch & Multi-Office Management' },
+      { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_branches', name: 'Search Candidates Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'job:view_all_branches', name: 'View Jobs Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_markets', name: 'Search Candidates Across All Markets (US + India)', group: 'Branch & Multi-Office Management' },

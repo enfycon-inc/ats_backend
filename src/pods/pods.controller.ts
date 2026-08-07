@@ -85,7 +85,7 @@ export class PodsController {
 
   @Patch(':id')
   @RequirePermissions('pod:edit')
-  @ApiOperation({ summary: 'Update pod metadata or member roster' })
+  @ApiOperation({ summary: 'Update pod metadata or members' })
   @ApiParam({ name: 'id', description: 'Pod UUID' })
   async update(
     @Param('id') id: string,

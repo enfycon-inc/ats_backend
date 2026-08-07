@@ -253,7 +253,7 @@ Validates email + password and returns a signed JWT access token.
   @Roles('SUPER_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Get full tenant details, user roster, and usage stats [SUPER_ADMIN only]',
+    summary: 'Get full tenant details, user list, and usage stats [SUPER_ADMIN only]',
   })
   async getTenantDetails(@Param('id') tenantId: string) {
     return this.authService.getTenantDetails(tenantId);
