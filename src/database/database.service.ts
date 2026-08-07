@@ -39,6 +39,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ssl: connectionString.includes('supabase') ? { rejectUnauthorized: false } : undefined,
     });
 
+    // Catch background connection drops / resets so unhandled 'error' events do not crash NestJS process
+    this.pool.on('error', (err) => {
+      this.logger.error(`Unexpected background PostgreSQL pool client error: ${err.message}`, err.stack);
+    });
+
     // Test the database connection immediately and ensure tables exist
     try {
       const res = await this.pool.query('SELECT NOW()');
@@ -184,6 +189,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
       
       -- 5. Add market columns to candidates if not exists
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS market VARCHAR(50) DEFAULT 'US';
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS current_ctc DECIMAL(10,2);
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS expected_ctc DECIMAL(10,2);
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS notice_period_days INT DEFAULT 0;
