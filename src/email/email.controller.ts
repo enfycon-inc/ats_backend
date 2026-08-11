@@ -20,7 +20,7 @@ export class EmailController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.emailService.createCampaign(dto, tid);
+    return this.emailService.createCampaign(dto, tid, user.dbId);
   }
 
   @Post('campaigns/:id/cancel')
@@ -34,7 +34,7 @@ export class EmailController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.emailService.getCampaigns(tid);
+    return this.emailService.getCampaigns(tid, user);
   }
 
   @Get('campaigns/active')
@@ -57,7 +57,7 @@ export class EmailController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.emailService.getConnectedAccounts(tid);
+    return this.emailService.getConnectedAccounts(tid, user);
   }
 
   @Post('accounts/custom')
@@ -67,7 +67,7 @@ export class EmailController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.emailService.addCustomAccount(dto, tid);
+    return this.emailService.addCustomAccount(dto, tid, user.dbId);
   }
 
   @Post('accounts/:id/delete')
@@ -77,7 +77,18 @@ export class EmailController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.emailService.deleteAccount(id, tid);
+    return this.emailService.deleteAccount(id, tid, user);
+  }
+
+  @Post('accounts/:id/share')
+  async shareAccount(
+    @Param('id') id: string,
+    @Body() dto: { sharedWithAll: boolean; sharedWithUsers: string[]; sharedWithBranches: string[] },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.shareAccount(id, tid, user, dto);
   }
 
   @Post('accounts/:id/default')

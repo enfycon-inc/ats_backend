@@ -273,6 +273,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
       ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES public.tenants(id) ON DELETE CASCADE;
       UPDATE mass_mail.email_accounts SET tenant_id = 'd3b07384-d113-49c3-a555-9ee75c13ca33' WHERE tenant_id IS NULL;
+      
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS shared_with_all BOOLEAN DEFAULT false;
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS shared_with_branches UUID[] DEFAULT '{}';
+      ALTER TABLE mass_mail.email_accounts ADD COLUMN IF NOT EXISTS shared_with_users UUID[] DEFAULT '{}';
 
       CREATE TABLE IF NOT EXISTS mass_mail.email_preferences (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

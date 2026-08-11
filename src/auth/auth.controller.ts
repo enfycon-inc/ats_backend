@@ -132,11 +132,10 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── GET /api/auth/users ────────────────────────────────────
   @Get('users')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN', 'DELIVERY_HEAD')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'List all users in the tenant [ADMIN, DELIVERY_HEAD]',
+    summary: 'List all users in the tenant',
     description: 'Returns all registered users scoped to the active tenant.',
   })
   @ApiResponse({ status: 200, description: 'User list returned.' })

@@ -24,7 +24,7 @@ export class EmailService {
     });
   }
 
-  async createCampaign(dto: any, tenantId: string) {
+  async createCampaign(dto: any, tenantId: string, userId: string | null = null) {
     this.logger.log(`Creating mass mail campaign: ${dto.name} for tenant ${tenantId}`);
     this.logger.log(`DTO: ${JSON.stringify({ ...dto, recipients: dto.recipients?.length + ' recipients' })}`);
     
@@ -32,8 +32,8 @@ export class EmailService {
       // Create Campaign
       this.logger.log(`Executing INSERT INTO mass_mail.campaigns...`);
       const campRes = await this.db.query(
-        `INSERT INTO mass_mail.campaigns (tenant_id, name, subject, body_template, rate_per_minute, rate_per_hour, randomize_delay, email_account_id, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Processing') RETURNING id`,
+        `INSERT INTO mass_mail.campaigns (tenant_id, name, subject, body_template, rate_per_minute, rate_per_hour, randomize_delay, email_account_id, status, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Processing', $9) RETURNING id`,
         [
           tenantId,
           dto.name || 'Untitled Campaign',
@@ -43,6 +43,7 @@ export class EmailService {
           dto.ratePerHour || 500,
           dto.randomizeDelay || false,
           dto.accountId || null,
+          userId
         ]
       );
       const campaignId = campRes.rows[0].id;
@@ -139,8 +140,8 @@ export class EmailService {
     return { activeCampaignId: null };
   }
 
-  async getCampaigns(tenantId: string) {
-    const res = await this.db.query(`
+  async getCampaigns(tenantId: string, user: any) {
+    let query = `
       SELECT 
         c.id, 
         c.name, 
@@ -148,6 +149,9 @@ export class EmailService {
         c.status, 
         c.created_at as start_time,
         c.rate_per_minute as rate_set,
+        c.created_by,
+        u.full_name as author_name,
+        u.branch_id as author_branch_id,
         MAX(r.sent_at) as end_time,
         EXTRACT(EPOCH FROM AVG(r.sent_at - c.created_at)) as avg_wait_seconds,
         COUNT(r.id) as total_recipients,
@@ -157,10 +161,31 @@ export class EmailService {
         SUM(CASE WHEN r.status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled_count
       FROM mass_mail.campaigns c
       LEFT JOIN mass_mail.recipients r ON c.id = r.campaign_id
+      LEFT JOIN public.users u ON c.created_by = u.id::varchar
       WHERE c.tenant_id = $1
-      GROUP BY c.id
+    `;
+    
+    const params: any[] = [tenantId];
+    
+    // RBAC Filtering
+    if (user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'))) {
+      // View all tenant campaigns
+    } else if (user && user.roles && user.roles.includes('TENANT_BRANCH_ADMIN')) {
+      // View campaigns in the same branch, or own campaigns
+      query += ` AND (u.branch_id = $2 OR c.created_by = $3)`;
+      params.push(user.branchId, user.dbId);
+    } else if (user && user.dbId) {
+      // Regular user: only own campaigns
+      query += ` AND c.created_by = $2`;
+      params.push(user.dbId);
+    }
+    
+    query += `
+      GROUP BY c.id, u.full_name, u.branch_id
       ORDER BY c.created_at DESC
-    `, [tenantId]);
+    `;
+
+    const res = await this.db.query(query, params);
     return res.rows;
   }
 
@@ -184,7 +209,7 @@ export class EmailService {
     }
   }
 
-  async handleGoogleCallback(code: string, tenantId: string = 'd3b07384-d113-49c3-a555-9ee75c13ca33') {
+  async handleGoogleCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33', userId: string | null = null) {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     const redirectUri = process.env.GOOGLE_REDIRECT_URI;
@@ -207,10 +232,10 @@ export class EmailService {
     });
 
     const email = userInfoResponse.data.email;
-    await this.saveEmailAccount('google', email, access_token, tenantId, refresh_token);
+    await this.saveEmailAccount('google', email, access_token, tenantId, userId, refresh_token);
   }
 
-  async handleMicrosoftCallback(code: string, tenantId: string = 'd3b07384-d113-49c3-a555-9ee75c13ca33') {
+  async handleMicrosoftCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33', userId: string | null = null) {
     const clientId = process.env.MICROSOFT_CLIENT_ID;
     const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
     const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
@@ -235,45 +260,106 @@ export class EmailService {
     });
 
     const email = userInfoResponse.data.mail || userInfoResponse.data.userPrincipalName;
-    await this.saveEmailAccount('microsoft', email, access_token, tenantId, refresh_token);
+    await this.saveEmailAccount('microsoft', email, access_token, tenantId, userId, refresh_token);
   }
 
-  private async saveEmailAccount(provider: string, email: string, accessToken: string, tenantId: string, refreshToken?: string) {
+  private async saveEmailAccount(provider: string, email: string, accessToken: string, tenantId: string, userId: string | null, refreshToken?: string) {
     const query = `
-      INSERT INTO mass_mail.email_accounts (provider, email_address, access_token, refresh_token, tenant_id)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO mass_mail.email_accounts (provider, email_address, access_token, refresh_token, tenant_id, user_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (provider, email_address, tenant_id) DO UPDATE
+        SET access_token = EXCLUDED.access_token,
+            refresh_token = EXCLUDED.refresh_token,
+            user_id = COALESCE(EXCLUDED.user_id, mass_mail.email_accounts.user_id),
+            is_active = true
     `;
-    await this.db.query(query, [provider, email, accessToken, refreshToken || null, tenantId]);
+    await this.db.query(query, [provider, email, accessToken, refreshToken || null, tenantId, userId]);
   }
   
-  async getConnectedAccounts(tenantId: string) {
+  async getConnectedAccounts(tenantId: string, user: any) {
+    // If no user provided, just return tenant accounts (fallback)
+    if (!user || !user.dbId) {
+      const res = await this.db.query(`
+        SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name, user_id, shared_with_all, shared_with_users, shared_with_branches
+        FROM mass_mail.email_accounts 
+        WHERE tenant_id = $1 AND is_active = true
+      `, [tenantId]);
+      return res.rows;
+    }
+    
+    // Determine if admin
+    const isAdmin = user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+    
+    if (isAdmin) {
+      const res = await this.db.query(`
+        SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name, user_id, shared_with_all, shared_with_users, shared_with_branches
+        FROM mass_mail.email_accounts 
+        WHERE tenant_id = $1 AND is_active = true
+      `, [tenantId]);
+      return res.rows;
+    }
+    
+    // Regular user: Return accounts they own, or that are shared with them/their branch/tenant
     const res = await this.db.query(`
-      SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name 
+      SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name, user_id, shared_with_all, shared_with_users, shared_with_branches
       FROM mass_mail.email_accounts 
       WHERE tenant_id = $1 AND is_active = true
-    `, [tenantId]);
+      AND (
+        user_id = $2
+        OR shared_with_all = true 
+        OR $2::uuid = ANY(shared_with_users)
+        OR ($3::uuid IS NOT NULL AND $3::uuid = ANY(shared_with_branches))
+      )
+    `, [tenantId, user.dbId, user.branchId || null]);
     return res.rows;
   }
 
-  async addCustomAccount(dto: any, tenantId: string) {
+  async addCustomAccount(dto: any, tenantId: string, userId: string) {
     const query = `
       INSERT INTO mass_mail.email_accounts (
         provider, email_address, profile_name, password, 
-        smtp_host, smtp_port, imap_host, imap_port, require_ssl, require_tls, tenant_id
+        smtp_host, smtp_port, imap_host, imap_port, require_ssl, require_tls, tenant_id, user_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id, provider, email_address as email, profile_name
     `;
     const res = await this.db.query(query, [
       'smtp', dto.email, dto.profileName, dto.password, 
       dto.smtpHost, dto.smtpPort, dto.imapHost, dto.imapPort, 
-      dto.requireSsl, dto.requireTls, tenantId
+      dto.requireSsl, dto.requireTls, tenantId, userId
     ]);
     return res.rows[0];
   }
 
-  async deleteAccount(id: string, tenantId: string) {
-    await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+  async deleteAccount(id: string, tenantId: string, user: any) {
+    const userId = user?.dbId || user?.id;
+    const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+    
+    if (isAdmin) {
+      await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+    } else if (userId) {
+      await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1 AND tenant_id = $2 AND user_id = $3', [id, tenantId, userId]);
+    }
+    return { success: true };
+  }
+
+  async shareAccount(id: string, tenantId: string, user: any, dto: { sharedWithAll: boolean; sharedWithUsers: string[]; sharedWithBranches: string[] }) {
+    const userId = user?.dbId || user?.id;
+    const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+    
+    if (isAdmin) {
+      await this.db.query(`
+        UPDATE mass_mail.email_accounts 
+        SET shared_with_all = $1, shared_with_users = $2::uuid[], shared_with_branches = $3::uuid[]
+        WHERE id = $4 AND tenant_id = $5
+      `, [dto.sharedWithAll, dto.sharedWithUsers || [], dto.sharedWithBranches || [], id, tenantId]);
+    } else if (userId) {
+      await this.db.query(`
+        UPDATE mass_mail.email_accounts 
+        SET shared_with_all = $1, shared_with_users = $2::uuid[], shared_with_branches = $3::uuid[]
+        WHERE id = $4 AND tenant_id = $5 AND user_id = $6
+      `, [dto.sharedWithAll, dto.sharedWithUsers || [], dto.sharedWithBranches || [], id, tenantId, userId]);
+    }
     return { success: true };
   }
 
