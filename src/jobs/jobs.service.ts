@@ -151,20 +151,49 @@ export class JobsService implements OnModuleInit {
 
     this.logger.log('Jobs table V2 schema verified (all Ceipal fields present).');
   }
-  async getNextJobCode(tenantId: string, offset = 0): Promise<string> {
-    const tenantRes = await this.db.query('SELECT domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
-    let tenantPrefix = 'ENFY';
-    if (tenantRes.rows.length > 0) {
-      const domain = tenantRes.rows[0].domain || 'enfy';
-      const cleanDomain = domain.toLowerCase().endsWith('.com') ? domain.slice(0, -4) : domain;
-      tenantPrefix = (cleanDomain === 'temp' || !cleanDomain) ? 'ENFY' : cleanDomain.substring(0, 4).toUpperCase();
+  async getNextJobCode(tenantId: string, branchId?: string | null, shiftInput?: string | null, offset = 0): Promise<string> {
+    // 1. Resolve Branch Code (manual code set by admin, or first 3 letters of branch name, or 'GEN')
+    let branchCode = 'GEN';
+    if (branchId) {
+      const branchRes = await this.db.query(
+        'SELECT code, name FROM branches WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        [branchId, tenantId]
+      );
+      if (branchRes.rows.length > 0) {
+        const row = branchRes.rows[0];
+        if (row.code && row.code.trim().length > 0) {
+          branchCode = row.code.trim().toUpperCase().substring(0, 3);
+        } else if (row.name && row.name.trim().length > 0) {
+          branchCode = row.name.trim().replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
+        }
+      }
     }
 
+    // 2. Resolve Shift Code ('D' for Day, 'N' for Night)
+    let shiftCode = 'D';
+    if (shiftInput) {
+      const norm = shiftInput.trim().toUpperCase();
+      if (norm.startsWith('N') || norm === 'NIGHT') {
+        shiftCode = 'N';
+      } else {
+        shiftCode = 'D';
+      }
+    } else {
+      const currentHour = new Date().getHours();
+      shiftCode = (currentHour >= 18 || currentHour < 6) ? 'N' : 'D';
+    }
+
+    // 3. Format Date YYMMDD (e.g., 260812)
     const date = new Date();
     const yy = date.getFullYear().toString().slice(-2);
     const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const prefix = `${tenantPrefix}-JOB-${yy}${mm}-`;
+    const dd = String(date.getDate()).padStart(2, '0');
+    const dateStamp = `${yy}${mm}${dd}`;
 
+    // Prefix: e.g. BBS-260212-N or VIZ-260212-D
+    const prefix = `${branchCode}-${dateStamp}-${shiftCode}`;
+
+    // 4. Find highest sequence for this branch + date + shift prefix (e.g., BBS-260212-N0001)
     const jobsRes = await this.db.query(
       'SELECT job_code FROM jobs WHERE tenant_id = $1 AND job_code LIKE $2',
       [tenantId, `${prefix}%`]
@@ -173,9 +202,9 @@ export class JobsService implements OnModuleInit {
     let maxSequence = 0;
     for (const row of jobsRes.rows) {
       const jobCodeStr = row.job_code;
-      const sequenceStr = jobCodeStr.split('-').pop();
-      if (sequenceStr && !isNaN(parseInt(sequenceStr, 10))) {
-        const seq = parseInt(sequenceStr, 10);
+      const numPart = jobCodeStr.substring(prefix.length);
+      if (numPart && !isNaN(parseInt(numPart, 10))) {
+        const seq = parseInt(numPart, 10);
         if (seq > maxSequence) {
           maxSequence = seq;
         }
@@ -183,7 +212,7 @@ export class JobsService implements OnModuleInit {
     }
 
     const nextSeq = maxSequence + 1 + offset;
-    const seqStr = String(nextSeq).padStart(5, '0');
+    const seqStr = String(nextSeq).padStart(4, '0');
     return `${prefix}${seqStr}`;
   }
 
@@ -197,13 +226,13 @@ export class JobsService implements OnModuleInit {
     const tenantName = tenantRes.rows[0]?.name || 'enfysync Inc';
     const branchId = activeBranchId || null;
 
-    // Generate unique sequential PREFIXJOB-YYMM-XXXXX job code using the exact logic from enfysync_backend
+    // Generate unique sequential job code (e.g. BBS-260212-N0001 / VIZ-260212-D0001)
     let jobCode = '';
     let isUnique = false;
     let attempts = 0;
 
     while (!isUnique && attempts < 10) {
-      jobCode = await this.getNextJobCode(tenantId, attempts);
+      jobCode = await this.getNextJobCode(tenantId, branchId, (dto as any)?.shift, attempts);
       const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
       if (check.rows.length === 0) {
         isUnique = true;

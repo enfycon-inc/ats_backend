@@ -39,7 +39,7 @@ export class JobsController {
   ): Promise<JobProfile> {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
-    return this.jobsService.createJob(dto, tid, user?.dbId || 'System', bid);
+    return this.jobsService.createJob(dto, tid, user?.dbId || user?.email || 'System', bid);
   }
 
   @Post('parse-jd')
@@ -84,9 +84,13 @@ export class JobsController {
   async getNextJobCode(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('branchId') queryBranchId?: string,
+    @Query('shift') queryShift?: string,
   ): Promise<{ code: string }> {
     const tid = resolveTenantId(user, tenantId);
-    const code = await this.jobsService.getNextJobCode(tid);
+    const bid = queryBranchId || resolveBranchId(user, branchHeaderId);
+    const code = await this.jobsService.getNextJobCode(tid, bid, queryShift);
     return { code };
   }
 
