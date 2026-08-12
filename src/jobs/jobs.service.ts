@@ -154,13 +154,17 @@ export class JobsService implements OnModuleInit {
   async getNextJobCode(tenantId: string, branchId?: string | null, shiftInput?: string | null, offset = 0): Promise<string> {
     // 1. Resolve Branch Code (manual code set by admin, or first 3 letters of branch name, or 'GEN')
     let branchCode = 'GEN';
+    let branchMarket = '';
+    let branchName = '';
     if (branchId) {
       const branchRes = await this.db.query(
-        'SELECT code, name FROM branches WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        'SELECT code, name, market FROM branches WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [branchId, tenantId]
       );
       if (branchRes.rows.length > 0) {
         const row = branchRes.rows[0];
+        branchMarket = row.market || '';
+        branchName = row.name || '';
         if (row.code && row.code.trim().length > 0) {
           branchCode = row.code.trim().toUpperCase().substring(0, 3);
         } else if (row.name && row.name.trim().length > 0) {
@@ -173,11 +177,18 @@ export class JobsService implements OnModuleInit {
     let shiftCode = 'D';
     if (shiftInput) {
       const norm = shiftInput.trim().toUpperCase();
-      if (norm.startsWith('N') || norm === 'NIGHT') {
+      if (norm.startsWith('N') || norm.includes('NIGHT') || norm.includes('US')) {
         shiftCode = 'N';
       } else {
         shiftCode = 'D';
       }
+    } else if (
+      branchMarket.toUpperCase() === 'USA' ||
+      branchMarket.toUpperCase() === 'US' ||
+      branchName.toLowerCase().includes('us') ||
+      branchName.toLowerCase().includes('night')
+    ) {
+      shiftCode = 'N';
     } else {
       const currentHour = new Date().getHours();
       shiftCode = (currentHour >= 18 || currentHour < 6) ? 'N' : 'D';
