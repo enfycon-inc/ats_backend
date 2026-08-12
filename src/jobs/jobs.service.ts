@@ -288,8 +288,8 @@ export class JobsService implements OnModuleInit {
       dto.clientBillRate || 'N/A',                                   // $15
       dto.payRate || 'N/A',                                          // $16
       dto.taxTerms || 'C2C',                                         // $17
-      dto.client,                                                    // $18
-      dto.endClientName || dto.client,                               // $19
+      dto.client || dto.endClientName || 'Direct Client',            // $18
+      dto.endClientName || dto.client || 'Direct Client',            // $19
       dto.noOfPositions || 1,                                        // $20
       dto.submissionRequired || 5,                                   // $21
       dto.priority || 'Medium',                                      // $22
