@@ -356,6 +356,20 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       WHERE domain IS NOT NULL AND domain <> '' AND domain <> 'enfycon.com'
       ON CONFLICT (domain_name) DO NOTHING;
 
+      -- 9.5 Create tenant_auth_settings table for configurable auth policies
+      CREATE TABLE IF NOT EXISTS tenant_auth_settings (
+        tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+        allow_password_login BOOLEAN DEFAULT TRUE,
+        allow_microsoft_sso BOOLEAN DEFAULT FALSE,
+        allow_google_sso BOOLEAN DEFAULT FALSE,
+        enforce_sso_only BOOLEAN DEFAULT FALSE,
+        require_mfa BOOLEAN DEFAULT FALSE,
+        allowed_email_domains TEXT[] DEFAULT '{}',
+        microsoft_client_id VARCHAR(255),
+        microsoft_client_secret VARCHAR(255),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
       -- 10. Create clients table
       CREATE TABLE IF NOT EXISTS clients (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

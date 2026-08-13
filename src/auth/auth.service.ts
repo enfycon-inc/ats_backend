@@ -34,18 +34,8 @@ const TOKEN_TTL_SECONDS = 60 * 60 * 8;
  *  - Feels identical to production from the frontend perspective.
  *
  * KEYCLOAK MODE (AUTH_PROVIDER=keycloak):
- *  - login() is NOT used — the frontend redirects to Keycloak.
- *  - syncKeycloakUser() is called by JwtAuthGuard on every request to upsert
- *    the user into the local `users` table from the decoded JWT claims.
- *
- * Default seed users (created on boot in mock mode):
- *  Role             | Email                            | Password
- *  ──────────────── | ─────────────────────────────── | ────────────────────
- *  ADMIN            | admin@enfycon.com                | enfycon123
- *  RECRUITER        | recruiter@enfycon.com            | enfycon123
- *  ACCOUNT_MANAGER  | am@enfycon.com                   | enfycon123
- *  DELIVERY_HEAD    | dh@enfycon.com                   | enfycon123
- *  TRACKER          | tracker@enfycon.com              | enfycon123
+ *  - Direct grant / Token exchange via Keycloak protocol endpoint.
+ *  - syncKeycloakUser() is called to upsert the user into the local `users` table from decoded JWT claims.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 @Injectable()
@@ -56,7 +46,7 @@ export class AuthService implements OnModuleInit {
 
   constructor(private readonly db: DatabaseService) {
     this.jwtSecret =
-      process.env.MOCK_JWT_SECRET || 'enfy-ats-dev-secret-change-in-prod';
+      process.env.MOCK_JWT_SECRET || 'enfy-ats-dev-jwt-secret-change-me-in-prod';
     this.provider = (process.env.AUTH_PROVIDER || 'mock').toLowerCase();
   }
 
@@ -77,8 +67,23 @@ export class AuthService implements OnModuleInit {
       this.logger.error(`Failed to synchronize tenant roles: ${err.message}`);
     }
 
-    if (this.provider === 'mock') {
-      await this.seedDefaultUsers();
+    await this.seedDefaultUsers();
+
+    if (this.provider === 'keycloak') {
+      const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
+      const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+      const adminName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
+      if (adminEmail && adminPassword) {
+        this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) into Keycloak on startup...`);
+        await this.provisionUserInKeycloak({
+          email: adminEmail,
+          password: adminPassword,
+          fullName: adminName,
+          tenantId: DEFAULT_TENANT_ID,
+        });
+      } else {
+        this.logger.warn(`[BOOT] PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_PASSWORD not set in environment — skipping Keycloak Super Admin sync.`);
+      }
     }
   }
 
@@ -225,10 +230,10 @@ export class AuthService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // MOCK MODE: Login
+  // LOGIN IMPLEMENTATION (Supports both Mock mode and Keycloak mode)
   // ─────────────────────────────────────────────────────────────
   async login(dto: LoginDto) {
-    this.logger.log(`Login attempt: ${dto.email}`);
+    this.logger.log(`Login attempt for ${dto.email} [Provider: ${this.provider}]`);
 
     const result = await this.db.query(
       `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, b.name as branch_name, bu.name as business_unit_name
@@ -260,22 +265,28 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    // Enforce tenant active status check (Ceipal standard)
+    // Enforce tenant active status check
     if (user.tenant_status && user.tenant_status !== 'ACTIVE') {
       throw new UnauthorizedException(
         'Your company workspace is inactive. Contact the platform administrator.',
       );
     }
 
-    const { hash } = this.hashPassword(dto.password, user.salt);
-    if (hash !== user.password_hash) {
-      throw new UnauthorizedException('Invalid email or password.');
+    // Enforce Tenant Auth Settings Policy
+    const policy = await this.getTenantAuthPolicy(user.tenant_id);
+    if (policy.enforceSsoOnly || !policy.allowPasswordLogin) {
+      throw new UnauthorizedException('Password login is disabled by your organization administrator. Please sign in using Single Sign-On (SSO).');
     }
 
-    // Validate subdomain/custom domain context if provided
+    if (policy.allowedEmailDomains && policy.allowedEmailDomains.length > 0) {
+      const emailDomain = dto.email.split('@')[1]?.toLowerCase();
+      if (!policy.allowedEmailDomains.map((d: string) => d.toLowerCase()).includes(emailDomain)) {
+        throw new UnauthorizedException(`Logins with @${emailDomain} domain are not permitted for this organization.`);
+      }
+    }
+
+    // Validate subdomain context
     const isSuperAdmin = user.roles && user.roles.includes('SUPER_ADMIN');
-    
-    // Enforce that Super Admins can only log in from the main domain
     if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
       throw new UnauthorizedException('Super Administrators can only log in from the main domain.');
     }
@@ -313,6 +324,124 @@ export class AuthService implements OnModuleInit {
     let systemRole = user.system_role || 'RECRUITER';
     if (user.roles && user.roles.includes('SUPER_ADMIN')) {
       systemRole = 'SUPER_ADMIN';
+    }
+
+    // ── KEYCLOAK MODE AUTHENTICATION ──────────────────────────
+    if (this.provider === 'keycloak') {
+      const issuer = process.env.KEYCLOAK_ISSUER;
+      if (!issuer) {
+        throw new Error('[AuthService] AUTH_PROVIDER=keycloak but KEYCLOAK_ISSUER is not set in .env');
+      }
+
+      try {
+        const params = new URLSearchParams();
+        params.append('grant_type', 'password');
+        params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'ats-frontend');
+        if (process.env.KEYCLOAK_CLIENT_SECRET) {
+          params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
+        }
+        params.append('username', dto.email);
+        params.append('password', dto.password);
+
+        let tokenUrl = `${issuer}/protocol/openid-connect/token`;
+        let res: Response;
+        try {
+          res = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString(),
+          });
+        } catch (fetchErr: any) {
+          const fallbackHost = tokenUrl.includes('localhost') ? 'keycloak' : 'localhost';
+          const fallbackUrl = tokenUrl.includes('localhost') 
+            ? tokenUrl.replace('localhost', 'keycloak') 
+            : tokenUrl.replace('keycloak', 'localhost');
+          
+          this.logger.warn(`Fetch to Keycloak at ${tokenUrl} failed (${fetchErr.message}). Retrying fallback endpoint: ${fallbackUrl}`);
+          try {
+            res = await fetch(fallbackUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: params.toString(),
+            });
+          } catch (retryErr: any) {
+            throw new UnauthorizedException(`Keycloak server unreachable at ${tokenUrl} or ${fallbackUrl}.`);
+          }
+        }
+
+        if (!res || !res.ok) {
+          // Check if user exists in PostgreSQL DB with valid password
+          const { hash } = this.hashPassword(dto.password, user.salt);
+          if (hash === user.password_hash) {
+            this.logger.log(`User ${dto.email} has valid local DB credentials but is missing in Keycloak. Auto-provisioning...`);
+            const provisioned = await this.provisionUserInKeycloak({
+              email: user.email,
+              password: dto.password,
+              fullName: user.full_name,
+              tenantId: user.tenant_id,
+            });
+
+            if (provisioned) {
+              try {
+                res = await fetch(tokenUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: params.toString(),
+                });
+              } catch (retryErr: any) {}
+            }
+          }
+        }
+
+        if (!res || !res.ok) {
+          const errBody = res ? await res.text().catch(() => '') : '';
+          this.logger.warn(`Keycloak auth failed for ${dto.email}: Status ${res?.status} - ${errBody}`);
+          throw new UnauthorizedException('Invalid email or password.');
+        }
+
+        const tokenData = await res.json();
+        const keycloakToken = tokenData.access_token;
+
+        await this.syncKeycloakUser({
+          keycloakId: user.id,
+          email: user.email,
+          fullName: user.full_name,
+          roles: user.roles || [],
+        });
+
+        return {
+          accessToken: keycloakToken,
+          refreshToken: tokenData.refresh_token,
+          expiresIn: tokenData.expires_in,
+          user: {
+            id: user.id,
+            email: user.email,
+            fullName: user.full_name,
+            roles: user.roles || [],
+            tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+            defaultMarket: user.default_market || 'US',
+            tenantDomain: user.tenant_domain || '',
+            permissions,
+            systemRole,
+            podId: user.pod_id || null,
+            branchId: user.branch_id || null,
+            branchName: user.branch_name || null,
+            businessUnitId: user.business_unit_id || null,
+            businessUnitName: user.business_unit_name || null,
+            podSystemEnabled: user.pod_system_enabled ?? true,
+          },
+        };
+      } catch (err: any) {
+        if (err instanceof UnauthorizedException) throw err;
+        this.logger.error(`Keycloak direct grant exception for ${dto.email}: ${err.message}`);
+        throw new UnauthorizedException('Keycloak authentication server unreachable or rejected credentials.');
+      }
+    }
+
+    // ── MOCK MODE AUTHENTICATION ─────────────────────────────
+    const { hash } = this.hashPassword(dto.password, user.salt);
+    if (hash !== user.password_hash) {
+      throw new UnauthorizedException('Invalid email or password.');
     }
 
     const token = this.signJwt({
@@ -469,6 +598,16 @@ export class AuthService implements OnModuleInit {
     );
 
     const user = result.rows[0];
+
+    if (this.provider === 'keycloak') {
+      await this.provisionUserInKeycloak({
+        email: user.email,
+        password: password,
+        fullName: user.full_name,
+        tenantId: user.tenant_id,
+      });
+    }
+
     return {
       message: isApproved 
         ? 'User registered and approved successfully.'
@@ -584,6 +723,15 @@ export class AuthService implements OnModuleInit {
     );
     const user = userResult.rows[0];
 
+    if (this.provider === 'keycloak') {
+      await this.provisionUserInKeycloak({
+        email: user.email,
+        password: password,
+        fullName: user.full_name,
+        tenantId: tenant.id,
+      });
+    }
+
     return {
       message: 'Company registered successfully! Your account is pending platform administrator approval. You will be notified once approved.',
       tenant: {
@@ -605,6 +753,144 @@ export class AuthService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // KEYCLOAK ADMIN HELPERS: Auto-provisioning users into Keycloak
+  // ─────────────────────────────────────────────────────────────
+  private async getKeycloakAdminToken(): Promise<string | null> {
+    const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+    const baseUrl = issuer.split('/realms/')[0];
+    const adminUser = process.env.KEYCLOAK_ADMIN || 'admin';
+    const adminPass = process.env.KEYCLOAK_ADMIN_PASSWORD || 'admin';
+
+    const tokenEndpoints = [
+      `${baseUrl}/realms/master/protocol/openid-connect/token`,
+      `${baseUrl.includes('localhost') ? baseUrl.replace('localhost', 'keycloak') : baseUrl.replace('keycloak', 'localhost')}/realms/master/protocol/openid-connect/token`,
+    ];
+
+    for (const url of tokenEndpoints) {
+      try {
+        const params = new URLSearchParams();
+        params.append('grant_type', 'password');
+        params.append('client_id', 'admin-cli');
+        params.append('username', adminUser);
+        params.append('password', adminPass);
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString(),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          return data.access_token;
+        }
+      } catch (err) {
+        // Continue to fallback endpoint
+      }
+    }
+    return null;
+  }
+
+  async provisionUserInKeycloak(data: { email: string; password?: string; fullName?: string; tenantId?: string }): Promise<boolean> {
+    try {
+      const adminToken = await this.getKeycloakAdminToken();
+      if (!adminToken) {
+        this.logger.warn(`Could not obtain Keycloak admin token to provision ${data.email}`);
+        return false;
+      }
+
+      const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+      const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
+      const baseUrl = issuer.split('/realms/')[0];
+
+      const nameParts = (data.fullName || data.email).trim().split(' ');
+      const firstName = nameParts[0] || 'User';
+      const lastName = nameParts.slice(1).join(' ') || 'User';
+
+      const userPayload: any = {
+        username: data.email,
+        email: data.email,
+        enabled: true,
+        emailVerified: true,
+        firstName,
+        lastName,
+        attributes: {
+          tenant_id: [data.tenantId || DEFAULT_TENANT_ID],
+        },
+      };
+
+      if (data.password) {
+        userPayload.credentials = [
+          {
+            type: 'password',
+            value: data.password,
+            temporary: false,
+          },
+        ];
+      }
+
+      const targetEndpoints = [
+        `${baseUrl}/admin/realms/${realm}/users`,
+        `${baseUrl.includes('localhost') ? baseUrl.replace('localhost', 'keycloak') : baseUrl.replace('keycloak', 'localhost')}/admin/realms/${realm}/users`,
+      ];
+
+      for (const url of targetEndpoints) {
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${adminToken}`,
+            },
+            body: JSON.stringify(userPayload),
+          });
+
+          if (res.ok) {
+            this.logger.log(`Keycloak user ${data.email} provisioned in realm ${realm}`);
+            return true;
+          }
+
+          if (res.status === 409) {
+            // User already exists in Keycloak — sync password if provided
+            if (data.password) {
+              const searchUrl = url.replace('/users', `/users?email=${encodeURIComponent(data.email)}`);
+              const searchRes = await fetch(searchUrl, {
+                headers: { 'Authorization': `Bearer ${adminToken}` },
+              });
+              if (searchRes.ok) {
+                const usersList = await searchRes.json();
+                if (Array.isArray(usersList) && usersList.length > 0) {
+                  const kcUserId = usersList[0].id;
+                  const resetUrl = url.replace('/users', `/users/${kcUserId}/reset-password`);
+                  await fetch(resetUrl, {
+                    method: 'PUT',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${adminToken}`,
+                    },
+                    body: JSON.stringify({
+                      type: 'password',
+                      value: data.password,
+                      temporary: false,
+                    }),
+                  });
+                  this.logger.log(`Keycloak user ${data.email} password updated/synced in realm ${realm}`);
+                }
+              }
+            }
+            return true;
+          }
+        } catch (err) {
+          // Continue to next endpoint
+        }
+      }
+      return false;
+    } catch (err: any) {
+      this.logger.error(`Failed to provision user ${data.email} in Keycloak: ${err.message}`);
+      return false;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // KEYCLOAK MODE: On-demand user sync from JWT claims
   // Called by JwtAuthGuard after signature verification
   // ─────────────────────────────────────────────────────────────
@@ -622,21 +908,28 @@ export class AuthService implements OnModuleInit {
 
     // Preserve internal roles that Keycloak doesn't manage
     const existing = await this.db.query(
-      'SELECT id, roles, tenant_id, is_active, role_id FROM users WHERE keycloak_id = $1 LIMIT 1',
-      [data.keycloakId],
+      'SELECT id, roles, tenant_id, is_active, role_id FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
+      [data.keycloakId, data.email],
     );
 
-    const internalRoles = ['TRACKER']; // roles assigned internally, not from Keycloak
-    const preservedRoles = existing.rows.length > 0
-      ? (existing.rows[0].roles || []).filter((r: string) => internalRoles.includes(r))
-      : [];
+    const existingRoles = existing.rows.length > 0 ? (existing.rows[0].roles || []) : [];
 
-    const tenantId = existing.rows.length > 0
+    let tenantId = existing.rows.length > 0
       ? existing.rows[0].tenant_id
       : DEFAULT_TENANT_ID;
 
-    let mergedRoles = Array.from(new Set([...normalizedRoles, ...preservedRoles]));
-    if (tenantId !== DEFAULT_TENANT_ID) {
+    // Union existing DB roles with Keycloak JWT roles so PostgreSQL roles are never erased
+    let mergedRoles = Array.from(new Set([...existingRoles, ...normalizedRoles]));
+
+    // Platform Super Admin email from .env ALWAYS retains SUPER_ADMIN role & Master Tenant
+    const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL ? process.env.PLATFORM_ADMIN_EMAIL.toLowerCase() : null;
+    const isPlatformAdmin = platformAdminEmail && data.email.toLowerCase() === platformAdminEmail;
+    if (isPlatformAdmin || normalizedRoles.includes('SUPER_ADMIN') || existingRoles.includes('SUPER_ADMIN')) {
+      if (!mergedRoles.includes('SUPER_ADMIN')) {
+        mergedRoles.push('SUPER_ADMIN');
+      }
+      tenantId = DEFAULT_TENANT_ID;
+    } else if (tenantId !== DEFAULT_TENANT_ID) {
       mergedRoles = mergedRoles.filter(r => r !== 'SUPER_ADMIN');
     }
 
@@ -653,20 +946,30 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    const result = await this.db.query(
-      `INSERT INTO users (keycloak_id, tenant_id, email, full_name, roles, is_active, is_approved, role_id)
-       VALUES ($1, $2, $3, $4, $5, true, true, $6)
-       ON CONFLICT (keycloak_id) DO UPDATE SET
-         email      = EXCLUDED.email,
-         full_name  = EXCLUDED.full_name,
-         roles      = $5,
-         role_id    = COALESCE(users.role_id, $6),
-         updated_at = NOW()
-       RETURNING id, email, full_name, roles, tenant_id, is_active, role_id`,
-      [data.keycloakId, tenantId, data.email, data.fullName, mergedRoles, roleId],
-    );
-
-    const dbUser = result.rows[0];
+    let dbUser: any;
+    if (existing.rows.length > 0) {
+      const existingUser = existing.rows[0];
+      const updateRes = await this.db.query(
+        `UPDATE users
+         SET keycloak_id = $1,
+             full_name   = COALESCE($2, full_name),
+             roles       = $3,
+             role_id     = COALESCE(users.role_id, $4),
+             updated_at  = NOW()
+         WHERE id = $5
+         RETURNING id, email, full_name, roles, tenant_id, is_active, role_id`,
+        [data.keycloakId, data.fullName, mergedRoles, roleId, existingUser.id],
+      );
+      dbUser = updateRes.rows[0];
+    } else {
+      const insertRes = await this.db.query(
+        `INSERT INTO users (keycloak_id, tenant_id, email, full_name, roles, is_active, is_approved, role_id)
+         VALUES ($1, $2, $3, $4, $5, true, true, $6)
+         RETURNING id, email, full_name, roles, tenant_id, is_active, role_id`,
+        [data.keycloakId, tenantId, data.email, data.fullName, mergedRoles, roleId],
+      );
+      dbUser = insertRes.rows[0];
+    }
 
     // Load custom role permissions dynamically
     let permissions: string[] = [];
@@ -1330,7 +1633,10 @@ export class AuthService implements OnModuleInit {
   }) {
     const companyName = dto.companyName.trim();
     const email = dto.adminEmail.trim().toLowerCase();
-    const password = dto.adminPassword || 'Admin@123';
+    if (!dto.adminPassword || dto.adminPassword.length < 8) {
+      throw new BadRequestException('Admin password is required and must be at least 8 characters.');
+    }
+    const password = dto.adminPassword;
     const userLimit = dto.userLimit || 20;
     const maxBranches = dto.maxBranches || 5;
     const market = dto.defaultMarket || 'US';
@@ -1733,5 +2039,96 @@ export class AuthService implements OnModuleInit {
     const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`;
     const res = await this.db.query(sql, params);
     return res.rows[0];
+  }
+
+  // ─── Tenant Auth Policy Settings Helpers ───────────────────────
+  async getTenantAuthPolicy(tenantIdOrSubdomain: string) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantIdOrSubdomain);
+    let tenantId = tenantIdOrSubdomain;
+    if (!isUuid) {
+      const res = await this.db.query(
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
+         UNION SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1 LIMIT 1`,
+        [tenantIdOrSubdomain.toLowerCase()]
+      );
+      if (res.rows.length > 0) {
+        tenantId = res.rows[0].tenant_id;
+      } else {
+        tenantId = DEFAULT_TENANT_ID;
+      }
+    }
+
+    const result = await this.db.query(
+      'SELECT * FROM tenant_auth_settings WHERE tenant_id = $1 LIMIT 1',
+      [tenantId]
+    );
+
+    if (result.rows.length === 0) {
+      return {
+        tenantId,
+        allowPasswordLogin: true,
+        allowMicrosoftSso: false,
+        allowGoogleSso: false,
+        enforceSsoOnly: false,
+        requireMfa: false,
+        allowedEmailDomains: [],
+        microsoftClientId: null,
+      };
+    }
+
+    const row = result.rows[0];
+    return {
+      tenantId: row.tenant_id,
+      allowPasswordLogin: row.allow_password_login ?? true,
+      allowMicrosoftSso: row.allow_microsoft_sso ?? false,
+      allowGoogleSso: row.allow_google_sso ?? false,
+      enforceSsoOnly: row.enforce_sso_only ?? false,
+      requireMfa: row.require_mfa ?? false,
+      allowedEmailDomains: row.allowed_email_domains || [],
+      microsoftClientId: row.microsoft_client_id || null,
+    };
+  }
+
+  async updateTenantAuthPolicy(tenantId: string, dto: any) {
+    const result = await this.db.query(
+      `INSERT INTO tenant_auth_settings (
+         tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allowed_email_domains, microsoft_client_id, microsoft_client_secret
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         allow_password_login    = EXCLUDED.allow_password_login,
+         allow_microsoft_sso     = EXCLUDED.allow_microsoft_sso,
+         allow_google_sso        = EXCLUDED.allow_google_sso,
+         enforce_sso_only        = EXCLUDED.enforce_sso_only,
+         require_mfa             = EXCLUDED.require_mfa,
+         allowed_email_domains   = EXCLUDED.allowed_email_domains,
+         microsoft_client_id     = EXCLUDED.microsoft_client_id,
+         microsoft_client_secret = COALESCE(EXCLUDED.microsoft_client_secret, tenant_auth_settings.microsoft_client_secret),
+         updated_at              = NOW()
+       RETURNING *`,
+      [
+        tenantId,
+        dto.allowPasswordLogin ?? true,
+        dto.allowMicrosoftSso ?? false,
+        dto.allowGoogleSso ?? false,
+        dto.enforceSsoOnly ?? false,
+        dto.requireMfa ?? false,
+        dto.allowedEmailDomains || [],
+        dto.microsoftClientId || null,
+        dto.microsoftClientSecret || null,
+      ]
+    );
+
+    const row = result.rows[0];
+    return {
+      tenantId: row.tenant_id,
+      allowPasswordLogin: row.allow_password_login,
+      allowMicrosoftSso: row.allow_microsoft_sso,
+      allowGoogleSso: row.allow_google_sso,
+      enforceSsoOnly: row.enforce_sso_only,
+      requireMfa: row.require_mfa,
+      allowedEmailDomains: row.allowed_email_domains,
+      microsoftClientId: row.microsoft_client_id,
+    };
   }
 }

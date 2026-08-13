@@ -219,9 +219,22 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const issuer = process.env.KEYCLOAK_ISSUER!;
-    const jwksUrl = `${issuer}/protocol/openid-connect/certs`;
+    let jwksUrl = `${issuer}/protocol/openid-connect/certs`;
 
-    const jwks = await this.fetchJson(jwksUrl);
+    let jwks: any;
+    try {
+      jwks = await this.fetchJson(jwksUrl);
+    } catch (err: any) {
+      const fallbackUrl = jwksUrl.includes('localhost')
+        ? jwksUrl.replace('localhost', 'keycloak')
+        : jwksUrl.replace('keycloak', 'localhost');
+      this.logger.warn(`[JwtAuthGuard] JWKS fetch to ${jwksUrl} failed. Trying fallback: ${fallbackUrl}`);
+      try {
+        jwks = await this.fetchJson(fallbackUrl);
+      } catch (fallbackErr: any) {
+        throw new UnauthorizedException(`Could not fetch JWKS from Keycloak at ${jwksUrl} or ${fallbackUrl}.`);
+      }
+    }
 
     if (!jwks.keys || !Array.isArray(jwks.keys)) {
       throw new UnauthorizedException('Could not fetch JWKS from Keycloak.');

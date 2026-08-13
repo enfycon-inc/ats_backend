@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -53,17 +54,7 @@ Validates email + password and returns a signed JWT access token.
 - Returns a real signed JWT with 8-hour expiry.
 
 **Keycloak mode** (AUTH_PROVIDER=keycloak):
-- This endpoint is NOT used. The frontend redirects to the Keycloak login page.
-- The token is obtained directly from Keycloak.
-
-**Default dev credentials:**
-| Role             | Email                     | Password       |
-|------------------|---------------------------|----------------|
-| ADMIN            | admin@enfycon.com         | Admin@123      |
-| RECRUITER        | recruiter@enfycon.com     | Recruiter@123  |
-| ACCOUNT_MANAGER  | am@enfycon.com            | Manager@123    |
-| DELIVERY_HEAD    | dh@enfycon.com            | Delivery@123   |
-| TRACKER          | tracker@enfycon.com       | Tracker@123    |
+- Authenticates against Keycloak OIDC server via Direct Access Grant / Password grant.
     `.trim(),
   })
   @ApiResponse({ status: 200, description: 'Login successful — returns JWT access token.' })
@@ -146,6 +137,38 @@ Validates email + password and returns a signed JWT access token.
   ) {
     const tenantId = resolveTenantId(user, tenantHeader);
     return this.authService.listUsers(tenantId);
+  }
+
+  // ─── GET /api/auth/tenant-policy ───────────────────────────
+  @Get('tenant-policy')
+  @ApiOperation({
+    summary: 'Get tenant authentication policy (Public/Dynamic)',
+    description: 'Returns permitted login methods (Password, Microsoft SSO, Google SSO) for a tenant by ID or subdomain.',
+  })
+  async getTenantPolicy(
+    @Query('tenantId') tenantIdQuery?: string,
+    @Query('subdomain') subdomainQuery?: string,
+  ) {
+    const target = tenantIdQuery || subdomainQuery || 'default';
+    return this.authService.getTenantAuthPolicy(target);
+  }
+
+  // ─── PATCH /api/auth/tenant-policy ──────────────────────────
+  @Patch('tenant-policy')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant authentication policy [ADMIN only]',
+    description: 'Allows Tenant Admin to toggle password login, Microsoft/Google SSO, and domain restrictions.',
+  })
+  async updateTenantPolicy(
+    @CurrentUser() currentUser: AuthUser,
+    @Body() body: any,
+    @Headers('x-tenant-id') tenantHeader?: string,
+  ) {
+    const tenantId = resolveTenantId(currentUser, tenantHeader);
+    return this.authService.updateTenantAuthPolicy(tenantId, body);
   }
 
   // ─── PATCH /api/auth/users/:id/status ───────────────────────

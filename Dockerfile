@@ -11,5 +11,5 @@ COPY . .
 
 EXPOSE 5000
 
-# Start NestJS in watching development mode (compiles on file save)
-CMD ["npm", "run", "start"]
+# Start NestJS in watching development mode (recompiles automatically on file save)
+CMD ["npm", "run", "start:dev"]
