@@ -63,6 +63,19 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.login(dto);
   }
 
+  // ─── POST /api/auth/refresh ────────────────────────────────
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Refresh Keycloak / JWT access token',
+    description: 'Exchanges a valid refresh_token for a new access_token.',
+  })
+  @ApiResponse({ status: 200, description: 'Token refreshed successfully.' })
+  @ApiResponse({ status: 401, description: 'Invalid or expired refresh token.' })
+  async refresh(@Body('refreshToken') refreshToken: string) {
+    return this.authService.refreshKeycloakToken(refreshToken);
+  }
+
   // ─── POST /api/auth/register ────────────────────────────────
   @Post('register')
   @HttpCode(HttpStatus.CREATED)

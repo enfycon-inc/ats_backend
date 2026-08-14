@@ -485,6 +485,55 @@ export class AuthService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // Refresh Token (Keycloak & Mock)
+  // ─────────────────────────────────────────────────────────────
+  async refreshKeycloakToken(refreshToken: string) {
+    if (!refreshToken) {
+      throw new BadRequestException('Refresh token is required.');
+    }
+
+    if (this.provider === 'keycloak') {
+      const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+      const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+      const params = new URLSearchParams();
+      params.append('grant_type', 'refresh_token');
+      params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'nextjs-frontend');
+      if (process.env.KEYCLOAK_CLIENT_SECRET) {
+        params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
+      }
+      params.append('refresh_token', refreshToken);
+
+      let res = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      }).catch(() => null);
+
+      if (!res || !res.ok) {
+        const altUrl = tokenUrl.includes('localhost')
+          ? tokenUrl.replace('localhost', 'keycloak')
+          : tokenUrl.replace('keycloak', 'localhost');
+        res = await fetch(altUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString(),
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
+        const tokenData = await res.json();
+        return {
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token,
+          expiresIn: tokenData.expires_in,
+        };
+      }
+    }
+
+    throw new UnauthorizedException('Invalid or expired refresh token.');
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // MOCK MODE: Register new user
   // ─────────────────────────────────────────────────────────────
   async register(dto: RegisterDto, authHeader?: string) {
