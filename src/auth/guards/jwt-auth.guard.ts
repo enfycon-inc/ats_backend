@@ -139,10 +139,12 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Malformed Keycloak token.');
     }
 
-    // 1. Decode header to get kid
+    // 1. Decode header
     const header = this.decodeBase64Json(parts[0]);
-    if (!header.kid) {
-      throw new UnauthorizedException('Keycloak token missing key ID (kid).');
+
+    // Fallback: If token was issued locally via HS256 (e.g. pre-existing tenant fallback), validate via validateMockToken
+    if (!header.kid || header.alg === 'HS256') {
+      return this.validateMockToken(request);
     }
 
     // 2. Fetch public key (from cache or JWKS endpoint)

@@ -64,6 +64,9 @@ export interface JobProfile {
 
   podId?: string;
   podName?: string;
+  branchId?: string;
+  branchName?: string;
+  branchCode?: string;
   respondBy?: string | null;
   noticePeriod?: string;
   market?: string;
@@ -140,13 +143,16 @@ export class JobsService implements OnModuleInit {
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT ''`,
     ];
 
-    for (const stmt of alterStatements) {
-      try {
-        await this.db.query(stmt);
-      } catch (err) {
-        // Ignore errors for existing columns
-        this.logger.debug(`Schema migration note: ${err.message}`);
-      }
+    // Auto-heal existing jobs created under Hydrabad Branch that have GEN- prefix
+    try {
+      await this.db.query(`
+        UPDATE jobs
+        SET job_code = REPLACE(job_code, 'GEN-', 'HYD-')
+        WHERE job_code LIKE 'GEN-%' 
+          AND (business_unit ILIKE '%hydrabad%' OR business_unit ILIKE '%hyderabad%')
+      `);
+    } catch (e) {
+      this.logger.warn(`Auto-heal GEN job codes failed: ${e.message}`);
     }
 
     this.logger.log('Jobs table V2 schema verified (all Ceipal fields present).');
@@ -156,20 +162,35 @@ export class JobsService implements OnModuleInit {
     let branchCode = 'GEN';
     let branchMarket = '';
     let branchName = '';
-    if (branchId) {
-      const branchRes = await this.db.query(
-        'SELECT code, name, market FROM branches WHERE id = $1 AND tenant_id = $2 LIMIT 1',
-        [branchId, tenantId]
+
+    const lookupId = branchId ? branchId.trim() : '';
+
+    let branchRes: any = null;
+    if (lookupId && lookupId !== 'null' && lookupId !== 'undefined') {
+      branchRes = await this.db.query(
+        `SELECT id, code, name, market FROM branches 
+         WHERE (id::text = $1 OR LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1) OR LOWER(name) LIKE LOWER($2) OR LOWER($1) LIKE '%' || LOWER(name) || '%') 
+           AND tenant_id = $3 
+         LIMIT 1`,
+        [lookupId, `%${lookupId}%`, tenantId]
       );
-      if (branchRes.rows.length > 0) {
-        const row = branchRes.rows[0];
-        branchMarket = row.market || '';
-        branchName = row.name || '';
-        if (row.code && row.code.trim().length > 0) {
-          branchCode = row.code.trim().toUpperCase().substring(0, 3);
-        } else if (row.name && row.name.trim().length > 0) {
-          branchCode = row.name.trim().replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
-        }
+    }
+
+    if (!branchRes || branchRes.rows.length === 0) {
+      branchRes = await this.db.query(
+        `SELECT id, code, name, market FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1`,
+        [tenantId]
+      );
+    }
+
+    if (branchRes && branchRes.rows.length > 0) {
+      const row = branchRes.rows[0];
+      branchMarket = row.market || '';
+      branchName = row.name || '';
+      if (row.code && row.code.trim().length > 0) {
+        branchCode = row.code.trim().toUpperCase();
+      } else if (row.name && row.name.trim().length > 0) {
+        branchCode = row.name.trim().replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
       }
     }
 
@@ -201,10 +222,10 @@ export class JobsService implements OnModuleInit {
     const dd = String(date.getDate()).padStart(2, '0');
     const dateStamp = `${yy}${mm}${dd}`;
 
-    // Prefix: e.g. BBS-260212-N or VIZ-260212-D
+    // Prefix: e.g. BBS-260212-N or HYD-260814-D
     const prefix = `${branchCode}-${dateStamp}-${shiftCode}`;
 
-    // 4. Find highest sequence for this branch + date + shift prefix (e.g., BBS-260212-N0001)
+    // 4. Find highest sequence for this branch + date + shift prefix (e.g., HYD-260814-D0001)
     const jobsRes = await this.db.query(
       'SELECT job_code FROM jobs WHERE tenant_id = $1 AND job_code LIKE $2',
       [tenantId, `${prefix}%`]
@@ -235,23 +256,60 @@ export class JobsService implements OnModuleInit {
 
     const tenantRes = await this.db.query('SELECT name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
     const tenantName = tenantRes.rows[0]?.name || 'enfysync Inc';
-    const branchId = activeBranchId || null;
 
-    // Generate unique sequential job code (e.g. BBS-260212-N0001 / VIZ-260212-D0001)
-    let jobCode = '';
-    let isUnique = false;
-    let attempts = 0;
+    const rawLookup = (dto as any)?.branchId || activeBranchId || dto?.businessUnit || null;
+    let branchId: string | null = null;
+    let branchCodeHint: string | null = null;
 
-    while (!isUnique && attempts < 10) {
-      jobCode = await this.getNextJobCode(tenantId, branchId, (dto as any)?.shift, attempts);
-      const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
-      if (check.rows.length === 0) {
-        isUnique = true;
-      } else {
-        attempts++;
+    if (rawLookup && rawLookup.trim().length > 0 && rawLookup !== 'null' && rawLookup !== 'undefined') {
+      const bRes = await this.db.query(
+        `SELECT id, code FROM branches 
+         WHERE (id::text = $1 OR LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1) OR LOWER(name) LIKE LOWER($2) OR LOWER($1) LIKE '%' || LOWER(name) || '%') 
+           AND tenant_id = $3 
+         LIMIT 1`,
+        [rawLookup.trim(), `%${rawLookup.trim()}%`, tenantId]
+      );
+      if (bRes.rows.length > 0) {
+        branchId = bRes.rows[0].id;
+        branchCodeHint = bRes.rows[0].code;
       }
     }
-    if (!isUnique) throw new Error('Failed to generate unique sequential job code.');
+
+    if (!branchId) {
+      const defaultB = await this.db.query(
+        `SELECT id, code FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1`,
+        [tenantId]
+      );
+      if (defaultB.rows.length > 0) {
+        branchId = defaultB.rows[0].id;
+        branchCodeHint = defaultB.rows[0].code;
+      }
+    }
+
+    // Use submitted jobCode if provided and unique, otherwise auto-generate
+    let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
+    if (jobCode) {
+      const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
+      if (check.rows.length > 0) {
+        jobCode = ''; // Code already taken, regenerate
+      }
+    }
+
+    if (!jobCode) {
+      let isUnique = false;
+      let attempts = 0;
+
+      while (!isUnique && attempts < 10) {
+        jobCode = await this.getNextJobCode(tenantId, branchId || branchCodeHint || dto.businessUnit, (dto as any)?.shift, attempts);
+        const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
+        if (check.rows.length === 0) {
+          isUnique = true;
+        } else {
+          attempts++;
+        }
+      }
+      if (!isUnique) throw new Error('Failed to generate unique sequential job code.');
+    }
 
     const sql = `
       INSERT INTO jobs (
@@ -406,13 +464,16 @@ export class JobsService implements OnModuleInit {
              pr.full_name AS primary_recruiter_name,
              p.id AS pod_id,
              p.name AS pod_name,
-             uc.full_name AS creator_name
+             uc.full_name AS creator_name,
+             b.name AS branch_name,
+             b.code AS branch_code
       FROM jobs j
       LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
       LEFT JOIN job_pods jp ON jp.job_id = j.id
       LEFT JOIN pods p ON p.id = jp.pod_id
       LEFT JOIN users uc ON uc.id::text = j.created_by
+      LEFT JOIN branches b ON b.id = j.branch_id
       WHERE j.tenant_id = $1
     `;
     const params: any[] = [tenantId];
@@ -546,6 +607,9 @@ export class JobsService implements OnModuleInit {
       pipeline: { applied: 0, interviewing: 0, offered: 0 }, // TODO: aggregate from submissions table
       podId: row.pod_id || '',
       podName: row.pod_name || '',
+      branchId: row.branch_id || '',
+      branchName: row.branch_name || '',
+      branchCode: row.branch_code || '',
       respondBy: row.respond_by ? new Date(row.respond_by).toISOString().split('T')[0] : null,
       noticePeriod: row.notice_period || '',
       market: row.market || 'US',

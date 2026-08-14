@@ -81,6 +81,18 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_remarks TEXT');
       await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_interviewer VARCHAR(255)');
       await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT');
+      
+      // Auto-heal account_manager_id on jobs table to link created_by / AM string to user IDs
+      try {
+        await this.db.query(`
+          UPDATE jobs j
+          SET account_manager_id = u.id::text
+          FROM users u
+          WHERE (j.account_manager_id IS NULL OR j.account_manager_id = '' OR LOWER(j.account_manager_id) = LOWER(u.full_name) OR LOWER(j.account_manager_id) = LOWER(u.email))
+            AND (LOWER(j.created_by) = LOWER(u.email) OR LOWER(j.created_by) = LOWER(u.full_name) OR LOWER(j.account_manager_id) = LOWER(u.full_name))
+        `);
+      } catch (e) {}
+
       this.logger.log('recruiter_submissions database verified (interview & meeting_link columns check).');
     } catch (err: any) {
       this.logger.error(`Database migration check note: ${err.message}`);
@@ -260,14 +272,23 @@ export class RecruiterSubmissionsService implements OnModuleInit {
         j.market,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        am.full_name AS am_name
+        COALESCE(am.full_name, cb.full_name, j.account_manager_id) AS am_name
       FROM recruiter_submissions s
       LEFT JOIN candidates c ON s.candidate_id = c.id
       LEFT JOIN jobs j ON s.job_id = j.id
       LEFT JOIN users r ON s.recruiter_id = r.id::text
       LEFT JOIN pods p ON r.pod_id = p.id
       LEFT JOIN users ph ON p.pod_head_id = ph.id
-      LEFT JOIN users am ON j.account_manager_id = am.id::text
+      LEFT JOIN users am ON (
+        j.account_manager_id = am.id::text 
+        OR LOWER(j.account_manager_id) = LOWER(am.email) 
+        OR LOWER(j.account_manager_id) = LOWER(am.full_name)
+      )
+      LEFT JOIN users cb ON (
+        j.created_by = cb.id::text 
+        OR LOWER(j.created_by) = LOWER(cb.email) 
+        OR LOWER(j.created_by) = LOWER(cb.full_name)
+      )
       WHERE s.tenant_id = $1
     `;
 
@@ -296,9 +317,19 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       }
 
       if (isAm) {
-        roleConditions.push(`j.account_manager_id = $${paramIndex}`);
-        params.push(user.dbId);
-        paramIndex++;
+        roleConditions.push(
+          `(
+            j.account_manager_id = $${paramIndex}
+            OR LOWER(j.account_manager_id) = LOWER($${paramIndex + 1})
+            OR LOWER(j.account_manager_id) = LOWER($${paramIndex + 2})
+            OR LOWER(j.created_by) = LOWER($${paramIndex + 1})
+            OR LOWER(j.created_by) = LOWER($${paramIndex + 2})
+            OR s.recruiter_id = $${paramIndex}
+            OR LOWER(s.recruiter_id) = LOWER($${paramIndex + 1})
+          )`
+        );
+        params.push(user.dbId, user.email || '', user.fullName || '');
+        paramIndex += 3;
       }
 
       if (roleConditions.length > 0) {
@@ -320,9 +351,14 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       paramIndex++;
     }
 
-    if (filters.branchId) {
-      baseSql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL)`;
-      params.push(filters.branchId);
+    if (filters.branchId && filters.branchId.trim().length > 0 && filters.branchId !== 'null' && filters.branchId !== 'undefined') {
+      baseSql += ` AND (
+        j.branch_id::text = $${paramIndex} 
+        OR j.branch_id IN (SELECT id FROM branches WHERE LOWER(name) = LOWER($${paramIndex}) OR LOWER(code) = LOWER($${paramIndex}))
+        OR LOWER(j.business_unit) LIKE '%' || LOWER($${paramIndex}) || '%'
+        OR j.branch_id IS NULL
+      )`;
+      params.push(filters.branchId.trim());
       paramIndex++;
     }
 
@@ -434,14 +470,23 @@ export class RecruiterSubmissionsService implements OnModuleInit {
         j.market,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        am.full_name AS am_name
+        COALESCE(am.full_name, cb.full_name, j.account_manager_id) AS am_name
       FROM recruiter_submissions s
       LEFT JOIN candidates c ON s.candidate_id = c.id
       LEFT JOIN jobs j ON s.job_id = j.id
       LEFT JOIN users r ON s.recruiter_id = r.id::text
       LEFT JOIN pods p ON r.pod_id = p.id
       LEFT JOIN users ph ON p.pod_head_id = ph.id
-      LEFT JOIN users am ON j.account_manager_id = am.id::text
+      LEFT JOIN users am ON (
+        j.account_manager_id = am.id::text 
+        OR LOWER(j.account_manager_id) = LOWER(am.email) 
+        OR LOWER(j.account_manager_id) = LOWER(am.full_name)
+      )
+      LEFT JOIN users cb ON (
+        j.created_by = cb.id::text 
+        OR LOWER(j.created_by) = LOWER(cb.email) 
+        OR LOWER(j.created_by) = LOWER(cb.full_name)
+      )
       WHERE s.id = $1 AND s.tenant_id = $2
       LIMIT 1
     `;
@@ -702,9 +747,18 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       }
 
       if (isAm) {
-        roleConditions.push(`job_id IN (SELECT id FROM jobs WHERE account_manager_id = $${paramIndex})`);
-        params.push(user.dbId);
-        paramIndex++;
+        roleConditions.push(
+          `job_id IN (
+            SELECT id FROM jobs 
+            WHERE account_manager_id = $${paramIndex}
+               OR LOWER(account_manager_id) = LOWER($${paramIndex + 1})
+               OR LOWER(account_manager_id) = LOWER($${paramIndex + 2})
+               OR LOWER(created_by) = LOWER($${paramIndex + 1})
+               OR LOWER(created_by) = LOWER($${paramIndex + 2})
+          )`
+        );
+        params.push(user.dbId, user.email || '', user.fullName || '');
+        paramIndex += 3;
       }
 
       if (roleConditions.length > 0) {

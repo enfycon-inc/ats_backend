@@ -306,6 +306,7 @@ export class EmailService {
       WHERE tenant_id = $1 AND is_active = true
       AND (
         user_id = $2
+        OR user_id IS NULL
         OR shared_with_all = true 
         OR $2::uuid = ANY(shared_with_users)
         OR ($3::uuid IS NOT NULL AND $3::uuid = ANY(shared_with_branches))
@@ -458,5 +459,49 @@ export class EmailService {
     );
 
     return newAccessToken;
+  }
+
+  async getDeliverySettings(tenantId: string, branchId?: string) {
+    const targetBranch = branchId && branchId.trim().length > 0 ? branchId.trim() : 'default';
+    try {
+      const res = await this.db.query(
+        `SELECT rate_per_minute as "ratePerMinute", rate_per_hour as "ratePerHour", randomize_delay as "randomizeDelay"
+         FROM mass_mail.delivery_settings
+         WHERE tenant_id = $1 AND (branch_id = $2 OR branch_id = 'default')
+         ORDER BY CASE WHEN branch_id = $2 THEN 1 ELSE 2 END
+         LIMIT 1`,
+        [tenantId, targetBranch]
+      );
+      if (res.rows.length > 0) {
+        return {
+          ratePerMinute: res.rows[0].ratePerMinute,
+          ratePerHour: res.rows[0].ratePerHour,
+          randomizeDelay: res.rows[0].randomizeDelay
+        };
+      }
+    } catch (err) {
+      this.logger.error(`Failed to fetch delivery settings: ${err.message}`);
+    }
+    return { ratePerMinute: 30, ratePerHour: 500, randomizeDelay: false };
+  }
+
+  async saveDeliverySettings(tenantId: string, dto: { branchId?: string; ratePerMinute?: number; ratePerHour?: number; randomizeDelay?: boolean }) {
+    const targetBranch = dto.branchId && dto.branchId.trim().length > 0 ? dto.branchId.trim() : 'default';
+    const ratePerMinute = typeof dto.ratePerMinute === 'number' ? dto.ratePerMinute : 30;
+    const ratePerHour = typeof dto.ratePerHour === 'number' ? dto.ratePerHour : 500;
+    const randomizeDelay = typeof dto.randomizeDelay === 'boolean' ? dto.randomizeDelay : false;
+
+    await this.db.query(
+      `INSERT INTO mass_mail.delivery_settings (tenant_id, branch_id, rate_per_minute, rate_per_hour, randomize_delay, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
+       ON CONFLICT (tenant_id, branch_id) DO UPDATE
+       SET rate_per_minute = EXCLUDED.rate_per_minute,
+           rate_per_hour = EXCLUDED.rate_per_hour,
+           randomize_delay = EXCLUDED.randomize_delay,
+           updated_at = NOW()`,
+      [tenantId, targetBranch, ratePerMinute, ratePerHour, randomizeDelay]
+    );
+
+    return { success: true, ratePerMinute, ratePerHour, randomizeDelay };
   }
 }

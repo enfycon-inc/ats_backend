@@ -286,6 +286,16 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS mass_mail.delivery_settings (
+        tenant_id UUID NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+        branch_id VARCHAR(255) NOT NULL DEFAULT 'default',
+        rate_per_minute INT NOT NULL DEFAULT 30,
+        rate_per_hour INT NOT NULL DEFAULT 500,
+        randomize_delay BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        PRIMARY KEY (tenant_id, branch_id)
+      );
+
       CREATE TABLE IF NOT EXISTS mass_mail.recipients (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         campaign_id UUID NOT NULL REFERENCES mass_mail.campaigns(id) ON DELETE CASCADE,

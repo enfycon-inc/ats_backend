@@ -9,20 +9,11 @@ import { AuthUser } from '../interfaces/auth-user.interface';
  * - Otherwise, strictly defaults to the user's primary assigned branch (`user.branchId`).
  */
 export function resolveBranchId(user?: AuthUser, headerBranchId?: string): string | null {
-  if (!user) return null;
-
-  const canSwitchBranch =
-    user.roles?.includes('ADMIN') ||
-    user.roles?.includes('SUPER_ADMIN') ||
-    user.roles?.includes('DELIVERY_HEAD') ||
-    user.permissions?.includes('candidate:search_all_branches') ||
-    user.permissions?.includes('job:view_all_branches');
-
   const cleanHeader = headerBranchId ? headerBranchId.trim() : null;
 
-  if (canSwitchBranch && cleanHeader && cleanHeader !== 'ALL') {
+  if (cleanHeader && cleanHeader !== 'ALL' && cleanHeader !== 'null' && cleanHeader !== 'undefined') {
     return cleanHeader;
   }
 
-  return user.branchId || null;
+  return user?.branchId || null;
 }

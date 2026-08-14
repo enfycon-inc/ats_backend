@@ -129,4 +129,27 @@ export class EmailController {
   async getCampaignRecipients(@Param('id') id: string) {
     return this.emailService.getCampaignRecipients(id);
   }
+
+  @Get('delivery-settings')
+  async getDeliverySettings(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.getDeliverySettings(tid, branchId || user.branchId);
+  }
+
+  @Post('delivery-settings')
+  async saveDeliverySettings(
+    @Body() dto: { branchId?: string; ratePerMinute?: number; ratePerHour?: number; randomizeDelay?: boolean },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.saveDeliverySettings(tid, {
+      ...dto,
+      branchId: dto.branchId || user.branchId
+    });
+  }
 }

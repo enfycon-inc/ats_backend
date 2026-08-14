@@ -21,6 +21,12 @@ export class CreateJobDto {
   skillsRequired: string[];
 
   // ─── Ceipal-Matching Fields (from frontend form) ─────────────
+  @ApiPropertyOptional({ example: 'HYD-260814-D0001', description: 'Pre-generated or custom job code' })
+  jobCode?: string;
+
+  @ApiPropertyOptional({ example: 'branch-uuid-123', description: 'Associated office branch ID' })
+  branchId?: string;
+
   @ApiPropertyOptional({ example: 'enfysync Inc', description: 'Business unit / division' })
   businessUnit?: string;
 
