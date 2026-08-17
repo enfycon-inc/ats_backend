@@ -197,9 +197,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS last_working_day DATE;
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS pan_card VARCHAR(10);
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS preferred_locations VARCHAR(255)[];
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS candidate_code VARCHAR(100);
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS uploaded_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS uploaded_by_name VARCHAR(255);
 
-      -- 6. Default existing candidates to use the seeded tenant
-      UPDATE candidates SET tenant_id = 'd3b07384-d113-49c3-a555-9ee75c13ca33' WHERE tenant_id IS NULL;
+      -- Backfill candidate_code for existing records
+      UPDATE candidates SET candidate_code = 'CAN-' || LPAD(id::text, 6, '0') WHERE candidate_code IS NULL;
 
       -- 7. Create recruiter_submissions table
       CREATE TABLE IF NOT EXISTS recruiter_submissions (

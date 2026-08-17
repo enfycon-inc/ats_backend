@@ -42,9 +42,9 @@ export class PermissionsGuard implements CanActivate {
       throw new ForbiddenException('Access denied. No authenticated user found.');
     }
 
-    // Platform SUPER_ADMIN bypasses all normal tenant permission checks
-    if (user.roles && user.roles.includes('SUPER_ADMIN')) {
-      this.logger.debug(`[PermissionsGuard] User: ${user.email} is SUPER_ADMIN. Bypassing check.`);
+    // Platform SUPER_ADMIN and Tenant ADMIN bypass all normal tenant permission checks
+    if (user.roles && (user.roles.includes('SUPER_ADMIN') || user.roles.includes('ADMIN'))) {
+      this.logger.debug(`[PermissionsGuard] User: ${user.email} has ADMIN/SUPER_ADMIN role. Bypassing check.`);
       return true;
     }
 

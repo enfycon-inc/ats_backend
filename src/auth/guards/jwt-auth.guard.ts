@@ -109,15 +109,32 @@ export class JwtAuthGuard implements CanActivate {
 
     this.logger.log(`[JwtAuthGuard] Decoded token: email=${decoded.email}, tenantId=${decoded.tenantId}`);
 
-    // 3. Attach AuthUser
+    // 3. Fetch latest DB user profile so freshly assigned DB roles (ADMIN, BRANCH_ADMIN) are always honored
+    let activeRoles: string[] = decoded.roles || [];
+    let tenantId = decoded.tenantId || DEFAULT_TENANT_ID;
+    let isActive = true;
+    if (decoded.sub) {
+      try {
+        const profile = await this.authService.getProfile(decoded.sub);
+        if (profile && profile.roles && profile.roles.length > 0) {
+          activeRoles = Array.from(new Set([...profile.roles, ...activeRoles]));
+          tenantId = profile.tenantId || tenantId;
+          isActive = profile.isActive !== false;
+        }
+      } catch (e) {
+        // Fallback to JWT payload claims if DB fetch fails
+      }
+    }
+
+    // 4. Attach AuthUser
     request.user = {
       dbId: decoded.sub,
       keycloakId: `MOCK-${decoded.sub}`,
       email: decoded.email,
       fullName: decoded.fullName,
-      roles: decoded.roles || [],
-      tenantId: decoded.tenantId || DEFAULT_TENANT_ID,
-      isActive: true,
+      roles: activeRoles,
+      tenantId,
+      isActive,
       permissions: decoded.permissions || [],
       podId: decoded.podId,
       branchId: decoded.branchId,

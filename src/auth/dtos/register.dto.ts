@@ -4,8 +4,7 @@ export type UserRole =
   | 'RECRUITER'
   | 'ACCOUNT_MANAGER'
   | 'DELIVERY_HEAD'
-  | 'ADMIN'
-  | 'TRACKER';
+  | 'ADMIN';
 
 export class RegisterDto {
   @ApiProperty({
@@ -26,7 +25,7 @@ export class RegisterDto {
   @ApiProperty({
     example: 'RECRUITER',
     description: 'ATS role to assign',
-    enum: ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN', 'TRACKER'],
+    enum: ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'ADMIN'],
   })
   role: UserRole;
 

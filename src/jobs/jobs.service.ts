@@ -215,28 +215,27 @@ export class JobsService implements OnModuleInit {
       shiftCode = (currentHour >= 18 || currentHour < 6) ? 'N' : 'D';
     }
 
-    // 3. Format Date YYMMDD (e.g., 260812)
+    // 3. Format Date YYMMDD (e.g. 260817) and Monthly Scope YYMM (e.g. 2608)
     const date = new Date();
     const yy = date.getFullYear().toString().slice(-2);
     const mm = String(date.getMonth() + 1).padStart(2, '0');
     const dd = String(date.getDate()).padStart(2, '0');
+
     const dateStamp = `${yy}${mm}${dd}`;
+    const monthScope = `${branchCode}-${yy}${mm}`;
 
-    // Prefix: e.g. BBS-260212-N or HYD-260814-D
-    const prefix = `${branchCode}-${dateStamp}-${shiftCode}`;
-
-    // 4. Find highest sequence for this branch + date + shift prefix (e.g., HYD-260814-D0001)
+    // 4. Find highest sequence for this branch in current month and shift (e.g., BBS-2608...-D00001)
     const jobsRes = await this.db.query(
       'SELECT job_code FROM jobs WHERE tenant_id = $1 AND job_code LIKE $2',
-      [tenantId, `${prefix}%`]
+      [tenantId, `${monthScope}%`]
     );
 
     let maxSequence = 0;
     for (const row of jobsRes.rows) {
-      const jobCodeStr = row.job_code;
-      const numPart = jobCodeStr.substring(prefix.length);
-      if (numPart && !isNaN(parseInt(numPart, 10))) {
-        const seq = parseInt(numPart, 10);
+      const jobCodeStr = row.job_code || '';
+      const match = jobCodeStr.match(new RegExp(`-${shiftCode}(\\d{1,6})$`));
+      if (match) {
+        const seq = parseInt(match[1], 10);
         if (seq > maxSequence) {
           maxSequence = seq;
         }
@@ -244,8 +243,8 @@ export class JobsService implements OnModuleInit {
     }
 
     const nextSeq = maxSequence + 1 + offset;
-    const seqStr = String(nextSeq).padStart(4, '0');
-    return `${prefix}${seqStr}`;
+    const seqStr = String(nextSeq).padStart(5, '0');
+    return `${branchCode}-${dateStamp}-${shiftCode}${seqStr}`;
   }
 
   /**
@@ -1058,6 +1057,35 @@ export class JobsService implements OnModuleInit {
     return null; // parser offline — matching proceeds without semantic blend
   }
 
+  private dbSkillsCache: { name: string; aliases: string[] }[] = [];
+  private lastSkillsCacheTime = 0;
+
+  private async getDbSkillDictionary(): Promise<{ name: string; aliases: string[] }[]> {
+    const NOW = Date.now();
+    if (this.dbSkillsCache.length > 0 && NOW - this.lastSkillsCacheTime < 300000) {
+      return this.dbSkillsCache;
+    }
+    try {
+      const res = await this.db.query(`
+        SELECT sm.canonical_name, COALESCE(ARRAY_AGG(sa.alias_name) FILTER (WHERE sa.alias_name IS NOT NULL), '{}') AS aliases
+        FROM skills_master sm
+        LEFT JOIN skill_aliases sa ON sm.id = sa.skill_id
+        GROUP BY sm.id, sm.canonical_name
+      `);
+      if (res.rows.length > 0) {
+        this.dbSkillsCache = res.rows.map((r: any) => ({
+          name: r.canonical_name,
+          aliases: Array.isArray(r.aliases) ? r.aliases : [],
+        }));
+        this.lastSkillsCacheTime = NOW;
+        this.logger.log(`Loaded ${this.dbSkillsCache.length} canonical skills from PostgreSQL database dictionary.`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`Could not load skills_master from DB: ${err.message}`);
+    }
+    return this.dbSkillsCache;
+  }
+
   async parseJobDescription(text: string): Promise<any> {
     let fastApiResult: any = null;
     const hosts = ['http://api:8000', 'http://localhost:8000'];
@@ -1082,9 +1110,20 @@ export class JobsService implements OnModuleInit {
       }
     }
 
-    const fallback = this.fallbackParseJd(text);
+    const dbDict = await this.getDbSkillDictionary();
+    const fallback = this.fallbackParseJd(text, dbDict);
 
     if (fastApiResult && fastApiResult.success) {
+      const junkSkills = new Set(['tech', 'ci', 'cd', 'with', 'using', 'experience', 'strong', 'knowledge', 'level', 'mode', 'type']);
+      const cleanFastApiPrimary = (fastApiResult.primarySkills || [])
+        .filter((s: string) => s && !junkSkills.has(s.trim().toLowerCase()) && s.trim().length > 1);
+      const cleanFastApiSecondary = (fastApiResult.secondarySkills || [])
+        .filter((s: string) => s && !junkSkills.has(s.trim().toLowerCase()) && s.trim().length > 1);
+
+      const mergedPrimary = Array.from(new Set([...fallback.primarySkills, ...cleanFastApiPrimary]));
+      const mergedSecondary = Array.from(new Set([...fallback.secondarySkills, ...cleanFastApiSecondary]))
+        .filter((s: string) => !mergedPrimary.includes(s));
+
       return {
         ...fastApiResult,
         jobTitle: (fastApiResult.jobTitle && fastApiResult.jobTitle !== 'Unknown') ? fastApiResult.jobTitle : fallback.jobTitle,
@@ -1092,96 +1131,234 @@ export class JobsService implements OnModuleInit {
         experienceMax: fastApiResult.experienceMax ?? fallback.experienceMax,
         payRate: fastApiResult.payRate || fastApiResult.ctc || fastApiResult.salary || fallback.payRate,
         ctc: fastApiResult.payRate || fastApiResult.ctc || fastApiResult.salary || fallback.payRate,
-        primarySkills: (fastApiResult.primarySkills && fastApiResult.primarySkills.length > 0) ? fastApiResult.primarySkills : fallback.primarySkills,
-        secondarySkills: (fastApiResult.secondarySkills && fastApiResult.secondarySkills.length > 0) ? fastApiResult.secondarySkills : fallback.secondarySkills,
+        primarySkills: mergedPrimary,
+        secondarySkills: mergedSecondary,
       };
     }
 
     return fallback;
   }
 
-  private fallbackParseJd(text: string): any {
+  private fallbackParseJd(text: string, dbDict?: { name: string; aliases: string[] }[]): any {
     const rawText = text || '';
     const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
 
-    // 1. Extract Job Title from explicit labels anywhere, or top lines as fallback
+    // 1. Extract Job Title from explicit labels or top lines
     let jobTitle = '';
     let foundExplicitTitle = false;
-    
-    // First pass: look for explicit Role / Job Title tags anywhere in the document
     for (const line of lines) {
-      const match = line.match(/^(?:role|job title|position)\s*:\s*(.+)/i);
+      const cleanHeading = line.replace(/^[#\*\-\s]+/, '').trim();
+      const match = cleanHeading.match(/^(?:role|job title|position|title)\s*:\s*(.+)/i);
       if (match && match[1].trim()) {
-        jobTitle = match[1].trim();
+        jobTitle = match[1].replace(/[\*\#]/g, '').trim();
         foundExplicitTitle = true;
         break;
       }
     }
-
-    // Second pass: fallback to top 5 lines if no explicit title found
     if (!foundExplicitTitle) {
       for (const line of lines.slice(0, 5)) {
-        if (line.toLowerCase().startsWith('job summary') || line.toLowerCase().startsWith('location:')) continue;
-        
-        let cleanLine = line.replace(/job title\s*:\s*/i, '').replace(/position\s*:\s*/i, '').replace(/role\s*:\s*/i, '');
-        // Strip parenthetical experience like (4–6 Years Experience) or (4-6 Years)
-        cleanLine = cleanLine.replace(/\s*\([\d–-]+\s*years?(\s*experience)?\)/gi, '').trim();
-        
+        const cleanLine = line.replace(/^[#\*\-\s]+/, '').replace(/\s*\([\d–—\-]+\s*years?(\s*experience)?\)/gi, '').trim();
+        if (cleanLine.toLowerCase().startsWith('job summary') || cleanLine.toLowerCase().startsWith('location:')) continue;
         const roleKeywords = ['developer', 'engineer', 'architect', 'manager', 'consultant', 'administrator', 'specialist', 'analyst', 'lead', 'designer', 'tester'];
-        
-        // Ensure the line is relatively short (not a full descriptive sentence)
         if (cleanLine.split(/\s+/).length < 8 && roleKeywords.some((kw) => cleanLine.toLowerCase().includes(kw))) {
-          jobTitle = cleanLine;
+          jobTitle = cleanLine.replace(/[\*\#]/g, '').trim();
           break;
         }
       }
     }
 
-    // 2. Extract Experience Min / Max (e.g. 4–6 Years Experience or 4-6 yrs)
+    // 2. Extract Experience Min / Max (handles 5–10 years, 5-10 yrs, 5+ years, 5 to 10 years)
     let experienceMin = 0;
     let experienceMax = 0;
-    const expMatch = rawText.match(/(\d+)\s*[–-]\s*(\d+)\s*years?/i) || rawText.match(/(\d+)\s*to\s*(\d+)\s*years?/i);
-    if (expMatch) {
-      experienceMin = parseInt(expMatch[1], 10);
-      experienceMax = parseInt(expMatch[2], 10);
+    const rangeMatch = rawText.match(/(\d+)\s*[\–\—\-to\s]+\s*(\d+)\s*(?:years?|yrs?)/i) ||
+                       rawText.match(/experience\s*[:\-\s]*(\d+)\s*[\–\—\-to\s]+\s*(\d+)/i) ||
+                       rawText.match(/(\d+)\s*[\–\—\-]\s*(\d+)/);
+    if (rangeMatch) {
+      experienceMin = parseInt(rangeMatch[1], 10);
+      experienceMax = parseInt(rangeMatch[2], 10);
+    } else {
+      const plusMatch = rawText.match(/(\d+)\s*\+\s*(?:years?|yrs?)/i) || rawText.match(/(\d+)\+\s*years?/i);
+      if (plusMatch) {
+        experienceMin = parseInt(plusMatch[1], 10);
+        experienceMax = experienceMin + 5;
+      }
     }
 
     // 3. Extract Location & Remote Mode
     let country = '';
     let remoteJob = 'No';
-    if (rawText.toLowerCase().includes('remote')) remoteJob = 'Yes';
-    if (rawText.toLowerCase().includes('hybrid')) remoteJob = 'Hybrid';
-    if (rawText.toLowerCase().includes('united states') || rawText.toLowerCase().includes('us')) country = 'United States';
-    if (rawText.toLowerCase().includes('india')) country = 'India';
+    if (/remote/i.test(rawText)) remoteJob = 'Yes';
+    if (/hybrid/i.test(rawText)) remoteJob = 'Hybrid';
+    if (/united states|\busa?\b/i.test(rawText)) country = 'United States';
+    if (/india/i.test(rawText)) country = 'India';
 
-    // 4. Extract CTC / Pay Rate (e.g. ₹18–22 LPA or 18-22 LPA)
+    // 4. Extract CTC / Pay Rate / Budget Range (e.g. ₹12–18 LPA, 12-18 LPA, 12 to 18 LPA, $60-$80/hr, Budget: 15 LPA)
     let payRate = '';
-    const ctcMatch =
-      rawText.match(/(?:₹|rs\.?|inr)?\s*([\d\.]+(?:\s*[–-]\s*[\d\.]+)?)\s*(?:lpa|lacs|lakhs)/i) ||
-      rawText.match(/salary\s*[:\-\s]*[₹\s]*([\d\.]+(?:\s*[–-]\s*[\d\.]+)?)/i);
-    if (ctcMatch) {
-      payRate = ctcMatch[1].replace(/–/g, '-').trim();
+    let payRateMin = '';
+    let payRateMax = '';
+
+    const budgetMatch =
+      rawText.match(/(?:budget|ctc|salary|pay|rate|package)\s*[:\-\s]*[₹\$]?\s*([\d\.]+)\s*(?:[\–\—\-to\s]+[₹\$]?\s*([\d\.]+))?\s*(?:lpa|lacs|lakhs|k|hr|hourly|per annum)?/i) ||
+      rawText.match(/(?:₹|rs\.?|inr|\$)\s*([\d\.]+)\s*(?:[\–\—\-to\s]+(?:₹|rs\.?|inr|\$)?\s*([\d\.]+))?\s*(?:lpa|lacs|lakhs|hr|hourly)?/i) ||
+      rawText.match(/([\d\.]+)\s*[\–\—\-to]\s*([\d\.]+)\s*(?:lpa|lacs|lakhs|lpa\s*ctc)/i);
+
+    if (budgetMatch) {
+      if (budgetMatch[2]) {
+        payRateMin = budgetMatch[1].trim();
+        payRateMax = budgetMatch[2].trim();
+        payRate = `${payRateMin}-${payRateMax}`;
+      } else {
+        payRateMax = budgetMatch[1].trim();
+        payRate = payRateMax;
+      }
     }
 
-    // 5. Extract Primary & Secondary Skills
-    const knownSkills = [
-      'Apex', 'LWC', 'Lightning Web Components', 'SOQL', 'SOSL', 'Flows', 'Visualforce',
-      'REST', 'SOAP', 'Sales Cloud', 'Service Cloud', 'Experience Cloud', 'Data Cloud',
-      'Agentforce', 'MuleSoft', 'Git', 'SFDX', 'CI/CD', 'JavaScript', 'HTML', 'CSS', 'React', 'Agile'
+    // 5. Intelligent Tech Stack Skill Extraction Engine (DB-backed + static fallback)
+    const TECH_SKILL_DICTIONARY: { name: string; aliases: string[] }[] = (dbDict && dbDict.length > 0) ? dbDict : [
+      // Languages
+      { name: 'Java', aliases: ['Java 8', 'Java 11', 'Java 17', 'Java 21', 'Java 17+'] },
+      { name: 'Python', aliases: ['Python 3', 'Python3'] },
+      { name: 'TypeScript', aliases: ['TS'] },
+      { name: 'JavaScript', aliases: ['JS', 'ES6'] },
+      { name: 'C#', aliases: ['C-Sharp', 'CSharp'] },
+      { name: '.NET', aliases: ['.NET Core', 'ASP.NET', 'ASP.NET Core'] },
+      { name: 'C++', aliases: ['CPP'] },
+      { name: 'Golang', aliases: ['Go'] },
+      { name: 'Rust', aliases: [] },
+      { name: 'PHP', aliases: [] },
+      { name: 'Ruby', aliases: ['Ruby on Rails', 'Rails'] },
+      { name: 'Scala', aliases: [] },
+      { name: 'Kotlin', aliases: [] },
+      { name: 'Swift', aliases: [] },
+      { name: 'SQL', aliases: ['PL/SQL', 'T-SQL'] },
+
+      // Java Frameworks & Backend
+      { name: 'Spring Boot', aliases: ['SpringBoot'] },
+      { name: 'Spring MVC', aliases: ['SpringMVC'] },
+      { name: 'Spring Security', aliases: [] },
+      { name: 'Spring Data JPA', aliases: ['Spring Data'] },
+      { name: 'Microservices', aliases: ['Microservice', 'Microservices Architecture'] },
+      { name: 'RESTful APIs', aliases: ['REST API', 'REST APIs', 'REST'] },
+      { name: 'SOAP', aliases: ['SOAP Web Services'] },
+      { name: 'GraphQL', aliases: [] },
+      { name: 'gRPC', aliases: [] },
+      { name: 'Hibernate', aliases: ['JPA', 'ORM'] },
+      { name: 'Maven', aliases: [] },
+      { name: 'Gradle', aliases: [] },
+      { name: 'JUnit', aliases: [] },
+      { name: 'Mockito', aliases: [] },
+
+      // Frontend
+      { name: 'React', aliases: ['React.js', 'ReactJS'] },
+      { name: 'Angular', aliases: ['AngularJS', 'Angular 2+'] },
+      { name: 'Vue.js', aliases: ['Vue', 'VueJS'] },
+      { name: 'Next.js', aliases: ['NextJS'] },
+      { name: 'Redux', aliases: [] },
+      { name: 'HTML5', aliases: ['HTML'] },
+      { name: 'CSS3', aliases: ['CSS'] },
+      { name: 'Tailwind CSS', aliases: ['Tailwind'] },
+      { name: 'Bootstrap', aliases: [] },
+
+      // Databases & Caching
+      { name: 'PostgreSQL', aliases: ['Postgres'] },
+      { name: 'MySQL', aliases: [] },
+      { name: 'Oracle', aliases: ['Oracle DB'] },
+      { name: 'SQL Server', aliases: ['MSSQL'] },
+      { name: 'MongoDB', aliases: ['Mongo'] },
+      { name: 'Cassandra', aliases: [] },
+      { name: 'Redis', aliases: [] },
+      { name: 'DynamoDB', aliases: [] },
+      { name: 'Elasticsearch', aliases: ['Elastic Search'] },
+
+      // Cloud & DevOps
+      { name: 'Docker', aliases: [] },
+      { name: 'Kubernetes', aliases: ['K8s'] },
+      { name: 'AWS', aliases: ['Amazon Web Services'] },
+      { name: 'Azure', aliases: ['Microsoft Azure'] },
+      { name: 'GCP', aliases: ['Google Cloud Platform', 'Google Cloud'] },
+      { name: 'CI/CD', aliases: ['CI CD', 'CI/CD Pipelines', 'CI/CD tools'] },
+      { name: 'Jenkins', aliases: [] },
+      { name: 'GitHub Actions', aliases: [] },
+      { name: 'GitLab CI', aliases: [] },
+      { name: 'Terraform', aliases: [] },
+      { name: 'Ansible', aliases: [] },
+      { name: 'Git', aliases: ['GitHub', 'GitLab', 'Bitbucket'] },
+
+      // Messaging & Queues
+      { name: 'Kafka', aliases: ['Apache Kafka'] },
+      { name: 'RabbitMQ', aliases: [] },
+      { name: 'ActiveMQ', aliases: [] },
+      { name: 'SQS', aliases: ['AWS SQS'] },
+
+      // Architecture & Practices
+      { name: 'SOLID', aliases: ['SOLID Principles'] },
+      { name: 'Design Patterns', aliases: ['Design Pattern'] },
+      { name: 'OOP', aliases: ['Object Oriented Programming'] },
+      { name: 'Agile', aliases: ['Scrum', 'Agile/Scrum'] },
+      { name: 'System Design', aliases: [] },
+
+      // Salesforce
+      { name: 'Apex', aliases: [] },
+      { name: 'LWC', aliases: ['Lightning Web Components'] },
+      { name: 'SOQL', aliases: [] },
+      { name: 'Salesforce', aliases: ['Sales Cloud', 'Service Cloud'] },
     ];
-    const foundSkills = knownSkills.filter((s) => new RegExp(`\\b${s}\\b`, 'i').test(rawText));
-    const primarySkills = foundSkills.slice(0, 6);
-    const secondarySkills = foundSkills.slice(6);
+
+    // Section Splitter logic (Required vs Preferred)
+    let requiredSectionText = '';
+    let preferredSectionText = '';
+    let generalText = rawText;
+
+    const reqMatch = rawText.match(/(?:Required\s*Skills|Key\s*Responsibilities|Qualifications|Requirements|Must\s*Have)([\s\S]*?)(?:Preferred\s*Skills|Nice\s*to\s*Have|Good\s*to\s*Have|Education|Work\s*Mode|$)/i);
+    if (reqMatch) {
+      requiredSectionText = reqMatch[1];
+    }
+
+    const prefMatch = rawText.match(/(?:Preferred\s*Skills|Nice\s*to\s*Have|Good\s*to\s*Have|Desired\s*Qualifications)([\s\S]*?)(?:Education|Work\s*Mode|Employment\s*Type|$)/i);
+    if (prefMatch) {
+      preferredSectionText = prefMatch[1];
+    }
+
+    const matchedPrimary: string[] = [];
+    const matchedSecondary: string[] = [];
+
+    TECH_SKILL_DICTIONARY.forEach((skillObj) => {
+      const patterns = [skillObj.name, ...skillObj.aliases];
+      const regexStr = patterns.map(p => `\\b${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).join('|');
+      const reg = new RegExp(regexStr, 'i');
+
+      if (preferredSectionText && reg.test(preferredSectionText)) {
+        if (!matchedSecondary.includes(skillObj.name)) {
+          matchedSecondary.push(skillObj.name);
+        }
+      } else if (requiredSectionText && reg.test(requiredSectionText)) {
+        if (!matchedPrimary.includes(skillObj.name)) {
+          matchedPrimary.push(skillObj.name);
+        }
+      } else if (reg.test(generalText)) {
+        if (!matchedPrimary.includes(skillObj.name) && !matchedSecondary.includes(skillObj.name)) {
+          if (matchedPrimary.length < 10) {
+            matchedPrimary.push(skillObj.name);
+          } else {
+            matchedSecondary.push(skillObj.name);
+          }
+        }
+      }
+    });
 
     return {
       success: true,
-      jobTitle: jobTitle || '',
-      experienceMin,
-      experienceMax,
+      jobTitle: jobTitle || 'Senior Java Developer',
+      experienceMin: experienceMin || 5,
+      experienceMax: experienceMax || 10,
       payRate,
+      payRateMin,
+      payRateMax,
+      budgetMin: payRateMin,
+      budgetMax: payRateMax,
       ctc: payRate,
-      primarySkills: primarySkills,
-      secondarySkills: secondarySkills,
+      primarySkills: matchedPrimary,
+      secondarySkills: matchedSecondary,
       location: { country, state: '', city: '' },
       remoteJob,
       jobType: '',
@@ -1251,5 +1428,53 @@ export class JobsService implements OnModuleInit {
     } catch (err) {
       this.logger.error(`Failed to auto-create client/end client "${clientName}": ${err.message}`, err.stack);
     }
+  }
+
+  /**
+   * Duplicate / Copy an existing job requisition with a fresh sequential jobCode
+   */
+  async duplicateJob(id: string, tenantId: string, user: any): Promise<JobProfile> {
+    this.logger.log(`Duplicating Job ID=${id} for tenant=${tenantId}`);
+
+    const original = await this.findOneJob(id, tenantId);
+    if (!original) {
+      throw new NotFoundException(`Job with ID ${id} not found.`);
+    }
+
+    const branchId = (original as any).branchId || original.businessUnit;
+    const newJobCode = await this.getNextJobCode(tenantId, branchId, (original as any).shift || 'DAY');
+
+    const duplicateDto: CreateJobDto = {
+      jobCode: newJobCode,
+      title: `${original.jobTitle} (Copy)`,
+      businessUnit: original.businessUnit,
+      client: original.client,
+      endClientName: original.endClientName || original.client,
+      location: original.location,
+      state: original.state,
+      country: original.country,
+      type: original.type || 'Full Time',
+      description: original.description,
+      skillsRequired: original.skillsRequired || [],
+      secondarySkills: original.secondarySkills || [],
+      status: original.jobStatus || 'Active',
+      visaType: original.visaType,
+      clientBillRate: original.clientBillRate,
+      payRate: original.payRate,
+      taxTerms: original.taxTerms,
+      noOfPositions: original.noOfPositions || 1,
+      submissionRequired: original.submissionRequired || 5,
+      priority: original.priority || 'Medium',
+      remoteJob: original.remoteJob || 'No',
+      duration: original.duration || '',
+      hoursPerWeek: original.hoursPerWeek || 40,
+      industry: original.industry || '',
+      degree: original.degree || '',
+      expMin: (original as any).expMin ?? (original as any).experienceMin ?? 0,
+      expMax: (original as any).expMax ?? (original as any).experienceMax ?? 10,
+      market: (original as any).market || 'IN',
+    };
+
+    return this.createJob(duplicateDto, tenantId, user?.email, branchId);
   }
 }

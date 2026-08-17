@@ -1152,22 +1152,45 @@ export class AuthService implements OnModuleInit {
        WHERE u.tenant_id = $1 ORDER BY u.full_name ASC`,
       [tenantId],
     );
-    return result.rows.map((u) => ({
-      id: u.id,
-      email: u.email,
-      fullName: u.full_name,
-      roles: u.roles,
-      roleId: u.role_id,
-      roleName: u.role_name || u.roles[0] || 'RECRUITER',
-      isActive: u.is_active,
-      isApproved: u.is_approved,
-      createdAt: u.created_at,
-      podId: u.pod_id,
-      branchId: u.branch_id,
-      branchName: u.branch_name || null,
-      businessUnitId: u.business_unit_id,
-      businessUnitName: u.business_unit_name || null,
-    }));
+
+    // Fetch active valid role names for this tenant to exclude deleted custom roles
+    const validRolesRes = await this.db.query(
+      `SELECT name FROM custom_roles WHERE tenant_id = $1`,
+      [tenantId]
+    );
+
+    const SYSTEM_ROLES = [
+      "SUPER_ADMIN", "ADMIN", "TENANT_ADMIN", "ACCOUNT_MANAGER",
+      "POD_LEAD", "DELIVERY_HEAD", "RECRUITER", "BRANCH_ADMIN"
+    ];
+
+    const validRoleNames = new Set([
+      ...SYSTEM_ROLES,
+      ...validRolesRes.rows.map(r => r.name.toUpperCase())
+    ]);
+
+    return result.rows.map((u) => {
+      const rawRoles = Array.isArray(u.roles) ? u.roles : [];
+      const filteredRoles = rawRoles.filter(rName => validRoleNames.has(rName.toUpperCase()));
+      const primaryRole = u.role_name || filteredRoles[0] || 'RECRUITER';
+
+      return {
+        id: u.id,
+        email: u.email,
+        fullName: u.full_name,
+        roles: filteredRoles.length > 0 ? filteredRoles : [primaryRole],
+        roleId: u.role_id,
+        roleName: primaryRole,
+        isActive: u.is_active,
+        isApproved: u.is_approved,
+        createdAt: u.created_at,
+        podId: u.pod_id,
+        branchId: u.branch_id,
+        branchName: u.branch_name || null,
+        businessUnitId: u.business_unit_id,
+        businessUnitName: u.business_unit_name || null,
+      };
+    });
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1240,16 +1263,18 @@ export class AuthService implements OnModuleInit {
       await this.verifyLastAdminProtection(tenantId, userId, 'demote');
     }
 
-    // Find the custom role ID corresponding to the first role in the new list
+    // Find the custom role ID corresponding to any assigned custom role in the list
     let roleId = null;
     if (normalized.length > 0) {
-      const primaryRole = normalized[0];
-      const roleResult = await this.db.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
-        [tenantId, primaryRole]
-      );
-      if (roleResult.rows.length > 0) {
-        roleId = roleResult.rows[0].id;
+      for (const r of normalized) {
+        const roleResult = await this.db.query(
+          'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
+          [tenantId, r]
+        );
+        if (roleResult.rows.length > 0) {
+          roleId = roleResult.rows[0].id;
+          break;
+        }
       }
     }
 
@@ -1350,9 +1375,6 @@ export class AuthService implements OnModuleInit {
         'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
       ],
-      TRACKER: [
-        'submission:view', 'candidate:view'
-      ],
       POD_LEAD: [
         'job:view', 'candidate:view', 'submission:view', 'submission:edit',
         'pod:view', 'job:edit'
@@ -1410,28 +1432,97 @@ export class AuthService implements OnModuleInit {
     const rolesRes = await this.db.query(sql, [tenantId]);
     const roles = rolesRes.rows;
 
+    const DEFAULT_PERMS: Record<string, string[]> = {
+      ADMIN: [
+        'job:create', 'job:edit', 'job:view',
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:edit',
+        'tenant:settings', 'user:manage',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
+        'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches'
+      ],
+      BRANCH_ADMIN: [
+        'job:view', 'job:edit', 'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view', 'submission:edit',
+        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
+      ],
+      RECRUITER: [
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view',
+        'job:view',
+        'pod:view'
+      ],
+      ACCOUNT_MANAGER: [
+        'job:create', 'job:edit', 'job:view',
+        'candidate:view', 'submission:view', 'submission:edit',
+        'pod:view'
+      ],
+      DELIVERY_HEAD: [
+        'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
+        'candidate:search_all_branches', 'job:view_all_branches'
+      ],
+      POD_LEAD: [
+        'job:view', 'candidate:view', 'submission:view', 'submission:edit',
+        'pod:view', 'job:edit'
+      ]
+    };
+
+    const areEqual = (p1: string[], p2: string[]) => {
+      if (!p1 || !p2 || p1.length !== p2.length) return false;
+      const s1 = [...p1].sort();
+      const s2 = [...p2].sort();
+      return s1.every((val, index) => val === s2[index]);
+    };
+
     const result: any[] = [];
     for (const role of roles) {
       const permsRes = await this.db.query(
         'SELECT permission FROM role_permissions WHERE role_id = $1',
         [role.id]
       );
+      const rolePerms = permsRes.rows.map(row => row.permission);
+      const baseSysRole = (role.systemRole || role.name).toUpperCase();
+      const defaultPerms = DEFAULT_PERMS[baseSysRole] || [];
+
+      const isExactSubstitution = !role.isSystem && areEqual(rolePerms, defaultPerms);
+
       result.push({
         ...role,
-        permissions: permsRes.rows.map(row => row.permission)
+        permissions: rolePerms,
+        isExactSubstitution,
+        replacesSystemRole: isExactSubstitution ? baseSysRole : null,
       });
     }
     return result;
   }
 
+  async getAssignableRolePool(tenantId: string) {
+    const allRoles = await this.listRoles(tenantId);
+    const substitutedKeys = new Set<string>();
+
+    for (const r of allRoles) {
+      if (r.isExactSubstitution && r.replacesSystemRole) {
+        substitutedKeys.add(r.replacesSystemRole.toUpperCase());
+      }
+    }
+
+    return allRoles.filter(r => {
+      if (r.isSystem && substitutedKeys.has(r.name.toUpperCase())) {
+        return false;
+      }
+      return true;
+    });
+  }
+
   async createCustomRole(tenantId: string, name: string, description: string, permissions: string[], systemRole?: string) {
     const nameUpper = name.toUpperCase().trim();
-    if (['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(nameUpper)) {
+    if (['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(nameUpper)) {
       throw new BadRequestException('Role name conflicts with a default system role.');
     }
 
     const resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
-    if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'TRACKER', 'POD_LEAD'].includes(resolvedSystemRole)) {
+    if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
       throw new BadRequestException('Invalid base system role selected.');
     }
 
@@ -1470,9 +1561,6 @@ export class AuthService implements OnModuleInit {
           'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
           'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
           'candidate:search_all_branches', 'job:view_all_branches'
-        ],
-        TRACKER: [
-          'submission:view', 'candidate:view'
         ],
         POD_LEAD: [
           'job:view', 'candidate:view', 'submission:view', 'submission:edit',
@@ -1534,32 +1622,58 @@ export class AuthService implements OnModuleInit {
 
   async deleteCustomRole(tenantId: string, roleId: string) {
     const roleResult = await this.db.query(
-      'SELECT id, is_system FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
     if (roleResult.rows.length === 0) {
       throw new NotFoundException('Role not found.');
     }
-    if (roleResult.rows[0].is_system) {
+    const roleToDel = roleResult.rows[0];
+    if (roleToDel.is_system) {
       throw new BadRequestException('You cannot delete default system roles.');
     }
 
-    // Re-assign users under this role to RECRUITER fallback role
-    const fallbackRes = await this.db.query(
-      "SELECT id FROM custom_roles WHERE tenant_id = $1 AND name = 'RECRUITER' LIMIT 1",
-      [tenantId]
-    );
-    const fallbackRoleId = fallbackRes.rows[0]?.id;
+    const baseSysRole = roleToDel.system_role || 'RECRUITER';
 
-    if (fallbackRoleId) {
-      await this.db.query(
-        'UPDATE users SET role_id = $1 WHERE role_id = $2',
-        [fallbackRoleId, roleId]
+    // Find the base system role to revert users cleanly so permissions are never lost
+    const fallbackRes = await this.db.query(
+      "SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR system_role = $2) AND is_system = true LIMIT 1",
+      [tenantId, baseSysRole]
+    );
+    const fallbackRole = fallbackRes.rows[0];
+
+    let reassignedCount = 0;
+    if (fallbackRole) {
+      const updateRes = await this.db.query(
+        'UPDATE users SET role_id = $1 WHERE role_id = $2 RETURNING id',
+        [fallbackRole.id, roleId]
       );
+      reassignedCount = updateRes.rows.length;
+
+      // Replace role name in users.roles array
+      await this.db.query(
+        `UPDATE users SET roles = array_replace(roles, $1, $2) WHERE tenant_id = $3 AND $1 = ANY(roles)`,
+        [roleToDel.name, fallbackRole.name, tenantId]
+      ).catch(() => {});
+    } else {
+      // Remove role name from users.roles array
+      await this.db.query(
+        `UPDATE users SET roles = array_remove(roles, $1) WHERE tenant_id = $2 AND $1 = ANY(roles)`,
+        [roleToDel.name, tenantId]
+      ).catch(() => {});
     }
 
+    // 1. Clear associated permissions and user role mappings first to prevent FK constraint errors
+    await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]).catch(() => {});
+    await this.db.query('DELETE FROM user_roles WHERE role_id = $1', [roleId]).catch(() => {});
+
+    // 2. Delete the custom role
     await this.db.query('DELETE FROM custom_roles WHERE id = $1', [roleId]);
-    return { message: 'Custom role deleted successfully.' };
+    return {
+      message: `Custom role "${roleToDel.name}" deleted successfully.${reassignedCount > 0 ? ` Reassigned ${reassignedCount} staff member(s) to ${baseSysRole}.` : ''}`,
+      reassignedCount,
+      fallbackRole: baseSysRole,
+    };
   }
 
   async assignUserRoles(tenantId: string, userId: string, roleIds: string[], requesterRoles: string[]) {

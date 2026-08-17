@@ -411,6 +411,16 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.listRoles(user.tenantId);
   }
 
+  @Get('rbac/assignable-roles')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List active role pool available for user assignment (with system role substitutions applied)',
+  })
+  async getAssignableRolePool(@CurrentUser() user: AuthUser) {
+    return this.authService.getAssignableRolePool(user.tenantId);
+  }
+
   // ─── POST /api/auth/rbac/roles ───────────────────────────────
   @Post('rbac/roles')
   @UseGuards(JwtAuthGuard, PermissionsGuard)

@@ -44,7 +44,7 @@ export class CandidatesService implements OnModuleInit {
   /**
    * Safe SQL transaction to create a candidate and link their resume record in one step
    */
-  async createCandidate(dto: CreateCandidateDto, tenantId: string): Promise<CandidateProfile> {
+  async createCandidate(dto: CreateCandidateDto, tenantId: string, user?: AuthUser): Promise<CandidateProfile> {
     this.logger.log(`Creating database records for candidate: ${dto.fullName} (${dto.email}) for tenant: ${tenantId}`);
     
     const client = await this.db.getClient();
@@ -78,10 +78,10 @@ export class CandidatesService implements OnModuleInit {
       );
       const resumeRecordId = resumeResult.rows[0].id;
 
-      // 2. Insert into candidates table with tenant_id
+      // 2. Insert into candidates table with tenant_id, uploader info, and candidate_code
       const candidateResult = await client.query(
-        `INSERT INTO candidates (full_name, email, phone, raw_current_location, total_experience_years, raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10)
+        `INSERT INTO candidates (full_name, email, phone, raw_current_location, total_experience_years, raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id, uploaded_by_user_id, uploaded_by_name)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)
          RETURNING id, created_at`,
         [
           dto.fullName,
@@ -94,11 +94,15 @@ export class CandidatesService implements OnModuleInit {
           dto.workAuthorization,
           resumeRecordId,
           tenantId,
+          user?.dbId || null,
+          user?.fullName || user?.email || 'System Upload',
         ]
       );
       
       const candidateId = candidateResult.rows[0].id;
       const createdAt = candidateResult.rows[0].created_at;
+      const candidateCode = `CAN-${String(candidateId).padStart(6, '0')}`;
+      await client.query('UPDATE candidates SET candidate_code = $1 WHERE id = $2', [candidateCode, candidateId]);
 
       await client.query('COMMIT');
 
@@ -161,21 +165,13 @@ export class CandidatesService implements OnModuleInit {
     const canSearchAll = user?.permissions?.includes('candidate:search_all_markets') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
 
     // 1. Market Scoping Logic:
-    // - In 'ALL_BRANCHES' mode or when user has search_all_markets & allMarkets flag, market filter is bypassed unless query.market is specified.
-    // - In 'COMBINED_MARKET' (DEFAULT) or 'STRICT_BRANCH', scope by market (e.g. Domestic 'INDIA' vs USIT 'US').
-    if (poolMode !== 'ALL_BRANCHES' || !query.allMarkets || !canSearchAll) {
-      let effectiveMarket: string | null = null;
-      if (query.market) {
-        effectiveMarket = query.market.toUpperCase();
-      } else if (!query.allMarkets || !canSearchAll) {
-        effectiveMarket = (user?.defaultMarket || 'US').toUpperCase();
-      }
-
-      if (effectiveMarket && (!query.allMarkets || !canSearchAll)) {
-        baseSql += ` AND (UPPER(c.market) = $${paramIndex} OR (c.market IS NULL AND $${paramIndex} = 'US'))`;
-        params.push(effectiveMarket);
-        paramIndex++;
-      }
+    // - If query.allMarkets is true or query.market is not specified, bypass market filter to show all tenant candidates.
+    // - If query.market is explicitly passed (e.g. 'US' or 'INDIA'), filter by that market.
+    if (query.market && !query.allMarkets) {
+      const effectiveMarket = query.market.toUpperCase();
+      baseSql += ` AND (UPPER(c.market) = $${paramIndex} OR (c.market IS NULL AND $${paramIndex} = 'US'))`;
+      params.push(effectiveMarket);
+      paramIndex++;
     }
 
     // 2. Branch Scoping Logic:
@@ -185,11 +181,11 @@ export class CandidatesService implements OnModuleInit {
     // - In 'ALL_BRANCHES' mode: Candidates are accessible workspace-wide.
     const canSearchAllBranches = user?.permissions?.includes('candidate:search_all_branches') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
 
-    if (query.branchId) {
-      baseSql += ` AND c.branch_id = $${paramIndex}`;
+    if (query.branchId && !query.allBranches) {
+      baseSql += ` AND (c.branch_id = $${paramIndex} OR c.branch_id IS NULL)`;
       params.push(query.branchId);
       paramIndex++;
-    } else if (poolMode === 'STRICT_BRANCH' && user?.branchId && !canSearchAllBranches) {
+    } else if (poolMode === 'STRICT_BRANCH' && user?.branchId && !canSearchAllBranches && !query.allBranches) {
       baseSql += ` AND (c.branch_id = $${paramIndex} OR c.branch_id IS NULL)`;
       params.push(user.branchId);
       paramIndex++;
@@ -210,7 +206,7 @@ export class CandidatesService implements OnModuleInit {
 
     baseSql += ' ORDER BY c.created_at DESC';
 
-    const limit = query.limit || 50;
+    const limit = query.limit || 5000;
     baseSql += ` LIMIT $${paramIndex}`;
     params.push(limit);
     paramIndex++;
@@ -326,8 +322,15 @@ export class CandidatesService implements OnModuleInit {
       skills = parsedJsonObj.skills || [];
     }
 
+    const candidateCode = row.candidate_code || `CAN-${String(row.id).padStart(6, '0')}`;
+    const uploadedByName = row.uploaded_by_name || (row.source === 'Bulk Upload Benchmark' ? 'System Benchmark' : 'System');
+
     return {
       id: `INT-${row.source ? row.source.toUpperCase() : 'DB'}-${row.id}`,
+      dbId: row.id,
+      candidateCode,
+      uploadedByUserId: row.uploaded_by_user_id || null,
+      uploadedByName,
       applicantId: `APP-${row.id}`,
       fullName: row.full_name,
       email: row.email,
@@ -368,6 +371,7 @@ export class CandidatesService implements OnModuleInit {
   }
 
   /**
+/**
    * CV SAVE MECHANISM — upload a resume file, parse it (best-effort via the Python
    * parser), and persist the original file + structured candidate in one transaction.
    *
@@ -381,8 +385,12 @@ export class CandidatesService implements OnModuleInit {
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
     meta: { source?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string } = {},
+    user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
+
+    const uploaderId = user?.dbId || null;
+    const uploaderName = user?.fullName || user?.email || (meta.source === 'Bulk Upload Benchmark' ? 'System Benchmark' : 'System');
 
     const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
 
@@ -454,9 +462,12 @@ export class CandidatesService implements OnModuleInit {
           await client.query(
             `UPDATE candidates 
              SET full_name = $1, phone = $2, raw_current_location = $3, total_experience_years = $4,
-                 raw_current_designation = $5, work_authorization = $6, resume_record_id = $7, updated_at = NOW()
-             WHERE id = $8 AND tenant_id = $9`,
-            [fullName, phone, location, expYears, designation, workAuth, newResumeId, existingCandId, tenantId]
+                 raw_current_designation = $5, work_authorization = $6, resume_record_id = $7, 
+                 uploaded_by_user_id = COALESCE(uploaded_by_user_id, $8),
+                 uploaded_by_name = COALESCE(uploaded_by_name, $9),
+                 updated_at = NOW()
+             WHERE id = $10 AND tenant_id = $11`,
+            [fullName, phone, location, expYears, designation, workAuth, newResumeId, uploaderId, uploaderName, existingCandId, tenantId]
           );
 
           await client.query('COMMIT');
@@ -478,7 +489,7 @@ export class CandidatesService implements OnModuleInit {
       await client.query('BEGIN');
 
       const resumeRes = await client.query(
-        `INSERT INTO resumes
+        `INSERT INTO resumes 
           (filename, candidate_name, email, file_hash, parsed_json, raw_text, file_data, file_mime, file_size, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
          RETURNING id`,
@@ -499,24 +510,22 @@ export class CandidatesService implements OnModuleInit {
       const candRes = await client.query(
         `INSERT INTO candidates
           (full_name, email, phone, raw_current_location, total_experience_years,
-           raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id, branch_id, market)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12)
+           raw_current_designation, created_at, source, work_authorization, resume_record_id, tenant_id, branch_id, market, uploaded_by_user_id, uploaded_by_name)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id, created_at`,
         [fullName, email, phone, location, expYears, designation,
-         meta.source || 'CV Upload', workAuth, resumeId, tenantId, meta.branchId || null, meta.market || 'US'],
+         meta.source || 'CV Upload', workAuth, resumeId, tenantId, meta.branchId || null, meta.market || 'US', uploaderId, uploaderName],
       );
+
+      const candidateId = candRes.rows[0].id;
+      const candidateCode = `CAN-${String(candidateId).padStart(6, '0')}`;
+      await client.query('UPDATE candidates SET candidate_code = $1 WHERE id = $2', [candidateCode, candidateId]);
 
       await client.query('COMMIT');
 
-      const row = {
-        id: candRes.rows[0].id, full_name: fullName, email, phone,
-        raw_current_location: location, total_experience_years: expYears,
-        raw_current_designation: designation, source: meta.source || 'CV Upload',
-        work_authorization: workAuth, created_at: candRes.rows[0].created_at,
-        parsed_json: JSON.stringify({ skills }), raw_text: rawText,
-      };
-      this.logger.log(`Saved CV for "${fullName}" (candidate ${candRes.rows[0].id}, parsed=${!!parsed}).`);
-      return { candidate: this.mapRowToProfile(row), duplicate: false, parsed: !!parsed };
+      const createdCandidate = await this.findOne(candidateId, tenantId);
+      this.logger.log(`Saved CV for "${fullName}" (${candidateCode}, ID=${candidateId}, uploadedBy=${uploaderName}, parsed=${!!parsed}).`);
+      return { candidate: createdCandidate, duplicate: false, parsed: !!parsed };
     } catch (err: any) {
       await client.query('ROLLBACK');
       this.logger.error(`Failed to save uploaded CV: ${err.message}`, err.stack);

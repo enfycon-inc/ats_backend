@@ -262,6 +262,8 @@ export class RecruiterSubmissionsService implements OnModuleInit {
         c.raw_current_designation AS candidate_designation,
         c.work_authorization AS candidate_work_auth,
         c.source AS candidate_source,
+        c.candidate_code AS candidate_code,
+        COALESCE(c.uploaded_by_name, 'System') AS candidate_uploader_name,
         c.current_ctc AS candidate_current_ctc,
         c.expected_ctc AS candidate_expected_ctc,
         c.notice_period_days AS candidate_notice_period,

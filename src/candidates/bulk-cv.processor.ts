@@ -75,7 +75,7 @@ export class BulkCvProcessor extends WorkerHost {
                candidate_name = $2, 
                candidate_email = $3
            WHERE id = $4`,
-          [result.candidate.id, result.candidate.fullName, result.candidate.email || null, itemId]
+          [result.candidate.dbId || result.candidate.id, result.candidate.fullName, result.candidate.email || null, itemId]
         );
 
         this.logger.log(`[BULK CV PROCESSOR] Successfully processed CV: ${filename} -> Candidate ID ${result.candidate.id}`);

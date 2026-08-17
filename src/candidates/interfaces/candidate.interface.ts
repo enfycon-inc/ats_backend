@@ -3,6 +3,10 @@
  */
 export interface CandidateProfile {
   id: string;
+  dbId?: number;
+  candidateCode?: string;
+  uploadedByUserId?: string | null;
+  uploadedByName?: string | null;
   applicantId: string;
   fullName: string;
   email: string;

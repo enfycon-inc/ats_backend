@@ -48,7 +48,7 @@ export class CandidatesController {
     if (activeBranchId && !dto.branchId) {
       dto.branchId = activeBranchId;
     }
-    return this.candidatesService.createCandidate(dto, activeTenantId);
+    return this.candidatesService.createCandidate(dto, activeTenantId, user);
   }
 
   @Get()
@@ -69,7 +69,7 @@ export class CandidatesController {
   ): Promise<CandidateProfile[]> {
     const activeTenantId = resolveTenantId(user, tenantId);
     const activeBranchId = resolveBranchId(user, branchHeaderId);
-    if (activeBranchId && !query.branchId) {
+    if (activeBranchId && !query.branchId && !query.allBranches) {
       query.branchId = activeBranchId;
     }
     return this.candidatesService.findAll(query, activeTenantId, user);
@@ -190,7 +190,7 @@ export class CandidatesController {
       phone,
       branchId: activeBranchId || undefined,
       market: user?.defaultMarket || 'US',
-    });
+    }, user);
   }
 
   @Get(':id/resume')

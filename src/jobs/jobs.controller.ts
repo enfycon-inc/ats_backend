@@ -155,4 +155,20 @@ export class JobsController {
     const tid = resolveTenantId(user, tenantId);
     return this.jobsService.updateJob(id, dto, tid, user);
   }
+
+  @Post(':id/duplicate')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:create')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Duplicate / Copy an existing job requisition',
+  })
+  async duplicateJob(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<JobProfile> {
+    const tid = resolveTenantId(user, tenantId);
+    return this.jobsService.duplicateJob(id, tid, user);
+  }
 }

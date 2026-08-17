@@ -16,6 +16,9 @@ export class CandidateQueryDto {
   @ApiPropertyOptional({ example: false, description: 'Override market filtering if user has CANDIDATES_SEARCH_ALL_MARKETS permission' })
   allMarkets?: boolean;
 
+  @ApiPropertyOptional({ example: false, description: 'Override branch filtering to query candidates tenant-wide' })
+  allBranches?: boolean;
+
   @ApiPropertyOptional({ example: 10, description: 'The number of records to return' })
   limit?: number;
 
