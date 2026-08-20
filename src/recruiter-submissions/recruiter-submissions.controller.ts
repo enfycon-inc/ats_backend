@@ -103,10 +103,51 @@ export class RecruiterSubmissionsController {
     return this.service.getTrackerStats(tid, user);
   }
 
+  @Get('custom-remarks')
+  @ApiOperation({
+    summary: 'List Tenant Custom Stage Remarks Templates',
+    description: 'Retrieves all custom stage remarks configured for the active tenant.',
+  })
+  async getCustomRemarks(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.getCustomRemarks(tid);
+  }
+
+  @Post('custom-remarks')
+  @ApiOperation({
+    summary: 'Create a Tenant Custom Stage Remark Template',
+    description: 'Adds a custom stage remark option for L1, L2, L3, or final client stage.',
+  })
+  async createCustomRemark(
+    @Body() body: { stage: string; remarkText: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.createCustomRemark(tid, body.stage, body.remarkText, user.email || user.fullName || user.dbId);
+  }
+
+  @Delete('custom-remarks/:id')
+  @ApiOperation({
+    summary: 'Delete a Tenant Custom Stage Remark Template',
+    description: 'Removes a custom remark template by ID.',
+  })
+  async deleteCustomRemark(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.deleteCustomRemark(tid, id);
+  }
+
   @Get(':id')
   @ApiOperation({
-    summary: 'Fetch Detailed Submission Record',
-    description: 'Retrieves a single candidate submission profile with joined candidate and job requisition properties.',
+    summary: 'Fetch Single Candidate Submission Details',
+    description: 'Returns candidate submission payload along with matched JD details.',
   })
   @ApiParam({ name: 'id', description: 'Alphanumeric database primary key of the submission', type: Number })
   @ApiResponse({ status: 200, description: 'Detailed submission profile resolved successfully.' })

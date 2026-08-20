@@ -81,6 +81,20 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_remarks TEXT');
       await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_interviewer VARCHAR(255)');
       await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT');
+
+      // Tenant Custom Stage Remarks table
+      await this.db.query(`
+        CREATE TABLE IF NOT EXISTS tenant_stage_remarks (
+          id SERIAL PRIMARY KEY,
+          tenant_id VARCHAR(100) NOT NULL,
+          stage VARCHAR(50) NOT NULL,
+          remark_text TEXT NOT NULL,
+          created_by VARCHAR(100),
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_tenant_stage_remarks_tenant ON tenant_stage_remarks(tenant_id, stage);
+      `);
       
       // Auto-heal account_manager_id on jobs table to link created_by / AM string to user IDs
       try {
@@ -93,7 +107,7 @@ export class RecruiterSubmissionsService implements OnModuleInit {
         `);
       } catch (e) {}
 
-      this.logger.log('recruiter_submissions database verified (interview & meeting_link columns check).');
+      this.logger.log('recruiter_submissions database verified (interview, custom remarks & meeting_link check).');
     } catch (err: any) {
       this.logger.error(`Database migration check note: ${err.message}`);
     }
@@ -297,13 +311,16 @@ export class RecruiterSubmissionsService implements OnModuleInit {
     const params: any[] = [tenantId];
     let paramIndex = 2;
 
+    const userPerms = user.permissions || [];
     const isAm = user.roles?.includes('ACCOUNT_MANAGER');
     const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
     const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
     const isRecruiter = user.roles?.includes('RECRUITER');
     const isPodLead = user.roles?.includes('POD_LEAD');
 
-    if (!isAdmin && !isDeliveryHead) {
+    const canViewAll = isAdmin || isDeliveryHead || userPerms.includes('submission:view') || userPerms.includes('submission:audit_rounds') || userPerms.includes('submission:audit_l1') || userPerms.includes('submission:audit_l2') || userPerms.includes('submission:audit_l3') || userPerms.includes('submission:approve_client');
+
+    if (!canViewAll) {
       const roleConditions: string[] = [];
 
       if (isRecruiter) {
@@ -521,49 +538,43 @@ export class RecruiterSubmissionsService implements OnModuleInit {
 
     const existing = existingResult.rows[0];
 
-    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
+    const userPerms = user.permissions || [];
     const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
     const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
-    const isRecruiter = user.roles?.includes('RECRUITER');
+    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
     const isPodLead = user.roles?.includes('POD_LEAD');
 
-    if (!isAdmin && !isDeliveryHead) {
-      if (isAm && !isRecruiter && !isPodLead) {
-        // Must be the account manager for this exact job
-        if (existing.account_manager_id !== user.dbId) {
-          throw new ForbiddenException(
-            'You can only modify submissions for jobs you created / own.',
-          );
-        }
-      }
+    const canAuditRounds = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:audit_rounds');
+    const canAuditL1 = canAuditRounds || isAm || isPodLead || userPerms.includes('submission:audit_l1');
+    const canAuditL2 = canAuditRounds || isAm || userPerms.includes('submission:audit_l2');
+    const canAuditL3 = canAuditRounds || isAm || userPerms.includes('submission:audit_l3');
+    const canApproveClient = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:approve_client');
+    const canEditRate = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:edit_rate');
 
-      if (isPodLead && !isRecruiter && !isAm) {
-        // Verify recruiter belongs to a pod led by this user
-        const podCheck = await this.db.query(
-          `SELECT 1 FROM users 
-           WHERE id::text = $1 
-             AND pod_id IN (SELECT id FROM pods WHERE pod_head_id = $2) LIMIT 1`,
-          [existing.recruiter_id, user.dbId]
-        );
-        if (podCheck.rows.length === 0) {
-          throw new ForbiddenException(
-            'You can only modify submissions for recruiters within your pod.',
-          );
-        }
-      }
-
-      if (isRecruiter) {
-        // Recruiters cannot update interview statuses, dates, finalStatus, or remarks
-        // They can only update recruiterComment
-        delete dto.l1Status;
-        delete dto.l1Date;
-        delete dto.l2Status;
-        delete dto.l2Date;
-        delete dto.l3Status;
-        delete dto.l3Date;
-        delete dto.finalStatus;
-        delete dto.remarks;
-      }
+    if (!canAuditL1) {
+      delete dto.l1Status;
+      delete dto.l1Date;
+      delete dto.l1Remarks;
+      delete dto.l1Interviewer;
+    }
+    if (!canAuditL2) {
+      delete dto.l2Status;
+      delete dto.l2Date;
+      delete dto.l2Remarks;
+      delete dto.l2Interviewer;
+    }
+    if (!canAuditL3) {
+      delete dto.l3Status;
+      delete dto.l3Date;
+      delete dto.l3Remarks;
+      delete dto.l3Interviewer;
+    }
+    if (!canApproveClient) {
+      delete dto.finalStatus;
+      delete dto.remarks;
+    }
+    if (!canEditRate) {
+      delete dto.submittedRate;
     }
 
     // Evaluate merged status changes
@@ -846,5 +857,46 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       submittedRate: row.submitted_rate,
       market: row.market,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Tenant Custom Stage Remarks Configuration Methods
+  // ─────────────────────────────────────────────────────────────
+  async getCustomRemarks(tenantId: string) {
+    const result = await this.db.query(
+      `SELECT id, stage, remark_text as "remarkText", created_by as "createdBy", created_at as "createdAt"
+       FROM tenant_stage_remarks
+       WHERE tenant_id = $1
+       ORDER BY id ASC`,
+      [tenantId]
+    );
+    return result.rows;
+  }
+
+  async createCustomRemark(tenantId: string, stage: string, remarkText: string, createdBy?: string) {
+    if (!stage || !remarkText?.trim()) {
+      throw new BadRequestException('Stage and remarkText are required.');
+    }
+    const cleanStage = stage.toLowerCase().trim();
+    const cleanText = remarkText.trim();
+
+    const result = await this.db.query(
+      `INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, stage, remark_text as "remarkText", created_by as "createdBy", created_at as "createdAt"`,
+      [tenantId, cleanStage, cleanText, createdBy || 'admin']
+    );
+    return result.rows[0];
+  }
+
+  async deleteCustomRemark(tenantId: string, id: number) {
+    const result = await this.db.query(
+      `DELETE FROM tenant_stage_remarks WHERE id = $1 AND tenant_id = $2 RETURNING id`,
+      [id, tenantId]
+    );
+    if (result.rows.length === 0) {
+      throw new NotFoundException(`Custom remark template #${id} not found.`);
+    }
+    return { message: `Custom remark #${id} deleted successfully.`, id };
   }
 }

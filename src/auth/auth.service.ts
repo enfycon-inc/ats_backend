@@ -1506,39 +1506,52 @@ export class AuthService implements OnModuleInit {
 
     const DEFAULT_PERMS: Record<string, string[]> = {
       ADMIN: [
-        'job:create', 'job:edit', 'job:view', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:edit',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
         'tenant:settings', 'user:manage',
-        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
-        'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches'
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'client:view', 'placement:view', 'report:view'
       ],
       BRANCH_ADMIN: [
-        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:view', 'submission:edit',
-        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
+        'submission:create', 'submission:view', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
+        'client:view', 'placement:view', 'report:view'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:view',
+        'submission:create', 'submission:view', 'submission:edit',
         'job:view',
         'pod:view'
       ],
       ACCOUNT_MANAGER: [
-        'job:create', 'job:edit', 'job:view',
-        'candidate:view', 'submission:view', 'submission:edit',
-        'pod:view'
+        'job:create', 'job:edit', 'job:view', 'job:approve',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:view',
+        'client:view', 'client:create', 'client:edit',
+        'placement:view', 'placement:create',
+        'report:view'
       ],
       DELIVERY_HEAD: [
-        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
-        'candidate:view', 'submission:view', 'submission:edit',
-        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
-        'candidate:search_all_branches', 'job:view_all_branches'
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'client:view', 'placement:view', 'report:view'
       ],
       POD_LEAD: [
-        'job:view', 'candidate:view', 'submission:view', 'submission:edit',
-        'pod:view', 'job:edit'
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:audit_l1', 'submission:schedule_interview', 'submission:edit',
+        'pod:view', 'pod:edit', 'report:view'
       ]
     };
 
@@ -1815,9 +1828,16 @@ export class AuthService implements OnModuleInit {
       { id: 'job:assign_recruiter', name: 'Assign Direct Recruiter to Job', group: 'Jobs Management' },
       { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
       { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates' },
-      { id: 'candidate:view', name: 'View Candidates', group: 'Candidates' },
-      { id: 'submission:create', name: 'Create Submissions', group: 'Submissions' },
-      { id: 'submission:edit', name: 'Edit Submissions', group: 'Submissions' },
+      { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:audit_rounds', name: 'Interview Stages & Screening Audits (L1, L2, L3 & Remarks)', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:audit_l1', name: 'Internal Screening & Resume Audit (L1)', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:audit_l2', name: 'Technical Vetting & Screening (L2)', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:audit_l3', name: 'Commercial & Client Readiness Audit (L3)', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:approve_client', name: 'Approve & Submit to Client / Final Status', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:schedule_interview', name: 'Schedule Client & Internal Interviews', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:edit_rate', name: 'Edit Candidate Pay Rate & CTC Margins', group: 'Candidate Submissions & Quality Audits' },
+      { id: 'submission:edit', name: 'Edit Submissions (General Notes)', group: 'Candidate Submissions & Quality Audits' },
       { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
       { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
       { id: 'pod:create', name: 'Create Pods', group: 'Pods Management' },
