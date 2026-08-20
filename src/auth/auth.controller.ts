@@ -384,7 +384,12 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 200, description: 'Tenant settings updated.' })
   async updateMySettings(
     @CurrentUser() user: AuthUser,
-    @Body() body: { podSystemEnabled?: boolean; candidatePoolMode?: string },
+    @Body() body: {
+      podSystemEnabled?: boolean;
+      candidatePoolMode?: string;
+      jobAssignmentMode?: string;
+      jobAssignmentOptions?: any;
+    },
   ) {
     return this.authService.updateTenantSettings(user.tenantId, body);
   }

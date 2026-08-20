@@ -119,4 +119,13 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: 'US', enum: ['US', 'IN'], description: 'Staffing market/shift context' })
   market?: string;
+
+  @ApiPropertyOptional({ example: 'user-uuid-123', description: 'Assigned reviewer/approver user ID' })
+  assignedApproverId?: string;
+
+  @ApiPropertyOptional({ example: 'POD_LEAD', enum: ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'], description: 'Assigned approver persona role' })
+  assignedApproverRole?: string;
+
+  @ApiPropertyOptional({ example: 'PENDING_APPROVAL', enum: ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'], description: 'Job approval status' })
+  approvalStatus?: string;
 }

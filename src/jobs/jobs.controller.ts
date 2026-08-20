@@ -156,6 +156,40 @@ export class JobsController {
     return this.jobsService.updateJob(id, dto, tid, user);
   }
 
+  @Patch(':id/approve')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:edit')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Approve pending job requisition and activate for recruiters',
+  })
+  async approve(
+    @Param('id') id: string,
+    @Body() body: { assignedTo?: string; primaryRecruiterId?: string; podId?: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<JobProfile> {
+    const tid = resolveTenantId(user, tenantId);
+    return this.jobsService.approveJob(id, tid, user, body);
+  }
+
+  @Patch(':id/reject')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:edit')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Reject pending job requisition with reviewer reason',
+  })
+  async reject(
+    @Param('id') id: string,
+    @Body() body: { reason: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<JobProfile> {
+    const tid = resolveTenantId(user, tenantId);
+    return this.jobsService.rejectJob(id, tid, user, body?.reason || '');
+  }
+
   @Post(':id/duplicate')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('job:create')

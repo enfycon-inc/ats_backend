@@ -143,8 +143,10 @@ export class AuthService implements OnModuleInit {
       -- Ensure is_approved column exists on older tables
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
 
-      -- Add branch_id and business_unit_id to users
+      -- Add branch_id, assigned_branch_ids, branch_roles and business_unit_id to users
       ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_branch_ids UUID[] DEFAULT '{}';
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_roles JSONB DEFAULT '{}';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
 
       -- Update any existing users with null value to true
@@ -158,6 +160,10 @@ export class AuthService implements OnModuleInit {
         AND t.status = 'ACTIVE'
         AND u.is_active = true
         AND u.is_approved = false;
+
+      -- Ensure job_assignment_mode and job_assignment_options exist on tenants
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_options JSONB DEFAULT '{"allowAuto":true,"allowAll":true,"allowUnassigned":true,"allowedPodIds":[]}';
 
       -- Compulsory Default HQ Branch Creation for Tenants without branches
       INSERT INTO branches (id, tenant_id, name, code, market)
@@ -174,6 +180,9 @@ export class AuthService implements OnModuleInit {
         LIMIT 1
       )
       WHERE u.branch_id IS NULL;
+
+      -- Auto-backfill assigned_branch_ids array with branch_id if empty
+      UPDATE users SET assigned_branch_ids = ARRAY[branch_id] WHERE branch_id IS NOT NULL AND (assigned_branch_ids IS NULL OR cardinality(assigned_branch_ids) = 0);
     `;
     try {
       await this.db.query(ddl);
@@ -245,7 +254,7 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Login attempt for ${dto.email} [Provider: ${this.provider}]`);
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
@@ -426,6 +435,8 @@ export class AuthService implements OnModuleInit {
                 systemRole,
                 podId: user.pod_id,
                 branchId: user.branch_id,
+                assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
+                branchRoles: user.branch_roles || {},
                 branchName: user.branch_name || null,
                 businessUnitId: user.business_unit_id,
                 businessUnitName: user.business_unit_name || null,
@@ -467,6 +478,8 @@ export class AuthService implements OnModuleInit {
             systemRole,
             podId: user.pod_id || null,
             branchId: user.branch_id || null,
+            assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
+            branchRoles: user.branch_roles || {},
             branchName: user.branch_name || null,
             businessUnitId: user.business_unit_id || null,
             businessUnitName: user.business_unit_name || null,
@@ -518,6 +531,8 @@ export class AuthService implements OnModuleInit {
         systemRole,
         podId: user.pod_id,
         branchId: user.branch_id,
+        assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
+        branchRoles: user.branch_roles || {},
         branchName: user.branch_name || null,
         businessUnitId: user.business_unit_id,
         businessUnitName: user.business_unit_name || null,
@@ -1072,8 +1087,14 @@ export class AuthService implements OnModuleInit {
 
   // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
+    // Ensure columns exist on tenants table
+    await this.db.query(`
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_options JSONB DEFAULT '{"allowAuto":true,"allowAll":true,"allowUnassigned":true,"allowedPodIds":[]}';
+    `).catch(() => {});
+
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit, t.pod_system_enabled, t.candidate_pool_mode, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit, t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN branches b ON u.branch_id = b.id
@@ -1093,6 +1114,26 @@ export class AuthService implements OnModuleInit {
       systemRole = 'SUPER_ADMIN';
     }
     let permissions: string[] = [];
+    const rolesArray: string[] = Array.isArray(u.roles) ? u.roles : (u.roles ? [u.roles] : []);
+
+    // 1. Fetch permissions for custom roles linked via role_id or matching role names in u.roles
+    const permsRes = await this.db.query(
+      `SELECT DISTINCT rp.permission
+       FROM role_permissions rp
+       JOIN custom_roles cr ON cr.id = rp.role_id
+       WHERE cr.tenant_id = $1
+         AND (
+           cr.id = $2
+           OR cr.name = ANY($3::text[])
+           OR UPPER(cr.name) = ANY(ARRAY(SELECT UPPER(x) FROM unnest($3::text[]) x))
+         )`,
+      [u.tenant_id, u.role_id, rolesArray]
+    ).catch(() => ({ rows: [] }));
+
+    if (permsRes.rows.length > 0) {
+      permissions = permsRes.rows.map(row => row.permission);
+    }
+
     if (u.role_id) {
       const roleRes = await this.db.query(
         'SELECT name, system_role FROM custom_roles WHERE id = $1 LIMIT 1',
@@ -1102,12 +1143,15 @@ export class AuthService implements OnModuleInit {
         roleName = roleRes.rows[0].name;
         systemRole = roleRes.rows[0].system_role || systemRole;
       }
-
-      const permsRes = await this.db.query(
-        'SELECT permission FROM role_permissions WHERE role_id = $1',
-        [u.role_id]
+    } else if (rolesArray.length > 0) {
+      const roleRes = await this.db.query(
+        'SELECT id, name, system_role FROM custom_roles WHERE tenant_id = $1 AND (name = ANY($2::text[]) OR UPPER(name) = ANY(ARRAY(SELECT UPPER(x) FROM unnest($2::text[]) x))) LIMIT 1',
+        [u.tenant_id, rolesArray]
       );
-      permissions = permsRes.rows.map(row => row.permission);
+      if (roleRes.rows.length > 0) {
+        roleName = roleRes.rows[0].name;
+        systemRole = roleRes.rows[0].system_role || systemRole;
+      }
     }
 
     return {
@@ -1127,11 +1171,15 @@ export class AuthService implements OnModuleInit {
       userLimit: u.user_limit || 5,
       podId: u.pod_id,
       branchId: u.branch_id,
+      assignedBranchIds: u.assigned_branch_ids && u.assigned_branch_ids.length > 0 ? u.assigned_branch_ids : (u.branch_id ? [u.branch_id] : []),
+      branchRoles: u.branch_roles || {},
       branchName: u.branch_name || null,
       businessUnitId: u.business_unit_id,
       businessUnitName: u.business_unit_name || null,
       podSystemEnabled: u.pod_system_enabled !== false,
       candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
+      jobAssignmentMode: u.job_assignment_mode || 'AUTO',
+      jobAssignmentOptions: u.job_assignment_options || { allowAuto: true, allowAll: true, allowUnassigned: true, allowedPodIds: [] },
       tenant: {
         name: u.tenant_name || '',
         domain: u.tenant_domain || '',
@@ -1144,7 +1192,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listUsers(tenantId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at, u.role_id, u.pod_id, u.branch_id, u.business_unit_id, r.name as role_name, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, r.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u 
        LEFT JOIN custom_roles r ON u.role_id = r.id
        LEFT JOIN branches b ON u.branch_id = b.id
@@ -1186,6 +1234,8 @@ export class AuthService implements OnModuleInit {
         createdAt: u.created_at,
         podId: u.pod_id,
         branchId: u.branch_id,
+        assignedBranchIds: u.assigned_branch_ids && u.assigned_branch_ids.length > 0 ? u.assigned_branch_ids : (u.branch_id ? [u.branch_id] : []),
+        branchRoles: u.branch_roles || {},
         branchName: u.branch_name || null,
         businessUnitId: u.business_unit_id,
         businessUnitName: u.business_unit_name || null,
@@ -1287,7 +1337,7 @@ export class AuthService implements OnModuleInit {
 
   async updateUserDetails(
     userId: string,
-    dto: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roles?: string[] },
+    dto: { fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[] },
     requester: any
   ) {
     const userRes = await this.db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
@@ -1326,8 +1376,23 @@ export class AuthService implements OnModuleInit {
       salt = pwdRes.salt;
     }
 
+    let assignedBranchIds = user.assigned_branch_ids || [];
+    let branchRoles = user.branch_roles || {};
+
     if (dto.branchId !== undefined) {
       branchId = dto.branchId || null;
+    }
+
+    if (dto.assignedBranchIds !== undefined) {
+      assignedBranchIds = Array.isArray(dto.assignedBranchIds) ? dto.assignedBranchIds : [];
+    }
+
+    if (dto.branchRoles !== undefined) {
+      branchRoles = dto.branchRoles || {};
+    }
+
+    if (branchId && !assignedBranchIds.includes(branchId)) {
+      assignedBranchIds = Array.from(new Set([branchId, ...assignedBranchIds]));
     }
 
     if (dto.businessUnitId !== undefined) {
@@ -1336,9 +1401,9 @@ export class AuthService implements OnModuleInit {
 
     await this.db.query(
       `UPDATE users
-       SET full_name = $1, email = $2, password_hash = $3, salt = $4, branch_id = $5, business_unit_id = $6, updated_at = NOW()
-       WHERE id = $7`,
-      [fullName, email, hash, salt, branchId, businessUnitId, userId]
+       SET full_name = $1, email = $2, password_hash = $3, salt = $4, branch_id = $5, assigned_branch_ids = $6, branch_roles = $7, business_unit_id = $8, updated_at = NOW()
+       WHERE id = $9`,
+      [fullName, email, hash, salt, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, userId]
     );
 
     if (dto.roles && Array.isArray(dto.roles) && dto.roles.length > 0) {
@@ -1354,11 +1419,17 @@ export class AuthService implements OnModuleInit {
   async seedTenantRoles(tenantId: string): Promise<Record<string, string>> {
     const DEFAULT_PERMISSIONS: Record<string, string[]> = {
       ADMIN: [
-        'job:create', 'job:edit', 'job:view',
+        'job:create', 'job:edit', 'job:view', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:edit',
         'tenant:settings', 'user:manage',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
+      ],
+      BRANCH_ADMIN: [
+        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view', 'submission:edit',
+        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
@@ -1372,7 +1443,8 @@ export class AuthService implements OnModuleInit {
         'pod:view'
       ],
       DELIVERY_HEAD: [
-        'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
+        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:view', 'submission:view', 'submission:edit',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
       ],
       POD_LEAD: [
@@ -1434,7 +1506,7 @@ export class AuthService implements OnModuleInit {
 
     const DEFAULT_PERMS: Record<string, string[]> = {
       ADMIN: [
-        'job:create', 'job:edit', 'job:view',
+        'job:create', 'job:edit', 'job:view', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:edit',
         'tenant:settings', 'user:manage',
@@ -1442,7 +1514,8 @@ export class AuthService implements OnModuleInit {
         'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches'
       ],
       BRANCH_ADMIN: [
-        'job:view', 'job:edit', 'candidate:create', 'candidate:view',
+        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:edit',
         'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
       ],
@@ -1458,7 +1531,8 @@ export class AuthService implements OnModuleInit {
         'pod:view'
       ],
       DELIVERY_HEAD: [
-        'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
+        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:view', 'submission:view', 'submission:edit',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
         'candidate:search_all_branches', 'job:view_all_branches'
       ],
@@ -1734,6 +1808,12 @@ export class AuthService implements OnModuleInit {
       { id: 'job:create', name: 'Create Jobs', group: 'Jobs Management' },
       { id: 'job:edit', name: 'Edit Jobs', group: 'Jobs Management' },
       { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
+      { id: 'job:publish_direct', name: 'Publish Jobs Directly (Bypass Approval Gate)', group: 'Jobs Management' },
+      { id: 'job:approve', name: 'Approve & Activate Job Requisitions', group: 'Jobs Management' },
+      { id: 'job:reject', name: 'Reject Job Requisitions with Feedback', group: 'Jobs Management' },
+      { id: 'job:assign', name: 'Assign & Reassign Jobs to Recruiters/Pods', group: 'Jobs Management' },
+      { id: 'job:assign_recruiter', name: 'Assign Direct Recruiter to Job', group: 'Jobs Management' },
+      { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
       { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates' },
       { id: 'candidate:view', name: 'View Candidates', group: 'Candidates' },
       { id: 'submission:create', name: 'Create Submissions', group: 'Submissions' },
@@ -2208,8 +2288,20 @@ export class AuthService implements OnModuleInit {
     return { message: 'Domain mapping deleted successfully.' };
   }
 
-  async updateTenantSettings(tenantId: string, settings: { podSystemEnabled?: boolean; candidatePoolMode?: string }) {
+  async updateTenantSettings(tenantId: string, settings: {
+    podSystemEnabled?: boolean;
+    candidatePoolMode?: string;
+    jobAssignmentMode?: string;
+    jobAssignmentOptions?: any;
+  }) {
     this.logger.log(`Updating tenant settings for ${tenantId}: ${JSON.stringify(settings)}`);
+
+    // Ensure columns exist on tenants table
+    await this.db.query(`
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_options JSONB DEFAULT '{"allowAuto":true,"allowAll":true,"allowUnassigned":true,"allowedPodIds":[]}';
+    `).catch(() => {});
+
     const fields: string[] = [];
     const params: any[] = [tenantId];
     let paramIndex = 2;
@@ -2227,6 +2319,22 @@ export class AuthService implements OnModuleInit {
       }
       fields.push(`candidate_pool_mode = $${paramIndex}`);
       params.push(mode);
+      paramIndex++;
+    }
+
+    if (settings.jobAssignmentMode !== undefined) {
+      const mode = settings.jobAssignmentMode.trim().toUpperCase();
+      if (!['AUTO', 'ADMIN_CONTROLLED'].includes(mode)) {
+        throw new BadRequestException('Invalid job assignment mode. Must be AUTO or ADMIN_CONTROLLED.');
+      }
+      fields.push(`job_assignment_mode = $${paramIndex}`);
+      params.push(mode);
+      paramIndex++;
+    }
+
+    if (settings.jobAssignmentOptions !== undefined) {
+      fields.push(`job_assignment_options = $${paramIndex}`);
+      params.push(typeof settings.jobAssignmentOptions === 'string' ? settings.jobAssignmentOptions : JSON.stringify(settings.jobAssignmentOptions));
       paramIndex++;
     }
     

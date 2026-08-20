@@ -70,6 +70,15 @@ export interface JobProfile {
   respondBy?: string | null;
   noticePeriod?: string;
   market?: string;
+
+  // Approval Workflow
+  approvalStatus: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+  assignedApproverId?: string | null;
+  assignedApproverName?: string | null;
+  assignedApproverRole?: string | null;
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  rejectionReason?: string | null;
 }
 
 /** A single candidate ranked against a job requisition. */
@@ -141,7 +150,21 @@ export class JobsService implements OnModuleInit {
       `ALTER TABLE jobs ALTER COLUMN visa_type TYPE VARCHAR(500)`,
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS respond_by DATE`,
       `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT ''`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APPROVED'`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS assigned_approver_id UUID`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS assigned_approver_role VARCHAR(50)`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS approved_by UUID`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP`,
+      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS rejection_reason TEXT`,
     ];
+
+    for (const stmt of alterStatements) {
+      try {
+        await this.db.query(stmt);
+      } catch (err: any) {
+        this.logger.warn(`Alter table failed: ${stmt} -> ${err.message}`);
+      }
+    }
 
     // Auto-heal existing jobs created under Hydrabad Branch that have GEN- prefix
     try {
@@ -155,7 +178,7 @@ export class JobsService implements OnModuleInit {
       this.logger.warn(`Auto-heal GEN job codes failed: ${e.message}`);
     }
 
-    this.logger.log('Jobs table V2 schema verified (all Ceipal fields present).');
+    this.logger.log('Jobs table V2 schema verified (all Ceipal fields + approval workflow present).');
   }
   async getNextJobCode(tenantId: string, branchId?: string | null, shiftInput?: string | null, offset = 0): Promise<string> {
     // 1. Resolve Branch Code (manual code set by admin, or first 3 letters of branch name, or 'GEN')
@@ -310,6 +333,10 @@ export class JobsService implements OnModuleInit {
       if (!isUnique) throw new Error('Failed to generate unique sequential job code.');
     }
 
+    const isApprovalRequested = dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval';
+    const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
+    const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
+
     const sql = `
       INSERT INTO jobs (
         tenant_id, job_code, job_title, job_location, job_type, job_description,
@@ -322,6 +349,7 @@ export class JobsService implements OnModuleInit {
         account_manager_id, recruitment_manager_id, primary_recruiter_id, assigned_to,
         industry, degree, exp_min, exp_max, created_by,
         respond_by, notice_period, market, branch_id,
+        approval_status, assigned_approver_id, assigned_approver_role,
         created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
@@ -334,6 +362,7 @@ export class JobsService implements OnModuleInit {
         $28, $29, $30, $31,
         $32, $33, $34, $35, $36,
         $37, $38, $39, $40,
+        $41, $42, $43,
         NOW(), NOW()
       ) RETURNING *
     `;
@@ -347,7 +376,7 @@ export class JobsService implements OnModuleInit {
       dto.description,                                               // $6
       dto.skillsRequired || [],                                      // $7
       dto.secondarySkills || [],                                     // $8
-      dto.status || 'Active',                                        // $9
+      initialJobStatus,                                              // $9
       dto.businessUnit || tenantName,                                // $10
       dto.state || '',                                               // $11
       dto.country || 'United States',                                // $12
@@ -379,6 +408,9 @@ export class JobsService implements OnModuleInit {
       dto.noticePeriod || '',                                        // $38
       dto.market || 'US',                                            // $39
       branchId,                                                      // $40
+      initialApprovalStatus,                                         // $41
+      dto.assignedApproverId || null,                                // $42
+      dto.assignedApproverRole || null,                              // $43
     ];
 
     // Auto-create client & end client if not present
@@ -392,15 +424,38 @@ export class JobsService implements OnModuleInit {
       const job = result.rows[0];
       const jobId = job.id;
 
+      // Fetch branch-level assignment settings if branchId is present
+      let branchSettings: any = null;
+      if (branchId) {
+        const bRes = await this.db.query(
+          "SELECT allow_none, allow_pods, allow_all, allow_unassigned, pod_distribution_strategy FROM branches WHERE id = $1 AND tenant_id = $2",
+          [branchId, tenantId]
+        );
+        if (bRes.rows.length > 0) {
+          branchSettings = bRes.rows[0];
+        }
+      }
+
       // Fetch tenant setting to see if pod system is enabled
       const tenantRes = await this.db.query("SELECT pod_system_enabled FROM tenants WHERE id = $1 LIMIT 1", [tenantId]);
       const podSystemEnabled = tenantRes.rows[0]?.pod_system_enabled !== false;
+      const allowPods = branchSettings ? branchSettings.allow_pods !== false && !branchSettings.allow_none : podSystemEnabled;
+      const allowAll = branchSettings ? branchSettings.allow_all !== false && !branchSettings.allow_none : true;
 
-      // Assign Pod (Explicit, Round-Robin, or None)
+      // Assign Pod (Explicit, Round-Robin, All Recruiters, or None)
       let assignedPodId: string | null = null;
-      if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
+      if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
+        // Broadcast to all recruiters in branch
+        await this.db.query(
+          "UPDATE jobs SET assigned_to = 'ALL' WHERE id = $1",
+          [jobId]
+        );
+      } else if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
         assignedPodId = dto.podId;
-      } else if (podSystemEnabled) {
+      } else if (dto.podId === 'none' || dto.podId === 'off' || (branchSettings && branchSettings.allow_none)) {
+        // Explicitly keep unassigned or direct assignment
+        await this.db.query("DELETE FROM job_pods WHERE job_id = $1", [jobId]);
+      } else if (allowPods && podSystemEnabled) {
         // Find next available pod for round-robin
         let podRes = await this.db.query(
           `SELECT id FROM pods
@@ -452,7 +507,7 @@ export class JobsService implements OnModuleInit {
   }
 
   /**
-   * Get all jobs for a tenant with user name resolution
+   * Get all jobs for a tenant with user name resolution and approval gating
    */
   async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null): Promise<JobProfile[]> {
     this.logger.log(`Fetching jobs for tenant: ${tenantId}`);
@@ -461,6 +516,7 @@ export class JobsService implements OnModuleInit {
       SELECT j.*,
              rm.full_name AS recruitment_manager_name,
              pr.full_name AS primary_recruiter_name,
+             app.full_name AS assigned_approver_name,
              p.id AS pod_id,
              p.name AS pod_name,
              uc.full_name AS creator_name,
@@ -469,6 +525,7 @@ export class JobsService implements OnModuleInit {
       FROM jobs j
       LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+      LEFT JOIN users app ON app.id = j.assigned_approver_id
       LEFT JOIN job_pods jp ON jp.job_id = j.id
       LEFT JOIN pods p ON p.id = jp.pod_id
       LEFT JOIN users uc ON uc.id::text = j.created_by
@@ -486,6 +543,44 @@ export class JobsService implements OnModuleInit {
       params.push(targetBranchId);
       paramIndex++;
     }
+
+    // ── Recruiter scoping & Approval visibility gate ─────────────────────────
+    // If user has 'job:approve' permission or is privileged (Admin / Delivery Head / Pod Lead / Account Manager):
+    // They SHOULD see pending jobs so they can review, approve, and reject them!
+    // Standard recruiters (without job:approve or privileged roles) are gated from unapproved jobs.
+    const canApprove = user?.permissions?.includes('job:approve');
+    const isPrivileged =
+      canApprove ||
+      user?.roles?.includes('SUPER_ADMIN') ||
+      user?.roles?.includes('ADMIN') ||
+      user?.roles?.includes('DELIVERY_HEAD') ||
+      user?.roles?.includes('POD_LEAD') ||
+      user?.roles?.includes('ACCOUNT_MANAGER') ||
+      user?.permissions?.includes('job:view_all') ||
+      user?.permissions?.includes('job:publish_direct');
+
+    const isRecruiter = user?.roles?.includes('RECRUITER');
+
+    if (isRecruiter && !isPrivileged && user?.dbId) {
+      // Gate unapproved jobs completely from standard recruiters (unless assigned directly as reviewer)
+      sql += ` AND (
+        ((j.approval_status = 'APPROVED' OR j.approval_status IS NULL) AND UPPER(COALESCE(j.status, '')) NOT IN ('PENDING APPROVAL', 'PENDING_APPROVAL', 'DRAFT'))
+        OR j.assigned_approver_id = $${paramIndex}::uuid
+      )`;
+
+      sql += ` AND (
+        j.primary_recruiter_id = $${paramIndex}::uuid
+        OR j.recruitment_manager_id = $${paramIndex}::uuid
+        OR j.assigned_approver_id = $${paramIndex}::uuid
+        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
+        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM pods WHERE pod_head_id = $${paramIndex}::uuid))
+        OR UPPER(j.assigned_to) = 'ALL'
+        OR UPPER(j.assigned_to) LIKE 'ALL%'
+      )`;
+      params.push(user.dbId);
+      paramIndex++;
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     sql += ' ORDER BY j.created_at DESC';
 
@@ -509,19 +604,23 @@ export class JobsService implements OnModuleInit {
 
     const sql = isUuid
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
+                app.full_name AS assigned_approver_name,
                 p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
          FROM jobs j
          LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN users app ON app.id = j.assigned_approver_id
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
          LEFT JOIN users uc ON uc.id::text = j.created_by
          WHERE j.tenant_id = $1 AND j.id = $2::uuid LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
+                app.full_name AS assigned_approver_name,
                 p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
          FROM jobs j
          LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN users app ON app.id = j.assigned_approver_id
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
          LEFT JOIN users uc ON uc.id::text = j.created_by
@@ -612,7 +711,83 @@ export class JobsService implements OnModuleInit {
       respondBy: row.respond_by ? new Date(row.respond_by).toISOString().split('T')[0] : null,
       noticePeriod: row.notice_period || '',
       market: row.market || 'US',
+
+      // Approval Workflow
+      approvalStatus: row.approval_status || (row.status === 'Pending Approval' ? 'PENDING_APPROVAL' : 'APPROVED'),
+      assignedApproverId: row.assigned_approver_id || null,
+      assignedApproverName: row.assigned_approver_name || null,
+      assignedApproverRole: row.assigned_approver_role || null,
+      approvedBy: row.approved_by || null,
+      approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : null,
+      rejectionReason: row.rejection_reason || null,
     };
+  }
+
+  /**
+   * Approve a pending job requisition and activate it for recruiters
+   */
+  async approveJob(
+    jobId: string,
+    tenantId: string,
+    approver: any,
+    overrides?: { assignedTo?: string; primaryRecruiterId?: string; podId?: string }
+  ): Promise<JobProfile> {
+    this.logger.log(`Approving job ${jobId} by ${approver?.email || approver?.dbId}`);
+
+    const jobCheck = await this.db.query('SELECT * FROM jobs WHERE id = $1 AND tenant_id = $2', [jobId, tenantId]);
+    if (jobCheck.rows.length === 0) {
+      throw new NotFoundException(`Job with ID "${jobId}" not found.`);
+    }
+
+    const currentJob = jobCheck.rows[0];
+    const assignedTo = overrides?.assignedTo || currentJob.assigned_to || 'All Branch Recruiters';
+    const primaryRecruiterId = overrides?.primaryRecruiterId || currentJob.primary_recruiter_id;
+
+    if (overrides?.podId) {
+      await this.db.query(
+        'INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [jobId, overrides.podId]
+      );
+    }
+
+    await this.db.query(
+      `UPDATE jobs
+       SET status = 'Active',
+           approval_status = 'APPROVED',
+           approved_by = $1,
+           approved_at = NOW(),
+           assigned_to = $2,
+           primary_recruiter_id = $3,
+           updated_at = NOW()
+       WHERE id = $4 AND tenant_id = $5`,
+      [approver?.dbId || null, assignedTo, primaryRecruiterId || null, jobId, tenantId]
+    );
+
+    return this.findOneJob(jobId, tenantId);
+  }
+
+  /**
+   * Reject a pending job requisition with feedback reason
+   */
+  async rejectJob(jobId: string, tenantId: string, approver: any, reason: string): Promise<JobProfile> {
+    this.logger.log(`Rejecting job ${jobId} by ${approver?.email}: ${reason}`);
+
+    const jobCheck = await this.db.query('SELECT * FROM jobs WHERE id = $1 AND tenant_id = $2', [jobId, tenantId]);
+    if (jobCheck.rows.length === 0) {
+      throw new NotFoundException(`Job with ID "${jobId}" not found.`);
+    }
+
+    await this.db.query(
+      `UPDATE jobs
+       SET status = 'Draft',
+           approval_status = 'REJECTED',
+           rejection_reason = $1,
+           updated_at = NOW()
+       WHERE id = $2 AND tenant_id = $3`,
+      [reason || 'Job requirement rejected by reviewer.', jobId, tenantId]
+    );
+
+    return this.findOneJob(jobId, tenantId);
   }
 
   /**
@@ -635,16 +810,26 @@ export class JobsService implements OnModuleInit {
       throw new NotFoundException(`Job not found.`);
     }
 
-    // Define delivery head or admin clearance (with override custom permissions support)
+    // Define Tenant Admin, Branch Admin, Delivery Head, or Delegated Permission clearance
     const userPermissions = user.permissions || [];
     const userRoles = user.roles || [];
     const isSuperAdmin = userRoles.includes('SUPER_ADMIN');
-    const isDeliveryHeadOrAdmin =
-      userRoles.includes('DELIVERY_HEAD') ||
-      userRoles.includes('ADMIN') ||
-      isSuperAdmin ||
+    const isTenantAdmin = isSuperAdmin || userRoles.includes('ADMIN') || userPermissions.includes('tenant:settings');
+    const isBranchAdmin = 
+      userRoles.includes('BRANCH_ADMIN') || 
+      userPermissions.includes('branch_admin:manage') ||
+      (jobRes.rows[0]?.branch_id && user?.branchRoles?.[jobRes.rows[0]?.branch_id]?.some((r: string) => ['ADMIN', 'BRANCH_ADMIN'].includes(r)));
+
+    const hasDelegatedAssignPermission = 
+      userPermissions.includes('job:assign') ||
+      userPermissions.includes('job:assign_recruiter') ||
+      userPermissions.includes('job:assign_pod') ||
+      userPermissions.includes('job:edit') ||
       userPermissions.includes('pod:edit') ||
-      userPermissions.includes('pod:overlap');
+      userPermissions.includes('pod:overlap') ||
+      userRoles.includes('DELIVERY_HEAD');
+
+    const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission;
 
     // Fetch the job's current pod mappings
     const jobPodsRes = await this.db.query("SELECT pod_id FROM job_pods WHERE job_id = $1", [id]);
@@ -654,12 +839,12 @@ export class JobsService implements OnModuleInit {
     if (dto.primaryRecruiterId !== undefined) {
       const newRecruiterId = dto.primaryRecruiterId;
 
-      if (isUnassignedJob && !isDeliveryHeadOrAdmin) {
-        throw new BadRequestException("Unassigned jobs can only be assigned to recruiters by a Delivery Head or Administrator.");
+      if (isUnassignedJob && !canAssignAny) {
+        throw new BadRequestException("Unassigned jobs can only be assigned by a Tenant Admin, Branch Admin, or an authorized staff member.");
       }
 
-      if (isDeliveryHeadOrAdmin) {
-        // Delivery Head / Admin can assign ANY recruiter in the tenant
+      if (canAssignAny) {
+        // Tenant Admin, Branch Admin, or Delegated User can assign any recruiter in the workspace
         if (newRecruiterId) {
           const recruiterRes = await this.db.query(
             "SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
@@ -769,18 +954,19 @@ export class JobsService implements OnModuleInit {
       await this.db.query(updateSql, params);
     }
 
-    // If updating pod assignment (e.g. for Admins/Delivery Heads re-routing jobs)
+    // If updating pod assignment (e.g. for Admins/Branch Admins/Authorized Users re-routing jobs)
     if (dto.podId !== undefined) {
-      const userPermissions = user?.permissions || [];
-      const isSuperAdmin = user?.roles && user.roles.includes('SUPER_ADMIN');
-      const hasOverridePermission = userPermissions.includes('pod:edit') || isSuperAdmin;
-
-      if (!hasOverridePermission) {
+      if (!canAssignAny) {
         throw new ForbiddenException('You do not have permission to modify job pod assignments.');
       }
 
       await this.db.query("DELETE FROM job_pods WHERE job_id = $1", [id]);
-      if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
+      if (dto.podId === 'all') {
+        await this.db.query("UPDATE jobs SET assigned_to = 'ALL' WHERE id = $1", [id]);
+      } else if (dto.podId === 'none' || dto.podId === 'off') {
+        await this.db.query("UPDATE jobs SET assigned_to = 'N/A' WHERE id = $1", [id]);
+      } else if (dto.podId) {
+        await this.db.query("UPDATE jobs SET assigned_to = 'N/A' WHERE id = $1", [id]);
         await this.db.query(
           "INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
           [id, dto.podId]

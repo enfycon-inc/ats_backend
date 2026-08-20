@@ -15,6 +15,17 @@ export interface BranchResponse {
   managerName: string | null;
   managerEmail: string | null;
   isActive: boolean;
+  allowNone: boolean;
+  allowPods: boolean;
+  allowAll: boolean;
+  allowUnassigned: boolean;
+  podDistributionStrategy: 'AUTO' | 'MANUAL';
+  requireAmJobApproval: boolean;
+  requireJobApproval: boolean;
+  rolesRequiringApproval: string[];
+  defaultJobApproverRole: string;
+  allowedJobApproverRoles: string[];
+  approvalRoutingMode: 'FLEXIBLE' | 'ENFORCE_DEFAULT';
   usersCount: number;
   jobsCount: number;
   createdAt: string;
@@ -26,7 +37,24 @@ export class BranchesService {
 
   constructor(private readonly db: DatabaseService) {}
 
+  private async ensureBranchSettingsColumns() {
+    await this.db.query(`
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_none BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_pods BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_all BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_unassigned BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS pod_distribution_strategy VARCHAR(50) DEFAULT 'AUTO';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS require_am_job_approval BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS require_job_approval BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS roles_requiring_approval TEXT DEFAULT '["ACCOUNT_MANAGER", "BD", "RECRUITER"]';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS default_job_approver_role VARCHAR(50) DEFAULT 'POD_LEAD';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allowed_job_approver_roles TEXT DEFAULT '["POD_LEAD", "DELIVERY_HEAD", "PRIMARY_RECRUITER", "BRANCH_ADMIN"]';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS approval_routing_mode VARCHAR(50) DEFAULT 'FLEXIBLE';
+    `).catch(() => {});
+  }
+
   async create(dto: CreateBranchDto, tenantId: string): Promise<BranchResponse> {
+    await this.ensureBranchSettingsColumns();
     this.logger.log(`Creating branch "${dto.name}" for tenant ${tenantId}`);
 
     const tenantRes = await this.db.query(
@@ -70,6 +98,7 @@ export class BranchesService {
   }
 
   async findAll(tenantId: string): Promise<BranchResponse[]> {
+    await this.ensureBranchSettingsColumns();
     const res = await this.db.query(
       `SELECT b.*,
               u.full_name AS manager_name,
@@ -95,6 +124,33 @@ export class BranchesService {
       managerName: row.manager_name || null,
       managerEmail: row.manager_email || null,
       isActive: row.is_active,
+      allowNone: Boolean(row.allow_none),
+      allowPods: row.allow_pods !== false,
+      allowAll: row.allow_all !== false,
+      allowUnassigned: row.allow_unassigned !== false,
+      podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
+      requireAmJobApproval: row.require_am_job_approval !== false,
+      requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
+      rolesRequiringApproval: (() => {
+        try {
+          return typeof row.roles_requiring_approval === 'string'
+            ? JSON.parse(row.roles_requiring_approval)
+            : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
+        } catch {
+          return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
+        }
+      })(),
+      defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
+      allowedJobApproverRoles: (() => {
+        try {
+          return typeof row.allowed_job_approver_roles === 'string'
+            ? JSON.parse(row.allowed_job_approver_roles)
+            : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
+        } catch {
+          return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
+        }
+      })(),
+      approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
       usersCount: row.users_count || 0,
       jobsCount: row.jobs_count || 0,
       createdAt: row.created_at,
@@ -102,6 +158,7 @@ export class BranchesService {
   }
 
   async findOne(id: string, tenantId: string): Promise<BranchResponse> {
+    await this.ensureBranchSettingsColumns();
     const res = await this.db.query(
       `SELECT b.*,
               u.full_name AS manager_name,
@@ -131,6 +188,33 @@ export class BranchesService {
       managerName: row.manager_name || null,
       managerEmail: row.manager_email || null,
       isActive: row.is_active,
+      allowNone: Boolean(row.allow_none),
+      allowPods: row.allow_pods !== false,
+      allowAll: row.allow_all !== false,
+      allowUnassigned: row.allow_unassigned !== false,
+      podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
+      requireAmJobApproval: row.require_am_job_approval !== false,
+      requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
+      rolesRequiringApproval: (() => {
+        try {
+          return typeof row.roles_requiring_approval === 'string'
+            ? JSON.parse(row.roles_requiring_approval)
+            : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
+        } catch {
+          return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
+        }
+      })(),
+      defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
+      allowedJobApproverRoles: (() => {
+        try {
+          return typeof row.allowed_job_approver_roles === 'string'
+            ? JSON.parse(row.allowed_job_approver_roles)
+            : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
+        } catch {
+          return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
+        }
+      })(),
+      approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
       usersCount: row.users_count || 0,
       jobsCount: row.jobs_count || 0,
       createdAt: row.created_at,
@@ -138,6 +222,7 @@ export class BranchesService {
   }
 
   async update(id: string, dto: UpdateBranchDto, tenantId: string): Promise<BranchResponse> {
+    await this.ensureBranchSettingsColumns();
     const existing = await this.findOne(id, tenantId);
 
     if (dto.name && dto.name.trim().toUpperCase() !== existing.name.toUpperCase()) {
@@ -157,12 +242,34 @@ export class BranchesService {
     const country = dto.country !== undefined ? dto.country : existing.country;
     const market = dto.market !== undefined ? dto.market.trim().toUpperCase() : existing.market;
     const isActive = dto.isActive !== undefined ? dto.isActive : existing.isActive;
+    const allowNone = dto.allowNone !== undefined ? dto.allowNone : existing.allowNone;
+    const allowPods = dto.allowPods !== undefined ? dto.allowPods : existing.allowPods;
+    const allowAll = dto.allowAll !== undefined ? dto.allowAll : existing.allowAll;
+    const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : existing.allowUnassigned;
+    const podDistributionStrategy = dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy;
+    const requireJobApproval = dto.requireJobApproval !== undefined 
+      ? dto.requireJobApproval 
+      : (dto.requireAmJobApproval !== undefined ? dto.requireAmJobApproval : existing.requireJobApproval);
+    const requireAmJobApproval = requireJobApproval;
+    const rolesRequiringApproval = dto.rolesRequiringApproval !== undefined
+      ? JSON.stringify(dto.rolesRequiringApproval)
+      : JSON.stringify(existing.rolesRequiringApproval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
+    const defaultJobApproverRole = dto.defaultJobApproverRole !== undefined ? dto.defaultJobApproverRole : existing.defaultJobApproverRole;
+    const allowedJobApproverRoles = dto.allowedJobApproverRoles !== undefined
+      ? JSON.stringify(dto.allowedJobApproverRoles)
+      : JSON.stringify(existing.allowedJobApproverRoles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
+    const approvalRoutingMode = dto.approvalRoutingMode !== undefined ? dto.approvalRoutingMode : existing.approvalRoutingMode;
 
     await this.db.query(
       `UPDATE branches
-       SET name = $1, code = $2, city = $3, state = $4, country = $5, market = $6, is_active = $7, updated_at = NOW()
-       WHERE id = $8 AND tenant_id = $9`,
-      [name, code, city, state, country, market, isActive, id, tenantId]
+       SET name = $1, code = $2, city = $3, state = $4, country = $5, market = $6, is_active = $7,
+           allow_none = $8, allow_pods = $9, allow_all = $10, allow_unassigned = $11, pod_distribution_strategy = $12,
+           require_am_job_approval = $13, default_job_approver_role = $14,
+           allowed_job_approver_roles = $15, approval_routing_mode = $16,
+           require_job_approval = $17, roles_requiring_approval = $18,
+           updated_at = NOW()
+       WHERE id = $19 AND tenant_id = $20`,
+      [name, code, city, state, country, market, isActive, allowNone, allowPods, allowAll, allowUnassigned, podDistributionStrategy, requireAmJobApproval, defaultJobApproverRole, allowedJobApproverRoles, approvalRoutingMode, requireJobApproval, rolesRequiringApproval, id, tenantId]
     );
 
     return this.findOne(id, tenantId);
@@ -194,16 +301,20 @@ export class BranchesService {
     }));
   }
 
-  async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[]) {
+  async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[], assignedBranchIds?: string[]) {
     await this.findOne(branchId, tenantId);
     const userRes = await this.db.query('SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2', [userId, tenantId]);
     if (userRes.rows.length === 0) {
       throw new NotFoundException('User not found in tenant.');
     }
+    const branchIds = (assignedBranchIds && Array.isArray(assignedBranchIds) && assignedBranchIds.length > 0)
+      ? Array.from(new Set([branchId, ...assignedBranchIds]))
+      : [branchId];
+
     if (roles && Array.isArray(roles) && roles.length > 0) {
-      await this.db.query('UPDATE users SET branch_id = $1, roles = $2 WHERE id = $3 AND tenant_id = $4', [branchId, roles, userId, tenantId]);
+      await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2, roles = $3 WHERE id = $4 AND tenant_id = $5', [branchId, branchIds, roles, userId, tenantId]);
     } else {
-      await this.db.query('UPDATE users SET branch_id = $1 WHERE id = $2 AND tenant_id = $3', [branchId, userId, tenantId]);
+      await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2 WHERE id = $3 AND tenant_id = $4', [branchId, branchIds, userId, tenantId]);
     }
     return { message: 'User assigned to branch and roles updated successfully.' };
   }

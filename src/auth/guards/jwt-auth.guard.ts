@@ -109,17 +109,23 @@ export class JwtAuthGuard implements CanActivate {
 
     this.logger.log(`[JwtAuthGuard] Decoded token: email=${decoded.email}, tenantId=${decoded.tenantId}`);
 
-    // 3. Fetch latest DB user profile so freshly assigned DB roles (ADMIN, BRANCH_ADMIN) are always honored
+    // 3. Fetch latest DB user profile so freshly assigned DB roles and permissions are always honored
     let activeRoles: string[] = decoded.roles || [];
     let tenantId = decoded.tenantId || DEFAULT_TENANT_ID;
     let isActive = true;
+    let permissions: string[] = decoded.permissions || [];
     if (decoded.sub) {
       try {
         const profile = await this.authService.getProfile(decoded.sub);
-        if (profile && profile.roles && profile.roles.length > 0) {
-          activeRoles = Array.from(new Set([...profile.roles, ...activeRoles]));
+        if (profile) {
+          if (profile.roles && profile.roles.length > 0) {
+            activeRoles = Array.from(new Set([...profile.roles, ...activeRoles]));
+          }
           tenantId = profile.tenantId || tenantId;
           isActive = profile.isActive !== false;
+          if (profile.permissions && profile.permissions.length > 0) {
+            permissions = profile.permissions;
+          }
         }
       } catch (e) {
         // Fallback to JWT payload claims if DB fetch fails
@@ -135,7 +141,7 @@ export class JwtAuthGuard implements CanActivate {
       roles: activeRoles,
       tenantId,
       isActive,
-      permissions: decoded.permissions || [],
+      permissions,
       podId: decoded.podId,
       branchId: decoded.branchId,
       businessUnitId: decoded.businessUnitId,
