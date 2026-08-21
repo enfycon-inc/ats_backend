@@ -548,7 +548,9 @@ export class RecruiterSubmissionsService implements OnModuleInit {
     const canAuditL1 = canAuditRounds || isAm || isPodLead || userPerms.includes('submission:audit_l1');
     const canAuditL2 = canAuditRounds || isAm || userPerms.includes('submission:audit_l2');
     const canAuditL3 = canAuditRounds || isAm || userPerms.includes('submission:audit_l3');
-    const canApproveClient = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:approve_client');
+    const canInternalScreen = isAdmin || isDeliveryHead || isPodLead || userPerms.includes('submission:internal_screening');
+    const canFinalStatus = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:final_status');
+    const canApproveClient = canInternalScreen || canFinalStatus;
     const canEditRate = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:edit_rate');
 
     if (!canAuditL1) {
@@ -569,8 +571,15 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       delete dto.l3Remarks;
       delete dto.l3Interviewer;
     }
-    if (!canApproveClient) {
+    if (existing.final_status === 'PENDING_APPROVAL' && !canInternalScreen) {
       delete dto.finalStatus;
+      delete (dto as any).reviewFeedback;
+    } else if (existing.final_status !== 'PENDING_APPROVAL' && (dto.finalStatus === 'OFFER' || dto.finalStatus === 'JOIN') && !canFinalStatus) {
+      delete dto.finalStatus;
+    } else if (!canApproveClient) {
+      delete dto.finalStatus;
+    }
+    if (!canFinalStatus && !canInternalScreen) {
       delete dto.remarks;
     }
     if (!canEditRate) {
@@ -860,31 +869,38 @@ export class RecruiterSubmissionsService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Tenant Custom Stage Remarks Configuration Methods
+  // Tenant & Branch Custom Stage Remarks Configuration Methods
   // ─────────────────────────────────────────────────────────────
-  async getCustomRemarks(tenantId: string) {
-    const result = await this.db.query(
-      `SELECT id, stage, remark_text as "remarkText", created_by as "createdBy", created_at as "createdAt"
-       FROM tenant_stage_remarks
-       WHERE tenant_id = $1
-       ORDER BY id ASC`,
-      [tenantId]
-    );
+  async getCustomRemarks(tenantId: string, branchId?: string) {
+    let query = `
+      SELECT id, stage, remark_text as "remarkText", branch_id as "branchId", created_by as "createdBy", created_at as "createdAt"
+      FROM tenant_stage_remarks
+      WHERE tenant_id = $1
+    `;
+    const params: any[] = [tenantId];
+    if (branchId) {
+      params.push(branchId);
+      query += ` AND (branch_id = $2 OR branch_id IS NULL)`;
+    }
+    query += ` ORDER BY id ASC`;
+
+    const result = await this.db.query(query, params);
     return result.rows;
   }
 
-  async createCustomRemark(tenantId: string, stage: string, remarkText: string, createdBy?: string) {
+  async createCustomRemark(tenantId: string, stage: string, remarkText: string, branchId?: string, createdBy?: string) {
     if (!stage || !remarkText?.trim()) {
       throw new BadRequestException('Stage and remarkText are required.');
     }
     const cleanStage = stage.toLowerCase().trim();
     const cleanText = remarkText.trim();
+    const cleanBranchId = branchId?.trim() || null;
 
     const result = await this.db.query(
-      `INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, created_by)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, stage, remark_text as "remarkText", created_by as "createdBy", created_at as "createdAt"`,
-      [tenantId, cleanStage, cleanText, createdBy || 'admin']
+      `INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, branch_id, created_by)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, stage, remark_text as "remarkText", branch_id as "branchId", created_by as "createdBy", created_at as "createdAt"`,
+      [tenantId, cleanStage, cleanText, cleanBranchId, createdBy || 'admin']
     );
     return result.rows[0];
   }

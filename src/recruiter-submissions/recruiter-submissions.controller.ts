@@ -105,29 +105,30 @@ export class RecruiterSubmissionsController {
 
   @Get('custom-remarks')
   @ApiOperation({
-    summary: 'List Tenant Custom Stage Remarks Templates',
-    description: 'Retrieves all custom stage remarks configured for the active tenant.',
+    summary: 'List Tenant & Branch Custom Stage Remarks Templates',
+    description: 'Retrieves all custom stage remarks configured for the active tenant and optional branch.',
   })
   async getCustomRemarks(
+    @Query('branchId') branchId: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.getCustomRemarks(tid);
+    return this.service.getCustomRemarks(tid, branchId);
   }
 
   @Post('custom-remarks')
   @ApiOperation({
-    summary: 'Create a Tenant Custom Stage Remark Template',
-    description: 'Adds a custom stage remark option for L1, L2, L3, or final client stage.',
+    summary: 'Create a Tenant or Branch Custom Stage Remark Template',
+    description: 'Adds a custom stage remark option for review, L1, L2, L3, or final stage.',
   })
   async createCustomRemark(
-    @Body() body: { stage: string; remarkText: string },
+    @Body() body: { stage: string; remarkText: string; branchId?: string },
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.createCustomRemark(tid, body.stage, body.remarkText, user.email || user.fullName || user.dbId);
+    return this.service.createCustomRemark(tid, body.stage, body.remarkText, body.branchId, user.email || user.fullName || user.dbId);
   }
 
   @Delete('custom-remarks/:id')

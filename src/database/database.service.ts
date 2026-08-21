@@ -226,6 +226,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
       -- Add stage-specific interviewer names and comments for multi-stage workflow
       ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT;
+      ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS review_feedback TEXT;
       ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_remarks TEXT;
       ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_interviewer VARCHAR(255);
       ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_remarks TEXT;

@@ -1069,15 +1069,18 @@ export class AuthService implements OnModuleInit {
       dbUser = insertRes.rows[0];
     }
 
-    // Load custom role permissions dynamically
+    // Load custom role permissions dynamically across assigned role ID and all user roles
     let permissions: string[] = [];
-    if (dbUser.role_id) {
-      const permsRes = await this.db.query(
-        'SELECT permission FROM role_permissions WHERE role_id = $1',
-        [dbUser.role_id]
-      );
-      permissions = permsRes.rows.map(row => row.permission);
-    }
+    const roleNamesUpper = (dbUser.roles || []).map((r: string) => r.toUpperCase());
+    const permsRes = await this.db.query(
+      `SELECT DISTINCT rp.permission 
+       FROM custom_roles cr
+       JOIN role_permissions rp ON rp.role_id = cr.id
+       WHERE (cr.tenant_id = $1 OR cr.tenant_id IS NULL) 
+         AND (cr.id = $2 OR UPPER(cr.name) = ANY($3) OR UPPER(cr.system_role) = ANY($3))`,
+      [dbUser.tenant_id || DEFAULT_TENANT_ID, dbUser.role_id || null, roleNamesUpper]
+    );
+    permissions = permsRes.rows.map(row => row.permission);
 
     return {
       ...dbUser,
@@ -1509,7 +1512,7 @@ export class AuthService implements OnModuleInit {
         'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
-        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
         'tenant:settings', 'user:manage',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
@@ -1519,7 +1522,7 @@ export class AuthService implements OnModuleInit {
         'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:view', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
         'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
         'client:view', 'placement:view', 'report:view'
       ],
@@ -1532,7 +1535,7 @@ export class AuthService implements OnModuleInit {
       ACCOUNT_MANAGER: [
         'job:create', 'job:edit', 'job:view', 'job:approve',
         'candidate:view', 'candidate:create',
-        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
         'pod:view',
         'client:view', 'client:create', 'client:edit',
         'placement:view', 'placement:create',
@@ -1542,7 +1545,7 @@ export class AuthService implements OnModuleInit {
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:view', 'candidate:create',
-        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
         'client:view', 'placement:view', 'report:view'
@@ -1550,7 +1553,7 @@ export class AuthService implements OnModuleInit {
       POD_LEAD: [
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'candidate:view', 'candidate:create',
-        'submission:view', 'submission:create', 'submission:audit_l1', 'submission:schedule_interview', 'submission:edit',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
         'pod:view', 'pod:edit', 'report:view'
       ]
     };
@@ -1576,7 +1579,7 @@ export class AuthService implements OnModuleInit {
 
       result.push({
         ...role,
-        permissions: rolePerms,
+        permissions: role.isSystem && defaultPerms.length > 0 ? defaultPerms : rolePerms,
         isExactSubstitution,
         replacesSystemRole: isExactSubstitution ? baseSysRole : null,
       });
@@ -1818,6 +1821,7 @@ export class AuthService implements OnModuleInit {
 
   listAllPermissions() {
     return [
+      // 1. Jobs Management
       { id: 'job:create', name: 'Create Jobs', group: 'Jobs Management' },
       { id: 'job:edit', name: 'Edit Jobs', group: 'Jobs Management' },
       { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
@@ -1827,29 +1831,53 @@ export class AuthService implements OnModuleInit {
       { id: 'job:assign', name: 'Assign & Reassign Jobs to Recruiters/Pods', group: 'Jobs Management' },
       { id: 'job:assign_recruiter', name: 'Assign Direct Recruiter to Job', group: 'Jobs Management' },
       { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
-      { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates' },
-      { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:audit_rounds', name: 'Interview Stages & Screening Audits (L1, L2, L3 & Remarks)', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:audit_l1', name: 'Internal Screening & Resume Audit (L1)', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:audit_l2', name: 'Technical Vetting & Screening (L2)', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:audit_l3', name: 'Commercial & Client Readiness Audit (L3)', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:approve_client', name: 'Approve & Submit to Client / Final Status', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:schedule_interview', name: 'Schedule Client & Internal Interviews', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:edit_rate', name: 'Edit Candidate Pay Rate & CTC Margins', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'submission:edit', name: 'Edit Submissions (General Notes)', group: 'Candidate Submissions & Quality Audits' },
-      { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
-      { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
+
+      // 2. Candidates Management
+      { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates Management' },
+      { id: 'candidate:view', name: 'View Candidates & Resume Bank', group: 'Candidates Management' },
+
+      // 3. Candidate Submissions & Tracking (General)
+      { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Sourcing' },
+      { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Sourcing' },
+      { id: 'submission:edit', name: 'Edit Submissions (General Notes & Comments)', group: 'Candidate Submissions & Sourcing' },
+
+      // 4. Internal Screening & Pre-Interview Gate (Zone A)
+      { id: 'submission:internal_screening', name: 'Internal Screening Review & Approval Gate', group: 'Internal Screening & Review Gate' },
+      { id: 'submission:edit_rate', name: 'Edit Candidate Pay Rate & CTC Margins', group: 'Internal Screening & Review Gate' },
+
+      // 5. Active Interview Stages & Quality Audits (Zone B: L1, L2, L3)
+      { id: 'submission:audit_rounds', name: 'Interview Stages (Master L1, L2, L3 Audits & Remarks)', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+      { id: 'submission:audit_l1', name: 'Round 1 (L1) Screening & Interview Audit', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+      { id: 'submission:audit_l2', name: 'Round 2 (L2) Technical Interview & Vetting', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+      { id: 'submission:audit_l3', name: 'Round 3 (L3) Commercial & Final Readiness Audit', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+      { id: 'submission:schedule_interview', name: 'Schedule Client & Internal Interviews', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+      { id: 'submission:final_status', name: 'Final Placement Status (Offer & Join Outcome)', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+
+      // 6. Clients & Placements
+      { id: 'client:view', name: 'View Clients Directory', group: 'Clients & Placements' },
+      { id: 'client:create', name: 'Create New Clients', group: 'Clients & Placements' },
+      { id: 'client:edit', name: 'Edit Client Profiles & Terms', group: 'Clients & Placements' },
+      { id: 'placement:view', name: 'View Placements & Revenue Margins', group: 'Clients & Placements' },
+      { id: 'placement:create', name: 'Create & Finalize Placements', group: 'Clients & Placements' },
+      { id: 'report:view', name: 'View Analytics & Performance Reports', group: 'Clients & Placements' },
+
+      // 7. Pods Management
       { id: 'pod:create', name: 'Create Pods', group: 'Pods Management' },
       { id: 'pod:edit', name: 'Edit Pods & Assign Unassigned Jobs', group: 'Pods Management' },
       { id: 'pod:delete', name: 'Delete Pods', group: 'Pods Management' },
       { id: 'pod:view', name: 'View Pods', group: 'Pods Management' },
       { id: 'pod:reset_cycle', name: 'Reset Assignment Cycle', group: 'Pods Management' },
       { id: 'pod:overlap', name: 'Authorize Pod Assignment Overlaps', group: 'Pods Management' },
+
+      // 8. Branch & Multi-Office Management
       { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_branches', name: 'Search Candidates Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'job:view_all_branches', name: 'View Jobs Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_markets', name: 'Search Candidates Across All Markets (US + India)', group: 'Branch & Multi-Office Management' },
+
+      // 9. Administration
+      { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
+      { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
     ];
   }
 
