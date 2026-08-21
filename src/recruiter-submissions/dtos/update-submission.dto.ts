@@ -86,6 +86,9 @@ export class UpdateSubmissionDto {
   @ApiPropertyOptional({ description: 'Internal team lead or pod lead approval remarks' })
   podLeadRemarks?: string;
 
+  @ApiPropertyOptional({ description: 'Review feedback from Account Manager / Pod Lead during internal review' })
+  reviewFeedback?: string;
+
   @ApiPropertyOptional({ description: 'L1 Interview feedback / client comments' })
   l1Remarks?: string;
 
