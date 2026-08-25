@@ -205,4 +205,38 @@ export class JobsController {
     const tid = resolveTenantId(user, tenantId);
     return this.jobsService.duplicateJob(id, tid, user);
   }
+
+  @Patch(':id/restore')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:edit')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Restore a soft-deleted job requisition',
+  })
+  async restore(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<JobProfile> {
+    const tid = resolveTenantId(user, tenantId);
+    return this.jobsService.restoreJob(id, tid);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:edit')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Soft delete a job requisition',
+  })
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<void> {
+    const tid = resolveTenantId(user, tenantId);
+    await this.jobsService.deleteJob(id, tid);
+  }
 }
+

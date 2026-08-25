@@ -468,9 +468,13 @@ Validates email + password and returns a signed JWT access token.
   async deleteCustomRole(
     @CurrentUser() user: AuthUser,
     @Param('id') roleId: string,
+    @Query('targetRoleId') targetRoleId?: string,
+    @Body('targetRoleId') targetRoleIdBody?: string,
   ) {
-    return this.authService.deleteCustomRole(user.tenantId, roleId);
+    const finalTargetRoleId = targetRoleId || targetRoleIdBody;
+    return this.authService.deleteCustomRole(user.tenantId, roleId, finalTargetRoleId);
   }
+
 
   // ─── POST /api/auth/rbac/users/:id/roles ─────────────────────
   @Post('rbac/users/:id/roles')

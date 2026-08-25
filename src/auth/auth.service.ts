@@ -110,8 +110,10 @@ export class AuthService implements OnModuleInit {
       UPDATE custom_roles SET system_role = 'BRANCH_ADMIN' WHERE name = 'BRANCH_ADMIN';
       UPDATE custom_roles SET system_role = 'ACCOUNT_MANAGER' WHERE name = 'ACCOUNT_MANAGER';
       UPDATE custom_roles SET system_role = 'DELIVERY_HEAD' WHERE name = 'DELIVERY_HEAD';
-      UPDATE custom_roles SET system_role = 'TRACKER' WHERE name = 'TRACKER';
       UPDATE custom_roles SET system_role = 'POD_LEAD' WHERE name = 'POD_LEAD';
+
+      -- Remove obsolete TRACKER system role if present
+      DELETE FROM custom_roles WHERE UPPER(name) = 'TRACKER' OR UPPER(system_role) = 'TRACKER';
 
       -- 2. Create role_permissions table
       CREATE TABLE IF NOT EXISTS role_permissions (
@@ -1710,7 +1712,7 @@ export class AuthService implements OnModuleInit {
     return { message: 'Permissions updated successfully.', permissions };
   }
 
-  async deleteCustomRole(tenantId: string, roleId: string) {
+  async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string) {
     const roleResult = await this.db.query(
       'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
@@ -1723,27 +1725,55 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('You cannot delete default system roles.');
     }
 
-    const baseSysRole = roleToDel.system_role || 'RECRUITER';
-
-    // Find the base system role to revert users cleanly so permissions are never lost
-    const fallbackRes = await this.db.query(
-      "SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR system_role = $2) AND is_system = true LIMIT 1",
-      [tenantId, baseSysRole]
+    // Check staff count currently assigned to this role
+    const staffCountRes = await this.db.query(
+      'SELECT COUNT(*)::int as count FROM users WHERE role_id = $1 OR $2 = ANY(roles)',
+      [roleId, roleToDel.name]
     );
-    const fallbackRole = fallbackRes.rows[0];
+    const staffCount = staffCountRes.rows[0]?.count || 0;
+
+    // If staff members exist and no targetRoleId is provided, throw error requiring target selection
+    if (staffCount > 0 && !targetRoleId) {
+      throw new BadRequestException({
+        message: `Cannot delete custom role "${roleToDel.name}" because ${staffCount} staff member(s) are currently assigned to it. Please select a replacement target role.`,
+        requiresReassignment: true,
+        staffCount,
+        roleName: roleToDel.name,
+      });
+    }
+
+    let targetRole: any = null;
+    if (targetRoleId) {
+      const targetRes = await this.db.query(
+        'SELECT id, name FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        [targetRoleId, tenantId]
+      );
+      if (targetRes.rows.length === 0) {
+        throw new NotFoundException('Target replacement role not found.');
+      }
+      targetRole = targetRes.rows[0];
+    } else {
+      // Default fallback if staffCount is 0
+      const baseSysRole = roleToDel.system_role || 'RECRUITER';
+      const fallbackRes = await this.db.query(
+        "SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR system_role = $2) AND is_system = true LIMIT 1",
+        [tenantId, baseSysRole]
+      );
+      targetRole = fallbackRes.rows[0];
+    }
 
     let reassignedCount = 0;
-    if (fallbackRole) {
+    if (targetRole) {
       const updateRes = await this.db.query(
         'UPDATE users SET role_id = $1 WHERE role_id = $2 RETURNING id',
-        [fallbackRole.id, roleId]
+        [targetRole.id, roleId]
       );
       reassignedCount = updateRes.rows.length;
 
       // Replace role name in users.roles array
       await this.db.query(
         `UPDATE users SET roles = array_replace(roles, $1, $2) WHERE tenant_id = $3 AND $1 = ANY(roles)`,
-        [roleToDel.name, fallbackRole.name, tenantId]
+        [roleToDel.name, targetRole.name, tenantId]
       ).catch(() => {});
     } else {
       // Remove role name from users.roles array
@@ -1760,11 +1790,12 @@ export class AuthService implements OnModuleInit {
     // 2. Delete the custom role
     await this.db.query('DELETE FROM custom_roles WHERE id = $1', [roleId]);
     return {
-      message: `Custom role "${roleToDel.name}" deleted successfully.${reassignedCount > 0 ? ` Reassigned ${reassignedCount} staff member(s) to ${baseSysRole}.` : ''}`,
+      message: `Custom role "${roleToDel.name}" deleted successfully.${reassignedCount > 0 ? ` Reassigned ${reassignedCount} staff member(s) to ${targetRole?.name || 'default role'}.` : ''}`,
       reassignedCount,
-      fallbackRole: baseSysRole,
+      targetRole: targetRole?.name,
     };
   }
+
 
   async assignUserRoles(tenantId: string, userId: string, roleIds: string[], requesterRoles: string[]) {
     if (!roleIds || roleIds.length === 0) {

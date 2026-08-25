@@ -124,15 +124,31 @@ export class CandidatesController {
     return this.candidatesService.updateCandidate(id, dto, activeTenantId);
   }
 
+  @Patch(':id/restore')
+  @ApiOperation({
+    summary: 'Restore a soft-deleted Candidate Profile by ID',
+  })
+  @ApiParam({ name: 'id', description: 'The integer Database ID of the candidate record', type: Number })
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  async restore(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ): Promise<CandidateProfile> {
+    const activeTenantId = resolveTenantId(user, tenantId);
+    return this.candidatesService.restoreCandidate(id, activeTenantId);
+  }
+
   @Delete(':id')
   @ApiOperation({
-    summary: 'Delete Candidate Profile by ID',
-    description: 'Removes the candidate record and all joined work histories, education, skills, and resume attachments.',
+    summary: 'Soft Delete Candidate Profile by ID',
+    description: 'Soft-deletes the candidate record.',
   })
   @ApiParam({ name: 'id', description: 'The integer Database ID of the candidate record', type: Number })
   @ApiResponse({
     status: 200,
-    description: 'Candidate profile and its linkages deleted successfully.',
+    description: 'Candidate profile soft-deleted successfully.',
   })
   @ApiResponse({
     status: 404,

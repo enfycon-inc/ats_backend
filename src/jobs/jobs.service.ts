@@ -530,7 +530,7 @@ export class JobsService implements OnModuleInit {
       LEFT JOIN pods p ON p.id = jp.pod_id
       LEFT JOIN users uc ON uc.id::text = j.created_by
       LEFT JOIN branches b ON b.id = j.branch_id
-      WHERE j.tenant_id = $1
+      WHERE j.tenant_id = $1 AND j.deleted_at IS NULL
     `;
     const params: any[] = [tenantId];
     let paramIndex = 2;
@@ -613,7 +613,7 @@ export class JobsService implements OnModuleInit {
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
          LEFT JOIN users uc ON uc.id::text = j.created_by
-         WHERE j.tenant_id = $1 AND j.id = $2::uuid LIMIT 1`
+         WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
                 p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
@@ -624,7 +624,7 @@ export class JobsService implements OnModuleInit {
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
          LEFT JOIN users uc ON uc.id::text = j.created_by
-         WHERE j.tenant_id = $1 AND j.job_code = $2 LIMIT 1`;
+         WHERE j.tenant_id = $1 AND j.job_code = $2 AND j.deleted_at IS NULL LIMIT 1`;
 
     try {
       const result = await this.db.query(sql, [tenantId, idOrCode]);
@@ -1663,4 +1663,33 @@ export class JobsService implements OnModuleInit {
 
     return this.createJob(duplicateDto, tenantId, user?.email, branchId);
   }
+
+  async deleteJob(id: string, tenantId: string): Promise<boolean> {
+    this.logger.log(`Soft deleting job ${id} for tenant ${tenantId}`);
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(id);
+    const sql = isUuid
+      ? `UPDATE jobs SET deleted_at = NOW() WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`
+      : `UPDATE jobs SET deleted_at = NOW() WHERE job_code = $1 AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`;
+    const res = await this.db.query(sql, [id, tenantId]);
+    if (res.rows.length === 0) {
+      throw new NotFoundException(`Job ${id} not found or already deleted.`);
+    }
+    return true;
+  }
+
+  async restoreJob(id: string, tenantId: string): Promise<JobProfile> {
+    this.logger.log(`Restoring job ${id} for tenant ${tenantId}`);
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(id);
+    const sql = isUuid
+      ? `UPDATE jobs SET deleted_at = NULL WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NOT NULL RETURNING id`
+      : `UPDATE jobs SET deleted_at = NULL WHERE job_code = $1 AND tenant_id = $2 AND deleted_at IS NOT NULL RETURNING id`;
+    const res = await this.db.query(sql, [id, tenantId]);
+    if (res.rows.length === 0) {
+      throw new NotFoundException(`Job ${id} not found or not deleted.`);
+    }
+    return this.findOneJob(res.rows[0].id, tenantId);
+  }
 }
+

@@ -181,9 +181,12 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS job_description TEXT;
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS skills_required TEXT[];
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS market VARCHAR(50) DEFAULT 'US';
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS client_id UUID REFERENCES clients(id) ON DELETE SET NULL;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS end_client_id UUID REFERENCES clients(id) ON DELETE SET NULL;
       
       -- Ensure account_manager_id is optional (nullable)
       ALTER TABLE jobs ALTER COLUMN account_manager_id DROP NOT NULL;
+
 
       -- 4. Add tenant_id column to candidates if not exists
       ALTER TABLE candidates ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
@@ -511,7 +514,58 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         ip_address VARCHAR(100),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      -- 17. Soft delete columns and performance indexes
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+      ALTER TABLE candidates ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_jobs_tenant_deleted ON jobs(tenant_id, deleted_at);
+      CREATE INDEX IF NOT EXISTS idx_clients_tenant_deleted ON clients(tenant_id, deleted_at);
+      CREATE INDEX IF NOT EXISTS idx_candidates_tenant_deleted ON candidates(tenant_id, deleted_at);
+
+      -- 18. Create tenant_dice_integrations table
+      CREATE TABLE IF NOT EXISTS tenant_dice_integrations (
+        tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+        client_id VARCHAR(255),
+        client_secret TEXT,
+        account_id VARCHAR(255),
+        access_token TEXT,
+        token_expires_at TIMESTAMP WITH TIME ZONE,
+        is_active BOOLEAN DEFAULT TRUE,
+        daily_view_limit INT DEFAULT 500,
+        views_used_today INT DEFAULT 0,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      -- 19. Client CRM, Qualifier & Onboarding columns
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS market VARCHAR(50) DEFAULT 'US';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS end_client_name VARCHAR(255);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_same_as_primary BOOLEAN DEFAULT TRUE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS contact_person VARCHAR(255);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS contact_designation VARCHAR(255);
+      
+      -- Domestic & US Tax Fields
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS gstin VARCHAR(100);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS pan_number VARCHAR(100);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS currency VARCHAR(20) DEFAULT 'USD';
+      
+      -- Qualifier & Vetting Columns
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS tier_rating VARCHAR(50) DEFAULT 'TIER_1';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS credit_check_status VARCHAR(50) DEFAULT 'APPROVED';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS fillability_score VARCHAR(50) DEFAULT 'HIGH';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS vetting_notes TEXT;
+      
+      -- Onboarding Checklist Columns
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(50) DEFAULT 'ACTIVE';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS msa_signed BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS sow_executed BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS coi_received BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS vendor_portal_created BOOLEAN DEFAULT FALSE;
     `;
+
+
+
 
     try {
       await this.pool.query(ddl);

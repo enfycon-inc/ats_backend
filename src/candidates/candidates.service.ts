@@ -157,7 +157,7 @@ export class CandidatesService implements OnModuleInit {
       SELECT c.*, r.raw_text, r.parsed_json
       FROM candidates c
       LEFT JOIN resumes r ON c.resume_record_id = r.id
-      WHERE c.tenant_id = $1
+      WHERE c.tenant_id = $1 AND c.deleted_at IS NULL
     `;
     const params: any[] = [tenantId];
     let paramIndex = 2;
@@ -236,7 +236,7 @@ export class CandidatesService implements OnModuleInit {
       `SELECT c.*, r.raw_text, r.parsed_json
        FROM candidates c
        LEFT JOIN resumes r ON c.resume_record_id = r.id
-       WHERE c.id = $1 AND c.tenant_id = $2 LIMIT 1`,
+       WHERE c.id = $1 AND c.tenant_id = $2 AND c.deleted_at IS NULL LIMIT 1`,
       [id, tenantId]
     );
 
@@ -255,7 +255,7 @@ export class CandidatesService implements OnModuleInit {
       `SELECT c.*, r.raw_text, r.parsed_json
        FROM candidates c
        LEFT JOIN resumes r ON c.resume_record_id = r.id
-       WHERE c.email = $1 AND c.tenant_id = $2 LIMIT 1`,
+       WHERE c.email = $1 AND c.tenant_id = $2 AND c.deleted_at IS NULL LIMIT 1`,
       [email, tenantId]
     );
 
@@ -267,45 +267,35 @@ export class CandidatesService implements OnModuleInit {
   }
 
   /**
-   * Deletes a candidate by ID, scoped by tenant
+   * Soft deletes a candidate by ID, scoped by tenant
    */
   async deleteCandidate(id: number, tenantId: string): Promise<{ message: string }> {
-    this.logger.log(`Initiating deletion for Candidate ID=${id} for tenant: ${tenantId}`);
-    
-    const candidate = await this.db.query('SELECT resume_record_id FROM candidates WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
-    if (candidate.rows.length === 0) {
-      throw new NotFoundException(`Candidate profile with ID ${id} was not found.`);
+    this.logger.log(`Soft deleting Candidate ID=${id} for tenant: ${tenantId}`);
+    const res = await this.db.query(
+      `UPDATE candidates SET deleted_at = NOW() WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`,
+      [id, tenantId]
+    );
+    if (res.rows.length === 0) {
+      throw new NotFoundException(`Candidate profile with ID ${id} was not found or already deleted.`);
     }
-
-    const resumeRecordId = candidate.rows[0].resume_record_id;
-    const client = await this.db.getClient();
-
-    try {
-      await client.query('BEGIN');
-      
-      // Delete candidate experience, education, skills if present
-      await client.query('DELETE FROM candidate_experience WHERE candidate_id = $1', [id]);
-      await client.query('DELETE FROM candidate_education WHERE candidate_id = $1', [id]);
-      await client.query('DELETE FROM candidate_skills WHERE candidate_id = $1', [id]);
-      
-      // Delete from candidates
-      await client.query('DELETE FROM candidates WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
-      
-      // Delete from resumes
-      if (resumeRecordId) {
-        await client.query('DELETE FROM resumes WHERE id = $1', [resumeRecordId]);
-      }
-
-      await client.query('COMMIT');
-      return { message: `Candidate with ID ${id} and linked resume were successfully deleted.` };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      this.logger.error(`Failed to delete candidate ID=${id}: ${err.message}`, err.stack);
-      throw err;
-    } finally {
-      client.release();
-    }
+    return { message: `Candidate with ID ${id} was successfully soft-deleted.` };
   }
+
+  /**
+   * Restores a soft-deleted candidate by ID, scoped by tenant
+   */
+  async restoreCandidate(id: number, tenantId: string): Promise<CandidateProfile> {
+    this.logger.log(`Restoring Candidate ID=${id} for tenant: ${tenantId}`);
+    const res = await this.db.query(
+      `UPDATE candidates SET deleted_at = NULL WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NOT NULL RETURNING id`,
+      [id, tenantId]
+    );
+    if (res.rows.length === 0) {
+      throw new NotFoundException(`Candidate profile with ID ${id} was not found or not deleted.`);
+    }
+    return this.findOne(id, tenantId);
+  }
+
 
   /**
    * Utility method to map raw database query rows to typed candidate profile payloads

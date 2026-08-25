@@ -14,6 +14,7 @@ import { PodsModule } from './pods/pods.module';
 import { BranchesModule } from './branches/branches.module';
 import { BusinessUnitsModule } from './business-units/business-units.module';
 import { AuditModule } from './audit/audit.module';
+import { DiceModule } from './integrations/dice/dice.module';
 
 @Module({
   imports: [
@@ -35,9 +36,11 @@ import { AuditModule } from './audit/audit.module';
     PodsModule,
     BranchesModule,
     BusinessUnitsModule,
+    DiceModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
+
 
