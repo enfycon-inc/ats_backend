@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   Headers,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -494,6 +495,26 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { roleIds: string[] },
   ) {
     return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles);
+  }
+
+  // ─── GET /api/auth/check-ssl-domain ─────────────────────────
+  @Get('check-ssl-domain')
+  @ApiOperation({ summary: 'Caddy On-Demand TLS domain validation' })
+  async checkSslDomain(@Query('domain') domain?: string): Promise<string> {
+    if (!domain) {
+      return 'OK';
+    }
+    const cleanDomain = domain.toLowerCase().trim();
+    // Allow root domain and any *.enfyjobs.com
+    if (cleanDomain === 'enfyjobs.com' || cleanDomain.endsWith('.enfyjobs.com')) {
+      return 'OK';
+    }
+    // Check if domain is registered in DB for custom client domains
+    const isRegistered = await this.authService.isDomainRegistered(cleanDomain);
+    if (isRegistered) {
+      return 'OK';
+    }
+    throw new BadRequestException('Unauthorized Domain');
   }
 
   // ─── GET /api/auth/tenants/my-domains ───────────────────────

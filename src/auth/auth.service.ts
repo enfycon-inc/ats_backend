@@ -2369,7 +2369,24 @@ export class AuthService implements OnModuleInit {
       'DELETE FROM tenant_domains WHERE id = $1 AND tenant_id = $2',
       [domainId, tenantId]
     );
-    return { message: 'Domain mapping deleted successfully.' };
+    return { success: true, message: 'Domain deleted successfully.' };
+  }
+
+  async isDomainRegistered(domainName: string): Promise<boolean> {
+    const normalized = domainName.toLowerCase().trim();
+    if (!normalized) return false;
+    try {
+      const res = await this.db.query(
+        `SELECT 1 FROM tenant_domains WHERE domain_name = $1
+         UNION
+         SELECT 1 FROM tenants WHERE LOWER(domain) = $1 OR LOWER(domain || '.enfyjobs.com') = $1
+         LIMIT 1`,
+        [normalized]
+      );
+      return (res.rows.length > 0);
+    } catch {
+      return false;
+    }
   }
 
   async updateTenantSettings(tenantId: string, settings: {
