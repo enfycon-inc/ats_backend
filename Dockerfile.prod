@@ -24,4 +24,5 @@ COPY --from=build /app/dist ./dist
 
 EXPOSE 5000
 
-CMD ["node", "dist/main.js"]
+CMD ["sh", "-c", "if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
+
