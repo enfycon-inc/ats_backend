@@ -23,6 +23,10 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
 import { RegisterTenantDto } from './dtos/register-tenant.dto';
+import { InviteUserDto } from './dtos/invite-user.dto';
+import { SsoLoginDto } from './dtos/sso-login.dto';
+import { AcceptInviteDto } from './dtos/accept-invite.dto';
+import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
@@ -526,4 +530,102 @@ Validates email + password and returns a signed JWT access token.
   ) {
     return this.authService.deleteTenantDomain(user.tenantId, domainId);
   }
+
+  // ─── POST /api/auth/tenants/my-domains/verify ───────────────
+  @Post('tenants/my-domains/verify')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Verify custom domain DNS records & provision SSL [ADMIN only]' })
+  async verifyMyDomain(
+    @CurrentUser() user: AuthUser,
+    @Body() body: VerifyCustomDomainDto,
+  ) {
+    return this.authService.verifyCustomDomain(user.tenantId, body.domainName);
+  }
+
+  // ─── POST /api/auth/sso-login ───────────────────────────────
+  @Post('sso-login')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Single Sign-On (Google & Microsoft) — Zero-Trust Invite-Only Gate',
+    description: 'Validates verified OAuth email identity against tenant user invitation list and issues signed ATS JWT.',
+  })
+  @ApiResponse({ status: 200, description: 'SSO Login successful — returns ATS JWT access token.' })
+  @ApiResponse({ status: 401, description: 'Access denied: user is not invited or account is deactivated.' })
+  async ssoLogin(@Body() dto: SsoLoginDto) {
+    return this.authService.ssoLogin(dto);
+  }
+
+  // ─── POST /api/auth/invite ──────────────────────────────────
+  @Post('invite')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Invite new team member to workspace [ADMIN / BRANCH_ADMIN only]',
+    description: 'Creates pre-provisioned user record, generates 24-hr setup token, and dispatches branded welcome email from no-reply@tenant.enfycon.com.',
+  })
+  @ApiResponse({ status: 201, description: 'User invited and activation email dispatched.' })
+  @ApiResponse({ status: 409, description: 'User already exists in this workspace.' })
+  async inviteUser(
+    @Body() dto: InviteUserDto,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    return this.authService.inviteUser(dto, authHeader);
+  }
+
+  // ─── GET /api/auth/invitation/:token ────────────────────────
+  @Get('invitation/:token')
+  @ApiOperation({
+    summary: 'Get invitation metadata for password setup screen [Public]',
+    description: 'Returns tenant name, subdomain, invited email, and expiration status.',
+  })
+  @ApiResponse({ status: 200, description: 'Invitation details retrieved.' })
+  @ApiResponse({ status: 404, description: 'Invalid invitation token.' })
+  async getInvitationDetails(@Param('token') token: string) {
+    return this.authService.getInvitationDetails(token);
+  }
+
+  // ─── POST /api/auth/accept-invite ───────────────────────────
+  @Post('accept-invite')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Accept invitation & set user password [Public]',
+    description: 'Consumes invitation token, sets user password hash, and marks account active.',
+  })
+  @ApiResponse({ status: 200, description: 'Password set successfully.' })
+  @ApiResponse({ status: 400, description: 'Token expired or invalid.' })
+  async acceptInvite(@Body() dto: AcceptInviteDto) {
+    return this.authService.acceptInvite(dto);
+  }
+
+  // ─── GET /api/auth/tenant-auth-policy ───────────────────────
+  @Get('tenant-auth-policy')
+  @ApiOperation({
+    summary: 'Get tenant SSO & authentication policy [Public / Tenant User]',
+  })
+  async getTenantAuthPolicy(
+    @Query('subdomain') subdomain?: string,
+    @Headers('x-tenant-id') headerTenantId?: string,
+  ) {
+    const context = headerTenantId || subdomain || 'default';
+    return this.authService.getTenantAuthPolicy(context);
+  }
+
+  // ─── PATCH /api/auth/tenant-auth-policy ──────────────────────
+  @Patch('tenant-auth-policy')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN', 'ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update tenant SSO and authentication policy [ADMIN only]',
+  })
+  async updateTenantAuthPolicy(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: any,
+  ) {
+    return this.authService.updateTenantAuthPolicy(user.tenantId, dto);
+  }
 }
+

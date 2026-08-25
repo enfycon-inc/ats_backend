@@ -361,14 +361,19 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
+      ALTER TABLE tenant_domains ADD COLUMN IF NOT EXISTS verification_token VARCHAR(255);
+      ALTER TABLE tenant_domains ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'VERIFIED';
+      ALTER TABLE tenant_domains ADD COLUMN IF NOT EXISTS ssl_status VARCHAR(50) DEFAULT 'ACTIVE';
+      ALTER TABLE tenant_domains ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP WITH TIME ZONE;
+
       -- Seed the default tenant domain
-      INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
-      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'enfycon.com', TRUE)
+      INSERT INTO tenant_domains (tenant_id, domain_name, is_primary, verification_status, ssl_status)
+      VALUES ('d3b07384-d113-49c3-a555-9ee75c13ca33', 'enfycon.com', TRUE, 'VERIFIED', 'ACTIVE')
       ON CONFLICT (domain_name) DO NOTHING;
 
       -- Backfill existing tenants' default subdomain slugs into tenant_domains table
-      INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
-      SELECT id, domain, TRUE
+      INSERT INTO tenant_domains (tenant_id, domain_name, is_primary, verification_status, ssl_status)
+      SELECT id, domain, TRUE, 'VERIFIED', 'ACTIVE'
       FROM tenants
       WHERE domain IS NOT NULL AND domain <> '' AND domain <> 'enfycon.com'
       ON CONFLICT (domain_name) DO NOTHING;
@@ -381,10 +386,47 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         allow_google_sso BOOLEAN DEFAULT FALSE,
         enforce_sso_only BOOLEAN DEFAULT FALSE,
         require_mfa BOOLEAN DEFAULT FALSE,
+        allow_personal_emails BOOLEAN DEFAULT TRUE,
         allowed_email_domains TEXT[] DEFAULT '{}',
+        microsoft_tenant_id VARCHAR(255),
         microsoft_client_id VARCHAR(255),
         microsoft_client_secret VARCHAR(255),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      ALTER TABLE tenant_auth_settings ADD COLUMN IF NOT EXISTS allow_personal_emails BOOLEAN DEFAULT TRUE;
+      ALTER TABLE tenant_auth_settings ADD COLUMN IF NOT EXISTS microsoft_tenant_id VARCHAR(255);
+
+      -- 9.6 Create tenant_email_domains table for custom transactional/outreach email senders
+      CREATE TABLE IF NOT EXISTS tenant_email_domains (
+        id SERIAL PRIMARY KEY,
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        email_domain VARCHAR(255) UNIQUE NOT NULL,
+        sender_address VARCHAR(255) NOT NULL,
+        dkim_tokens TEXT[] DEFAULT '{}',
+        dkim_verified BOOLEAN DEFAULT FALSE,
+        spf_verified BOOLEAN DEFAULT FALSE,
+        status VARCHAR(50) DEFAULT 'PENDING',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        verified_at TIMESTAMP WITH TIME ZONE
+      );
+
+      -- 9.7 Create user_invitations table for secure invitation & onboarding lifecycle
+      CREATE TABLE IF NOT EXISTS user_invitations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        email VARCHAR(255) NOT NULL,
+        full_name VARCHAR(255),
+        role_id UUID REFERENCES custom_roles(id) ON DELETE SET NULL,
+        system_role VARCHAR(50) DEFAULT 'RECRUITER',
+        branch_id UUID REFERENCES branches(id) ON DELETE SET NULL,
+        pod_id UUID REFERENCES pods(id) ON DELETE SET NULL,
+        invitation_token VARCHAR(255) UNIQUE NOT NULL,
+        token_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        created_by VARCHAR(255),
+        is_accepted BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(tenant_id, email)
       );
 
       -- 10. Create clients table

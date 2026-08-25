@@ -209,7 +209,7 @@ export class DiceService {
 
     // Create candidate record in database using correct schema columns
     const client = await this.db.getClient();
-    let candidateId = null;
+    let candidateId: number = 0;
     try {
       await client.query('BEGIN');
       const resumeRes = await client.query(
@@ -253,7 +253,7 @@ export class DiceService {
       client.release();
     }
 
-    const createdCandidate = await this.candidatesService.findOne(candidateId, tenantId);
+    const createdCandidate = candidateId ? await this.candidatesService.findOne(candidateId, tenantId) : null;
     return { candidate: createdCandidate, duplicate: false, message: 'Candidate imported from Dice successfully.' };
   }
 

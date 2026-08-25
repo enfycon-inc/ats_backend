@@ -5,4 +5,4 @@ dist
 .gemini
 *.tsbuildinfo
 .env
-.env.example
+.env.local

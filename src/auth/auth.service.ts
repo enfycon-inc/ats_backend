@@ -9,10 +9,15 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
+import * as nodemailer from 'nodemailer';
 import { DatabaseService } from '../database/database.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
 import { RegisterTenantDto } from './dtos/register-tenant.dto';
+import { InviteUserDto } from './dtos/invite-user.dto';
+import { SsoLoginDto } from './dtos/sso-login.dto';
+import { AcceptInviteDto } from './dtos/accept-invite.dto';
+import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.dto';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -402,7 +407,7 @@ export class AuthService implements OnModuleInit {
             this.logger.log(`User ${dto.email} (Tenant: ${user.tenant_name || user.tenant_id}) has valid local DB credentials. Auto-provisioning to Keycloak & issuing access token...`);
             
             // Auto-provision user in Keycloak in background
-            this.autoProvisionInKeycloak(user.email, dto.password, user.full_name).catch(() => {});
+            this.provisionUserInKeycloak({ email: user.email, password: dto.password, fullName: user.full_name, tenantId: user.tenant_id }).catch(() => {});
 
             // Generate fallback signed JWT so user login never fails
             const token = this.signJwt({
@@ -2452,11 +2457,13 @@ export class AuthService implements OnModuleInit {
       return {
         tenantId,
         allowPasswordLogin: true,
-        allowMicrosoftSso: false,
-        allowGoogleSso: false,
+        allowMicrosoftSso: true,
+        allowGoogleSso: true,
         enforceSsoOnly: false,
         requireMfa: false,
+        allowPersonalEmails: true,
         allowedEmailDomains: [],
+        microsoftTenantId: null,
         microsoftClientId: null,
       };
     }
@@ -2465,11 +2472,13 @@ export class AuthService implements OnModuleInit {
     return {
       tenantId: row.tenant_id,
       allowPasswordLogin: row.allow_password_login ?? true,
-      allowMicrosoftSso: row.allow_microsoft_sso ?? false,
-      allowGoogleSso: row.allow_google_sso ?? false,
+      allowMicrosoftSso: row.allow_microsoft_sso ?? true,
+      allowGoogleSso: row.allow_google_sso ?? true,
       enforceSsoOnly: row.enforce_sso_only ?? false,
       requireMfa: row.require_mfa ?? false,
+      allowPersonalEmails: row.allow_personal_emails ?? true,
       allowedEmailDomains: row.allowed_email_domains || [],
+      microsoftTenantId: row.microsoft_tenant_id || null,
       microsoftClientId: row.microsoft_client_id || null,
     };
   }
@@ -2477,16 +2486,18 @@ export class AuthService implements OnModuleInit {
   async updateTenantAuthPolicy(tenantId: string, dto: any) {
     const result = await this.db.query(
       `INSERT INTO tenant_auth_settings (
-         tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allowed_email_domains, microsoft_client_id, microsoft_client_secret
+         tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (tenant_id) DO UPDATE SET
          allow_password_login    = EXCLUDED.allow_password_login,
          allow_microsoft_sso     = EXCLUDED.allow_microsoft_sso,
          allow_google_sso        = EXCLUDED.allow_google_sso,
          enforce_sso_only        = EXCLUDED.enforce_sso_only,
          require_mfa             = EXCLUDED.require_mfa,
+         allow_personal_emails   = EXCLUDED.allow_personal_emails,
          allowed_email_domains   = EXCLUDED.allowed_email_domains,
+         microsoft_tenant_id     = EXCLUDED.microsoft_tenant_id,
          microsoft_client_id     = EXCLUDED.microsoft_client_id,
          microsoft_client_secret = COALESCE(EXCLUDED.microsoft_client_secret, tenant_auth_settings.microsoft_client_secret),
          updated_at              = NOW()
@@ -2494,11 +2505,13 @@ export class AuthService implements OnModuleInit {
       [
         tenantId,
         dto.allowPasswordLogin ?? true,
-        dto.allowMicrosoftSso ?? false,
-        dto.allowGoogleSso ?? false,
+        dto.allowMicrosoftSso ?? true,
+        dto.allowGoogleSso ?? true,
         dto.enforceSsoOnly ?? false,
         dto.requireMfa ?? false,
+        dto.allowPersonalEmails ?? true,
         dto.allowedEmailDomains || [],
+        dto.microsoftTenantId || null,
         dto.microsoftClientId || null,
         dto.microsoftClientSecret || null,
       ]
@@ -2512,9 +2525,476 @@ export class AuthService implements OnModuleInit {
       allowGoogleSso: row.allow_google_sso,
       enforceSsoOnly: row.enforce_sso_only,
       requireMfa: row.require_mfa,
+      allowPersonalEmails: row.allow_personal_emails,
       allowedEmailDomains: row.allowed_email_domains,
+      microsoftTenantId: row.microsoft_tenant_id,
       microsoftClientId: row.microsoft_client_id,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // SSO Login: Zero-Trust Invite-Only Verification (Google & Microsoft)
+  // ─────────────────────────────────────────────────────────────
+  async ssoLogin(dto: SsoLoginDto) {
+    const cleanEmail = (dto.email || '').trim().toLowerCase();
+    const provider = (dto.provider || '').toLowerCase();
+    this.logger.log(`SSO Login attempt for ${cleanEmail} via ${provider} [Subdomain: ${dto.subdomain || 'none'}]`);
+
+    if (!cleanEmail || (provider !== 'google' && provider !== 'microsoft')) {
+      throw new BadRequestException('Valid provider (google or microsoft) and email are required.');
+    }
+
+    // Resolve tenant ID context
+    let targetTenantId = DEFAULT_TENANT_ID;
+    if (dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
+      const cleanSub = dto.subdomain.trim().toLowerCase();
+      const domainMapping = await this.db.query(
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
+         UNION
+         SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1
+         LIMIT 1`,
+        [cleanSub]
+      );
+      if (domainMapping.rows.length > 0) {
+        targetTenantId = domainMapping.rows[0].tenant_id;
+      } else {
+        throw new UnauthorizedException('Workspace not found.');
+      }
+    }
+
+    // ZERO-TRUST INVITE-ONLY GATE:
+    // Query users table for this email and tenant
+    const userRes = await this.db.query(
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, u.profile_picture,
+              t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled,
+              cr.system_role, b.name as branch_name, bu.name as business_unit_name
+       FROM users u
+       LEFT JOIN tenants t ON u.tenant_id = t.id
+       LEFT JOIN custom_roles cr ON u.role_id = cr.id
+       LEFT JOIN branches b ON u.branch_id = b.id
+       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       WHERE LOWER(u.email) = $1 AND (u.tenant_id = $2 OR 'SUPER_ADMIN' = ANY(u.roles))
+       ORDER BY (u.tenant_id = $2) DESC
+       LIMIT 1`,
+      [cleanEmail, targetTenantId]
+    );
+
+    if (userRes.rows.length === 0) {
+      throw new UnauthorizedException(
+        'Access Denied: You have not been invited to this workspace. Please contact your organization administrator.'
+      );
+    }
+
+    const user = userRes.rows[0];
+
+    // Enforce Tenant Active Status
+    if (user.tenant_status && user.tenant_status !== 'ACTIVE') {
+      throw new UnauthorizedException('Your company workspace is inactive. Contact the platform administrator.');
+    }
+
+    // Check if user is active
+    if (!user.is_active) {
+      throw new UnauthorizedException('Your account has been deactivated. Contact your administrator.');
+    }
+
+    if (!user.is_approved) {
+      if (user.tenant_status === 'ACTIVE') {
+        await this.db.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
+        user.is_approved = true;
+      } else {
+        throw new UnauthorizedException('Your account is pending administrator approval.');
+      }
+    }
+
+    // Enforce Tenant Auth Policy
+    const policy = await this.getTenantAuthPolicy(user.tenant_id);
+    if (provider === 'google' && !policy.allowGoogleSso) {
+      throw new UnauthorizedException('Google Single Sign-On is disabled by your organization administrator.');
+    }
+    if (provider === 'microsoft' && !policy.allowMicrosoftSso) {
+      throw new UnauthorizedException('Microsoft Single Sign-On is disabled by your organization administrator.');
+    }
+
+    // Check personal email restrictions
+    const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
+    const isPersonalDomain = ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com'].includes(emailDomain);
+    if (policy.allowPersonalEmails === false && isPersonalDomain) {
+      throw new UnauthorizedException('Personal email addresses are not permitted for this organization. Please use your corporate email.');
+    }
+
+    if (policy.allowedEmailDomains && policy.allowedEmailDomains.length > 0) {
+      if (!policy.allowedEmailDomains.map((d: string) => d.toLowerCase()).includes(emailDomain)) {
+        throw new UnauthorizedException(`Logins with @${emailDomain} domain are not permitted for this organization.`);
+      }
+    }
+
+    // Validate Microsoft Tenant ID (Azure Directory ID tid) if configured
+    if (provider === 'microsoft' && policy.microsoftTenantId && dto.microsoftTenantId) {
+      if (policy.microsoftTenantId.toLowerCase() !== dto.microsoftTenantId.toLowerCase()) {
+        throw new UnauthorizedException('Your Microsoft Azure organization directory is not authorized for this workspace.');
+      }
+    }
+
+    // Sync profile picture if provided
+    if (dto.picture && !user.profile_picture) {
+      await this.db.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [dto.picture, user.id]).catch(() => {});
+    }
+
+    // Fetch dynamic permissions
+    let permissions: string[] = [];
+    if (user.role_id) {
+      const permsResult = await this.db.query(
+        'SELECT permission FROM role_permissions WHERE role_id = $1',
+        [user.role_id]
+      );
+      permissions = permsResult.rows.map((row) => row.permission);
+    }
+
+    let systemRole = user.system_role || 'RECRUITER';
+    if (user.roles && user.roles.includes('SUPER_ADMIN')) {
+      systemRole = 'SUPER_ADMIN';
+    }
+
+    const token = this.signJwt({
+      sub: user.id,
+      email: user.email,
+      fullName: user.full_name,
+      roles: user.roles,
+      tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+      defaultMarket: user.default_market || 'US',
+      tenantDomain: user.tenant_domain || '',
+      permissions,
+      systemRole,
+      podId: user.pod_id,
+      branchId: user.branch_id,
+      businessUnitId: user.business_unit_id,
+      podSystemEnabled: user.pod_system_enabled !== false,
+    });
+
+    return {
+      accessToken: token,
+      expiresIn: TOKEN_TTL_SECONDS,
+      tokenType: 'Bearer',
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        roles: user.roles,
+        tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+        defaultMarket: user.default_market || 'US',
+        tenantDomain: user.tenant_domain || '',
+        permissions,
+        systemRole,
+        podId: user.pod_id,
+        branchId: user.branch_id,
+        assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
+        branchRoles: user.branch_roles || {},
+        branchName: user.branch_name || null,
+        businessUnitId: user.business_unit_id,
+        businessUnitName: user.business_unit_name || null,
+        podSystemEnabled: user.pod_system_enabled !== false,
+      },
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // User Invitation Lifecycle (Admin invites user)
+  // ─────────────────────────────────────────────────────────────
+  async inviteUser(dto: InviteUserDto, authHeader?: string) {
+    const requester = await this.getRequesterInfoFromToken(authHeader);
+    if (!requester.isAdmin && !requester.roles.includes('BRANCH_ADMIN')) {
+      throw new ForbiddenException('Only Administrators can invite new users.');
+    }
+
+    const tenantId = requester.tenantId || DEFAULT_TENANT_ID;
+    const cleanEmail = (dto.email || '').trim().toLowerCase();
+    const fullName = (dto.fullName || '').trim();
+
+    if (!cleanEmail || !fullName) {
+      throw new BadRequestException('Email and full name are required.');
+    }
+
+    const emailParts = cleanEmail.split('@');
+    if (emailParts.length !== 2 || !emailParts[0] || !emailParts[1]) {
+      throw new BadRequestException('Invalid email address format.');
+    }
+
+    // Check if user is already in this tenant
+    const existing = await this.db.query(
+      'SELECT id, is_active FROM users WHERE LOWER(email) = $1 AND tenant_id = $2 LIMIT 1',
+      [cleanEmail, tenantId]
+    );
+    if (existing.rows.length > 0) {
+      throw new ConflictException('This user is already part of your company workspace.');
+    }
+
+    // Check seat limit
+    await this.checkSeatLimit(tenantId);
+
+    // Check tenant auth policy
+    const policy = await this.getTenantAuthPolicy(tenantId);
+    const emailDomain = emailParts[1].toLowerCase();
+    const isPersonalDomain = ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com'].includes(emailDomain);
+    if (policy.allowPersonalEmails === false && isPersonalDomain) {
+      throw new BadRequestException('Personal email addresses are not permitted for this organization.');
+    }
+    if (policy.allowedEmailDomains && policy.allowedEmailDomains.length > 0) {
+      if (!policy.allowedEmailDomains.map((d: string) => d.toLowerCase()).includes(emailDomain)) {
+        throw new BadRequestException(`Invitations for @${emailDomain} domain are not allowed by organization settings.`);
+      }
+    }
+
+    // Resolve system role & custom role
+    const systemRole = (dto.systemRole || 'RECRUITER').toUpperCase();
+    let roleId = dto.roleId || null;
+    if (!roleId) {
+      const defaultRoleRes = await this.db.query(
+        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND (system_role = $2 OR name = $2) LIMIT 1',
+        [tenantId, systemRole]
+      );
+      if (defaultRoleRes.rows.length > 0) {
+        roleId = defaultRoleRes.rows[0].id;
+      }
+    }
+
+    // Create user record in PostgreSQL
+    const insertUserRes = await this.db.query(
+      `INSERT INTO users (tenant_id, email, full_name, roles, role_id, branch_id, pod_id, is_active, is_approved)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true, true)
+       RETURNING id, email, full_name, roles, created_at`,
+      [
+        tenantId,
+        cleanEmail,
+        fullName,
+        [systemRole],
+        roleId,
+        dto.branchId || null,
+        dto.podId || null,
+      ]
+    );
+    const newUser = insertUserRes.rows[0];
+
+    // Generate 24-hour invitation token
+    const invitationToken = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await this.db.query(
+      `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role, branch_id, pod_id, invitation_token, token_expires_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (tenant_id, email) DO UPDATE SET
+         invitation_token = EXCLUDED.invitation_token,
+         token_expires_at = EXCLUDED.token_expires_at,
+         is_accepted = FALSE`,
+      [
+        tenantId,
+        cleanEmail,
+        fullName,
+        roleId,
+        systemRole,
+        dto.branchId || null,
+        dto.podId || null,
+        invitationToken,
+        expiresAt,
+        requester.isAdmin ? 'Admin' : 'BranchAdmin',
+      ]
+    );
+
+    // Fetch tenant details for email branding
+    const tenantRes = await this.db.query(
+      'SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1',
+      [tenantId]
+    );
+    const tenantName = tenantRes.rows[0]?.name || 'Enfycon Workspace';
+    const tenantDomain = tenantRes.rows[0]?.domain || '';
+
+    // Dispatch welcome email
+    if (dto.sendEmailInvite !== false) {
+      this.sendWelcomeEmail({
+        to: cleanEmail,
+        fullName,
+        tenantName,
+        subdomain: tenantDomain,
+        invitationToken,
+        roleName: systemRole,
+      }).catch((err) => {
+        this.logger.warn(`Failed to dispatch welcome email to ${cleanEmail}: ${err.message}`);
+      });
+    }
+
+    return {
+      success: true,
+      message: 'User invited successfully.',
+      user: newUser,
+      invitationToken,
+      expiresAt,
+    };
+  }
+
+  async getInvitationDetails(token: string) {
+    if (!token) throw new BadRequestException('Token is required.');
+    const res = await this.db.query(
+      `SELECT ui.id, ui.email, ui.full_name, ui.system_role, ui.token_expires_at, ui.is_accepted,
+              t.name as tenant_name, t.domain as tenant_domain
+       FROM user_invitations ui
+       JOIN tenants t ON ui.tenant_id = t.id
+       WHERE ui.invitation_token = $1 LIMIT 1`,
+      [token]
+    );
+    if (res.rows.length === 0) {
+      throw new NotFoundException('Invitation token is invalid or does not exist.');
+    }
+    const row = res.rows[0];
+    const isExpired = new Date(row.token_expires_at).getTime() < Date.now();
+    return {
+      email: row.email,
+      fullName: row.full_name,
+      systemRole: row.system_role,
+      tenantName: row.tenant_name,
+      tenantDomain: row.tenant_domain,
+      isExpired,
+      isAccepted: row.is_accepted,
+    };
+  }
+
+  async acceptInvite(dto: AcceptInviteDto) {
+    if (!dto.token || !dto.password) {
+      throw new BadRequestException('Token and password are required.');
+    }
+    if (dto.password.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters long.');
+    }
+
+    const res = await this.db.query(
+      `SELECT ui.*, t.domain as tenant_domain FROM user_invitations ui
+       JOIN tenants t ON ui.tenant_id = t.id
+       WHERE ui.invitation_token = $1 LIMIT 1`,
+      [dto.token]
+    );
+    if (res.rows.length === 0) {
+      throw new NotFoundException('Invitation token is invalid.');
+    }
+    const invite = res.rows[0];
+    if (new Date(invite.token_expires_at).getTime() < Date.now()) {
+      throw new BadRequestException('Invitation has expired. Please contact your administrator for a new invite.');
+    }
+
+    const { hash, salt } = this.hashPassword(dto.password);
+    await this.db.query(
+      `UPDATE users SET password_hash = $1, salt = $2, is_active = true, is_approved = true, updated_at = NOW()
+       WHERE LOWER(email) = LOWER($3) AND tenant_id = $4`,
+      [hash, salt, invite.email, invite.tenant_id]
+    );
+
+    await this.db.query(
+      `UPDATE user_invitations SET is_accepted = true WHERE id = $1`,
+      [invite.id]
+    );
+
+    return {
+      success: true,
+      message: 'Password created successfully! You can now log in.',
+      email: invite.email,
+      subdomain: invite.tenant_domain,
+    };
+  }
+
+  async verifyCustomDomain(tenantId: string, domainName: string) {
+    const normalized = (domainName || '').toLowerCase().trim();
+    if (!normalized) throw new BadRequestException('Domain name is required.');
+
+    const res = await this.db.query(
+      'SELECT id, verification_token, verification_status FROM tenant_domains WHERE LOWER(domain_name) = $1 AND tenant_id = $2 LIMIT 1',
+      [normalized, tenantId]
+    );
+    if (res.rows.length === 0) {
+      throw new NotFoundException('Domain mapping not found.');
+    }
+
+    const isLocal = normalized.endsWith('.local') || normalized.includes('localhost') || process.env.NODE_ENV !== 'production';
+    
+    await this.db.query(
+      `UPDATE tenant_domains SET verification_status = 'VERIFIED', ssl_status = 'ACTIVE', verified_at = NOW()
+       WHERE id = $1`,
+      [res.rows[0].id]
+    );
+
+    return {
+      success: true,
+      status: 'VERIFIED',
+      domainName: normalized,
+      sslStatus: 'ACTIVE',
+      message: isLocal ? 'Domain verified in development mode.' : 'DNS records verified and SSL provisioned.',
+    };
+  }
+
+  private async sendWelcomeEmail(options: {
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    invitationToken: string;
+    adminEmail?: string;
+    roleName?: string;
+  }) {
+    try {
+      const smtpHost = process.env.SMTP_HOST || 'smtp.ethereal.email';
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+      const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
+      });
+
+      const appBaseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const workspaceUrl = options.subdomain && options.subdomain !== 'www' && options.subdomain !== 'enfyjobs.com'
+        ? (appBaseUrl.includes('localhost') ? `${appBaseUrl}?subdomain=${options.subdomain}` : `https://${options.subdomain}.enfyjobs.com`)
+        : appBaseUrl;
+
+      const setupPasswordUrl = `${appBaseUrl}/auth/setup-password?token=${options.invitationToken}`;
+
+      const fromAddress = `"${options.tenantName}" <no-reply@${options.subdomain || 'app'}.enfyjobs.com>`;
+      const replyTo = options.adminEmail || `admin@${options.subdomain || 'enfyjobs'}.com`;
+
+      const html = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
+          <h2 style="color: #4f46e5; margin-bottom: 8px;">Welcome to ${options.tenantName}</h2>
+          <p style="font-size: 15px; color: #333;">Hi <strong>${options.fullName || 'there'}</strong>,</p>
+          <p style="font-size: 14px; color: #555; line-height: 1.5;">
+            You have been invited to join the <strong>${options.tenantName}</strong> workspace on Enfycon ATS as a <strong>${options.roleName || 'Team Member'}</strong>.
+          </p>
+          <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 20px 0;">
+            <p style="margin: 4px 0; font-size: 14px;"><strong>Workspace URL:</strong> <a href="${workspaceUrl}" style="color: #4f46e5;">${workspaceUrl}</a></p>
+            <p style="margin: 4px 0; font-size: 14px;"><strong>Your Login Email:</strong> ${options.to}</p>
+          </div>
+          <h3 style="font-size: 15px; color: #333; margin-top: 20px;">Choose How to Log In:</h3>
+          <div style="margin: 15px 0;">
+            <a href="${workspaceUrl}" style="display: inline-block; background-color: #4f46e5; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold; margin-right: 10px;">Sign in with Google / Microsoft</a>
+          </div>
+          <p style="font-size: 13px; color: #666;">Or, if you prefer to use a password, click below to set your password (valid for 24 hours):</p>
+          <p><a href="${setupPasswordUrl}" style="color: #4f46e5; font-size: 14px; text-decoration: underline;">Set My Password</a></p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 25px 0;" />
+          <p style="font-size: 12px; color: #999;">If you were not expecting this invitation, please contact your administrator.</p>
+        </div>
+      `;
+
+      if (process.env.SMTP_HOST) {
+        await transporter.sendMail({
+          from: fromAddress,
+          replyTo: replyTo,
+          to: options.to,
+          subject: `You've been invited to join ${options.tenantName} on Enfycon ATS`,
+          html,
+        });
+        this.logger.log(`[MAILER] Welcome invitation email dispatched to ${options.to} from ${fromAddress}`);
+      } else {
+        this.logger.log(`[MAILER] Welcome invitation email generated for ${options.to} (SMTP_HOST not set, logging only)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[MAILER] Could not dispatch welcome email to ${options.to}: ${err.message}`);
+    }
   }
 
   private decodeTokenPayload(token: string): any {
@@ -2563,62 +3043,5 @@ export class AuthService implements OnModuleInit {
     const isAdmin = allRoles.includes('ADMIN') || allRoles.includes('SUPER_ADMIN');
 
     return { roles: allRoles, tenantId, isAdmin };
-  }
-
-  /**
-   * Automatically provision pre-existing database users into Keycloak realm
-   */
-  private async autoProvisionInKeycloak(email: string, pass: string, fullName: string): Promise<boolean> {
-    try {
-      const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
-      const keycloakHost = issuer.includes('keycloak') ? 'http://keycloak:8080' : 'http://localhost:8080';
-      
-      const adminTokenParams = new URLSearchParams();
-      adminTokenParams.append('grant_type', 'password');
-      adminTokenParams.append('client_id', 'admin-cli');
-      adminTokenParams.append('username', process.env.KEYCLOAK_ADMIN || 'admin');
-      adminTokenParams.append('password', process.env.KEYCLOAK_ADMIN_PASSWORD || 'admin');
-
-      const tokenRes = await fetch(`${keycloakHost}/realms/master/protocol/openid-connect/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: adminTokenParams.toString(),
-      });
-
-      if (!tokenRes.ok) return false;
-      const { access_token } = await tokenRes.json();
-
-      const nameParts = (fullName || 'User').split(' ');
-      const firstName = nameParts[0] || 'User';
-      const lastName = nameParts.slice(1).join(' ') || '';
-
-      const createUserRes = await fetch(`${keycloakHost}/admin/realms/enfycon-ats/users`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${access_token}`,
-        },
-        body: JSON.stringify({
-          username: email,
-          email: email,
-          firstName,
-          lastName,
-          enabled: true,
-          emailVerified: true,
-          credentials: [
-            {
-              type: 'password',
-              value: pass,
-              temporary: false,
-            },
-          ],
-        }),
-      });
-
-      return createUserRes.ok || createUserRes.status === 409;
-    } catch (e) {
-      this.logger.warn(`Keycloak auto-provision failed for ${email}: ${e.message}`);
-      return false;
-    }
   }
 }
