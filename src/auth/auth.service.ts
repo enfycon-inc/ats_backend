@@ -22,8 +22,8 @@ import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
-// Token TTL: 8 hours for mock (matches a typical work day)
-const TOKEN_TTL_SECONDS = 60 * 60 * 8;
+// Token TTL: 7 days (enterprise standard rolling window)
+const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +61,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async onModuleInit() {
     await this.ensureUsersTable();
+    
     
     // Sync active tenants with new system permissions
     try {
