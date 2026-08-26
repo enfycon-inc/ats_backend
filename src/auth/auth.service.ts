@@ -837,13 +837,14 @@ export class AuthService implements OnModuleInit {
       });
     }
 
+    const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
     return {
       message: 'Company registered successfully! Your account is pending platform administrator approval. You will be notified once approved.',
       tenant: {
         id: tenant.id,
         name: tenant.name,
         subdomain: tenant.domain,
-        workspaceUrl: `${tenant.domain}.enfycon.com`,
+        workspaceUrl: `${tenant.domain}.${baseDomain}`,
         status: tenant.status,
       },
       user: {
@@ -2966,14 +2967,15 @@ export class AuthService implements OnModuleInit {
       });
 
       const appBaseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-      const workspaceUrl = options.subdomain && options.subdomain !== 'www' && options.subdomain !== 'enfyjobs.com'
-        ? (appBaseUrl.includes('localhost') ? `${appBaseUrl}?subdomain=${options.subdomain}` : `https://${options.subdomain}.enfyjobs.com`)
+      const baseDomain = process.env.BASE_DOMAIN || (appBaseUrl.includes('localhost') ? 'localhost:3000' : 'enfyjobs.com');
+      const workspaceUrl = options.subdomain && options.subdomain !== 'www' && options.subdomain !== baseDomain
+        ? (appBaseUrl.includes('localhost') ? `${appBaseUrl}?subdomain=${options.subdomain}` : `https://${options.subdomain}.${baseDomain}`)
         : appBaseUrl;
 
       const setupPasswordUrl = `${appBaseUrl}/auth/setup-password?token=${options.invitationToken}`;
 
-      const fromAddress = `"${options.tenantName}" <no-reply@${options.subdomain || 'app'}.enfyjobs.com>`;
-      const replyTo = options.adminEmail || `admin@${options.subdomain || 'enfyjobs'}.com`;
+      const fromAddress = `"${options.tenantName}" <no-reply@${options.subdomain || 'app'}.${baseDomain}>`;
+      const replyTo = options.adminEmail || `admin@${options.subdomain || baseDomain.split('.')[0]}.${baseDomain}`;
 
       const html = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;">
