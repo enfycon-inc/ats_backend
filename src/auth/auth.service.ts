@@ -318,20 +318,20 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    // Validate subdomain context
+    // Validate subdomain / custom domain context
     const isSuperAdmin = user.roles && user.roles.includes('SUPER_ADMIN');
-    if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
+    if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
       throw new UnauthorizedException('Super Administrators can only log in from the main domain.');
     }
 
-    if (!isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
-      const cleanSubdomain = dto.subdomain.trim().toLowerCase();
+    if (!isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
+      const cleanSubdomain = dto.subdomain.split(':')[0].replace(/^https?:\/\//, '').trim().toLowerCase();
       const domainMapping = await this.db.query(
-        `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(TRIM(domain_name)) = $1 OR LOWER(TRIM(domain_name)) = $2
          UNION
-         SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1
+         SELECT id as tenant_id FROM tenants WHERE LOWER(TRIM(domain)) = $1 OR LOWER(TRIM(domain || '.enfyjobs.com')) = $1
          LIMIT 1`,
-        [cleanSubdomain]
+        [cleanSubdomain, cleanSubdomain.replace(/^www\./, '')]
       );
       if (domainMapping.rows.length > 0) {
         const mappedTenantId = domainMapping.rows[0].tenant_id;
@@ -339,7 +339,18 @@ export class AuthService implements OnModuleInit {
           throw new UnauthorizedException('User does not belong to this company workspace.');
         }
       } else {
-        throw new UnauthorizedException('Workspace not found.');
+        // Fallback: Check if cleanSubdomain matches the user tenant's slug
+        const userTenant = await this.db.query('SELECT domain FROM tenants WHERE id = $1', [user.tenant_id]);
+        if (userTenant.rows.length > 0) {
+          const tenantSlug = (userTenant.rows[0].domain || '').toLowerCase().trim();
+          if (cleanSubdomain === tenantSlug || cleanSubdomain === `${tenantSlug}.enfyjobs.com` || cleanSubdomain.startsWith(tenantSlug)) {
+            // Valid match
+          } else {
+            throw new UnauthorizedException('Workspace not found.');
+          }
+        } else {
+          throw new UnauthorizedException('Workspace not found.');
+        }
       }
     }
 
@@ -2587,19 +2598,17 @@ export class AuthService implements OnModuleInit {
 
     // Resolve tenant ID context
     let targetTenantId = DEFAULT_TENANT_ID;
-    if (dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com') {
-      const cleanSub = dto.subdomain.trim().toLowerCase();
+    if (dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
+      const cleanSub = dto.subdomain.split(':')[0].replace(/^https?:\/\//, '').trim().toLowerCase();
       const domainMapping = await this.db.query(
-        `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(TRIM(domain_name)) = $1 OR LOWER(TRIM(domain_name)) = $2
          UNION
-         SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1
+         SELECT id as tenant_id FROM tenants WHERE LOWER(TRIM(domain)) = $1 OR LOWER(TRIM(domain || '.enfyjobs.com')) = $1
          LIMIT 1`,
-        [cleanSub]
+        [cleanSub, cleanSub.replace(/^www\./, '')]
       );
       if (domainMapping.rows.length > 0) {
         targetTenantId = domainMapping.rows[0].tenant_id;
-      } else {
-        throw new UnauthorizedException('Workspace not found.');
       }
     }
 
