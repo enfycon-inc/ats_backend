@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
+import * as dns from 'dns/promises';
 import axios from 'axios';
 import { DatabaseService } from '../database/database.service';
 import { LoginDto } from './dtos/login.dto';
@@ -2358,8 +2359,14 @@ export class AuthService implements OnModuleInit {
   async getTenantDomains(tenantId: string) {
     const res = await this.db.query(
       `SELECT id, domain_name, is_primary, 
-              COALESCE(verification_status, 'VERIFIED') as verification_status, 
-              COALESCE(ssl_status, 'ACTIVE') as ssl_status, 
+              CASE 
+                WHEN is_primary = TRUE THEN 'VERIFIED'
+                ELSE COALESCE(verification_status, 'PENDING')
+              END as verification_status, 
+              CASE 
+                WHEN is_primary = TRUE THEN 'ACTIVE'
+                ELSE COALESCE(ssl_status, 'PENDING')
+              END as ssl_status, 
               created_at 
        FROM tenant_domains 
        WHERE tenant_id = $1 
@@ -2385,9 +2392,9 @@ export class AuthService implements OnModuleInit {
     }
 
     const res = await this.db.query(
-      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
-       VALUES ($1, $2, FALSE)
-       RETURNING id, domain_name, is_primary, created_at`,
+      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary, verification_status, ssl_status)
+       VALUES ($1, $2, FALSE, 'PENDING', 'PENDING')
+       RETURNING id, domain_name, is_primary, verification_status, ssl_status, created_at`,
       [tenantId, normalizedDomain]
     );
     return res.rows[0];
@@ -2966,8 +2973,74 @@ export class AuthService implements OnModuleInit {
       throw new NotFoundException('Domain mapping not found.');
     }
 
-    const isLocal = normalized.endsWith('.local') || normalized.includes('localhost') || process.env.NODE_ENV !== 'production';
-    
+    const isLocal = normalized.endsWith('.local') || normalized.includes('localhost') || (process.env.NODE_ENV !== 'production' && !normalized.includes('.'));
+    if (isLocal) {
+      await this.db.query(
+        `UPDATE tenant_domains SET verification_status = 'VERIFIED', ssl_status = 'ACTIVE', verified_at = NOW()
+         WHERE id = $1`,
+        [res.rows[0].id]
+      );
+      return {
+        success: true,
+        verified: true,
+        status: 'VERIFIED',
+        domainName: normalized,
+        sslStatus: 'ACTIVE',
+        message: 'Domain verified in development mode.',
+      };
+    }
+
+    // Authoritative DNS verification using Google (8.8.8.8) and Cloudflare (1.1.1.1) DNS servers
+    const resolver = new dns.Resolver();
+    resolver.setServers(['8.8.8.8', '1.1.1.1']);
+
+    let dnsMatched = false;
+    let matchDetail = '';
+
+    // 1. Check CNAME record
+    try {
+      const cnames = await resolver.resolveCname(normalized);
+      this.logger.log(`DNS check CNAME for ${normalized}: ${JSON.stringify(cnames)}`);
+      const baseDomain = (process.env.BASE_DOMAIN || 'enfyjobs.com').toLowerCase();
+      const validCname = cnames.some(c => {
+        const cleanC = c.toLowerCase().replace(/\.$/, '');
+        return cleanC.endsWith(baseDomain) || cleanC === baseDomain;
+      });
+      if (validCname) {
+        dnsMatched = true;
+        matchDetail = `CNAME points to ${cnames.join(', ')}`;
+      }
+    } catch (e: any) {
+      this.logger.debug(`CNAME resolution not found for ${normalized}: ${e.message}`);
+    }
+
+    // 2. Check A record (IPv4)
+    if (!dnsMatched) {
+      try {
+        const aRecords = await resolver.resolve4(normalized);
+        this.logger.log(`DNS check A records for ${normalized}: ${JSON.stringify(aRecords)}`);
+        const serverIp = process.env.VPS_IP || '13.55.100.200';
+        if (aRecords.includes(serverIp)) {
+          dnsMatched = true;
+          matchDetail = `A record points to server IP ${serverIp}`;
+        }
+      } catch (e: any) {
+        this.logger.debug(`A record resolution not found for ${normalized}: ${e.message}`);
+      }
+    }
+
+    if (!dnsMatched) {
+      return {
+        success: false,
+        verified: false,
+        status: 'PENDING',
+        domainName: normalized,
+        sslStatus: 'PENDING',
+        message: `DNS records not detected yet for ${normalized}. Please ensure your CNAME points to enfyjobs.com (or an A record points to 13.55.100.200). Note that DNS propagation can take a few minutes.`,
+      };
+    }
+
+    // Mark as VERIFIED and SSL ACTIVE
     await this.db.query(
       `UPDATE tenant_domains SET verification_status = 'VERIFIED', ssl_status = 'ACTIVE', verified_at = NOW()
        WHERE id = $1`,
@@ -2980,7 +3053,7 @@ export class AuthService implements OnModuleInit {
       status: 'VERIFIED',
       domainName: normalized,
       sslStatus: 'ACTIVE',
-      message: isLocal ? 'Domain verified in development mode.' : 'DNS records verified and SSL provisioned.',
+      message: `DNS verified successfully (${matchDetail}) and SSL is active!`,
     };
   }
 
