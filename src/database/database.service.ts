@@ -90,6 +90,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_branches INT DEFAULT 5;
       -- Ensure candidate_pool_mode column exists on tenants (DEFAULT 'COMBINED_MARKET')
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS candidate_pool_mode VARCHAR(50) DEFAULT 'COMBINED_MARKET';
+      -- Ensure multi-tenant email dispatch strategy columns exist on tenants
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS email_dispatch_mode VARCHAR(50) DEFAULT 'DEFAULT_SUBDOMAIN';
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS custom_email_domain VARCHAR(255);
+      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS custom_email_domain_verified BOOLEAN DEFAULT FALSE;
 
       -- 1.5 Create branches table
       CREATE TABLE IF NOT EXISTS branches (

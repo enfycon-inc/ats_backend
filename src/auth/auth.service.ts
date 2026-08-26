@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
+import axios from 'axios';
 import { DatabaseService } from '../database/database.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
@@ -724,6 +725,7 @@ export class AuthService implements OnModuleInit {
             fullName,
             tenantName,
             subdomain: tenantDomain,
+            tenantId,
             temporaryPassword: password,
             roleName: role,
           });
@@ -3045,25 +3047,11 @@ export class AuthService implements OnModuleInit {
     fullName: string;
     tenantName: string;
     subdomain: string;
+    tenantId?: string;
     temporaryPassword?: string;
     roleName?: string;
   }) {
     try {
-      const smtpHost = process.env.SMTP_HOST || 'smtp.ethereal.email';
-      const smtpUser = process.env.SMTP_USER;
-      const smtpPass = process.env.SMTP_PASS;
-      const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
-
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
-        tls: {
-          rejectUnauthorized: false,
-        },
-      });
-
       const appBaseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
       const baseDomain = process.env.BASE_DOMAIN || (appBaseUrl.includes('localhost') ? 'localhost:3000' : 'enfyjobs.com');
       const isSubdomainTenant = options.subdomain && options.subdomain !== 'www' && options.subdomain !== 'enfy' && options.subdomain !== baseDomain;
@@ -3073,6 +3061,7 @@ export class AuthService implements OnModuleInit {
 
       const fromAddress = `"${options.tenantName}" <no-reply@${options.subdomain || 'app'}.${baseDomain}>`;
       const replyTo = `admin@${options.subdomain || baseDomain.split('.')[0]}.${baseDomain}`;
+      const subject = `Welcome to ${options.tenantName} — Your Account Credentials & Login Guide`;
 
       const html = `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
@@ -3115,20 +3104,90 @@ export class AuthService implements OnModuleInit {
         </div>
       `;
 
+      // Check if tenant has connected a direct email account (Model 1: BYOE)
+      if (options.tenantId) {
+        const accRes = await this.db.query(
+          `SELECT id, provider, email_address, access_token, refresh_token, smtp_host, smtp_port, password, require_ssl
+           FROM mass_mail.email_accounts 
+           WHERE tenant_id = $1 AND is_active = true 
+           ORDER BY is_default DESC, created_at DESC LIMIT 1`,
+          [options.tenantId]
+        );
+
+        if (accRes.rows.length > 0) {
+          const acc = accRes.rows[0];
+          if (acc.provider === 'microsoft' && acc.access_token) {
+            try {
+              const payload = {
+                message: {
+                  subject,
+                  body: { contentType: 'HTML', content: html },
+                  toRecipients: [{ emailAddress: { address: options.to } }],
+                },
+                saveToSentItems: 'true',
+              };
+              await axios.post('https://graph.microsoft.com/v1.0/me/sendMail', payload, {
+                headers: { Authorization: `Bearer ${acc.access_token}`, 'Content-Type': 'application/json' },
+              });
+              this.logger.log(`[AUTH_MAILER] Dispatched welcome credentials email via Tenant Microsoft 365 (${acc.email_address}) to ${options.to}`);
+              return;
+            } catch (graphErr: any) {
+              this.logger.warn(`[AUTH_MAILER] Direct Microsoft dispatch failed (${graphErr.message}), falling back to SMTP relay.`);
+            }
+          } else if (acc.provider === 'smtp' && acc.smtp_host) {
+            try {
+              const customTransporter = nodemailer.createTransport({
+                host: acc.smtp_host,
+                port: acc.smtp_port || 587,
+                secure: acc.require_ssl || acc.smtp_port === 465,
+                auth: { user: acc.email_address, pass: acc.password },
+                tls: { rejectUnauthorized: false },
+              });
+              await customTransporter.sendMail({
+                from: `"${options.tenantName}" <${acc.email_address}>`,
+                to: options.to,
+                subject,
+                html,
+              });
+              this.logger.log(`[AUTH_MAILER] Dispatched welcome credentials email via Tenant SMTP (${acc.email_address}) to ${options.to}`);
+              return;
+            } catch (smtpErr: any) {
+              this.logger.warn(`[AUTH_MAILER] Direct SMTP dispatch failed (${smtpErr.message}), falling back to default relay.`);
+            }
+          }
+        }
+      }
+
+      // Default / Fallback: Platform SMTP Relay
+      const smtpHost = process.env.SMTP_HOST || 'smtp.ethereal.email';
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+      const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
+        tls: {
+          rejectUnauthorized: false,
+        },
+      });
+
       if (process.env.SMTP_HOST) {
         await transporter.sendMail({
           from: process.env.SMTP_FROM || fromAddress,
           replyTo: replyTo,
           to: options.to,
-          subject: `Welcome to ${options.tenantName} — Your Account Credentials & Login Guide`,
+          subject,
           html,
         });
-        this.logger.log(`[MAILER] Member credentials email dispatched to ${options.to} from ${process.env.SMTP_FROM || fromAddress}`);
+        this.logger.log(`[AUTH_MAILER] Member credentials email dispatched to ${options.to} from ${process.env.SMTP_FROM || fromAddress}`);
       } else {
-        this.logger.log(`[MAILER] Member credentials email generated for ${options.to} (SMTP_HOST not set, logging only)`);
+        this.logger.log(`[AUTH_MAILER] Member credentials email generated for ${options.to} (SMTP_HOST not set, logging only)`);
       }
     } catch (err: any) {
-      this.logger.warn(`[MAILER] Could not dispatch member credentials email to ${options.to}: ${err.message}`);
+      this.logger.warn(`[AUTH_MAILER] Could not dispatch member credentials email to ${options.to}: ${err.message}`);
     }
   }
 

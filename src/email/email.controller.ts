@@ -140,16 +140,67 @@ export class EmailController {
     return this.emailService.getDeliverySettings(tid, branchId || user.branchId);
   }
 
-  @Post('delivery-settings')
-  async saveDeliverySettings(
-    @Body() dto: { branchId?: string; ratePerMinute?: number; ratePerHour?: number; randomizeDelay?: boolean },
+  @Get('tenant-settings')
+  async getTenantEmailSettings(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.emailService.saveDeliverySettings(tid, {
-      ...dto,
-      branchId: dto.branchId || user.branchId
+    return this.emailService.getTenantEmailSettings(tid);
+  }
+
+  @Post('tenant-settings/mode')
+  async setTenantEmailMode(
+    @Body() dto: { mode: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.setTenantEmailMode(tid, dto.mode);
+  }
+
+  @Post('tenant-settings/custom-domain')
+  async setTenantCustomDomain(
+    @Body() dto: { customDomain: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.setTenantCustomDomain(tid, dto.customDomain);
+  }
+
+  @Post('tenant-settings/verify-domain')
+  async verifyTenantCustomDomain(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    return this.emailService.verifyTenantCustomDomain(tid);
+  }
+
+  @Post('tenant-settings/test-email')
+  async sendTestTenantEmail(
+    @Body() dto: { recipientEmail?: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    const targetEmail = dto.recipientEmail || user.email;
+    return this.emailService.sendTenantEmail({
+      tenantId: tid,
+      to: targetEmail,
+      subject: `EnfySync ATS — Test Email Configuration Verification`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 550px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+          <h3 style="color: #4f46e5; margin-top: 0;">✅ Email Strategy Verified</h3>
+          <p style="color: #334155; font-size: 14px;">
+            This test email confirms that your workspace email dispatch strategy is configured and working properly!
+          </p>
+          <p style="color: #64748b; font-size: 12px; margin-top: 20px;">
+            Sent by EnfySync ATS Multi-Tenant Delivery Engine.
+          </p>
+        </div>
+      `,
     });
   }
 }
