@@ -81,30 +81,6 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.refreshKeycloakToken(refreshToken);
   }
 
-  // ─── GET /api/auth/me ───────────────────────────────────────
-  @Get('me')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get current authenticated user profile and tenant details' })
-  async getMe(@CurrentUser() user: AuthUser) {
-    return {
-      user: {
-        id: user.dbId || user.id,
-        fullName: user.fullName || user.username,
-        email: user.email,
-        roles: user.roles,
-        permissions: user.permissions,
-        systemRole: user.systemRole,
-        tenantId: user.tenantId,
-        tenantDomain: user.tenantDomain,
-        defaultMarket: user.defaultMarket,
-        branchId: user.branchId,
-        branchName: user.branchName,
-        podId: user.podId,
-      }
-    };
-  }
-
   // ─── POST /api/auth/register ────────────────────────────────
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
