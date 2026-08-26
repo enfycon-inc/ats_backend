@@ -2963,7 +2963,11 @@ export class AuthService implements OnModuleInit {
       const transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
+        secure: smtpPort === 465,
         auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
+        tls: {
+          rejectUnauthorized: false,
+        },
       });
 
       const appBaseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -3001,13 +3005,13 @@ export class AuthService implements OnModuleInit {
 
       if (process.env.SMTP_HOST) {
         await transporter.sendMail({
-          from: fromAddress,
+          from: process.env.SMTP_FROM || fromAddress,
           replyTo: replyTo,
           to: options.to,
           subject: `You've been invited to join ${options.tenantName} on Enfycon ATS`,
           html,
         });
-        this.logger.log(`[MAILER] Welcome invitation email dispatched to ${options.to} from ${fromAddress}`);
+        this.logger.log(`[MAILER] Welcome invitation email dispatched to ${options.to} from ${process.env.SMTP_FROM || fromAddress}`);
       } else {
         this.logger.log(`[MAILER] Welcome invitation email generated for ${options.to} (SMTP_HOST not set, logging only)`);
       }
