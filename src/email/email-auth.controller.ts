@@ -59,12 +59,21 @@ export class EmailAuthController {
   @Get('microsoft')
   microsoftAuthInit(@Query('returnTo') returnTo: string, @Query('tenantId') tenantId: string, @Query('userId') userId: string, @Res() res: Response) {
     const clientId = process.env.MICROSOFT_CLIENT_ID;
-    const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+    const defaultApiUrl = process.env.BACKEND_PUBLIC_URL || process.env.API_BASE_URL || 'https://api.enfyjobs.com';
+    const redirectUri = process.env.MICROSOFT_REDIRECT_URI || `${defaultApiUrl}/api/v1/auth/callback/microsoft`;
+    
+    if (!clientId) {
+      this.logger.warn('MICROSOFT_CLIENT_ID is not configured in backend environment.');
+      const fallback = returnTo || '/company';
+      const joiner = fallback.includes('?') ? '&' : '?';
+      return res.redirect(`${fallback}${joiner}error=microsoft_client_id_missing`);
+    }
+
     const scope = encodeURIComponent('offline_access Mail.Send User.Read');
     const defaultTenantId = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
-    const stateObj = { returnTo: returnTo || '/email', tenantId: tenantId || defaultTenantId, userId: userId || null };
+    const stateObj = { returnTo: returnTo || '/company', tenantId: tenantId || defaultTenantId, userId: userId || null };
     const state = encodeURIComponent(JSON.stringify(stateObj));
-    const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&state=${state}`;
+    const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}`;
     res.redirect(authUrl);
   }
 
