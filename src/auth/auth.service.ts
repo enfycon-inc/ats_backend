@@ -3030,6 +3030,11 @@ export class AuthService implements OnModuleInit {
     }
 
     if (!dnsMatched) {
+      await this.db.query(
+        `UPDATE tenant_domains SET verification_status = 'PENDING', ssl_status = 'PENDING'
+         WHERE id = $1`,
+        [res.rows[0].id]
+      );
       return {
         success: false,
         verified: false,
