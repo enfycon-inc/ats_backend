@@ -713,6 +713,26 @@ export class AuthService implements OnModuleInit {
       });
     }
 
+    // Dispatch welcome email with credentials and login guide
+    if (dto.sendEmailInvite !== false) {
+      this.db.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId])
+        .then((tRes) => {
+          const tenantName = tRes.rows[0]?.name || 'Enfycon Workspace';
+          const tenantDomain = tRes.rows[0]?.domain || '';
+          return this.sendMemberCredentialsEmail({
+            to: email,
+            fullName,
+            tenantName,
+            subdomain: tenantDomain,
+            temporaryPassword: password,
+            roleName: role,
+          });
+        })
+        .catch((err) => {
+          this.logger.warn(`Failed to dispatch member credentials email to ${email}: ${err.message}`);
+        });
+    }
+
     return {
       message: isApproved 
         ? 'User registered and approved successfully.'
@@ -3017,6 +3037,98 @@ export class AuthService implements OnModuleInit {
       }
     } catch (err: any) {
       this.logger.warn(`[MAILER] Could not dispatch welcome email to ${options.to}: ${err.message}`);
+    }
+  }
+
+  private async sendMemberCredentialsEmail(options: {
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    temporaryPassword?: string;
+    roleName?: string;
+  }) {
+    try {
+      const smtpHost = process.env.SMTP_HOST || 'smtp.ethereal.email';
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASS;
+      const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
+        tls: {
+          rejectUnauthorized: false,
+        },
+      });
+
+      const appBaseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const baseDomain = process.env.BASE_DOMAIN || (appBaseUrl.includes('localhost') ? 'localhost:3000' : 'enfyjobs.com');
+      const isSubdomainTenant = options.subdomain && options.subdomain !== 'www' && options.subdomain !== 'enfy' && options.subdomain !== baseDomain;
+      const workspaceLoginUrl = isSubdomainTenant
+        ? (appBaseUrl.includes('localhost') ? `${appBaseUrl}?subdomain=${options.subdomain}` : `https://${options.subdomain}.${baseDomain}/auth/login`)
+        : (appBaseUrl.includes('localhost') ? `${appBaseUrl}/auth/login` : `https://${baseDomain}/auth/login`);
+
+      const fromAddress = `"${options.tenantName}" <no-reply@${options.subdomain || 'app'}.${baseDomain}>`;
+      const replyTo = `admin@${options.subdomain || baseDomain.split('.')[0]}.${baseDomain}`;
+
+      const html = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h2 style="color: #4f46e5; margin: 0 0 6px 0; font-size: 24px;">Welcome to ${options.tenantName}</h2>
+            <p style="color: #64748b; font-size: 14px; margin: 0;">Your EnfySync ATS Workspace Account is Ready</p>
+          </div>
+          
+          <p style="font-size: 15px; color: #1e293b;">Hi <strong>${options.fullName || 'there'}</strong>,</p>
+          <p style="font-size: 14px; color: #475569; line-height: 1.6;">
+            Your account has been created for the <strong>${options.tenantName}</strong> ATS workspace as a <strong>${options.roleName || 'Team Member'}</strong>.
+          </p>
+
+          <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
+            <h4 style="margin: 0 0 12px 0; color: #334155; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">🔐 Your Login Credentials</h4>
+            <p style="margin: 6px 0; font-size: 14px; color: #334155;"><strong>Workspace URL:</strong> <a href="${workspaceLoginUrl}" style="color: #4f46e5; font-weight: 600;">${workspaceLoginUrl}</a></p>
+            <p style="margin: 6px 0; font-size: 14px; color: #334155;"><strong>Username / Email:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">${options.to}</span></p>
+            ${options.temporaryPassword ? `<p style="margin: 6px 0; font-size: 14px; color: #334155;"><strong>Password:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-weight: bold; color: #0f172a;">${options.temporaryPassword}</span></p>` : ''}
+          </div>
+
+          <div style="text-align: center; margin: 28px 0;">
+            <a href="${workspaceLoginUrl}" style="display: inline-block; background-color: #4f46e5; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);">
+              Sign In to Your Workspace &rarr;
+            </a>
+          </div>
+
+          <div style="border-top: 1px solid #e2e8f0; padding-top: 16px; margin-top: 24px;">
+            <h4 style="margin: 0 0 8px 0; color: #334155; font-size: 13px;">📋 Quick Login Guide:</h4>
+            <ol style="font-size: 13px; color: #64748b; line-height: 1.6; padding-left: 18px; margin: 0;">
+              <li>Click the button above or navigate to <a href="${workspaceLoginUrl}" style="color: #4f46e5;">${workspaceLoginUrl}</a></li>
+              <li>Enter your email (<strong style="color: #1e293b;">${options.to}</strong>) and password</li>
+              <li>Or simply click <strong style="color: #1e293b;">Sign in with Microsoft / Google</strong> to access with corporate SSO.</li>
+            </ol>
+          </div>
+
+          <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 24px 0 16px 0;" />
+          <p style="font-size: 11px; color: #94a3b8; text-align: center; margin: 0;">
+            EnfySync AI Recruitment Platform &bull; ${options.tenantName}
+          </p>
+        </div>
+      `;
+
+      if (process.env.SMTP_HOST) {
+        await transporter.sendMail({
+          from: process.env.SMTP_FROM || fromAddress,
+          replyTo: replyTo,
+          to: options.to,
+          subject: `Welcome to ${options.tenantName} — Your Account Credentials & Login Guide`,
+          html,
+        });
+        this.logger.log(`[MAILER] Member credentials email dispatched to ${options.to} from ${process.env.SMTP_FROM || fromAddress}`);
+      } else {
+        this.logger.log(`[MAILER] Member credentials email generated for ${options.to} (SMTP_HOST not set, logging only)`);
+      }
+    } catch (err: any) {
+      this.logger.warn(`[MAILER] Could not dispatch member credentials email to ${options.to}: ${err.message}`);
     }
   }
 

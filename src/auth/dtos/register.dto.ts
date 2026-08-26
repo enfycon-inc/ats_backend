@@ -41,4 +41,10 @@ export class RegisterDto {
     description: 'Auto-approve user (for direct tenant admin registration)',
   })
   isApproved?: boolean;
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Whether to dispatch welcome email with credentials and login guide',
+  })
+  sendEmailInvite?: boolean;
 }
