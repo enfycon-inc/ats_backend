@@ -16,4 +16,4 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           repository: enfycon-inc/ATS_DOCKERREPO
           event-type: microservice-updated
-          client-payload: '{\"repo\": \"${{ github.repository }}\", \"commit\": \"${{ github.event.head_commit.message }}\", \"author\": \"${{ github.actor }}\"}' 
+          client-payload: '{"repo": "${{ github.repository }}", "commit": "${{ github.event.head_commit.message }}", "author": "${{ github.actor }}"}' 
