@@ -2357,7 +2357,13 @@ export class AuthService implements OnModuleInit {
   // ─── Custom Domain Helpers ────────────────────────────────────
   async getTenantDomains(tenantId: string) {
     const res = await this.db.query(
-      'SELECT id, domain_name, is_primary, created_at FROM tenant_domains WHERE tenant_id = $1 ORDER BY created_at ASC',
+      `SELECT id, domain_name, is_primary, 
+              COALESCE(verification_status, 'VERIFIED') as verification_status, 
+              COALESCE(ssl_status, 'ACTIVE') as ssl_status, 
+              created_at 
+       FROM tenant_domains 
+       WHERE tenant_id = $1 
+       ORDER BY created_at ASC`,
       [tenantId]
     );
     return res.rows;
@@ -2970,6 +2976,7 @@ export class AuthService implements OnModuleInit {
 
     return {
       success: true,
+      verified: true,
       status: 'VERIFIED',
       domainName: normalized,
       sslStatus: 'ACTIVE',
