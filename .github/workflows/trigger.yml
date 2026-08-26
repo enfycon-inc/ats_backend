@@ -1,0 +1,18 @@
+name: Trigger Root Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  signal_root:
+    name: Notify Root Orchestrator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger ATS_DOCKERREPO Workflow
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GH_PAT }}
+          repository: enfycon-inc/ATS_DOCKERREPO
+          event-type: microservice-updated
