@@ -45,17 +45,12 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async onModuleInit() {
     await this.ensureUsersTable();
-    
-    // Sync active tenants with new system permissions
-    try {
-      const tenantsResult = await this.db.query('SELECT id FROM tenants');
-      await Promise.all(tenantsResult.rows.map((tenant) => this.seedTenantRoles(tenant.id)));
-      this.logger.log('All tenant default roles and permissions successfully synchronized.');
-    } catch (err) {
-      this.logger.error(`Failed to synchronize tenant roles: ${err.message}`);
-    }
-
     await this.seedDefaultUsers();
+    
+    // Sync active tenants with system permissions in background to enable instant server boot
+    this.syncAllTenantRoles().catch((err) => {
+      this.logger.warn(`Background tenant role sync note: ${err.message}`);
+    });
 
     const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
     const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
@@ -72,6 +67,16 @@ export class AuthService implements OnModuleInit {
       });
     } else {
       this.logger.warn(`[BOOT] PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_PASSWORD not set in environment — skipping Keycloak Super Admin sync.`);
+    }
+  }
+
+  private async syncAllTenantRoles() {
+    try {
+      const tenantsResult = await this.db.query('SELECT id FROM tenants');
+      await Promise.all(tenantsResult.rows.map((tenant) => this.seedTenantRoles(tenant.id)));
+      this.logger.log('All tenant default roles and permissions successfully synchronized.');
+    } catch (err: any) {
+      this.logger.error(`Failed to synchronize tenant roles: ${err.message}`);
     }
   }
 

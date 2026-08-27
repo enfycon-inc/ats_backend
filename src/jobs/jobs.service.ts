@@ -126,44 +126,40 @@ export class JobsService implements OnModuleInit {
    * Expanded jobs table with all Ceipal-matching columns
    */
   private async ensureJobsTableV2() {
-    // Add new columns if they don't exist (idempotent ALTER TABLE)
-    const alterStatements = [
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS business_unit VARCHAR(255) DEFAULT 'enfysync Inc'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT ''`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT 'United States'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS client_job_id VARCHAR(100) DEFAULT 'N/A'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS recruitment_manager_id UUID`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS primary_recruiter_id UUID`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255) DEFAULT 'N/A'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS tax_terms VARCHAR(50) DEFAULT 'C2C'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS remote_job VARCHAR(20) DEFAULT 'No'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS start_date DATE`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS end_date DATE`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS hours_per_week INT DEFAULT 40`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duration VARCHAR(100) DEFAULT ''`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secondary_skills TEXT[] DEFAULT '{}'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS industry VARCHAR(100) DEFAULT ''`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS degree VARCHAR(100) DEFAULT ''`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS exp_min INT DEFAULT 0`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS exp_max INT DEFAULT 10`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT 'System'`,
-      `ALTER TABLE jobs ALTER COLUMN visa_type TYPE VARCHAR(500)`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS respond_by DATE`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT ''`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APPROVED'`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS assigned_approver_id UUID`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS assigned_approver_role VARCHAR(50)`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS approved_by UUID`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP`,
-      `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS rejection_reason TEXT`,
-    ];
-
-    for (const stmt of alterStatements) {
-      try {
-        await this.db.query(stmt);
-      } catch (err: any) {
-        this.logger.warn(`Alter table failed: ${stmt} -> ${err.message}`);
-      }
+    try {
+      await this.db.query(`
+        ALTER TABLE jobs
+          ADD COLUMN IF NOT EXISTS business_unit VARCHAR(255) DEFAULT 'enfysync Inc',
+          ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT '',
+          ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT 'United States',
+          ADD COLUMN IF NOT EXISTS client_job_id VARCHAR(100) DEFAULT 'N/A',
+          ADD COLUMN IF NOT EXISTS recruitment_manager_id UUID,
+          ADD COLUMN IF NOT EXISTS primary_recruiter_id UUID,
+          ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255) DEFAULT 'N/A',
+          ADD COLUMN IF NOT EXISTS tax_terms VARCHAR(50) DEFAULT 'C2C',
+          ADD COLUMN IF NOT EXISTS remote_job VARCHAR(20) DEFAULT 'No',
+          ADD COLUMN IF NOT EXISTS start_date DATE,
+          ADD COLUMN IF NOT EXISTS end_date DATE,
+          ADD COLUMN IF NOT EXISTS hours_per_week INT DEFAULT 40,
+          ADD COLUMN IF NOT EXISTS duration VARCHAR(100) DEFAULT '',
+          ADD COLUMN IF NOT EXISTS secondary_skills TEXT[] DEFAULT '{}',
+          ADD COLUMN IF NOT EXISTS industry VARCHAR(100) DEFAULT '',
+          ADD COLUMN IF NOT EXISTS degree VARCHAR(100) DEFAULT '',
+          ADD COLUMN IF NOT EXISTS exp_min INT DEFAULT 0,
+          ADD COLUMN IF NOT EXISTS exp_max INT DEFAULT 10,
+          ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT 'System',
+          ALTER COLUMN visa_type TYPE VARCHAR(500),
+          ADD COLUMN IF NOT EXISTS respond_by DATE,
+          ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT '',
+          ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APPROVED',
+          ADD COLUMN IF NOT EXISTS assigned_approver_id UUID,
+          ADD COLUMN IF NOT EXISTS assigned_approver_role VARCHAR(50),
+          ADD COLUMN IF NOT EXISTS approved_by UUID,
+          ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP,
+          ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+      `);
+    } catch (err: any) {
+      this.logger.debug(`Jobs schema update note: ${err.message}`);
     }
 
     // Auto-heal existing jobs created under Hydrabad Branch that have GEN- prefix

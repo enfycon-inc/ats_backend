@@ -73,16 +73,19 @@ export class RecruiterSubmissionsService implements OnModuleInit {
 
   private async ensureSubmittedRateColumn() {
     try {
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS submitted_rate VARCHAR(100)');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS meeting_link TEXT');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_remarks TEXT');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l1_interviewer VARCHAR(255)');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_remarks TEXT');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l2_interviewer VARCHAR(255)');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_remarks TEXT');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS l3_interviewer VARCHAR(255)');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT');
-      await this.db.query('ALTER TABLE recruiter_submissions ADD COLUMN IF NOT EXISTS review_feedback TEXT');
+      await this.db.query(`
+        ALTER TABLE recruiter_submissions
+          ADD COLUMN IF NOT EXISTS submitted_rate VARCHAR(100),
+          ADD COLUMN IF NOT EXISTS meeting_link TEXT,
+          ADD COLUMN IF NOT EXISTS l1_remarks TEXT,
+          ADD COLUMN IF NOT EXISTS l1_interviewer VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS l2_remarks TEXT,
+          ADD COLUMN IF NOT EXISTS l2_interviewer VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS l3_remarks TEXT,
+          ADD COLUMN IF NOT EXISTS l3_interviewer VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS pod_lead_remarks TEXT,
+          ADD COLUMN IF NOT EXISTS review_feedback TEXT;
+      `);
 
       // Tenant Custom Stage Remarks table
       await this.db.query(`
