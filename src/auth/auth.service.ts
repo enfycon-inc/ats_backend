@@ -608,6 +608,42 @@ export class AuthService implements OnModuleInit {
       }
     }
 
+    // ── MOCK MODE: re-sign a fresh JWT from the refresh token payload ──
+    if (this.provider !== 'keycloak') {
+      try {
+        const parts = refreshToken.split('.');
+        if (parts.length === 3) {
+          // Verify mock HS256 signature
+          const data = `${parts[0]}.${parts[1]}`;
+          const expectedSig = crypto
+            .createHmac('sha256', this.jwtSecret)
+            .update(data)
+            .digest('base64url');
+          if (expectedSig === parts[2]) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+            // Re-sign with a fresh 7-day expiry
+            const newToken = this.signJwt({
+              sub: payload.sub,
+              email: payload.email,
+              fullName: payload.fullName,
+              roles: payload.roles,
+              tenantId: payload.tenantId,
+              defaultMarket: payload.defaultMarket,
+              tenantDomain: payload.tenantDomain,
+              permissions: payload.permissions,
+              systemRole: payload.systemRole,
+              podId: payload.podId,
+              branchId: payload.branchId,
+            });
+            this.logger.log(`[Mock Refresh] Issued fresh token for ${payload.email}`);
+            return { accessToken: newToken, refreshToken, expiresIn: TOKEN_TTL_SECONDS };
+          }
+        }
+      } catch (e: any) {
+        this.logger.warn(`[Mock Refresh] Failed to parse refresh token: ${e.message}`);
+      }
+    }
+
     throw new UnauthorizedException('Invalid or expired refresh token.');
   }
 
