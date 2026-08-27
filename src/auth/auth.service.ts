@@ -2167,7 +2167,7 @@ export class AuthService implements OnModuleInit {
     return { accessToken, expiresIn: TOKEN_TTL_SECONDS };
   }
 
-  private verifyJwt(token: string): any {
+  verifyJwt(token: string): any {
     try {
       const parts = token.split('.');
       if (parts.length !== 3) return null;
