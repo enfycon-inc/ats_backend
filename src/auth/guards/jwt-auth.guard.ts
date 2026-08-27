@@ -51,32 +51,20 @@ export class JwtAuthGuard implements CanActivate {
   private readonly jwksCache = new Map<string, string>();
 
   constructor(private readonly authService: AuthService) {
-    this.provider = (process.env.AUTH_PROVIDER || 'mock').toLowerCase();
+    this.provider = (process.env.AUTH_PROVIDER || 'keycloak').toLowerCase();
     this.mockSecret =
       process.env.MOCK_JWT_SECRET ||
       'enfy-ats-dev-secret-change-in-prod';
 
-    if (this.provider === 'keycloak') {
-      if (!process.env.KEYCLOAK_ISSUER) {
-        throw new Error(
-          '[JwtAuthGuard] AUTH_PROVIDER=keycloak but KEYCLOAK_ISSUER is not set in .env',
-        );
-      }
-      this.logger.log(
-        `[AUTH] KEYCLOAK mode. JWKS: ${process.env.KEYCLOAK_ISSUER}/protocol/openid-connect/certs`,
-      );
-    } else {
-      this.logger.log(
-        '[AUTH] MOCK mode. POST /api/auth/login to obtain a dev token.',
-      );
-    }
+    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
+    this.logger.log(
+      `[AUTH] KEYCLOAK mode active. JWKS: ${issuer}/protocol/openid-connect/certs`,
+    );
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
-    return this.provider === 'keycloak'
-      ? this.validateKeycloakToken(request)
-      : this.validateMockToken(request);
+    return this.validateKeycloakToken(request);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
