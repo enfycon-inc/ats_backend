@@ -36,7 +36,11 @@ const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 @Injectable()
 export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
-  private readonly jwtSecret: string = process.env.JWT_SECRET || 'enfy-ats-jwt-secret';
+  private readonly jwtSecret: string =
+    process.env.AUTH_SECRET ||
+    process.env.MOCK_JWT_SECRET ||
+    process.env.JWT_SECRET ||
+    'enfy-ats-jwt-secret-secure-key';
 
   constructor(private readonly db: DatabaseService) {}
 

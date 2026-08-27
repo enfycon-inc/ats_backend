@@ -118,7 +118,11 @@ export class JwtAuthGuard implements CanActivate {
       return true;
     } else {
       // ── Internal HS256 Token ──
-      const secret = process.env.AUTH_SECRET || process.env.MOCK_JWT_SECRET || 'enfy-ats-jwt-secret-secure-key';
+      const secret =
+        process.env.AUTH_SECRET ||
+        process.env.MOCK_JWT_SECRET ||
+        process.env.JWT_SECRET ||
+        'enfy-ats-jwt-secret-secure-key';
       const data = `${parts[0]}.${parts[1]}`;
       const expectedSig = crypto.createHmac('sha256', secret).update(data).digest('base64url');
       if (parts[2] !== expectedSig) {
