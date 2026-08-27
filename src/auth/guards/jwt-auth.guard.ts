@@ -68,78 +68,6 @@ export class JwtAuthGuard implements CanActivate {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // MOCK MODE — verify HS256 JWT signed by AuthService.login()
-  // ─────────────────────────────────────────────────────────────────────────
-  private async validateMockToken(request: any): Promise<boolean> {
-    const token = this.extractBearerToken(request);
-
-    const parts = token.split('.');
-    if (parts.length !== 3) {
-      throw new UnauthorizedException('Malformed token.');
-    }
-
-    // 1. Verify HS256 signature
-    const data = `${parts[0]}.${parts[1]}`;
-    const expectedSig = crypto
-      .createHmac('sha256', this.mockSecret)
-      .update(data)
-      .digest('base64url');
-
-    if (expectedSig !== parts[2]) {
-      throw new UnauthorizedException(
-        'Token signature invalid. Please log in again.',
-      );
-    }
-
-    // 2. Decode and validate payload
-    const decoded = this.decodeBase64Json(parts[1]);
-    this.checkExpiry(decoded.exp, 'Session token');
-
-    this.logger.log(`[JwtAuthGuard] Decoded token: email=${decoded.email}, tenantId=${decoded.tenantId}`);
-
-    // 3. Fetch latest DB user profile so freshly assigned DB roles and permissions are always honored
-    let activeRoles: string[] = decoded.roles || [];
-    let tenantId = decoded.tenantId || DEFAULT_TENANT_ID;
-    let isActive = true;
-    let permissions: string[] = decoded.permissions || [];
-    if (decoded.sub) {
-      try {
-        const profile = await this.authService.getProfile(decoded.sub);
-        if (profile) {
-          if (profile.roles && profile.roles.length > 0) {
-            activeRoles = Array.from(new Set([...profile.roles, ...activeRoles]));
-          }
-          tenantId = profile.tenantId || tenantId;
-          isActive = profile.isActive !== false;
-          if (profile.permissions && profile.permissions.length > 0) {
-            permissions = profile.permissions;
-          }
-        }
-      } catch (e) {
-        // Fallback to JWT payload claims if DB fetch fails
-      }
-    }
-
-    // 4. Attach AuthUser
-    request.user = {
-      dbId: decoded.sub,
-      keycloakId: `MOCK-${decoded.sub}`,
-      email: decoded.email,
-      fullName: decoded.fullName,
-      roles: activeRoles,
-      tenantId,
-      isActive,
-      permissions,
-      podId: decoded.podId,
-      branchId: decoded.branchId,
-      businessUnitId: decoded.businessUnitId,
-      defaultMarket: decoded.defaultMarket || 'US',
-    };
-
-    return true;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
   // KEYCLOAK MODE — verify RS256 JWT using JWKS public key
   // ─────────────────────────────────────────────────────────────────────────
   private async validateKeycloakToken(request: any): Promise<boolean> {
@@ -152,10 +80,8 @@ export class JwtAuthGuard implements CanActivate {
 
     // 1. Decode header
     const header = this.decodeBase64Json(parts[0]);
-
-    // Fallback: If token was issued locally via HS256 (e.g. pre-existing tenant fallback), validate via validateMockToken
-    if (!header.kid || header.alg === 'HS256') {
-      return this.validateMockToken(request);
+    if (!header.kid) {
+      throw new UnauthorizedException('Invalid Keycloak token header: missing kid.');
     }
 
     // 2. Fetch public key (from cache or JWKS endpoint)
@@ -214,6 +140,14 @@ export class JwtAuthGuard implements CanActivate {
       tenantId: dbUser.tenant_id || DEFAULT_TENANT_ID,
       isActive: dbUser.is_active,
       permissions: dbUser.permissions || [],
+      podId: dbUser.pod_id || null,
+      branchId: dbUser.branch_id || null,
+      assignedBranchIds: dbUser.assigned_branch_ids || [],
+      branchRoles: dbUser.branch_roles || {},
+      businessUnitId: dbUser.business_unit_id || null,
+      defaultMarket: dbUser.default_market || 'US',
+      tenantDomain: dbUser.tenant_domain || '',
+      systemRole: dbUser.system_role || 'RECRUITER',
     };
 
     this.logger.debug(

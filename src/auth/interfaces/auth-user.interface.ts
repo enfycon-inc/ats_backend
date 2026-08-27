@@ -6,7 +6,7 @@
 export interface AuthUser {
   /** Internal database UUID from the `users` table */
   dbId: string;
-  /** Keycloak subject UUID (or "MOCK-{dbId}" in mock mode) */
+  /** Keycloak subject UUID */
   keycloakId: string;
   /** User's email address */
   email: string;
