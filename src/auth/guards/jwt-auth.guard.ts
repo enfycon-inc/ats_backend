@@ -39,97 +39,122 @@ export class JwtAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
-    return this.validateKeycloakToken(request);
+    return this.validateToken(request);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // KEYCLOAK MODE — verify RS256 JWT using JWKS public key
+  // Token verification (Supports Keycloak RS256 JWKS and Internal tokens)
   // ─────────────────────────────────────────────────────────────────────────
-  private async validateKeycloakToken(request: any): Promise<boolean> {
+  private async validateToken(request: any): Promise<boolean> {
     const token = this.extractBearerToken(request);
 
     const parts = token.split('.');
     if (parts.length !== 3) {
-      throw new UnauthorizedException('Malformed Keycloak token.');
+      throw new UnauthorizedException('Malformed token.');
     }
 
-    // 1. Decode header
     const header = this.decodeBase64Json(parts[0]);
-    if (!header.kid) {
-      throw new UnauthorizedException('Invalid Keycloak token header: missing kid.');
-    }
 
-    // 2. Fetch public key (from cache or JWKS endpoint)
-    const publicKey = await this.getPublicKey(header.kid);
+    if (header.kid) {
+      // ── Keycloak RS256 token ──
+      const publicKey = await this.getPublicKey(header.kid);
+      const data = `${parts[0]}.${parts[1]}`;
+      const signature = Buffer.from(parts[2], 'base64url');
+      const verify = crypto.createVerify('RSA-SHA256');
+      verify.update(data);
+      if (!verify.verify(publicKey, signature)) {
+        throw new UnauthorizedException('Keycloak token signature invalid.');
+      }
 
-    // 3. Verify RSA-SHA256 signature
-    const data = `${parts[0]}.${parts[1]}`;
-    const signature = Buffer.from(parts[2], 'base64url');
-    const verify = crypto.createVerify('RSA-SHA256');
-    verify.update(data);
-    if (!verify.verify(publicKey, signature)) {
-      throw new UnauthorizedException('Keycloak token signature invalid.');
-    }
+      const decoded = this.decodeBase64Json(parts[1]);
+      this.checkExpiry(decoded.exp, 'Keycloak token');
 
-    // 4. Decode payload and check expiry
-    const decoded = this.decodeBase64Json(parts[1]);
-    this.checkExpiry(decoded.exp, 'Keycloak token');
+      const realmRoles: string[] = decoded.realm_access?.roles || [];
+      const clientRoles: string[] = [];
+      if (decoded.resource_access) {
+        Object.values(decoded.resource_access).forEach((client: any) => {
+          if (client?.roles) clientRoles.push(...client.roles);
+        });
+      }
+      const groupRoles: string[] = decoded.groups || [];
+      const allJwtRoles = [...realmRoles, ...clientRoles, ...groupRoles];
 
-    // 5. Extract roles from Keycloak JWT structure
-    const realmRoles: string[] = decoded.realm_access?.roles || [];
-    const clientRoles: string[] = [];
-    if (decoded.resource_access) {
-      Object.values(decoded.resource_access).forEach((client: any) => {
-        if (client?.roles) clientRoles.push(...client.roles);
+      const dbUser = await this.authService.syncKeycloakUser({
+        keycloakId: decoded.sub,
+        email: decoded.email,
+        fullName: decoded.name || decoded.preferred_username || decoded.email,
+        roles: allJwtRoles,
       });
+
+      if (!dbUser.is_active) {
+        throw new UnauthorizedException(
+          'Your account has been deactivated. Contact your administrator.',
+        );
+      }
+
+      const mergedRoles = Array.from(
+        new Set([...allJwtRoles, ...(dbUser.roles || [])]),
+      ).map((r) => (r as string).toUpperCase().replace(/[\s-]/g, '_'));
+
+      request.user = {
+        dbId: dbUser.id,
+        keycloakId: decoded.sub,
+        email: decoded.email || dbUser.email,
+        fullName: decoded.name || dbUser.full_name,
+        roles: mergedRoles,
+        tenantId: dbUser.tenant_id || DEFAULT_TENANT_ID,
+        isActive: dbUser.is_active,
+        permissions: dbUser.permissions || [],
+        podId: dbUser.pod_id || null,
+        branchId: dbUser.branch_id || null,
+        assignedBranchIds: dbUser.assigned_branch_ids || [],
+        branchRoles: dbUser.branch_roles || {},
+        businessUnitId: dbUser.business_unit_id || null,
+        defaultMarket: dbUser.default_market || 'US',
+        tenantDomain: dbUser.tenant_domain || '',
+        systemRole: dbUser.system_role || 'RECRUITER',
+      };
+
+      return true;
+    } else {
+      // ── Internal HS256 Token ──
+      const secret = process.env.AUTH_SECRET || process.env.MOCK_JWT_SECRET || 'enfy-ats-jwt-secret-secure-key';
+      const data = `${parts[0]}.${parts[1]}`;
+      const expectedSig = crypto.createHmac('sha256', secret).update(data).digest('base64url');
+      if (parts[2] !== expectedSig) {
+        throw new UnauthorizedException('Token signature invalid.');
+      }
+
+      const decoded = this.decodeBase64Json(parts[1]);
+      this.checkExpiry(decoded.exp, 'Access token');
+
+      const profile = await this.authService.getProfile(decoded.sub || decoded.id);
+      if (!profile || profile.isActive === false) {
+        throw new UnauthorizedException('User account is deactivated or not found.');
+      }
+
+      const u = profile;
+      request.user = {
+        dbId: u.id,
+        keycloakId: u.id,
+        email: u.email,
+        fullName: u.fullName,
+        roles: (u.roles || []).map((r: string) => r.toUpperCase().replace(/[\s-]/g, '_')),
+        tenantId: u.tenantId || DEFAULT_TENANT_ID,
+        isActive: u.isActive !== undefined ? u.isActive : true,
+        permissions: u.permissions || [],
+        podId: u.podId || null,
+        branchId: u.branchId || null,
+        assignedBranchIds: u.assignedBranchIds || [],
+        branchRoles: u.branchRoles || {},
+        businessUnitId: u.businessUnitId || null,
+        defaultMarket: u.defaultMarket || 'US',
+        tenantDomain: u.tenantDomain || '',
+        systemRole: u.systemRole || 'RECRUITER',
+      };
+
+      return true;
     }
-    const groupRoles: string[] = decoded.groups || [];
-    const allJwtRoles = [...realmRoles, ...clientRoles, ...groupRoles];
-
-    // 6. On-demand sync to local `users` table
-    const dbUser = await this.authService.syncKeycloakUser({
-      keycloakId: decoded.sub,
-      email: decoded.email,
-      fullName: decoded.name || decoded.preferred_username || decoded.email,
-      roles: allJwtRoles,
-    });
-
-    if (!dbUser.is_active) {
-      throw new UnauthorizedException(
-        'Your account has been deactivated. Contact your administrator.',
-      );
-    }
-
-    // 7. Merge DB roles (internal) + JWT roles and normalize
-    const mergedRoles = Array.from(
-      new Set([...allJwtRoles, ...(dbUser.roles || [])]),
-    ).map((r) => (r as string).toUpperCase().replace(/[\s-]/g, '_'));
-
-    // 8. Attach AuthUser
-    request.user = {
-      dbId: dbUser.id,
-      keycloakId: decoded.sub,
-      email: decoded.email || dbUser.email,
-      fullName: decoded.name || dbUser.full_name,
-      roles: mergedRoles,
-      tenantId: dbUser.tenant_id || DEFAULT_TENANT_ID,
-      isActive: dbUser.is_active,
-      permissions: dbUser.permissions || [],
-      podId: dbUser.pod_id || null,
-      branchId: dbUser.branch_id || null,
-      assignedBranchIds: dbUser.assigned_branch_ids || [],
-      branchRoles: dbUser.branch_roles || {},
-      businessUnitId: dbUser.business_unit_id || null,
-      defaultMarket: dbUser.default_market || 'US',
-      tenantDomain: dbUser.tenant_domain || '',
-      systemRole: dbUser.system_role || 'RECRUITER',
-    };
-
-    this.logger.debug(
-      `[Keycloak] ✓ ${request.user.email} | Roles: [${mergedRoles.join(', ')}] | Perms: ${dbUser.permissions ? dbUser.permissions.length : 0}`,
-    );
-
-    return true;
   }
 
   // ─────────────────────────────────────────────────────────────────────────

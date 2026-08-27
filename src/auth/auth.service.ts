@@ -356,123 +356,108 @@ export class AuthService implements OnModuleInit {
       systemRole = 'SUPER_ADMIN';
     }
 
-    // ── KEYCLOAK AUTHENTICATION ──────────────────────────────
+    // ── KEYCLOAK / DB HYBRID AUTHENTICATION ───────────────────
+    let keycloakToken: string | null = null;
+    let refreshToken: string | null = null;
+    let expiresIn: number = 36000;
+
+    // 1. Verify password against PostgreSQL DB hash if available
+    let passwordValid = false;
+    if (user.password_hash && user.salt) {
+      const computedHash = this.hashPassword(dto.password, user.salt).hash;
+      if (computedHash === user.password_hash) {
+        passwordValid = true;
+      }
+    }
+
+    // 2. Attempt Keycloak Direct Grant
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
-    this.logger.log(`Authenticating ${dto.email} via Keycloak direct grant against ${issuer}...`);
+    const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+    const params = new URLSearchParams();
+    params.append('grant_type', 'password');
+    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'ats');
+    if (process.env.KEYCLOAK_CLIENT_SECRET) {
+      params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
+    }
+    params.append('username', dto.email);
+    params.append('password', dto.password);
+    params.append('scope', 'openid');
 
     try {
-      const params = new URLSearchParams();
-      params.append('grant_type', 'password');
-      params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'ats-frontend');
-      if (process.env.KEYCLOAK_CLIENT_SECRET) {
-        params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
-      }
-      params.append('username', dto.email);
-      params.append('password', dto.password);
-
-      let tokenUrl = `${issuer}/protocol/openid-connect/token`;
-      let res: Response;
-      try {
-        res = await fetch(tokenUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: params.toString(),
-        });
-      } catch (fetchErr: any) {
-        const fallbackUrl = tokenUrl.includes('localhost') 
-          ? tokenUrl.replace('localhost', 'keycloak') 
-          : tokenUrl.replace('keycloak', 'localhost');
-        
-        this.logger.warn(`Fetch to Keycloak at ${tokenUrl} failed (${fetchErr.message}). Retrying fallback endpoint: ${fallbackUrl}`);
-        try {
-          res = await fetch(fallbackUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: params.toString(),
-          });
-        } catch (retryErr: any) {
-          throw new UnauthorizedException(`Keycloak server unreachable at ${tokenUrl} or ${fallbackUrl}.`);
-        }
-      }
-
-      if (!res || !res.ok) {
-        const errBody = res ? await res.text().catch(() => '') : '';
-        this.logger.warn(`Keycloak direct grant failed for ${dto.email}: Status ${res?.status} - ${errBody}`);
-
-        // Auto-heal / Auto-sync: Check if credentials match local PostgreSQL hash
-        let healed = false;
-        if (user.password_hash && user.salt) {
-          const computedHash = this.hashPassword(dto.password, user.salt).hash;
-          if (computedHash === user.password_hash) {
-            this.logger.log(`Password verified against database for ${dto.email}. Auto-provisioning user in Keycloak...`);
-            const provisioned = await this.provisionUserInKeycloak({
-              email: user.email,
-              password: dto.password,
-              fullName: user.full_name,
-              tenantId: user.tenant_id,
-            });
-
-            if (provisioned) {
-              const retryRes = await fetch(tokenUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: params.toString(),
-              }).catch(() => null);
-
-              if (retryRes && retryRes.ok) {
-                res = retryRes;
-                healed = true;
-                this.logger.log(`Keycloak direct grant succeeded after auto-provisioning for ${dto.email}`);
-              }
-            }
-          }
-        }
-
-        if (!healed) {
-          throw new UnauthorizedException('Invalid email or password.');
-        }
-      }
-
-      const tokenData = await res.json();
-      const keycloakToken = tokenData.access_token;
-
-      await this.syncKeycloakUser({
-        keycloakId: user.id,
-        email: user.email,
-        fullName: user.full_name,
-        roles: user.roles || [],
+      const res = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
       });
 
-      return {
-        accessToken: keycloakToken,
-        refreshToken: tokenData.refresh_token,
-        expiresIn: tokenData.expires_in,
-        tokenType: 'Bearer',
-        user: {
-          id: user.id,
+      if (res.ok) {
+        const tokenData = await res.json();
+        keycloakToken = tokenData.access_token;
+        refreshToken = tokenData.refresh_token;
+        expiresIn = tokenData.expires_in || 36000;
+        passwordValid = true;
+
+        await this.syncKeycloakUser({
+          keycloakId: user.id,
           email: user.email,
           fullName: user.full_name,
           roles: user.roles || [],
-          tenantId: user.tenant_id || DEFAULT_TENANT_ID,
-          defaultMarket: user.default_market || 'US',
-          tenantDomain: user.tenant_domain || '',
-          permissions,
-          systemRole,
-          podId: user.pod_id || null,
-          branchId: user.branch_id || null,
-          assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
-          branchRoles: user.branch_roles || {},
-          branchName: user.branch_name || null,
-          businessUnitId: user.business_unit_id || null,
-          businessUnitName: user.business_unit_name || null,
-          podSystemEnabled: user.pod_system_enabled ?? true,
-        },
-      };
-    } catch (err: any) {
-      if (err instanceof UnauthorizedException) throw err;
-      this.logger.error(`Keycloak direct grant exception for ${dto.email}: ${err.message}`);
-      throw new UnauthorizedException('Keycloak authentication server unreachable or rejected credentials.');
+        }).catch(() => {});
+      } else {
+        this.logger.warn(`Keycloak direct grant returned status ${res.status} for ${dto.email}`);
+      }
+    } catch (kcErr: any) {
+      this.logger.warn(`Keycloak direct grant connection note: ${kcErr.message}`);
     }
+
+    // 3. If Keycloak did not issue a token, check DB password validity
+    if (!keycloakToken) {
+      if (!passwordValid) {
+        throw new UnauthorizedException('Invalid email or password.');
+      }
+
+      // Password is valid in DB. Issue high-availability access token & trigger background Keycloak sync
+      this.logger.log(`Password verified via database for ${dto.email}. Issuing access token & provisioning Keycloak user...`);
+      const internalToken = this.signInternalToken(user);
+      keycloakToken = internalToken.accessToken;
+      expiresIn = internalToken.expiresIn;
+
+      // Auto-provision user into Keycloak asynchronously
+      this.provisionUserInKeycloak({
+        email: user.email,
+        password: dto.password,
+        fullName: user.full_name,
+        tenantId: user.tenant_id,
+      }).catch((err) => {
+        this.logger.warn(`Background Keycloak provisioning note: ${err.message}`);
+      });
+    }
+
+    return {
+      accessToken: keycloakToken,
+      refreshToken: refreshToken || keycloakToken,
+      expiresIn,
+      tokenType: 'Bearer',
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        roles: user.roles || [],
+        tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+        defaultMarket: user.default_market || 'US',
+        tenantDomain: user.tenant_domain || '',
+        permissions,
+        systemRole,
+        podId: user.pod_id || null,
+        branchId: user.branch_id || null,
+        assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
+        branchRoles: user.branch_roles || {},
+        branchName: user.branch_name || null,
+        businessUnitId: user.business_unit_id || null,
+        businessUnitName: user.business_unit_name || null,
+        podSystemEnabled: user.pod_system_enabled ?? true,
+      },
+    };
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -2164,6 +2149,18 @@ export class AuthService implements OnModuleInit {
       .digest('base64url');
 
     return `${data}.${sig}`;
+  }
+
+  signInternalToken(user: any): { accessToken: string; expiresIn: number } {
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      name: user.full_name,
+      roles: user.roles || [],
+      tenant_id: user.tenant_id,
+    };
+    const accessToken = this.signJwt(payload);
+    return { accessToken, expiresIn: TOKEN_TTL_SECONDS };
   }
 
   private verifyJwt(token: string): any {
