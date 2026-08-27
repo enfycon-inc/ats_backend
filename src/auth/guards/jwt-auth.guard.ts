@@ -14,48 +14,23 @@ const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- * JwtAuthGuard  —  Switchable Authentication Guard
+ * JwtAuthGuard — Keycloak JWT Authentication Guard
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * Controlled entirely by the AUTH_PROVIDER environment variable:
- *
- *  AUTH_PROVIDER=mock      → Development / staging mode.
- *    • POST /api/auth/login validates email+password against DB users table.
- *    • Returns a signed HS256 JWT containing the user's full claims.
- *    • Guard verifies that signature using MOCK_JWT_SECRET from .env.
- *    • Frontend behaviour is IDENTICAL to production — just uses a mock token.
- *
- *  AUTH_PROVIDER=keycloak  → Production mode.
- *    • Guard rejects all mock tokens.
- *    • Decodes the Keycloak JWT header to get the key ID (kid).
- *    • Fetches the matching RSA public key from the Keycloak JWKS endpoint
- *      (cached in-process after first fetch for performance).
- *    • Verifies the RSA-SHA256 signature using Node built-in crypto.
- *    • Syncs the user record to the local `users` table on-demand.
- *    • Attaches a fully-normalized AuthUser to the request.
- *
- * ZERO external dependencies — uses only Node.js built-ins (crypto, https).
- *
- * Switch in .env:
- *   AUTH_PROVIDER=mock        (default when not set)
- *   AUTH_PROVIDER=keycloak
+ *  • Validates RS256 JWT tokens using Keycloak's JWKS public keys.
+ *  • Automatically verifies RSA signature and expiration against cached public keys.
+ *  • Syncs user profile with local PostgreSQL DB on demand.
+ *  • Attaches full AuthUser context to request.user.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   private readonly logger = new Logger(JwtAuthGuard.name);
-  private readonly provider: string;
-  private readonly mockSecret: string;
 
   // In-process JWKS public key cache  { kid → PEM string }
   private readonly jwksCache = new Map<string, string>();
 
   constructor(private readonly authService: AuthService) {
-    this.provider = (process.env.AUTH_PROVIDER || 'keycloak').toLowerCase();
-    this.mockSecret =
-      process.env.MOCK_JWT_SECRET ||
-      'enfy-ats-dev-secret-change-in-prod';
-
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     this.logger.log(
       `[AUTH] KEYCLOAK mode active. JWKS: ${issuer}/protocol/openid-connect/certs`,

@@ -23,39 +23,20 @@ import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
-// Token TTL: 7 days (enterprise standard rolling window)
-const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
-
 /**
  * ─────────────────────────────────────────────────────────────────────────────
- * AuthService
+ * AuthService — Keycloak Identity & Authorization Service
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * Handles ALL authentication logic for both mock and Keycloak modes.
- *
- * MOCK MODE (AUTH_PROVIDER=mock):
- *  - Users are stored in the `users` PostgreSQL table (created on boot).
- *  - Passwords are hashed with SHA-256 + salt (lightweight, no bcrypt dep needed).
- *  - Login returns a real, signed JWT containing the user's claims.
- *  - The frontend stores this token and sends it as Bearer on every request.
- *  - Feels identical to production from the frontend perspective.
- *
- * KEYCLOAK MODE (AUTH_PROVIDER=keycloak):
- *  - Direct grant / Token exchange via Keycloak protocol endpoint.
- *  - syncKeycloakUser() is called to upsert the user into the local `users` table from decoded JWT claims.
+ * Handles direct grant authentication and token refresh via Keycloak OIDC
+ * protocol endpoints, and syncs user credentials & RBAC into PostgreSQL.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 @Injectable()
 export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
-  private readonly jwtSecret: string;
-  private readonly provider: string;
 
-  constructor(private readonly db: DatabaseService) {
-    this.jwtSecret =
-      process.env.MOCK_JWT_SECRET || 'enfy-ats-dev-jwt-secret-change-me-in-prod';
-    this.provider = (process.env.AUTH_PROVIDER || 'keycloak').toLowerCase();
-  }
+  constructor(private readonly db: DatabaseService) {}
 
   // ─────────────────────────────────────────────────────────────
   // Module boot: ensure users table exists and seed defaults
