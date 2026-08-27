@@ -397,8 +397,40 @@ export class AuthService implements OnModuleInit {
 
       if (!res || !res.ok) {
         const errBody = res ? await res.text().catch(() => '') : '';
-        this.logger.warn(`Keycloak auth failed for ${dto.email}: Status ${res?.status} - ${errBody}`);
-        throw new UnauthorizedException('Invalid email or password.');
+        this.logger.warn(`Keycloak direct grant failed for ${dto.email}: Status ${res?.status} - ${errBody}`);
+
+        // Auto-heal / Auto-sync: Check if credentials match local PostgreSQL hash
+        let healed = false;
+        if (user.password_hash && user.salt) {
+          const computedHash = this.hashPassword(dto.password, user.salt).hash;
+          if (computedHash === user.password_hash) {
+            this.logger.log(`Password verified against database for ${dto.email}. Auto-provisioning user in Keycloak...`);
+            const provisioned = await this.provisionUserInKeycloak({
+              email: user.email,
+              password: dto.password,
+              fullName: user.full_name,
+              tenantId: user.tenant_id,
+            });
+
+            if (provisioned) {
+              const retryRes = await fetch(tokenUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params.toString(),
+              }).catch(() => null);
+
+              if (retryRes && retryRes.ok) {
+                res = retryRes;
+                healed = true;
+                this.logger.log(`Keycloak direct grant succeeded after auto-provisioning for ${dto.email}`);
+              }
+            }
+          }
+        }
+
+        if (!healed) {
+          throw new UnauthorizedException('Invalid email or password.');
+        }
       }
 
       const tokenData = await res.json();
