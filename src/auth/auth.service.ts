@@ -22,6 +22,7 @@ import { AcceptInviteDto } from './dtos/accept-invite.dto';
 import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.dto';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a
 @Injectable()
 export class AuthService implements OnModuleInit {
   private readonly logger = new Logger(AuthService.name);
+  private readonly jwtSecret: string = process.env.JWT_SECRET || 'enfy-ats-jwt-secret';
 
   constructor(private readonly db: DatabaseService) {}
 
@@ -43,7 +45,6 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async onModuleInit() {
     await this.ensureUsersTable();
-    
     
     // Sync active tenants with new system permissions
     try {
@@ -56,23 +57,21 @@ export class AuthService implements OnModuleInit {
 
     await this.seedDefaultUsers();
 
-    if (this.provider === 'keycloak') {
-      const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
-      const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
-      const adminName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
-      if (adminEmail && adminPassword) {
-        this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) into Keycloak on startup...`);
-        this.provisionUserInKeycloak({
-          email: adminEmail,
-          password: adminPassword,
-          fullName: adminName,
-          tenantId: DEFAULT_TENANT_ID,
-        }).catch((err) => {
-          this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
-        });
-      } else {
-        this.logger.warn(`[BOOT] PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_PASSWORD not set in environment — skipping Keycloak Super Admin sync.`);
-      }
+    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
+    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+    const adminName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
+    if (adminEmail && adminPassword) {
+      this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) into Keycloak on startup...`);
+      this.provisionUserInKeycloak({
+        email: adminEmail,
+        password: adminPassword,
+        fullName: adminName,
+        tenantId: DEFAULT_TENANT_ID,
+      }).catch((err) => {
+        this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
+      });
+    } else {
+      this.logger.warn(`[BOOT] PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_PASSWORD not set in environment — skipping Keycloak Super Admin sync.`);
     }
   }
 
@@ -242,7 +241,7 @@ export class AuthService implements OnModuleInit {
   // LOGIN IMPLEMENTATION (Supports both Mock mode and Keycloak mode)
   // ─────────────────────────────────────────────────────────────
   async login(dto: LoginDto) {
-    this.logger.log(`Login attempt for ${dto.email} [Provider: ${this.provider}]`);
+    this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
     const result = await this.db.query(
       `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, b.name as branch_name, bu.name as business_unit_name
@@ -486,9 +485,6 @@ export class AuthService implements OnModuleInit {
     throw new UnauthorizedException('Invalid or expired refresh token.');
   }
 
-    throw new UnauthorizedException('Invalid or expired refresh token.');
-  }
-
   // ─────────────────────────────────────────────────────────────
   // MOCK MODE: Register new user
   // ─────────────────────────────────────────────────────────────
@@ -596,14 +592,12 @@ export class AuthService implements OnModuleInit {
 
     const user = result.rows[0];
 
-    if (this.provider === 'keycloak') {
-      await this.provisionUserInKeycloak({
-        email: user.email,
-        password: password,
-        fullName: user.full_name,
-        tenantId: user.tenant_id,
-      });
-    }
+    await this.provisionUserInKeycloak({
+      email: user.email,
+      password: password,
+      fullName: user.full_name,
+      tenantId: user.tenant_id,
+    });
 
     // Dispatch welcome email with credentials and login guide
     if (dto.sendEmailInvite !== false) {
@@ -741,14 +735,12 @@ export class AuthService implements OnModuleInit {
     );
     const user = userResult.rows[0];
 
-    if (this.provider === 'keycloak') {
-      await this.provisionUserInKeycloak({
-        email: user.email,
-        password: password,
-        fullName: user.full_name,
-        tenantId: tenant.id,
-      });
-    }
+    await this.provisionUserInKeycloak({
+      email: user.email,
+      password: password,
+      fullName: user.full_name,
+      tenantId: tenant.id,
+    });
 
     const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
     return {
