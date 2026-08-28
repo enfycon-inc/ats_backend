@@ -243,13 +243,26 @@ export class JwtAuthGuard implements CanActivate {
   // ─────────────────────────────────────────────────────────────────────────
 
   private extractBearerToken(request: any): string {
-    const authHeader = request.headers.authorization as string | undefined;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const authHeader = (request.headers.authorization || request.headers.Authorization) as string | undefined;
+    if (!authHeader) {
       throw new UnauthorizedException(
         'Authorization header missing. Use: Authorization: Bearer <token>',
       );
     }
-    return authHeader.slice(7).trim();
+    let token = authHeader.trim();
+    // Strip one or more 'Bearer ' / 'bearer ' prefixes
+    while (/^bearer\s+/i.test(token)) {
+      token = token.replace(/^bearer\s+/i, '').trim();
+    }
+    // Strip surrounding quotes if present
+    token = token.replace(/^["']|["']$/g, '').trim();
+
+    if (!token) {
+      throw new UnauthorizedException(
+        'Authorization token missing. Use: Authorization: Bearer <token>',
+      );
+    }
+    return token;
   }
 
   private decodeBase64Json(segment: string): any {

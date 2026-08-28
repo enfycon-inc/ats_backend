@@ -475,6 +475,29 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE clients DROP CONSTRAINT IF EXISTS unique_client_code_per_tenant;
       ALTER TABLE clients ADD CONSTRAINT unique_client_code_per_tenant UNIQUE (tenant_id, client_code);
 
+      -- Ensure extended fields exist on clients table
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE DEFAULT NULL;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS branch_id UUID DEFAULT NULL;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS market VARCHAR(50) DEFAULT 'US';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS end_client_name VARCHAR(255);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS is_same_as_primary BOOLEAN DEFAULT TRUE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS contact_person VARCHAR(255);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS contact_designation VARCHAR(255);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS gstin VARCHAR(50);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS pan_number VARCHAR(50);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS currency VARCHAR(20) DEFAULT 'USD';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS tier_rating VARCHAR(20);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS credit_check_status VARCHAR(50);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS fillability_score NUMERIC(5,2);
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS vetting_notes TEXT;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(50) DEFAULT 'ACTIVE';
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS msa_signed BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS sow_executed BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS coi_received BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS vendor_portal_created BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS stop_notifications BOOLEAN DEFAULT FALSE;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS about_company TEXT;
+
       -- 11. Create pods table
       CREATE TABLE IF NOT EXISTS pods (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
