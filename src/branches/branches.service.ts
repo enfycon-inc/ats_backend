@@ -60,7 +60,7 @@ export class BranchesService {
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS work_start_time VARCHAR(20) DEFAULT '09:00';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS work_end_time VARCHAR(20) DEFAULT '18:00';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS working_days TEXT DEFAULT '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100) DEFAULT 'General Day Shift (09:00 - 18:00)';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100) DEFAULT 'General Shift';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS break_duration_minutes INTEGER DEFAULT 60;
     `).catch(() => {});
   }
@@ -101,7 +101,7 @@ export class BranchesService {
     const workStartTime = dto.workStartTime || '09:00';
     const workEndTime = dto.workEndTime || '18:00';
     const workingDays = JSON.stringify(dto.workingDays || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-    const shiftTiming = dto.shiftTiming || `General Shift (${workStartTime} - ${workEndTime})`;
+    const shiftTiming = dto.shiftTiming ? dto.shiftTiming.trim() : (market === 'US' ? 'US Shift' : 'General Shift');
     const breakDurationMinutes = dto.breakDurationMinutes ?? 60;
 
     const res = await this.db.query(
@@ -198,7 +198,7 @@ export class BranchesService {
           return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
         }
       })(),
-      shiftTiming: row.shift_timing || 'General Day Shift (09:00 - 18:00)',
+      shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
       breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
       usersCount: row.users_count || 0,
       jobsCount: row.jobs_count || 0,
@@ -221,7 +221,7 @@ export class BranchesService {
     );
 
     if (res.rows.length === 0) {
-      throw new NotFoundException(`Branch with ID ${id} not found.`);
+      throw new NotFoundException(`Branch with ID "${id}" not found.`);
     }
 
     const row = res.rows[0];
@@ -276,7 +276,7 @@ export class BranchesService {
           return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
         }
       })(),
-      shiftTiming: row.shift_timing || 'General Day Shift (09:00 - 18:00)',
+      shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
       breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
       usersCount: row.users_count || 0,
       jobsCount: row.jobs_count || 0,
