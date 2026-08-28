@@ -17,4 +17,10 @@ export class UpdateBranchDto {
   defaultJobApproverRole?: string;
   allowedJobApproverRoles?: string[];
   approvalRoutingMode?: 'FLEXIBLE' | 'ENFORCE_DEFAULT';
+  timezone?: string;
+  workStartTime?: string;
+  workEndTime?: string;
+  workingDays?: string[];
+  shiftTiming?: string;
+  breakDurationMinutes?: number;
 }

@@ -5,4 +5,10 @@ export class CreateBranchDto {
   state?: string;
   country?: string;
   market?: string;
+  timezone?: string;
+  workStartTime?: string;
+  workEndTime?: string;
+  workingDays?: string[];
+  shiftTiming?: string;
+  breakDurationMinutes?: number;
 }

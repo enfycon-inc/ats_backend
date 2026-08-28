@@ -79,6 +79,14 @@ export interface JobProfile {
   approvedBy?: string | null;
   approvedAt?: string | null;
   rejectionReason?: string | null;
+
+  // Branch Timing Snapshot
+  jobTimezone?: string;
+  workStartTime?: string;
+  workEndTime?: string;
+  workingDays?: string[];
+  shiftTiming?: string;
+  timingSnapshotAt?: string | null;
 }
 
 /** A single candidate ranked against a job requisition. */
@@ -123,7 +131,7 @@ export class JobsService implements OnModuleInit {
   }
 
   /**
-   * Expanded jobs table with all Ceipal-matching columns
+   * Expanded jobs table with all Ceipal-matching columns + branch timing snapshot
    */
   private async ensureJobsTableV2() {
     try {
@@ -156,7 +164,13 @@ export class JobsService implements OnModuleInit {
           ADD COLUMN IF NOT EXISTS assigned_approver_role VARCHAR(50),
           ADD COLUMN IF NOT EXISTS approved_by UUID,
           ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP,
-          ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+          ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
+          ADD COLUMN IF NOT EXISTS job_timezone VARCHAR(100),
+          ADD COLUMN IF NOT EXISTS work_start_time VARCHAR(20),
+          ADD COLUMN IF NOT EXISTS work_end_time VARCHAR(20),
+          ADD COLUMN IF NOT EXISTS working_days TEXT,
+          ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100),
+          ADD COLUMN IF NOT EXISTS timing_snapshot_at TIMESTAMP WITH TIME ZONE;
       `);
     } catch (err: any) {
       this.logger.debug(`Jobs schema update note: ${err.message}`);
@@ -333,6 +347,39 @@ export class JobsService implements OnModuleInit {
     const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
     const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
 
+    // ── Branch Timing Snapshot ────────────────────────────────────────────────
+    let jobTimezone = (dto as any)?.jobTimezone || (dto as any)?.timezone || null;
+    let workStartTime = (dto as any)?.workStartTime || null;
+    let workEndTime = (dto as any)?.workEndTime || null;
+    let workingDays = (dto as any)?.workingDays
+      ? (typeof (dto as any).workingDays === 'string' ? (dto as any).workingDays : JSON.stringify((dto as any).workingDays))
+      : null;
+    let shiftTiming = (dto as any)?.shiftTiming || (dto as any)?.shift || null;
+
+    if (branchId) {
+      const branchTimingRes = await this.db.query(
+        `SELECT timezone, work_start_time, work_end_time, working_days, shift_timing
+         FROM branches
+         WHERE id = $1 LIMIT 1`,
+        [branchId]
+      );
+      if (branchTimingRes.rows.length > 0) {
+        const bRow = branchTimingRes.rows[0];
+        jobTimezone = jobTimezone || bRow.timezone || (dto.country === 'United States' || dto.market === 'US' ? 'America/New_York' : 'Asia/Kolkata');
+        workStartTime = workStartTime || bRow.work_start_time || '09:00';
+        workEndTime = workEndTime || bRow.work_end_time || '18:00';
+        workingDays = workingDays || bRow.working_days || '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
+        shiftTiming = shiftTiming || bRow.shift_timing || `General Shift (${workStartTime} - ${workEndTime})`;
+      }
+    }
+    if (!jobTimezone) {
+      jobTimezone = dto.country === 'United States' || dto.market === 'US' ? 'America/New_York' : 'Asia/Kolkata';
+    }
+    if (!workStartTime) workStartTime = '09:00';
+    if (!workEndTime) workEndTime = '18:00';
+    if (!workingDays) workingDays = '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
+    if (!shiftTiming) shiftTiming = `General Shift (${workStartTime} - ${workEndTime})`;
+
     const sql = `
       INSERT INTO jobs (
         tenant_id, job_code, job_title, job_location, job_type, job_description,
@@ -346,6 +393,7 @@ export class JobsService implements OnModuleInit {
         industry, degree, exp_min, exp_max, created_by,
         respond_by, notice_period, market, branch_id,
         approval_status, assigned_approver_id, assigned_approver_role,
+        job_timezone, work_start_time, work_end_time, working_days, shift_timing, timing_snapshot_at,
         created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
@@ -359,6 +407,7 @@ export class JobsService implements OnModuleInit {
         $32, $33, $34, $35, $36,
         $37, $38, $39, $40,
         $41, $42, $43,
+        $44, $45, $46, $47, $48, NOW(),
         NOW(), NOW()
       ) RETURNING *
     `;
@@ -407,6 +456,11 @@ export class JobsService implements OnModuleInit {
       initialApprovalStatus,                                         // $41
       dto.assignedApproverId || null,                                // $42
       dto.assignedApproverRole || null,                              // $43
+      jobTimezone,                                                   // $44
+      workStartTime,                                                 // $45
+      workEndTime,                                                   // $46
+      workingDays,                                                   // $47
+      shiftTiming,                                                   // $48
     ];
 
     // Auto-create client & end client if not present
@@ -716,6 +770,22 @@ export class JobsService implements OnModuleInit {
       approvedBy: row.approved_by || null,
       approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : null,
       rejectionReason: row.rejection_reason || null,
+
+      // Branch Timing Snapshot
+      jobTimezone: row.job_timezone || (row.country === 'United States' || row.market === 'US' ? 'America/New_York' : 'Asia/Kolkata'),
+      workStartTime: row.work_start_time || '09:00',
+      workEndTime: row.work_end_time || '18:00',
+      workingDays: (() => {
+        try {
+          return typeof row.working_days === 'string'
+            ? JSON.parse(row.working_days)
+            : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+        } catch {
+          return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        }
+      })(),
+      shiftTiming: row.shift_timing || 'General Day Shift (09:00 - 18:00)',
+      timingSnapshotAt: row.timing_snapshot_at ? new Date(row.timing_snapshot_at).toISOString() : null,
     };
   }
 
@@ -931,6 +1001,11 @@ export class JobsService implements OnModuleInit {
     addField('exp_max', dto.expMax);
     addField('respond_by', dto.respondBy);
     addField('notice_period', dto.noticePeriod);
+    if (dto.jobTimezone !== undefined) addField('job_timezone', dto.jobTimezone);
+    if (dto.workStartTime !== undefined) addField('work_start_time', dto.workStartTime);
+    if (dto.workEndTime !== undefined) addField('work_end_time', dto.workEndTime);
+    if (dto.workingDays !== undefined) addField('working_days', typeof dto.workingDays === 'string' ? dto.workingDays : JSON.stringify(dto.workingDays));
+    if (dto.shiftTiming !== undefined) addField('shift_timing', dto.shiftTiming);
 
     // Auto-create client & end client if not present
     const creatorId = user?.dbId || 'System';

@@ -26,6 +26,12 @@ export interface BranchResponse {
   defaultJobApproverRole: string;
   allowedJobApproverRoles: string[];
   approvalRoutingMode: 'FLEXIBLE' | 'ENFORCE_DEFAULT';
+  timezone: string;
+  workStartTime: string;
+  workEndTime: string;
+  workingDays: string[];
+  shiftTiming: string;
+  breakDurationMinutes: number;
   usersCount: number;
   jobsCount: number;
   createdAt: string;
@@ -50,6 +56,12 @@ export class BranchesService {
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS default_job_approver_role VARCHAR(50) DEFAULT 'POD_LEAD';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS allowed_job_approver_roles TEXT DEFAULT '["POD_LEAD", "DELIVERY_HEAD", "PRIMARY_RECRUITER", "BRANCH_ADMIN"]';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS approval_routing_mode VARCHAR(50) DEFAULT 'FLEXIBLE';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) DEFAULT 'Asia/Kolkata';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS work_start_time VARCHAR(20) DEFAULT '09:00';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS work_end_time VARCHAR(20) DEFAULT '18:00';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS working_days TEXT DEFAULT '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100) DEFAULT 'General Day Shift (09:00 - 18:00)';
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS break_duration_minutes INTEGER DEFAULT 60;
     `).catch(() => {});
   }
 
@@ -85,12 +97,35 @@ export class BranchesService {
 
     const code = dto.code ? dto.code.trim().toUpperCase() : dto.name.substring(0, 4).toUpperCase();
     const market = dto.market ? dto.market.trim().toUpperCase() : 'INDIA';
+    const timezone = dto.timezone || (market === 'US' || dto.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata');
+    const workStartTime = dto.workStartTime || '09:00';
+    const workEndTime = dto.workEndTime || '18:00';
+    const workingDays = JSON.stringify(dto.workingDays || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+    const shiftTiming = dto.shiftTiming || `General Shift (${workStartTime} - ${workEndTime})`;
+    const breakDurationMinutes = dto.breakDurationMinutes ?? 60;
 
     const res = await this.db.query(
-      `INSERT INTO branches (tenant_id, name, code, city, state, country, market)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [tenantId, dto.name.trim(), code, dto.city || null, dto.state || null, dto.country || 'India', market]
+      `INSERT INTO branches (
+        tenant_id, name, code, city, state, country, market,
+        timezone, work_start_time, work_end_time, working_days, shift_timing, break_duration_minutes
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *`,
+      [
+        tenantId,
+        dto.name.trim(),
+        code,
+        dto.city || null,
+        dto.state || null,
+        dto.country || 'India',
+        market,
+        timezone,
+        workStartTime,
+        workEndTime,
+        workingDays,
+        shiftTiming,
+        breakDurationMinutes,
+      ]
     );
     const branch = res.rows[0];
 
@@ -151,6 +186,20 @@ export class BranchesService {
         }
       })(),
       approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
+      timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
+      workStartTime: row.work_start_time || '09:00',
+      workEndTime: row.work_end_time || '18:00',
+      workingDays: (() => {
+        try {
+          return typeof row.working_days === 'string'
+            ? JSON.parse(row.working_days)
+            : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+        } catch {
+          return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        }
+      })(),
+      shiftTiming: row.shift_timing || 'General Day Shift (09:00 - 18:00)',
+      breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
       usersCount: row.users_count || 0,
       jobsCount: row.jobs_count || 0,
       createdAt: row.created_at,
@@ -215,6 +264,20 @@ export class BranchesService {
         }
       })(),
       approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
+      timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
+      workStartTime: row.work_start_time || '09:00',
+      workEndTime: row.work_end_time || '18:00',
+      workingDays: (() => {
+        try {
+          return typeof row.working_days === 'string'
+            ? JSON.parse(row.working_days)
+            : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+        } catch {
+          return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        }
+      })(),
+      shiftTiming: row.shift_timing || 'General Day Shift (09:00 - 18:00)',
+      breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
       usersCount: row.users_count || 0,
       jobsCount: row.jobs_count || 0,
       createdAt: row.created_at,
@@ -259,6 +322,12 @@ export class BranchesService {
       ? JSON.stringify(dto.allowedJobApproverRoles)
       : JSON.stringify(existing.allowedJobApproverRoles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
     const approvalRoutingMode = dto.approvalRoutingMode !== undefined ? dto.approvalRoutingMode : existing.approvalRoutingMode;
+    const timezone = dto.timezone !== undefined ? dto.timezone : existing.timezone;
+    const workStartTime = dto.workStartTime !== undefined ? dto.workStartTime : existing.workStartTime;
+    const workEndTime = dto.workEndTime !== undefined ? dto.workEndTime : existing.workEndTime;
+    const workingDays = dto.workingDays !== undefined ? JSON.stringify(dto.workingDays) : JSON.stringify(existing.workingDays);
+    const shiftTiming = dto.shiftTiming !== undefined ? dto.shiftTiming : existing.shiftTiming;
+    const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : existing.breakDurationMinutes;
 
     await this.db.query(
       `UPDATE branches
@@ -267,9 +336,20 @@ export class BranchesService {
            require_am_job_approval = $13, default_job_approver_role = $14,
            allowed_job_approver_roles = $15, approval_routing_mode = $16,
            require_job_approval = $17, roles_requiring_approval = $18,
+           timezone = $19, work_start_time = $20, work_end_time = $21,
+           working_days = $22, shift_timing = $23, break_duration_minutes = $24,
            updated_at = NOW()
-       WHERE id = $19 AND tenant_id = $20`,
-      [name, code, city, state, country, market, isActive, allowNone, allowPods, allowAll, allowUnassigned, podDistributionStrategy, requireAmJobApproval, defaultJobApproverRole, allowedJobApproverRoles, approvalRoutingMode, requireJobApproval, rolesRequiringApproval, id, tenantId]
+       WHERE id = $25 AND tenant_id = $26`,
+      [
+        name, code, city, state, country, market, isActive,
+        allowNone, allowPods, allowAll, allowUnassigned, podDistributionStrategy,
+        requireAmJobApproval, defaultJobApproverRole,
+        allowedJobApproverRoles, approvalRoutingMode,
+        requireJobApproval, rolesRequiringApproval,
+        timezone, workStartTime, workEndTime,
+        workingDays, shiftTiming, breakDurationMinutes,
+        id, tenantId
+      ]
     );
 
     return this.findOne(id, tenantId);
