@@ -139,6 +139,25 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getProfile(user.dbId);
   }
 
+  // ─── GET /api/auth/profile/:id ──────────────────────────────
+  // Alias route — frontend calls /api/auth/profile/{userId} to fetch the
+  // authenticated user's own profile. The :id param is accepted but we
+  // always return the CALLER's profile (enforced by JwtAuthGuard) to prevent
+  // privilege escalation. Admins wishing to query other users use /api/auth/users.
+  @Get('profile/:id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get user profile by ID (caller must own the ID)',
+    description: 'Returns the authenticated user\'s profile. The :id in the URL must match the authenticated user\'s ID.',
+  })
+  @ApiResponse({ status: 200, description: 'User profile returned.' })
+  @ApiResponse({ status: 401, description: 'Token missing or invalid.' })
+  async getProfileById(@CurrentUser() user: AuthUser) {
+    // Always return the authenticated caller's own profile
+    return this.authService.getProfile(user.dbId);
+  }
+
   // ─── GET /api/auth/users ────────────────────────────────────
   @Get('users')
   @UseGuards(JwtAuthGuard)

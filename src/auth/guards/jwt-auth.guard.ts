@@ -9,6 +9,7 @@ import * as crypto from 'crypto';
 import * as https from 'https';
 import * as http from 'http';
 import { AuthService } from '../auth.service';
+import { DatabaseService } from '../../database/database.service';
 
 const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -19,6 +20,7 @@ const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
  *
  *  • Validates RS256 JWT tokens using Keycloak's JWKS public keys.
  *  • Automatically verifies RSA signature and expiration against cached public keys.
+ *  • Persists JWKS keys to DB so verification survives backend restarts.
  *  • Syncs user profile with local PostgreSQL DB on demand.
  *  • Attaches full AuthUser context to request.user.
  * ─────────────────────────────────────────────────────────────────────────────
@@ -30,11 +32,22 @@ export class JwtAuthGuard implements CanActivate {
   // In-process JWKS public key cache  { kid → PEM string }
   private readonly jwksCache = new Map<string, string>();
 
-  constructor(private readonly authService: AuthService) {
+  constructor(
+    private readonly authService: AuthService,
+    private readonly db: DatabaseService,
+  ) {
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     this.logger.log(
       `[AUTH] KEYCLOAK mode active. JWKS: ${issuer}/protocol/openid-connect/certs`,
     );
+    // Ensure kv_store table exists for JWKS key persistence
+    this.db.query(`
+      CREATE TABLE IF NOT EXISTS kv_store (
+        key   VARCHAR(255) PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `).catch(() => {});
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -153,19 +166,24 @@ export class JwtAuthGuard implements CanActivate {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Fetch RSA public key from Keycloak JWKS endpoint (with in-process cache)
+  // Fetch RSA public key from Keycloak JWKS endpoint (with in-process + DB cache)
+  // Falls back to DB-persisted key if Keycloak is temporarily unreachable.
   // ─────────────────────────────────────────────────────────────────────────
   private async getPublicKey(kid: string): Promise<string> {
+    // 1. In-process memory cache (fastest)
     if (this.jwksCache.has(kid)) {
       return this.jwksCache.get(kid)!;
     }
 
-    const issuer = process.env.KEYCLOAK_ISSUER!;
+    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     let jwksUrl = `${issuer}/protocol/openid-connect/certs`;
 
     let jwks: any;
+    let keycloakReachable = false;
+
     try {
       jwks = await this.fetchJson(jwksUrl);
+      keycloakReachable = true;
     } catch (err: any) {
       const fallbackUrl = jwksUrl.includes('localhost')
         ? jwksUrl.replace('localhost', 'keycloak')
@@ -173,8 +191,27 @@ export class JwtAuthGuard implements CanActivate {
       this.logger.warn(`[JwtAuthGuard] JWKS fetch to ${jwksUrl} failed. Trying fallback: ${fallbackUrl}`);
       try {
         jwks = await this.fetchJson(fallbackUrl);
+        keycloakReachable = true;
       } catch (fallbackErr: any) {
-        throw new UnauthorizedException(`Could not fetch JWKS from Keycloak at ${jwksUrl} or ${fallbackUrl}.`);
+        // Keycloak is unreachable — try DB-persisted key before failing
+        this.logger.warn(`[JwtAuthGuard] JWKS fallback also failed. Checking DB cache for kid="${kid}"...`);
+        try {
+          const dbRes = await this.db.query(
+            `SELECT value FROM kv_store WHERE key = $1 LIMIT 1`,
+            [`jwks_pem:${kid}`],
+          );
+          if (dbRes.rows.length > 0) {
+            const cachedPem = dbRes.rows[0].value;
+            this.jwksCache.set(kid, cachedPem);
+            this.logger.log(`[JwtAuthGuard] Recovered public key for kid="${kid}" from DB cache.`);
+            return cachedPem;
+          }
+        } catch (dbErr: any) {
+          this.logger.error(`[JwtAuthGuard] DB cache lookup also failed: ${dbErr.message}`);
+        }
+        throw new UnauthorizedException(
+          `Keycloak unavailable and no cached key found for kid="${kid}". Please try again shortly.`,
+        );
       }
     }
 
