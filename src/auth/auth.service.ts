@@ -469,13 +469,68 @@ export class AuthService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Refresh Token (Keycloak)
+  // Refresh Token (Keycloak or Internal HS256)
   // ─────────────────────────────────────────────────────────────
   async refreshKeycloakToken(refreshToken: string) {
     if (!refreshToken) {
       throw new BadRequestException('Refresh token is required.');
     }
 
+    // ── Detect token type from JWT header ──────────────────────
+    // Internal HS256 tokens have no `kid` in the header.
+    // Keycloak RS256 tokens always include `kid`.
+    let isInternalToken = false;
+    try {
+      const parts = refreshToken.split('.');
+      if (parts.length === 3) {
+        const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+        if (!header.kid && header.alg === 'HS256') {
+          isInternalToken = true;
+        }
+      }
+    } catch {
+      // Not a JWT — fall through to Keycloak path
+    }
+
+    // ── Internal HS256 refresh path ────────────────────────────
+    // Verify signature (ignoring expiry), look up live user, re-issue token.
+    if (isInternalToken) {
+      this.logger.log('[Auth] Internal HS256 refresh requested.');
+      const payload = this.verifyJwtIgnoreExpiry(refreshToken);
+      if (!payload) {
+        throw new UnauthorizedException('Invalid internal token signature.');
+      }
+
+      const userId = payload.sub || payload.id;
+      if (!userId) {
+        throw new UnauthorizedException('Token payload missing user identifier.');
+      }
+
+      const userResult = await this.db.query(
+        `SELECT u.*, cr.system_role
+         FROM users u
+         LEFT JOIN custom_roles cr ON cr.id = u.role_id
+         WHERE u.id = $1 LIMIT 1`,
+        [userId],
+      );
+      if (!userResult.rows.length) {
+        throw new UnauthorizedException('User not found.');
+      }
+      const user = userResult.rows[0];
+      if (!user.is_active) {
+        throw new UnauthorizedException('Your account has been deactivated.');
+      }
+
+      const freshToken = this.signInternalToken(user);
+      this.logger.log(`[Auth] Re-issued internal token for user ${user.email}`);
+      return {
+        accessToken: freshToken.accessToken,
+        refreshToken: freshToken.accessToken, // internal: refresh token = access token
+        expiresIn: freshToken.expiresIn,
+      };
+    }
+
+    // ── Keycloak RS256 refresh path ────────────────────────────
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     const tokenUrl = `${issuer}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
@@ -513,6 +568,26 @@ export class AuthService implements OnModuleInit {
     }
 
     throw new UnauthorizedException('Invalid or expired refresh token.');
+  }
+
+  /**
+   * Verify an HS256 JWT signature WITHOUT checking expiry.
+   * Used solely for the internal token refresh flow.
+   */
+  verifyJwtIgnoreExpiry(token: string): any {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+      const data = `${parts[0]}.${parts[1]}`;
+      const expectedSig = crypto
+        .createHmac('sha256', this.jwtSecret)
+        .update(data)
+        .digest('base64url');
+      if (expectedSig !== parts[2]) return null;
+      return JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    } catch {
+      return null;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
