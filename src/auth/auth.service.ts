@@ -1521,6 +1521,11 @@ export class AuthService implements OnModuleInit {
   private async ensureRolesTableBranchColumn(): Promise<void> {
     await this.db.query(`
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
+      UPDATE custom_roles cr
+      SET branch_id = (
+        SELECT id FROM branches b WHERE b.tenant_id = cr.tenant_id ORDER BY b.created_at ASC LIMIT 1
+      )
+      WHERE cr.branch_id IS NULL AND cr.is_system = false;
     `).catch(() => {});
   }
 
@@ -1543,7 +1548,7 @@ export class AuthService implements OnModuleInit {
 
     if (branchId) {
       params.push(branchId);
-      sql += ` AND (cr.branch_id = $${params.length}::uuid OR cr.branch_id IS NULL)`;
+      sql += ` AND cr.branch_id = $${params.length}::uuid`;
     }
 
     sql += ' ORDER BY (cr.is_system = false) DESC, cr.name ASC';
