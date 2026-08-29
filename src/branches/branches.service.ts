@@ -157,92 +157,70 @@ export class BranchesService {
       [tenantId]
     );
 
-    const allUsersRes = await this.db.query(
-      `SELECT id, email, full_name, roles, is_active, pod_id, branch_id, assigned_branch_ids, created_at
-       FROM users
-       WHERE tenant_id = $1
-       ORDER BY full_name ASC`,
-      [tenantId]
+    return Promise.all(
+      res.rows.map(async (row) => {
+        const branchMembers = await this.getMembers(row.id, tenantId);
+
+        return {
+          id: row.id,
+          name: row.name,
+          code: row.code,
+          city: row.city,
+          state: row.state,
+          country: row.country,
+          market: row.market || 'INDIA',
+          managerId: row.manager_id || null,
+          managerName: row.manager_name || null,
+          managerEmail: row.manager_email || null,
+          isActive: row.is_active,
+          allowNone: Boolean(row.allow_none),
+          allowPods: row.allow_pods !== false,
+          allowAll: row.allow_all !== false,
+          allowUnassigned: row.allow_unassigned !== false,
+          podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
+          requireAmJobApproval: row.require_am_job_approval !== false,
+          requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
+          rolesRequiringApproval: (() => {
+            try {
+              return typeof row.roles_requiring_approval === 'string'
+                ? JSON.parse(row.roles_requiring_approval)
+                : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
+            } catch {
+              return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
+            }
+          })(),
+          defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
+          allowedJobApproverRoles: (() => {
+            try {
+              return typeof row.allowed_job_approver_roles === 'string'
+                ? JSON.parse(row.allowed_job_approver_roles)
+                : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
+            } catch {
+              return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
+            }
+          })(),
+          approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
+          timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
+          workStartTime: row.work_start_time || '09:00',
+          workEndTime: row.work_end_time || '18:00',
+          workingDays: (() => {
+            try {
+              return typeof row.working_days === 'string'
+                ? JSON.parse(row.working_days)
+                : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+            } catch {
+              return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+            }
+          })(),
+          shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
+          breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
+          usersCount: branchMembers.length,
+          jobsCount: row.jobs_count || 0,
+          members: branchMembers,
+          createdAt: row.created_at,
+        };
+      })
     );
-    const allUsers = allUsersRes.rows;
-
-    return res.rows.map((row) => {
-      const branchMembers: BranchMember[] = allUsers
-        .filter((u) => {
-          if (u.branch_id === row.id) return true;
-          if (Array.isArray(u.assigned_branch_ids) && u.assigned_branch_ids.includes(row.id)) return true;
-          if (typeof u.assigned_branch_ids === 'string' && u.assigned_branch_ids.includes(row.id)) return true;
-          return false;
-        })
-        .map((r) => ({
-          id: r.id,
-          email: r.email,
-          fullName: r.full_name,
-          roles: r.roles || [],
-          isActive: r.is_active,
-          podId: r.pod_id,
-          createdAt: r.created_at,
-        }));
-
-      return {
-        id: row.id,
-        name: row.name,
-        code: row.code,
-        city: row.city,
-        state: row.state,
-        country: row.country,
-        market: row.market || 'INDIA',
-        managerId: row.manager_id || null,
-        managerName: row.manager_name || null,
-        managerEmail: row.manager_email || null,
-        isActive: row.is_active,
-        allowNone: Boolean(row.allow_none),
-        allowPods: row.allow_pods !== false,
-        allowAll: row.allow_all !== false,
-        allowUnassigned: row.allow_unassigned !== false,
-        podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
-        requireAmJobApproval: row.require_am_job_approval !== false,
-        requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
-        rolesRequiringApproval: (() => {
-          try {
-            return typeof row.roles_requiring_approval === 'string'
-              ? JSON.parse(row.roles_requiring_approval)
-              : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
-          } catch {
-            return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
-          }
-        })(),
-        defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
-        allowedJobApproverRoles: (() => {
-          try {
-            return typeof row.allowed_job_approver_roles === 'string'
-              ? JSON.parse(row.allowed_job_approver_roles)
-              : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
-          } catch {
-            return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
-          }
-        })(),
-        approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
-        timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
-        workStartTime: row.work_start_time || '09:00',
-        workEndTime: row.work_end_time || '18:00',
-        workingDays: (() => {
-          try {
-            return typeof row.working_days === 'string'
-              ? JSON.parse(row.working_days)
-              : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-          } catch {
-            return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-          }
-        })(),
-        shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
-        breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
-        usersCount: branchMembers.length,
-        jobsCount: row.jobs_count || 0,
-        members: branchMembers,
-        createdAt: row.created_at,
-      };
-    });
   }
 
   async findOne(id: string, tenantId: string): Promise<BranchResponse> {
