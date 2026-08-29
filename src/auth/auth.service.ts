@@ -1221,7 +1221,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listUsers(tenantId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, r.name as role_name, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, r.name as role_name, r.system_role as system_role, b.name as branch_name, bu.name as business_unit_name
        FROM users u 
        LEFT JOIN custom_roles r ON u.role_id = r.id
        LEFT JOIN branches b ON u.branch_id = b.id
@@ -1250,6 +1250,7 @@ export class AuthService implements OnModuleInit {
       const rawRoles = Array.isArray(u.roles) ? u.roles : [];
       const filteredRoles = rawRoles.filter(rName => validRoleNames.has(rName.toUpperCase()));
       const primaryRole = u.role_name || filteredRoles[0] || 'RECRUITER';
+      const systemRole = u.system_role || (filteredRoles[0] ? filteredRoles[0].toUpperCase() : 'RECRUITER');
 
       return {
         id: u.id,
@@ -1258,6 +1259,7 @@ export class AuthService implements OnModuleInit {
         roles: filteredRoles.length > 0 ? filteredRoles : [primaryRole],
         roleId: u.role_id,
         roleName: primaryRole,
+        systemRole: systemRole,
         isActive: u.is_active,
         isApproved: u.is_approved,
         createdAt: u.created_at,
