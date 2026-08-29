@@ -1970,7 +1970,7 @@ export class AuthService implements OnModuleInit {
   }
 
 
-  async assignUserRoles(tenantId: string, userId: string, roleIds: string[], requesterRoles: string[]) {
+  async assignUserRoles(tenantId: string, userId: string, roleIds: string[], requesterRoles: string[], append: boolean = false) {
     if (!roleIds || roleIds.length === 0) {
       throw new BadRequestException('Please specify at least one role.');
     }
@@ -1983,16 +1983,17 @@ export class AuthService implements OnModuleInit {
     if (rolesResult.rows.length === 0) {
       throw new NotFoundException('Selected roles were not found.');
     }
-    const roleNames = rolesResult.rows.map(r => r.name.toUpperCase());
+    const newRoleNames = rolesResult.rows.map(r => r.name);
 
     // Block assigning SUPER_ADMIN unless requester has SUPER_ADMIN role
-    if (roleNames.includes('SUPER_ADMIN') && (!requesterRoles || !requesterRoles.includes('SUPER_ADMIN'))) {
+    const newRoleNamesUpper = newRoleNames.map(r => r.toUpperCase());
+    if (newRoleNamesUpper.includes('SUPER_ADMIN') && (!requesterRoles || !requesterRoles.includes('SUPER_ADMIN'))) {
       throw new ForbiddenException('You are not authorized to assign the SUPER_ADMIN role.');
     }
 
     // Fetch target user details
     const userRes = await this.db.query(
-      'SELECT tenant_id, roles FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT tenant_id, roles, role_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (userRes.rows.length === 0) {
@@ -2006,8 +2007,23 @@ export class AuthService implements OnModuleInit {
       throw new ForbiddenException('You are not authorized to modify roles of a SUPER_ADMIN.');
     }
 
+    // Determine final combined roles array
+    let finalRoles: string[];
+    if (append) {
+      const existingUpper = new Set(targetUserRoles.map((r: string) => r.toUpperCase()));
+      finalRoles = [...targetUserRoles];
+      for (const nr of newRoleNames) {
+        if (!existingUpper.has(nr.toUpperCase())) {
+          finalRoles.push(nr);
+          existingUpper.add(nr.toUpperCase());
+        }
+      }
+    } else {
+      finalRoles = newRoleNames;
+    }
+
     // Demoting check: if new roles do not contain ADMIN, protect last admin lockout
-    const isNewAdmin = roleNames.includes('ADMIN');
+    const isNewAdmin = finalRoles.some(r => r.toUpperCase() === 'ADMIN');
     if (!isNewAdmin) {
       await this.verifyLastAdminProtection(tenantId, userId, 'demote');
     }
@@ -2017,10 +2033,98 @@ export class AuthService implements OnModuleInit {
       `UPDATE users 
        SET role_id = $1, roles = $2, updated_at = NOW() 
        WHERE id = $3 AND tenant_id = $4`,
-      [roleIds[0], roleNames, userId, tenantId]
+      [roleIds[0] || targetUser.role_id, finalRoles, userId, tenantId]
     );
 
-    return { message: 'User roles assigned successfully.', roles: roleNames };
+    return { message: 'User roles assigned successfully.', roles: finalRoles };
+  }
+
+  async batchAssignUsersToRole(tenantId: string, roleId: string, userIds: string[], requesterRoles: string[]) {
+    if (!userIds || userIds.length === 0) {
+      throw new BadRequestException('Please provide at least one user ID.');
+    }
+
+    const roleRes = await this.db.query(
+      'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [roleId, tenantId]
+    );
+    if (roleRes.rows.length === 0) {
+      throw new NotFoundException('Target custom role not found.');
+    }
+    const targetRole = roleRes.rows[0];
+
+    let assignedCount = 0;
+    for (const userId of userIds) {
+      const uRes = await this.db.query(
+        'SELECT id, roles, role_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        [userId, tenantId]
+      );
+      if (uRes.rows.length === 0) continue;
+      const user = uRes.rows[0];
+      const currentRoles: string[] = user.roles || [];
+
+      // Add targetRole.name if not present
+      const hasRole = currentRoles.some(r => r.toUpperCase() === targetRole.name.toUpperCase());
+      const updatedRoles = hasRole ? currentRoles : [...currentRoles, targetRole.name];
+
+      await this.db.query(
+        `UPDATE users 
+         SET role_id = $1, roles = $2, updated_at = NOW() 
+         WHERE id = $3 AND tenant_id = $4`,
+        [targetRole.id, updatedRoles, userId, tenantId]
+      );
+      assignedCount++;
+    }
+
+    return { message: `Successfully assigned ${assignedCount} user(s) to role "${targetRole.name}".`, count: assignedCount };
+  }
+
+  async unassignUserFromRole(tenantId: string, roleId: string, userId: string) {
+    const roleRes = await this.db.query(
+      'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [roleId, tenantId]
+    );
+    if (roleRes.rows.length === 0) {
+      throw new NotFoundException('Role not found.');
+    }
+    const role = roleRes.rows[0];
+
+    const uRes = await this.db.query(
+      'SELECT id, roles, role_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [userId, tenantId]
+    );
+    if (uRes.rows.length === 0) {
+      throw new NotFoundException('User not found.');
+    }
+    const user = uRes.rows[0];
+    const currentRoles: string[] = user.roles || [];
+
+    // Filter out this role name
+    let remainingRoles = currentRoles.filter(r => r.toUpperCase() !== role.name.toUpperCase());
+
+    // If no roles remain, fallback to RECRUITER
+    if (remainingRoles.length === 0) {
+      remainingRoles = ['RECRUITER'];
+    }
+
+    // Find next valid custom role ID if current role_id was this role
+    let nextRoleId = user.role_id === role.id ? null : user.role_id;
+    if (!nextRoleId && remainingRoles.length > 0) {
+      const nextRoleRes = await this.db.query(
+        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR UPPER(name) = UPPER($2)) LIMIT 1',
+        [tenantId, remainingRoles[0]]
+      );
+      nextRoleId = nextRoleRes.rows[0]?.id || null;
+    }
+
+    await this.db.query(
+      `UPDATE users 
+       SET role_id = $1, roles = $2, updated_at = NOW() 
+       WHERE id = $3 AND tenant_id = $4`,
+      [nextRoleId, remainingRoles, userId, tenantId]
+    );
+
+    return { message: `Removed user from role "${role.name}".`, remainingRoles };
   }
 
   listAllPermissions() {

@@ -558,9 +558,37 @@ Validates email + password and returns a signed JWT access token.
   async assignUserRoles(
     @CurrentUser() user: AuthUser,
     @Param('id') targetUserId: string,
-    @Body() body: { roleIds: string[] },
+    @Body() body: { roleIds: string[]; append?: boolean },
   ) {
-    return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles);
+    return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles, body.append);
+  }
+
+  // ─── POST /api/auth/rbac/roles/:id/assign-users ───────────────
+  @Post('rbac/roles/:id/assign-users')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Batch assign multiple users to a custom role' })
+  async batchAssignUsers(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roleId: string,
+    @Body() body: { userIds: string[] },
+  ) {
+    return this.authService.batchAssignUsersToRole(user.tenantId, roleId, body.userIds, user.roles);
+  }
+
+  // ─── POST /api/auth/rbac/roles/:id/unassign-user ─────────────
+  @Post('rbac/roles/:id/unassign-user')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unassign a user from a specific custom role' })
+  async unassignUser(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roleId: string,
+    @Body() body: { userId: string },
+  ) {
+    return this.authService.unassignUserFromRole(user.tenantId, roleId, body.userId);
   }
 
   // ─── GET /api/auth/check-ssl-domain ─────────────────────────
