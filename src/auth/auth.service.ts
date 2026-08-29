@@ -1539,6 +1539,7 @@ export class AuthService implements OnModuleInit {
   private async ensureRolesTableBranchColumn(): Promise<void> {
     await this.db.query(`
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
+      ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
       UPDATE custom_roles cr
       SET branch_id = (
         SELECT id FROM branches b WHERE b.tenant_id = cr.tenant_id ORDER BY b.created_at ASC LIMIT 1
@@ -1551,9 +1552,12 @@ export class AuthService implements OnModuleInit {
     await this.ensureRolesTableBranchColumn();
     let sql = `
       SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName",
-             cr.name, cr.description, cr.is_system as "isSystem", cr.system_role as "systemRole"
+             cr.name, cr.description, cr.is_system as "isSystem", cr.system_role as "systemRole",
+             cr.created_at as "createdAt", cr.updated_at as "updatedAt",
+             cr.created_by as "createdById", u.full_name as "createdByName", u.email as "createdByEmail"
       FROM custom_roles cr
       LEFT JOIN branches b ON b.id = cr.branch_id
+      LEFT JOIN users u ON u.id = cr.created_by
       WHERE cr.tenant_id = $1
     `;
     const params: any[] = [tenantId];
@@ -1678,6 +1682,7 @@ export class AuthService implements OnModuleInit {
     permissions: string[],
     systemRole?: string,
     branchId?: string,
+    createdById?: string,
   ) {
     await this.ensureRolesTableBranchColumn();
     const nameUpper = name.toUpperCase().trim();
@@ -1752,10 +1757,10 @@ export class AuthService implements OnModuleInit {
     }
 
     const roleRes = await this.db.query(
-      `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role)
-       VALUES ($1, $2, $3, $4, false, $5)
-       RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role as "systemRole"`,
-      [tenantId, effectiveBranchId, name, description, resolvedSystemRole]
+      `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role, created_by)
+       VALUES ($1, $2, $3, $4, false, $5, $6)
+       RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role as "systemRole", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById"`,
+      [tenantId, effectiveBranchId, name, description, resolvedSystemRole, createdById || null]
     );
     const role = roleRes.rows[0];
 
@@ -1777,6 +1782,84 @@ export class AuthService implements OnModuleInit {
       branchName,
       permissions: resolvedPermissions
     };
+  }
+
+  async updateCustomRole(
+    tenantId: string,
+    roleId: string,
+    body: { name?: string; description?: string; systemRole?: string; branchId?: string; permissions?: string[] },
+    userId?: string,
+  ) {
+    await this.ensureRolesTableBranchColumn();
+    const roleResult = await this.db.query(
+      'SELECT id, name, is_system, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      [roleId, tenantId]
+    );
+    if (roleResult.rows.length === 0) {
+      throw new NotFoundException('Role not found.');
+    }
+    const existingRole = roleResult.rows[0];
+    if (existingRole.is_system) {
+      throw new BadRequestException('Default system archetype templates cannot be modified directly.');
+    }
+
+    const updates: string[] = ['updated_at = NOW()'];
+    const params: any[] = [roleId, tenantId];
+
+    if (body.name !== undefined) {
+      const nameUpper = body.name.toUpperCase().trim();
+      if (nameUpper === 'SUPER_ADMIN') {
+        throw new BadRequestException('Role name SUPER_ADMIN is reserved.');
+      }
+      const targetBranchId = body.branchId !== undefined ? body.branchId : existingRole.branch_id;
+      const exists = await this.db.query(
+        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) AND id <> $4 LIMIT 1',
+        [tenantId, nameUpper, targetBranchId, roleId]
+      );
+      if (exists.rows.length > 0) {
+        throw new ConflictException(`A custom role with name "${body.name}" already exists in this branch.`);
+      }
+      params.push(body.name.trim());
+      updates.push(`name = $${params.length}`);
+    }
+
+    if (body.description !== undefined) {
+      params.push(body.description);
+      updates.push(`description = $${params.length}`);
+    }
+
+    if (body.systemRole !== undefined) {
+      const resolvedSystemRole = body.systemRole.toUpperCase().trim();
+      if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
+        throw new BadRequestException('Invalid base system role selected.');
+      }
+      params.push(resolvedSystemRole);
+      updates.push(`system_role = $${params.length}`);
+    }
+
+    if (body.branchId !== undefined) {
+      params.push(body.branchId);
+      updates.push(`branch_id = $${params.length}::uuid`);
+    }
+
+    if (updates.length > 1) {
+      await this.db.query(
+        `UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1 AND tenant_id = $2`,
+        params
+      );
+    }
+
+    if (body.permissions && Array.isArray(body.permissions)) {
+      await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+      for (const perm of body.permissions) {
+        await this.db.query(
+          'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
+          [roleId, perm]
+        );
+      }
+    }
+
+    return { message: 'Custom role updated successfully.', roleId };
   }
 
   async updateRolePermissions(tenantId: string, roleId: string, permissions: string[]) {

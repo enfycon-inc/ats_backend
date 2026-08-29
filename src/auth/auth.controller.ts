@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Put,
   Patch,
   Delete,
   Body,
@@ -476,7 +477,39 @@ Validates email + password and returns a signed JWT access token.
     @Query('branchId') queryBranchId?: string,
   ) {
     const bid = body.branchId || queryBranchId || headerBranchId;
-    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid);
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, user.dbId);
+  }
+
+  // ─── PUT /api/auth/rbac/roles/:id ───────────────────────────
+  @Put('rbac/roles/:id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update custom role details and permissions [ADMIN only]',
+  })
+  async updateCustomRole(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roleId: string,
+    @Body() body: { name?: string; description?: string; systemRole?: string; branchId?: string; permissions?: string[] },
+  ) {
+    return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId);
+  }
+
+  // ─── PATCH /api/auth/rbac/roles/:id ─────────────────────────
+  @Patch('rbac/roles/:id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Update custom role details and permissions [ADMIN only]',
+  })
+  async patchCustomRole(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roleId: string,
+    @Body() body: { name?: string; description?: string; systemRole?: string; branchId?: string; permissions?: string[] },
+  ) {
+    return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId);
   }
 
   // ─── PATCH /api/auth/rbac/roles/:id/permissions ──────────────
