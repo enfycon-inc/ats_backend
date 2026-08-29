@@ -1663,8 +1663,8 @@ export class AuthService implements OnModuleInit {
   ) {
     await this.ensureRolesTableBranchColumn();
     const nameUpper = name.toUpperCase().trim();
-    if (['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(nameUpper)) {
-      throw new BadRequestException('Role name conflicts with a default system role.');
+    if (nameUpper === 'SUPER_ADMIN') {
+      throw new BadRequestException('Role name SUPER_ADMIN is reserved for the root system administrator.');
     }
 
     const resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
@@ -1726,11 +1726,11 @@ export class AuthService implements OnModuleInit {
     }
 
     const exists = await this.db.query(
-      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) LIMIT 1',
+      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) LIMIT 1',
       [tenantId, nameUpper, effectiveBranchId]
     );
     if (exists.rows.length > 0) {
-      throw new ConflictException(`A role with name "${name}" already exists in this branch.`);
+      throw new ConflictException(`A custom role with name "${name}" already exists in this branch.`);
     }
 
     const roleRes = await this.db.query(
