@@ -413,7 +413,25 @@ export class BranchesService {
       : [branchId];
 
     if (roles && Array.isArray(roles) && roles.length > 0) {
-      await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2, roles = $3 WHERE id = $4 AND tenant_id = $5', [branchId, branchIds, roles, userId, tenantId]);
+      const customRoleRes = await this.db.query(
+        `SELECT id, name FROM custom_roles 
+         WHERE tenant_id = $1 AND (name = ANY($2::text[]) OR id::text = ANY($2::text[]) OR system_role = ANY($2::text[]))
+         ORDER BY (is_system = false) DESC, created_at DESC LIMIT 1`,
+        [tenantId, roles]
+      );
+      const roleId = customRoleRes.rows[0]?.id || null;
+
+      if (roleId) {
+        await this.db.query(
+          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, roles = $3, role_id = $4 WHERE id = $5 AND tenant_id = $6',
+          [branchId, branchIds, roles, roleId, userId, tenantId]
+        );
+      } else {
+        await this.db.query(
+          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, roles = $3 WHERE id = $4 AND tenant_id = $5',
+          [branchId, branchIds, roles, userId, tenantId]
+        );
+      }
     } else {
       await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2 WHERE id = $3 AND tenant_id = $4', [branchId, branchIds, userId, tenantId]);
     }

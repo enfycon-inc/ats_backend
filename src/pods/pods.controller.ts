@@ -1,9 +1,9 @@
 import {
-  Controller, Get, Post, Patch, Delete, Body, Param, Headers,
+  Controller, Get, Post, Patch, Delete, Body, Param, Query, Headers,
   HttpStatus, HttpCode, UseGuards,
 } from '@nestjs/common';
 import {
-  ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth,
+  ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiBearerAuth,
 } from '@nestjs/swagger';
 import { PodsService, PodResponse } from './pods.service';
 import { CreatePodDto } from './dtos/create-pod.dto';
@@ -31,32 +31,43 @@ export class PodsController {
     @Body() dto: CreatePodDto,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
+    @Query('branchId') queryBranchId?: string,
   ): Promise<PodResponse> {
     const tid = resolveTenantId(user, tenantId);
-    return this.podsService.create(dto, tid);
+    const bid = dto.branchId || queryBranchId || headerBranchId;
+    return this.podsService.create(dto, tid, bid);
   }
 
   @Get()
   @RequirePermissions('pod:view')
   @ApiOperation({ summary: 'List all pods in the workspace' })
   @ApiResponse({ status: 200, description: 'Return pods list.' })
+  @ApiQuery({ name: 'branchId', required: false, description: 'Filter pods by branch UUID' })
   async findAll(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
+    @Query('branchId') queryBranchId?: string,
   ): Promise<PodResponse[]> {
     const tid = resolveTenantId(user, tenantId);
-    return this.podsService.findAll(tid);
+    const bid = queryBranchId || headerBranchId;
+    return this.podsService.findAll(tid, bid);
   }
 
   @Get('available-recruiters')
   @RequirePermissions('pod:view')
   @ApiOperation({ summary: 'Get recruiters not associated with any pod' })
+  @ApiQuery({ name: 'branchId', required: false, description: 'Filter available recruiters by branch UUID' })
   async getAvailableRecruiters(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
+    @Query('branchId') queryBranchId?: string,
   ): Promise<any[]> {
     const tid = resolveTenantId(user, tenantId);
-    return this.podsService.getAvailableRecruiters(tid);
+    const bid = queryBranchId || headerBranchId;
+    return this.podsService.getAvailableRecruiters(tid, bid);
   }
 
   @Get('my-team')
