@@ -502,16 +502,21 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       CREATE TABLE IF NOT EXISTS pods (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        branch_id UUID REFERENCES branches(id) ON DELETE CASCADE,
         name VARCHAR(255) NOT NULL,
         pod_head_id UUID,
         description TEXT,
         is_available_for_assignment BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        UNIQUE(tenant_id, name)
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
+      ALTER TABLE pods ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
       ALTER TABLE pods ADD COLUMN IF NOT EXISTS description TEXT;
+      ALTER TABLE pods DROP CONSTRAINT IF EXISTS pods_tenant_id_name_key;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pods_branch_name 
+        ON pods (tenant_id, branch_id, UPPER(name)) 
+        WHERE branch_id IS NOT NULL;
 
       -- 12. Add pod_id to users referencing pods
       ALTER TABLE users ADD COLUMN IF NOT EXISTS pod_id UUID REFERENCES pods(id) ON DELETE SET NULL;

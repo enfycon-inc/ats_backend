@@ -95,13 +95,19 @@ export class AuthService implements OnModuleInit {
         description   TEXT,
         is_system     BOOLEAN NOT NULL DEFAULT false,
         created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        UNIQUE(tenant_id, name)
+        updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
       -- Ensure branch_id and system_role columns exist on custom_roles
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS system_role VARCHAR(50) DEFAULT 'RECRUITER';
+      ALTER TABLE custom_roles DROP CONSTRAINT IF EXISTS custom_roles_tenant_id_name_key;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_branch_name 
+        ON custom_roles (tenant_id, branch_id, UPPER(name)) 
+        WHERE is_system = false AND branch_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_system_name 
+        ON custom_roles (tenant_id, UPPER(name)) 
+        WHERE is_system = true;
 
       -- Update system_role mappings for default system roles
       UPDATE custom_roles SET system_role = 'ADMIN' WHERE name = 'ADMIN';
@@ -1489,20 +1495,32 @@ export class AuthService implements OnModuleInit {
     const roleMap: Record<string, string> = {};
 
     for (const [roleName, permissions] of Object.entries(DEFAULT_PERMISSIONS)) {
-      // 1. Insert role
-      const roleRes = await this.db.query(`
-        INSERT INTO custom_roles (tenant_id, name, description, is_system, system_role)
-        VALUES ($1, $2, $3, true, $4)
-        ON CONFLICT (tenant_id, name) DO UPDATE SET system_role = EXCLUDED.system_role
-        RETURNING id
-      `, [
-        tenantId,
-        roleName,
-        `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`,
-        roleName,
-      ]);
+      // 1. Check or insert system role
+      let roleRes = await this.db.query(
+        "SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = UPPER($2) AND is_system = true LIMIT 1",
+        [tenantId, roleName]
+      );
+      let roleId: string;
+      if (roleRes.rows.length === 0) {
+        const ins = await this.db.query(`
+          INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role)
+          VALUES ($1, NULL, $2, $3, true, $4)
+          RETURNING id
+        `, [
+          tenantId,
+          roleName,
+          `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`,
+          roleName,
+        ]);
+        roleId = ins.rows[0].id;
+      } else {
+        roleId = roleRes.rows[0].id;
+        await this.db.query(
+          "UPDATE custom_roles SET system_role = $1, description = $2 WHERE id = $3",
+          [roleName, `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`, roleId]
+        );
+      }
       
-      const roleId = roleRes.rows[0].id;
       roleMap[roleName] = roleId;
 
       // 2. Insert permissions
