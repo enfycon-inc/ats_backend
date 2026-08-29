@@ -436,8 +436,14 @@ Validates email + password and returns a signed JWT access token.
   @ApiOperation({
     summary: 'List all company roles and permissions',
   })
-  async listRoles(@CurrentUser() user: AuthUser) {
-    return this.authService.listRoles(user.tenantId);
+  async listRoles(
+    @CurrentUser() user: AuthUser,
+    @Query('branchId') branchId?: string,
+    @Query('includeSystem') includeSystem?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
+  ) {
+    const bid = branchId || headerBranchId;
+    return this.authService.listRoles(user.tenantId, bid, includeSystem === 'true');
   }
 
   @Get('rbac/assignable-roles')
@@ -446,8 +452,13 @@ Validates email + password and returns a signed JWT access token.
   @ApiOperation({
     summary: 'List active role pool available for user assignment (with system role substitutions applied)',
   })
-  async getAssignableRolePool(@CurrentUser() user: AuthUser) {
-    return this.authService.getAssignableRolePool(user.tenantId);
+  async getAssignableRolePool(
+    @CurrentUser() user: AuthUser,
+    @Query('branchId') branchId?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
+  ) {
+    const bid = branchId || headerBranchId;
+    return this.authService.getAssignableRolePool(user.tenantId, bid);
   }
 
   // ─── POST /api/auth/rbac/roles ───────────────────────────────
@@ -460,9 +471,12 @@ Validates email + password and returns a signed JWT access token.
   })
   async createCustomRole(
     @CurrentUser() user: AuthUser,
-    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string },
+    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string; branchId?: string },
+    @Headers('x-branch-id') headerBranchId?: string,
+    @Query('branchId') queryBranchId?: string,
   ) {
-    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole);
+    const bid = body.branchId || queryBranchId || headerBranchId;
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid);
   }
 
   // ─── PATCH /api/auth/rbac/roles/:id/permissions ──────────────

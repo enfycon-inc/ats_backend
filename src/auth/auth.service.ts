@@ -90,6 +90,7 @@ export class AuthService implements OnModuleInit {
       CREATE TABLE IF NOT EXISTS custom_roles (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_id     UUID NOT NULL DEFAULT 'd3b07384-d113-49c3-a555-9ee75c13ca33',
+        branch_id     UUID REFERENCES branches(id) ON DELETE CASCADE,
         name          VARCHAR(100) NOT NULL,
         description   TEXT,
         is_system     BOOLEAN NOT NULL DEFAULT false,
@@ -98,7 +99,8 @@ export class AuthService implements OnModuleInit {
         UNIQUE(tenant_id, name)
       );
 
-      -- Ensure system_role column exists on custom_roles
+      -- Ensure branch_id and system_role columns exist on custom_roles
+      ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS system_role VARCHAR(50) DEFAULT 'RECRUITER';
 
       -- Update system_role mappings for default system roles
@@ -1516,13 +1518,36 @@ export class AuthService implements OnModuleInit {
     return roleMap;
   }
 
-  async listRoles(tenantId: string) {
-    let sql = 'SELECT id, name, description, is_system as "isSystem", system_role as "systemRole" FROM custom_roles WHERE tenant_id = $1';
-    if (tenantId !== DEFAULT_TENANT_ID) {
-      sql += " AND name <> 'SUPER_ADMIN'";
+  private async ensureRolesTableBranchColumn(): Promise<void> {
+    await this.db.query(`
+      ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
+    `).catch(() => {});
+  }
+
+  async listRoles(tenantId: string, branchId?: string, includeSystem = false) {
+    await this.ensureRolesTableBranchColumn();
+    let sql = `
+      SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName",
+             cr.name, cr.description, cr.is_system as "isSystem", cr.system_role as "systemRole"
+      FROM custom_roles cr
+      LEFT JOIN branches b ON b.id = cr.branch_id
+      WHERE cr.tenant_id = $1
+    `;
+    const params: any[] = [tenantId];
+
+    if (!includeSystem) {
+      sql += ' AND cr.is_system = false';
+    } else if (tenantId !== DEFAULT_TENANT_ID) {
+      sql += " AND cr.name <> 'SUPER_ADMIN'";
     }
-    sql += ' ORDER BY name ASC';
-    const rolesRes = await this.db.query(sql, [tenantId]);
+
+    if (branchId) {
+      params.push(branchId);
+      sql += ` AND (cr.branch_id = $${params.length}::uuid OR cr.branch_id IS NULL)`;
+    }
+
+    sql += ' ORDER BY (cr.is_system = false) DESC, cr.name ASC';
+    const rolesRes = await this.db.query(sql, params);
     const roles = rolesRes.rows;
 
     const DEFAULT_PERMS: Record<string, string[]> = {
@@ -1605,8 +1630,8 @@ export class AuthService implements OnModuleInit {
     return result;
   }
 
-  async getAssignableRolePool(tenantId: string) {
-    const allRoles = await this.listRoles(tenantId);
+  async getAssignableRolePool(tenantId: string, branchId?: string) {
+    const allRoles = await this.listRoles(tenantId, branchId, true);
     const substitutedKeys = new Set<string>();
 
     for (const r of allRoles) {
@@ -1623,7 +1648,15 @@ export class AuthService implements OnModuleInit {
     });
   }
 
-  async createCustomRole(tenantId: string, name: string, description: string, permissions: string[], systemRole?: string) {
+  async createCustomRole(
+    tenantId: string,
+    name: string,
+    description: string,
+    permissions: string[],
+    systemRole?: string,
+    branchId?: string,
+  ) {
+    await this.ensureRolesTableBranchColumn();
     const nameUpper = name.toUpperCase().trim();
     if (['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(nameUpper)) {
       throw new BadRequestException('Role name conflicts with a default system role.');
@@ -1632,6 +1665,15 @@ export class AuthService implements OnModuleInit {
     const resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
     if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
       throw new BadRequestException('Invalid base system role selected.');
+    }
+
+    let effectiveBranchId = branchId || null;
+    if (!effectiveBranchId) {
+      const defaultBranchRes = await this.db.query(
+        'SELECT id FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1',
+        [tenantId]
+      );
+      effectiveBranchId = defaultBranchRes.rows[0]?.id || null;
     }
 
     // Determine default permissions for the selected base template if none or generic defaults are provided.
@@ -1679,18 +1721,18 @@ export class AuthService implements OnModuleInit {
     }
 
     const exists = await this.db.query(
-      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
-      [tenantId, nameUpper]
+      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) LIMIT 1',
+      [tenantId, nameUpper, effectiveBranchId]
     );
     if (exists.rows.length > 0) {
-      throw new ConflictException(`A role with name "${name}" already exists.`);
+      throw new ConflictException(`A role with name "${name}" already exists in this branch.`);
     }
 
     const roleRes = await this.db.query(
-      `INSERT INTO custom_roles (tenant_id, name, description, is_system, system_role)
-       VALUES ($1, $2, $3, false, $4)
-       RETURNING id, name, description, is_system as "isSystem", system_role as "systemRole"`,
-      [tenantId, name, description, resolvedSystemRole]
+      `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role)
+       VALUES ($1, $2, $3, $4, false, $5)
+       RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role as "systemRole"`,
+      [tenantId, effectiveBranchId, name, description, resolvedSystemRole]
     );
     const role = roleRes.rows[0];
 
@@ -1701,8 +1743,15 @@ export class AuthService implements OnModuleInit {
       );
     }
 
+    let branchName = null;
+    if (effectiveBranchId) {
+      const bRes = await this.db.query('SELECT name FROM branches WHERE id = $1', [effectiveBranchId]);
+      branchName = bRes.rows[0]?.name || null;
+    }
+
     return {
       ...role,
+      branchName,
       permissions: resolvedPermissions
     };
   }
