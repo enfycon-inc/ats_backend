@@ -402,7 +402,6 @@ export class BranchesService {
   }
 
   async getMembers(branchId: string, tenantId: string): Promise<BranchMember[]> {
-    await this.findOne(branchId, tenantId).catch(() => null);
     const res = await this.db.query(
       `SELECT id, email, full_name, roles, is_active, pod_id, branch_id, assigned_branch_ids, created_at
        FROM users
