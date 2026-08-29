@@ -3,6 +3,16 @@ import { DatabaseService } from '../database/database.service';
 import { CreateBranchDto } from './dtos/create-branch.dto';
 import { UpdateBranchDto } from './dtos/update-branch.dto';
 
+export interface BranchMember {
+  id: string;
+  email: string;
+  fullName: string;
+  roles: string[];
+  isActive: boolean;
+  podId: string | null;
+  createdAt: string;
+}
+
 export interface BranchResponse {
   id: string;
   name: string;
@@ -34,6 +44,7 @@ export interface BranchResponse {
   breakDurationMinutes: number;
   usersCount: number;
   jobsCount: number;
+  members?: BranchMember[];
   createdAt: string;
 }
 
@@ -43,9 +54,9 @@ export class BranchesService {
 
   constructor(private readonly db: DatabaseService) {}
 
-  private async ensureBranchSettingsColumns() {
+  private async ensureBranchSettingsColumns(): Promise<void> {
     await this.db.query(`
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_none BOOLEAN DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_none BOOLEAN DEFAULT FALSE;
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_pods BOOLEAN DEFAULT TRUE;
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_all BOOLEAN DEFAULT TRUE;
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_unassigned BOOLEAN DEFAULT TRUE;
@@ -138,7 +149,6 @@ export class BranchesService {
       `SELECT b.*,
               u.full_name AS manager_name,
               u.email AS manager_email,
-              (SELECT COUNT(*)::int FROM users WHERE branch_id = b.id) as users_count,
               (SELECT COUNT(*)::int FROM jobs WHERE branch_id = b.id) as jobs_count
        FROM branches b
        LEFT JOIN users u ON u.id = b.manager_id
@@ -147,63 +157,92 @@ export class BranchesService {
       [tenantId]
     );
 
-    return res.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      code: row.code,
-      city: row.city,
-      state: row.state,
-      country: row.country,
-      market: row.market || 'INDIA',
-      managerId: row.manager_id || null,
-      managerName: row.manager_name || null,
-      managerEmail: row.manager_email || null,
-      isActive: row.is_active,
-      allowNone: Boolean(row.allow_none),
-      allowPods: row.allow_pods !== false,
-      allowAll: row.allow_all !== false,
-      allowUnassigned: row.allow_unassigned !== false,
-      podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
-      requireAmJobApproval: row.require_am_job_approval !== false,
-      requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
-      rolesRequiringApproval: (() => {
-        try {
-          return typeof row.roles_requiring_approval === 'string'
-            ? JSON.parse(row.roles_requiring_approval)
-            : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
-        } catch {
-          return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
-        }
-      })(),
-      defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
-      allowedJobApproverRoles: (() => {
-        try {
-          return typeof row.allowed_job_approver_roles === 'string'
-            ? JSON.parse(row.allowed_job_approver_roles)
-            : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
-        } catch {
-          return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
-        }
-      })(),
-      approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
-      timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
-      workStartTime: row.work_start_time || '09:00',
-      workEndTime: row.work_end_time || '18:00',
-      workingDays: (() => {
-        try {
-          return typeof row.working_days === 'string'
-            ? JSON.parse(row.working_days)
-            : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-        } catch {
-          return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-        }
-      })(),
-      shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
-      breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
-      usersCount: row.users_count || 0,
-      jobsCount: row.jobs_count || 0,
-      createdAt: row.created_at,
-    }));
+    const allUsersRes = await this.db.query(
+      `SELECT id, email, full_name, roles, is_active, pod_id, branch_id, assigned_branch_ids, created_at
+       FROM users
+       WHERE tenant_id = $1
+       ORDER BY full_name ASC`,
+      [tenantId]
+    );
+    const allUsers = allUsersRes.rows;
+
+    return res.rows.map((row) => {
+      const branchMembers: BranchMember[] = allUsers
+        .filter((u) => {
+          if (u.branch_id === row.id) return true;
+          if (Array.isArray(u.assigned_branch_ids) && u.assigned_branch_ids.includes(row.id)) return true;
+          if (typeof u.assigned_branch_ids === 'string' && u.assigned_branch_ids.includes(row.id)) return true;
+          return false;
+        })
+        .map((r) => ({
+          id: r.id,
+          email: r.email,
+          fullName: r.full_name,
+          roles: r.roles || [],
+          isActive: r.is_active,
+          podId: r.pod_id,
+          createdAt: r.created_at,
+        }));
+
+      return {
+        id: row.id,
+        name: row.name,
+        code: row.code,
+        city: row.city,
+        state: row.state,
+        country: row.country,
+        market: row.market || 'INDIA',
+        managerId: row.manager_id || null,
+        managerName: row.manager_name || null,
+        managerEmail: row.manager_email || null,
+        isActive: row.is_active,
+        allowNone: Boolean(row.allow_none),
+        allowPods: row.allow_pods !== false,
+        allowAll: row.allow_all !== false,
+        allowUnassigned: row.allow_unassigned !== false,
+        podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
+        requireAmJobApproval: row.require_am_job_approval !== false,
+        requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
+        rolesRequiringApproval: (() => {
+          try {
+            return typeof row.roles_requiring_approval === 'string'
+              ? JSON.parse(row.roles_requiring_approval)
+              : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
+          } catch {
+            return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
+          }
+        })(),
+        defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
+        allowedJobApproverRoles: (() => {
+          try {
+            return typeof row.allowed_job_approver_roles === 'string'
+              ? JSON.parse(row.allowed_job_approver_roles)
+              : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
+          } catch {
+            return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
+          }
+        })(),
+        approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
+        timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
+        workStartTime: row.work_start_time || '09:00',
+        workEndTime: row.work_end_time || '18:00',
+        workingDays: (() => {
+          try {
+            return typeof row.working_days === 'string'
+              ? JSON.parse(row.working_days)
+              : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+          } catch {
+            return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+          }
+        })(),
+        shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
+        breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
+        usersCount: branchMembers.length,
+        jobsCount: row.jobs_count || 0,
+        members: branchMembers,
+        createdAt: row.created_at,
+      };
+    });
   }
 
   async findOne(id: string, tenantId: string): Promise<BranchResponse> {
@@ -212,7 +251,6 @@ export class BranchesService {
       `SELECT b.*,
               u.full_name AS manager_name,
               u.email AS manager_email,
-              (SELECT COUNT(*)::int FROM users WHERE branch_id = b.id) as users_count,
               (SELECT COUNT(*)::int FROM jobs WHERE branch_id = b.id) as jobs_count
        FROM branches b
        LEFT JOIN users u ON u.id = b.manager_id
@@ -224,6 +262,7 @@ export class BranchesService {
       throw new NotFoundException(`Branch with ID "${id}" not found.`);
     }
 
+    const members = await this.getMembers(id, tenantId);
     const row = res.rows[0];
     return {
       id: row.id,
@@ -278,8 +317,9 @@ export class BranchesService {
       })(),
       shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
       breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
-      usersCount: row.users_count || 0,
+      usersCount: members.length,
       jobsCount: row.jobs_count || 0,
+      members,
       createdAt: row.created_at,
     };
   }
@@ -361,12 +401,16 @@ export class BranchesService {
     return { message: 'Branch deleted successfully.' };
   }
 
-  async getMembers(branchId: string, tenantId: string) {
-    await this.findOne(branchId, tenantId);
+  async getMembers(branchId: string, tenantId: string): Promise<BranchMember[]> {
+    await this.findOne(branchId, tenantId).catch(() => null);
     const res = await this.db.query(
-      `SELECT id, email, full_name, roles, is_active, pod_id, created_at
+      `SELECT id, email, full_name, roles, is_active, pod_id, branch_id, assigned_branch_ids, created_at
        FROM users
-       WHERE tenant_id = $1 AND branch_id = $2
+       WHERE tenant_id = $1
+         AND (
+           branch_id = $2
+           OR (assigned_branch_ids IS NOT NULL AND assigned_branch_ids::text LIKE '%' || $2 || '%')
+         )
        ORDER BY full_name ASC`,
       [tenantId, branchId]
     );
@@ -406,13 +450,16 @@ export class BranchesService {
       if (userRes.rows.length === 0) {
         throw new NotFoundException('Selected manager user not found in tenant.');
       }
-      const rolesRes = await this.db.query('SELECT roles FROM users WHERE id = $1', [managerId]);
+      const rolesRes = await this.db.query('SELECT roles, assigned_branch_ids FROM users WHERE id = $1', [managerId]);
       const currentRoles: string[] = rolesRes.rows[0]?.roles || [];
+      const currentBranchIds: string[] = rolesRes.rows[0]?.assigned_branch_ids || [];
+      const updatedBranchIds = Array.from(new Set([branchId, ...currentBranchIds]));
+
       if (!currentRoles.includes('BRANCH_ADMIN')) {
         const updatedRoles = [...currentRoles, 'BRANCH_ADMIN'];
-        await this.db.query('UPDATE users SET roles = $1, branch_id = $2 WHERE id = $3', [updatedRoles, branchId, managerId]);
+        await this.db.query('UPDATE users SET roles = $1, branch_id = $2, assigned_branch_ids = $3 WHERE id = $4', [updatedRoles, branchId, updatedBranchIds, managerId]);
       } else {
-        await this.db.query('UPDATE users SET branch_id = $1 WHERE id = $2', [branchId, managerId]);
+        await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2 WHERE id = $3', [branchId, updatedBranchIds, managerId]);
       }
     }
     await this.db.query('UPDATE branches SET manager_id = $1 WHERE id = $2 AND tenant_id = $3', [managerId, branchId, tenantId]);
@@ -437,7 +484,7 @@ export class BranchesService {
           'SELECT id, name, code FROM pods WHERE branch_id = $1 AND tenant_id = $2',
           [b.id, tenantId]
         );
-        const members = await this.getMembers(b.id, tenantId);
+        const members = b.members || (await this.getMembers(b.id, tenantId));
         
         return {
           ...b,
