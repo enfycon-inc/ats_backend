@@ -1225,6 +1225,25 @@ export class AuthService implements OnModuleInit {
       [tenantId]
     );
 
+    // Query role permissions map for tenant custom roles
+    const rolePermsRes = await this.db.query(
+      `SELECT cr.id as role_id, cr.name as role_name, rp.permission
+       FROM custom_roles cr
+       JOIN role_permissions rp ON rp.role_id = cr.id
+       WHERE cr.tenant_id = $1`,
+      [tenantId]
+    ).catch(() => ({ rows: [] }));
+
+    const rolePermMap: Record<string, Set<string>> = {};
+    for (const row of rolePermsRes.rows) {
+      const rId = row.role_id;
+      const rName = (row.role_name || '').toUpperCase();
+      if (!rolePermMap[rId]) rolePermMap[rId] = new Set();
+      if (!rolePermMap[rName]) rolePermMap[rName] = new Set();
+      rolePermMap[rId].add(row.permission);
+      rolePermMap[rName].add(row.permission);
+    }
+
     const SYSTEM_ROLES = [
       "SUPER_ADMIN", "ADMIN", "TENANT_ADMIN", "ACCOUNT_MANAGER",
       "POD_LEAD", "DELIVERY_HEAD", "RECRUITER", "BRANCH_ADMIN"
@@ -1240,6 +1259,46 @@ export class AuthService implements OnModuleInit {
       const filteredRoles = rawRoles.filter(rName => validRoleNames.has(rName.toUpperCase()));
       const primaryRole = u.role_name || filteredRoles[0] || 'RECRUITER';
       const systemRole = u.system_role || (filteredRoles[0] ? filteredRoles[0].toUpperCase() : 'RECRUITER');
+
+      const userPerms = new Set<string>();
+
+      // Add default reviewer permissions for standard privileged roles
+      for (const r of filteredRoles) {
+        const up = r.toUpperCase();
+        if (up === 'SUPER_ADMIN' || up === 'ADMIN' || up === 'DELIVERY_HEAD' || up === 'BRANCH_ADMIN' || up === 'POD_LEAD' || up === 'ACCOUNT_MANAGER') {
+          userPerms.add('job:approve');
+          userPerms.add('submission:internal_screening');
+          userPerms.add('job:reject');
+        }
+        if (rolePermMap[up]) {
+          rolePermMap[up].forEach(p => userPerms.add(p));
+        }
+      }
+      if (u.role_id && rolePermMap[u.role_id]) {
+        rolePermMap[u.role_id].forEach(p => userPerms.add(p));
+      }
+
+      // Check branch-wise roles
+      if (u.branch_roles && typeof u.branch_roles === 'object') {
+        Object.values(u.branch_roles).forEach((bRoleList: any) => {
+          if (Array.isArray(bRoleList)) {
+            bRoleList.forEach((brName: string) => {
+              const bUp = brName.toUpperCase();
+              if (bUp === 'SUPER_ADMIN' || bUp === 'ADMIN' || bUp === 'DELIVERY_HEAD' || bUp === 'BRANCH_ADMIN' || bUp === 'POD_LEAD' || bUp === 'ACCOUNT_MANAGER') {
+                userPerms.add('job:approve');
+                userPerms.add('submission:internal_screening');
+                userPerms.add('job:reject');
+              }
+              if (rolePermMap[bUp]) {
+                rolePermMap[bUp].forEach(p => userPerms.add(p));
+              }
+            });
+          }
+        });
+      }
+
+      const permissionsArray = Array.from(userPerms);
+      const canReview = userPerms.has('job:approve') || userPerms.has('submission:internal_screening') || userPerms.has('job:reject');
 
       return {
         id: u.id,
@@ -1261,6 +1320,8 @@ export class AuthService implements OnModuleInit {
         businessUnitName: u.business_unit_name || null,
         jobReviewerId: u.job_reviewer_id || null,
         jobReviewerName: u.job_reviewer_name || null,
+        permissions: permissionsArray,
+        canReview: canReview,
       };
     });
   }
