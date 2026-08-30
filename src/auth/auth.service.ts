@@ -663,22 +663,6 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    // Validate email domain suffix matches tenant domain name (except for SUPER_ADMIN)
-    if (!requesterRoles.includes('SUPER_ADMIN')) {
-      const tenantRes = await this.db.query('SELECT domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
-      if (tenantRes.rows.length > 0) {
-        const tenantDomain = tenantRes.rows[0].domain || '';
-        // Sanitize the domain: strip trailing .com if it already ends in .com
-        const cleanDomain = tenantDomain.toLowerCase().endsWith('.com')
-          ? tenantDomain.slice(0, -4)
-          : tenantDomain;
-        const expectedDomain = `@${cleanDomain}.com`.toLowerCase();
-        if (!email.endsWith(expectedDomain)) {
-          throw new BadRequestException(`Email address must end with the company domain: ${expectedDomain}`);
-        }
-      }
-    }
-
     if (isApproved) {
       await this.checkSeatLimit(tenantId);
     }
