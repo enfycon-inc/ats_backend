@@ -1239,14 +1239,11 @@ export class AuthService implements OnModuleInit {
       }
     });
 
+    // Compute effective permissions purely from assigned role IDs in role_permissions (respecting custom restrictions)
     const userPerms = new Set<string>();
     userRoleIds.forEach((rId) => {
       if (rolePermMap[rId]) {
         rolePermMap[rId].forEach((p) => userPerms.add(p));
-      }
-      const rObj = roleById[rId];
-      if (rObj && rObj.base_role_id && rolePermMap[rObj.base_role_id]) {
-        rolePermMap[rObj.base_role_id].forEach((p) => userPerms.add(p));
       }
     });
 
@@ -1379,15 +1376,11 @@ export class AuthService implements OnModuleInit {
         }
       });
 
-      // Compute effective permissions purely from role IDs and base_role_id inheritance
+      // Compute effective permissions purely from assigned role IDs in role_permissions (respecting custom restrictions)
       const userPerms = new Set<string>();
       userRoleIds.forEach((rId) => {
         if (rolePermMap[rId]) {
           rolePermMap[rId].forEach((p) => userPerms.add(p));
-        }
-        const rObj = roleById[rId];
-        if (rObj && rObj.base_role_id && rolePermMap[rObj.base_role_id]) {
-          rolePermMap[rObj.base_role_id].forEach((p) => userPerms.add(p));
         }
       });
 
@@ -1895,49 +1888,69 @@ export class AuthService implements OnModuleInit {
       effectiveBranchId = defaultBranchRes.rows[0]?.id || null;
     }
 
+    const DEFAULT_PERMISSIONS: Record<string, string[]> = {
+      ADMIN: [
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:create', 'candidate:view',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'tenant:settings', 'user:manage',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'client:view', 'placement:view', 'report:view'
+      ],
+      BRANCH_ADMIN: [
+        'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
+        'client:view', 'placement:view', 'report:view'
+      ],
+      RECRUITER: [
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view', 'submission:edit',
+        'job:view',
+        'pod:view'
+      ],
+      ACCOUNT_MANAGER: [
+        'job:create', 'job:edit', 'job:view', 'job:approve',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:view', 'client:view', 'client:create', 'client:edit',
+        'placement:view', 'placement:create', 'report:view'
+      ],
+      DELIVERY_HEAD: [
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'client:view', 'placement:view', 'report:view'
+      ],
+      POD_LEAD: [
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
+        'pod:view', 'pod:edit', 'report:view'
+      ]
+    };
+
+    // Allowed base archetype ceiling
+    const allowedBaseCeiling = new Set(DEFAULT_PERMISSIONS[resolvedSystemRole] || DEFAULT_PERMISSIONS.RECRUITER);
+
     // Determine default permissions for the selected base template if none or generic defaults are provided.
     let resolvedPermissions = permissions || [];
     if (
       resolvedPermissions.length === 0 || 
       (resolvedPermissions.length === 2 && resolvedPermissions.includes('job:view') && resolvedPermissions.includes('candidate:view'))
     ) {
-      const DEFAULT_PERMISSIONS: Record<string, string[]> = {
-        ADMIN: [
-          'job:create', 'job:edit', 'job:view',
-          'candidate:create', 'candidate:view',
-          'submission:create', 'submission:edit',
-          'tenant:settings', 'user:manage',
-          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
-          'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches'
-        ],
-        BRANCH_ADMIN: [
-          'job:view', 'job:edit', 'candidate:create', 'candidate:view',
-          'submission:create', 'submission:view', 'submission:edit',
-          'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
-        ],
-        RECRUITER: [
-          'candidate:create', 'candidate:view',
-          'submission:create', 'submission:view',
-          'job:view',
-          'pod:view'
-        ],
-        ACCOUNT_MANAGER: [
-          'job:create', 'job:edit', 'job:view',
-          'candidate:view', 'submission:view', 'submission:edit',
-          'pod:view'
-        ],
-        DELIVERY_HEAD: [
-          'job:view', 'job:edit', 'candidate:view', 'submission:view', 'submission:edit',
-          'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle',
-          'candidate:search_all_branches', 'job:view_all_branches'
-        ],
-        POD_LEAD: [
-          'job:view', 'candidate:view', 'submission:view', 'submission:edit',
-          'pod:view', 'job:edit'
-        ]
-      };
       resolvedPermissions = DEFAULT_PERMISSIONS[resolvedSystemRole] || ['job:view', 'candidate:view'];
     }
+
+    // Enforce permission ceiling: custom roles can NEVER have extra permissions beyond their base system archetype
+    resolvedPermissions = resolvedPermissions.filter(p => allowedBaseCeiling.has(p));
 
     const exists = await this.db.query(
       'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) LIMIT 1',
@@ -2082,13 +2095,7 @@ export class AuthService implements OnModuleInit {
     }
 
     if (body.permissions && Array.isArray(body.permissions)) {
-      await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
-      for (const perm of body.permissions) {
-        await this.db.query(
-          'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
-          [roleId, perm]
-        );
-      }
+      await this.updateRolePermissions(tenantId, roleId, body.permissions);
     }
 
     return { message: 'Custom role updated successfully.', roleId };
@@ -2096,23 +2103,77 @@ export class AuthService implements OnModuleInit {
 
   async updateRolePermissions(tenantId: string, roleId: string, permissions: string[]) {
     const roleResult = await this.db.query(
-      'SELECT id, is_system FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, is_system, system_role, base_role_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
     if (roleResult.rows.length === 0) {
       throw new NotFoundException('Role not found.');
     }
+    const role = roleResult.rows[0];
+
+    const DEFAULT_PERMISSIONS: Record<string, string[]> = {
+      ADMIN: [
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:create', 'candidate:view',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'tenant:settings', 'user:manage',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'client:view', 'placement:view', 'report:view'
+      ],
+      BRANCH_ADMIN: [
+        'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
+        'client:view', 'placement:view', 'report:view'
+      ],
+      RECRUITER: [
+        'candidate:create', 'candidate:view',
+        'submission:create', 'submission:view', 'submission:edit',
+        'job:view',
+        'pod:view'
+      ],
+      ACCOUNT_MANAGER: [
+        'job:create', 'job:edit', 'job:view', 'job:approve',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:view', 'client:view', 'client:create', 'client:edit',
+        'placement:view', 'placement:create', 'report:view'
+      ],
+      DELIVERY_HEAD: [
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'client:view', 'placement:view', 'report:view'
+      ],
+      POD_LEAD: [
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
+        'pod:view', 'pod:edit', 'report:view'
+      ]
+    };
+
+    const sysKey = (role.system_role || 'RECRUITER').toUpperCase();
+    const allowedCeiling = new Set(DEFAULT_PERMISSIONS[sysKey] || DEFAULT_PERMISSIONS.RECRUITER);
+    const filteredPermissions = role.is_system ? permissions : permissions.filter(p => allowedCeiling.has(p));
 
     // Update permissions in database
     await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
-    for (const perm of permissions) {
+    for (const perm of filteredPermissions) {
       await this.db.query(
         'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
         [roleId, perm]
       );
     }
 
-    return { message: 'Permissions updated successfully.', permissions };
+    return { message: 'Permissions updated successfully.', permissions: filteredPermissions };
   }
 
   async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string) {
