@@ -76,11 +76,11 @@ export class JwtAuthGuard implements CanActivate {
       const verify = crypto.createVerify('RSA-SHA256');
       verify.update(data);
       if (!verify.verify(publicKey, signature)) {
-        throw new UnauthorizedException('Keycloak token signature invalid.');
+        throw new UnauthorizedException('Authentication token signature invalid.');
       }
 
       const decoded = this.decodeBase64Json(parts[1]);
-      this.checkExpiry(decoded.exp, 'Keycloak token');
+      this.checkExpiry(decoded.exp, 'Session');
 
       const IGNORED_KEYCLOAK_ROLES = new Set([
         'OFFLINE_ACCESS',

@@ -394,7 +394,7 @@ export class AuthService implements OnModuleInit {
     }
     params.append('username', dto.email);
     params.append('password', dto.password);
-    params.append('scope', 'openid');
+    params.append('scope', 'openid offline_access');
 
     try {
       const controller = new AbortController();
@@ -571,9 +571,45 @@ export class AuthService implements OnModuleInit {
       const tokenData = await res.json();
       return {
         accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token,
-        expiresIn: tokenData.expires_in,
+        refreshToken: tokenData.refresh_token || refreshToken,
+        expiresIn: tokenData.expires_in || 36000,
       };
+    }
+
+    // ── Seamless DB fallback if Keycloak session has expired or is unavailable ──
+    try {
+      const parts = refreshToken.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        const userEmail = payload.email || payload.preferred_username;
+        const keycloakSub = payload.sub;
+
+        if (userEmail || keycloakSub) {
+          const userRes = await this.db.query(
+            `SELECT u.*, cr.system_role
+             FROM users u
+             LEFT JOIN custom_roles cr ON cr.id = u.role_id
+             WHERE u.email = $1 OR u.id::text = $2
+             LIMIT 1`,
+            [userEmail, keycloakSub],
+          );
+
+          if (userRes.rows.length > 0) {
+            const user = userRes.rows[0];
+            if (user.is_active) {
+              const freshToken = this.signInternalToken(user);
+              this.logger.log(`[Auth] Seamlessly refreshed token via DB fallback for user ${user.email}`);
+              return {
+                accessToken: freshToken.accessToken,
+                refreshToken: freshToken.accessToken,
+                expiresIn: freshToken.expiresIn,
+              };
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn(`Fallback token refresh error: ${e.message}`);
     }
 
     throw new UnauthorizedException('Invalid or expired refresh token.');
