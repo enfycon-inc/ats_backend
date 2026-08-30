@@ -441,9 +441,8 @@ Validates email + password and returns a signed JWT access token.
     @CurrentUser() user: AuthUser,
     @Query('branchId') branchId?: string,
     @Query('includeSystem') includeSystem?: string,
-    @Headers('x-branch-id') headerBranchId?: string,
   ) {
-    const bid = branchId || headerBranchId;
+    const bid = branchId && branchId !== 'ALL' ? branchId : undefined;
     return this.authService.listRoles(user.tenantId, bid, includeSystem === 'true');
   }
 
