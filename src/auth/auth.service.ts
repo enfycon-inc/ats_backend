@@ -1255,92 +1255,134 @@ export class AuthService implements OnModuleInit {
       [tenantId],
     );
 
-    // Fetch active valid role names for this tenant to exclude deleted custom roles
-    const validRolesRes = await this.db.query(
-      `SELECT name FROM custom_roles WHERE tenant_id = $1`,
-      [tenantId]
-    );
-
-    // Query role permissions map for tenant custom roles
-    const rolePermsRes = await this.db.query(
-      `SELECT cr.id as role_id, cr.name as role_name, rp.permission
+    // Query all custom roles for this tenant along with their assigned permissions
+    const customRolesWithPerms = await this.db.query(
+      `SELECT cr.id, cr.name, cr.system_role, cr.branch_id,
+              ARRAY_AGG(rp.permission) FILTER (WHERE rp.permission IS NOT NULL) as perms
        FROM custom_roles cr
-       JOIN role_permissions rp ON rp.role_id = cr.id
-       WHERE cr.tenant_id = $1`,
+       LEFT JOIN role_permissions rp ON rp.role_id = cr.id
+       WHERE cr.tenant_id = $1
+       GROUP BY cr.id, cr.name, cr.system_role, cr.branch_id`,
       [tenantId]
     ).catch(() => ({ rows: [] }));
 
+    const normalizeKey = (val: string) => (val || '').toUpperCase().replace(/[\s-_]+/g, '');
+
     const rolePermMap: Record<string, Set<string>> = {};
-    for (const row of rolePermsRes.rows) {
-      const rId = row.role_id;
-      const rName = (row.role_name || '').toUpperCase();
-      if (!rolePermMap[rId]) rolePermMap[rId] = new Set();
-      if (!rolePermMap[rName]) rolePermMap[rName] = new Set();
-      rolePermMap[rId].add(row.permission);
-      rolePermMap[rName].add(row.permission);
-    }
+    const roleCanReviewMap: Record<string, boolean> = {};
 
-    const SYSTEM_ROLES = [
-      "SUPER_ADMIN", "ADMIN", "TENANT_ADMIN", "ACCOUNT_MANAGER",
-      "POD_LEAD", "DELIVERY_HEAD", "RECRUITER", "BRANCH_ADMIN"
-    ];
-
-    const validRoleNames = new Set([
-      ...SYSTEM_ROLES,
-      ...validRolesRes.rows.map(r => r.name.toUpperCase())
+    const REVIEWER_PERMISSION_TOKENS = new Set([
+      'submission:internal_screening',
+      'job:approve',
+      'job:reject',
+      'job:publish_direct',
+      'submission:audit_rounds',
     ]);
 
+    const PRIVILEGED_ARCHETYPES = new Set([
+      'ADMIN',
+      'SUPER_ADMIN',
+      'TENANT_ADMIN',
+      'DELIVERY_HEAD',
+      'BRANCH_ADMIN',
+      'POD_LEAD',
+      'ACCOUNT_MANAGER',
+    ]);
+
+    for (const r of customRolesWithPerms.rows) {
+      const perms: string[] = r.perms || [];
+      const permSet = new Set<string>(perms);
+
+      const isPrivilegedArchetype = r.system_role && PRIVILEGED_ARCHETYPES.has(r.system_role.toUpperCase().replace(/[\s-]/g, '_'));
+      const hasReviewPerm = isPrivilegedArchetype || perms.some(p => REVIEWER_PERMISSION_TOKENS.has(p));
+
+      const keys = [
+        r.id,
+        r.name,
+        (r.name || '').toUpperCase(),
+        (r.name || '').toUpperCase().replace(/[\s-]/g, '_'),
+        normalizeKey(r.name),
+        r.system_role,
+        (r.system_role || '').toUpperCase(),
+        (r.system_role || '').toUpperCase().replace(/[\s-]/g, '_'),
+        normalizeKey(r.system_role),
+      ].filter(Boolean);
+
+      for (const k of keys) {
+        if (!rolePermMap[k]) rolePermMap[k] = new Set();
+        permSet.forEach(p => rolePermMap[k].add(p));
+        if (hasReviewPerm) roleCanReviewMap[k] = true;
+      }
+    }
+
     return result.rows.map((u) => {
-      const rawRoles = Array.isArray(u.roles) ? u.roles : [];
-      const filteredRoles = rawRoles.filter(rName => validRoleNames.has(rName.toUpperCase()));
-      const primaryRole = u.role_name || filteredRoles[0] || 'RECRUITER';
-      const systemRole = u.system_role || (filteredRoles[0] ? filteredRoles[0].toUpperCase() : 'RECRUITER');
+      const rawRoles: string[] = Array.isArray(u.roles) ? u.roles : [];
+      const primaryRole = u.role_name || rawRoles[0] || 'RECRUITER';
+      const systemRole = u.system_role || (rawRoles[0] ? rawRoles[0].toUpperCase().replace(/[\s-]/g, '_') : 'RECRUITER');
 
       const userPerms = new Set<string>();
+      let canReview = false;
 
-      // Add default reviewer permissions for standard privileged roles
-      for (const r of filteredRoles) {
-        const up = r.toUpperCase();
-        if (up === 'SUPER_ADMIN' || up === 'ADMIN' || up === 'DELIVERY_HEAD' || up === 'BRANCH_ADMIN' || up === 'POD_LEAD' || up === 'ACCOUNT_MANAGER') {
-          userPerms.add('job:approve');
+      const ingestRole = (roleIdentifier: string) => {
+        if (!roleIdentifier || typeof roleIdentifier !== 'string') return;
+        const norm = normalizeKey(roleIdentifier);
+        const upper = roleIdentifier.toUpperCase().replace(/[\s-]/g, '_');
+
+        if (
+          norm === 'ADMIN' ||
+          norm === 'SUPERADMIN' ||
+          norm === 'TENANTADMIN' ||
+          norm === 'DELIVERYHEAD' ||
+          norm === 'BRANCHADMIN' ||
+          norm === 'PODLEAD' ||
+          norm === 'ACCOUNTMANAGER'
+        ) {
+          canReview = true;
           userPerms.add('submission:internal_screening');
+          userPerms.add('job:approve');
           userPerms.add('job:reject');
         }
-        if (rolePermMap[up]) {
-          rolePermMap[up].forEach(p => userPerms.add(p));
-        }
-      }
-      if (u.role_id && rolePermMap[u.role_id]) {
-        rolePermMap[u.role_id].forEach(p => userPerms.add(p));
-      }
 
-      // Check branch-wise roles
+        if (roleCanReviewMap[roleIdentifier] || roleCanReviewMap[upper] || roleCanReviewMap[norm]) {
+          canReview = true;
+        }
+
+        const matchedPerms = rolePermMap[roleIdentifier] || rolePermMap[upper] || rolePermMap[norm];
+        if (matchedPerms) {
+          matchedPerms.forEach(p => {
+            userPerms.add(p);
+            if (REVIEWER_PERMISSION_TOKENS.has(p)) {
+              canReview = true;
+            }
+          });
+        }
+      };
+
+      if (u.role_id) ingestRole(u.role_id);
+      if (u.role_name) ingestRole(u.role_name);
+      if (u.system_role) ingestRole(u.system_role);
+
+      rawRoles.forEach(r => ingestRole(r));
+
       if (u.branch_roles && typeof u.branch_roles === 'object') {
         Object.values(u.branch_roles).forEach((bRoleList: any) => {
           if (Array.isArray(bRoleList)) {
-            bRoleList.forEach((brName: string) => {
-              const bUp = brName.toUpperCase();
-              if (bUp === 'SUPER_ADMIN' || bUp === 'ADMIN' || bUp === 'DELIVERY_HEAD' || bUp === 'BRANCH_ADMIN' || bUp === 'POD_LEAD' || bUp === 'ACCOUNT_MANAGER') {
-                userPerms.add('job:approve');
-                userPerms.add('submission:internal_screening');
-                userPerms.add('job:reject');
-              }
-              if (rolePermMap[bUp]) {
-                rolePermMap[bUp].forEach(p => userPerms.add(p));
-              }
-            });
+            bRoleList.forEach((brName: string) => ingestRole(brName));
           }
         });
       }
 
+      if (userPerms.has('submission:internal_screening') || userPerms.has('job:approve') || userPerms.has('job:reject')) {
+        canReview = true;
+      }
+
       const permissionsArray = Array.from(userPerms);
-      const canReview = userPerms.has('job:approve') || userPerms.has('submission:internal_screening') || userPerms.has('job:reject');
 
       return {
         id: u.id,
         email: u.email,
         fullName: u.full_name,
-        roles: filteredRoles.length > 0 ? filteredRoles : [primaryRole],
+        roles: rawRoles.length > 0 ? rawRoles : [primaryRole],
         roleId: u.role_id,
         roleName: primaryRole,
         systemRole: systemRole,
