@@ -486,12 +486,12 @@ Validates email + password and returns a signed JWT access token.
   })
   async createCustomRole(
     @CurrentUser() user: AuthUser,
-    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string; branchId?: string },
+    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string; baseRoleId?: string; branchId?: string },
     @Headers('x-branch-id') headerBranchId?: string,
     @Query('branchId') queryBranchId?: string,
   ) {
     const bid = body.branchId || queryBranchId || headerBranchId;
-    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, user.dbId);
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, user.dbId, body.baseRoleId);
   }
 
   // ─── PUT /api/auth/rbac/roles/:id ───────────────────────────
@@ -505,7 +505,7 @@ Validates email + password and returns a signed JWT access token.
   async updateCustomRole(
     @CurrentUser() user: AuthUser,
     @Param('id') roleId: string,
-    @Body() body: { name?: string; description?: string; systemRole?: string; branchId?: string; permissions?: string[] },
+    @Body() body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; permissions?: string[] },
   ) {
     return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId);
   }
