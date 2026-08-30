@@ -611,7 +611,11 @@ export class JobsService implements OnModuleInit {
       LEFT JOIN users app ON app.id = j.assigned_approver_id
       LEFT JOIN job_pods jp ON jp.job_id = j.id
       LEFT JOIN pods p ON p.id = jp.pod_id
-      LEFT JOIN users uc ON uc.id::text = j.created_by
+      LEFT JOIN users uc ON (
+        uc.id::text = j.created_by 
+        OR LOWER(uc.email) = LOWER(j.created_by) 
+        OR LOWER(uc.full_name) = LOWER(j.created_by)
+      )
       LEFT JOIN branches b ON b.id = j.branch_id
       WHERE j.tenant_id = $1 AND j.deleted_at IS NULL
     `;
@@ -695,7 +699,11 @@ export class JobsService implements OnModuleInit {
          LEFT JOIN users app ON app.id = j.assigned_approver_id
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
-         LEFT JOIN users uc ON uc.id::text = j.created_by
+         LEFT JOIN users uc ON (
+           uc.id::text = j.created_by 
+           OR LOWER(uc.email) = LOWER(j.created_by) 
+           OR LOWER(uc.full_name) = LOWER(j.created_by)
+         )
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
@@ -706,7 +714,11 @@ export class JobsService implements OnModuleInit {
          LEFT JOIN users app ON app.id = j.assigned_approver_id
          LEFT JOIN job_pods jp ON jp.job_id = j.id
          LEFT JOIN pods p ON p.id = jp.pod_id
-         LEFT JOIN users uc ON uc.id::text = j.created_by
+         LEFT JOIN users uc ON (
+           uc.id::text = j.created_by 
+           OR LOWER(uc.email) = LOWER(j.created_by) 
+           OR LOWER(uc.full_name) = LOWER(j.created_by)
+         )
          WHERE j.tenant_id = $1 AND j.job_code = $2 AND j.deleted_at IS NULL LIMIT 1`;
 
     try {

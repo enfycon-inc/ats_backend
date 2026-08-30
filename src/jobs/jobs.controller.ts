@@ -158,7 +158,7 @@ export class JobsController {
 
   @Patch(':id/approve')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:edit')
+  @RequirePermissions('job:approve')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Approve pending job requisition and activate for recruiters',
@@ -175,7 +175,7 @@ export class JobsController {
 
   @Patch(':id/reject')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:edit')
+  @RequirePermissions('job:reject')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Reject pending job requisition with reviewer reason',
