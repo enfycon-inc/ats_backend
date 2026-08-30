@@ -1250,20 +1250,71 @@ export class AuthService implements OnModuleInit {
     const canReview = userPerms.has('submission:internal_screening') || userPerms.has('job:approve') || userPerms.has('job:reject') || userPerms.has('job:publish_direct');
     const permissionsArray = Array.from(userPerms);
 
-    const primaryRoleObj = u.role_id ? roleById[u.role_id] : null;
-    const roleName = primaryRoleObj?.name || rawRoles[0] || 'RECRUITER';
-    const systemRole = primaryRoleObj?.system_role || (rawRoles[0] ? rawRoles[0].toUpperCase() : 'RECRUITER');
+    // Collect all assigned role objects to determine highest ranking primary role and clean deduplicated roles array
+    const assignedRoleObjs: any[] = [];
+    userRoleIds.forEach((rId) => {
+      if (roleById[rId]) {
+        assignedRoleObjs.push(roleById[rId]);
+      }
+    });
+
+    const ROLE_RANK: Record<string, number> = {
+      SUPER_ADMIN: 100,
+      ADMIN: 90,
+      BRANCH_ADMIN: 80,
+      DELIVERY_HEAD: 70,
+      ACCOUNT_MANAGER: 60,
+      POD_LEAD: 50,
+      RECRUITER: 40,
+    };
+
+    let bestRoleObj: any = null;
+    let highestRank = -1;
+
+    for (const r of assignedRoleObjs) {
+      const sysKey = (r.system_role || r.name || '').toUpperCase().replace(/[\s-_]+/g, '');
+      const matchedKey = Object.keys(ROLE_RANK).find(k => k.replace(/_/g, '') === sysKey) || '';
+      const rank = ROLE_RANK[matchedKey] || 30;
+      if (rank > highestRank) {
+        highestRank = rank;
+        bestRoleObj = r;
+      }
+    }
+
+    const roleName = bestRoleObj?.name || (u.role_id ? roleById[u.role_id]?.name : null) || rawRoles[0] || 'RECRUITER';
+    const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || (rawRoles[0] ? rawRoles[0].toUpperCase() : 'RECRUITER');
+    const baseRoleId = bestRoleObj?.base_role_id || (u.role_id ? roleById[u.role_id]?.base_role_id : null) || null;
+
+    // Clean & deduplicate role names by canonical key
+    const seenCanonicalRoles = new Set<string>();
+    const cleanRoles: string[] = [];
+    for (const r of assignedRoleObjs) {
+      const cKey = r.name.toUpperCase().replace(/[\s-_]+/g, '');
+      if (!seenCanonicalRoles.has(cKey)) {
+        seenCanonicalRoles.add(cKey);
+        cleanRoles.push(r.name);
+      }
+    }
+    if (cleanRoles.length === 0) {
+      rawRoles.forEach((r) => {
+        const cKey = r.toUpperCase().replace(/[\s-_]+/g, '');
+        if (!seenCanonicalRoles.has(cKey)) {
+          seenCanonicalRoles.add(cKey);
+          cleanRoles.push(r);
+        }
+      });
+    }
 
     return {
       id: u.id,
       email: u.email,
       fullName: u.full_name,
-      roles: rawRoles.length > 0 ? rawRoles : [roleName],
-      roleId: u.role_id,
+      roles: cleanRoles.length > 0 ? cleanRoles : [roleName],
+      roleId: bestRoleObj?.id || u.role_id,
       assignedRoleIds: Array.from(userRoleIds),
       roleName,
       systemRole,
-      baseRoleId: primaryRoleObj?.base_role_id || null,
+      baseRoleId,
       permissions: permissionsArray,
       canReview,
       tenantId: u.tenant_id,
@@ -1387,19 +1438,71 @@ export class AuthService implements OnModuleInit {
       const canReview = userPerms.has('submission:internal_screening') || userPerms.has('job:approve') || userPerms.has('job:reject') || userPerms.has('job:publish_direct');
       const permissionsArray = Array.from(userPerms);
 
-      const primaryRole = u.role_name || rawRoles[0] || 'RECRUITER';
-      const systemRole = u.system_role || (rawRoles[0] ? rawRoles[0].toUpperCase() : 'RECRUITER');
+      // Collect all assigned role objects to determine highest ranking primary role and clean deduplicated roles array
+      const assignedRoleObjs: any[] = [];
+      userRoleIds.forEach((rId) => {
+        if (roleById[rId]) {
+          assignedRoleObjs.push(roleById[rId]);
+        }
+      });
+
+      const ROLE_RANK: Record<string, number> = {
+        SUPER_ADMIN: 100,
+        ADMIN: 90,
+        BRANCH_ADMIN: 80,
+        DELIVERY_HEAD: 70,
+        ACCOUNT_MANAGER: 60,
+        POD_LEAD: 50,
+        RECRUITER: 40,
+      };
+
+      let bestRoleObj: any = null;
+      let highestRank = -1;
+
+      for (const r of assignedRoleObjs) {
+        const sysKey = (r.system_role || r.name || '').toUpperCase().replace(/[\s-_]+/g, '');
+        const matchedKey = Object.keys(ROLE_RANK).find(k => k.replace(/_/g, '') === sysKey) || '';
+        const rank = ROLE_RANK[matchedKey] || 30;
+        if (rank > highestRank) {
+          highestRank = rank;
+          bestRoleObj = r;
+        }
+      }
+
+      const primaryRole = bestRoleObj?.name || u.role_name || rawRoles[0] || 'RECRUITER';
+      const systemRole = bestRoleObj?.system_role || u.system_role || (rawRoles[0] ? rawRoles[0].toUpperCase() : 'RECRUITER');
+      const baseRoleId = bestRoleObj?.base_role_id || u.base_role_id || null;
+
+      // Clean & deduplicate role names by canonical key
+      const seenCanonicalRoles = new Set<string>();
+      const cleanRoles: string[] = [];
+      for (const r of assignedRoleObjs) {
+        const cKey = r.name.toUpperCase().replace(/[\s-_]+/g, '');
+        if (!seenCanonicalRoles.has(cKey)) {
+          seenCanonicalRoles.add(cKey);
+          cleanRoles.push(r.name);
+        }
+      }
+      if (cleanRoles.length === 0) {
+        rawRoles.forEach((r) => {
+          const cKey = r.toUpperCase().replace(/[\s-_]+/g, '');
+          if (!seenCanonicalRoles.has(cKey)) {
+            seenCanonicalRoles.add(cKey);
+            cleanRoles.push(r);
+          }
+        });
+      }
 
       return {
         id: u.id,
         email: u.email,
         fullName: u.full_name,
-        roles: rawRoles.length > 0 ? rawRoles : [primaryRole],
-        roleId: u.role_id,
+        roles: cleanRoles.length > 0 ? cleanRoles : [primaryRole],
+        roleId: bestRoleObj?.id || u.role_id,
         assignedRoleIds: Array.from(userRoleIds),
         roleName: primaryRole,
         systemRole: systemRole,
-        baseRoleId: u.base_role_id || null,
+        baseRoleId: baseRoleId,
         isActive: u.is_active,
         isApproved: u.is_approved,
         createdAt: u.created_at,
