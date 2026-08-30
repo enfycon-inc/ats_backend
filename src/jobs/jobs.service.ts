@@ -343,20 +343,19 @@ export class JobsService implements OnModuleInit {
       if (!isUnique) throw new Error('Failed to generate unique sequential job code.');
     }
 
-    const isApprovalRequested = dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval';
-    const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
-    const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
-
     let assignedApproverId = dto.assignedApproverId || null;
     let assignedApproverRole = dto.assignedApproverRole || null;
+    let requiresApprovalGate = false;
 
-    if (!assignedApproverId && createdByEmail && createdByEmail !== 'System') {
+    if (createdByEmail && createdByEmail !== 'System') {
       // Cascading reviewer resolution: 1. User's designated reviewer -> 2. Pod Head -> 3. Branch Manager
       const creatorRes = await this.db.query(
-        `SELECT u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id
+        `SELECT u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
+                u.roles, u.role_id, r.name as role_name
          FROM users u
          LEFT JOIN pods p ON p.id = u.pod_id
          LEFT JOIN branches b ON b.id = u.branch_id
+         LEFT JOIN custom_roles r ON r.id = u.role_id
          WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2 LIMIT 1`,
         [createdByEmail, tenantId]
       ).catch(() => ({ rows: [] }));
@@ -366,15 +365,20 @@ export class JobsService implements OnModuleInit {
         if (cRow.job_reviewer_id) {
           assignedApproverId = cRow.job_reviewer_id;
           assignedApproverRole = 'DESIGNATED_REVIEWER';
+          requiresApprovalGate = true;
         } else if (cRow.pod_head_id) {
-          assignedApproverId = cRow.pod_head_id;
-          assignedApproverRole = 'POD_LEAD';
+          assignedApproverId = assignedApproverId || cRow.pod_head_id;
+          assignedApproverRole = assignedApproverRole || 'POD_LEAD';
         } else if (cRow.branch_manager_id) {
-          assignedApproverId = cRow.branch_manager_id;
-          assignedApproverRole = 'BRANCH_ADMIN';
+          assignedApproverId = assignedApproverId || cRow.branch_manager_id;
+          assignedApproverRole = assignedApproverRole || 'BRANCH_ADMIN';
         }
       }
     }
+
+    const isApprovalRequested = dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval' || requiresApprovalGate;
+    const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
+    const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
 
     // ── Branch Timing Snapshot ────────────────────────────────────────────────
     let jobTimezone = (dto as any)?.jobTimezone || (dto as any)?.timezone || null;
