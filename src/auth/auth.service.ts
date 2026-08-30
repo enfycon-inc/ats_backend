@@ -1833,6 +1833,42 @@ export class AuthService implements OnModuleInit {
         `UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1 AND tenant_id = $2`,
         params
       );
+
+      // Cascade role name rename to users.roles and users.branch_roles across the tenant
+      if (body.name !== undefined && body.name.trim() !== existingRole.name) {
+        const oldName = existingRole.name;
+        const newName = body.name.trim();
+
+        const usersToUpdate = await this.db.query(
+          'SELECT id, roles, branch_roles FROM users WHERE tenant_id = $1',
+          [tenantId]
+        );
+
+        for (const u of usersToUpdate.rows) {
+          let needsUpdate = false;
+          let userRoles: string[] = u.roles || [];
+          let branchRoles: Record<string, string[]> = u.branch_roles || {};
+
+          if (userRoles.some((r: string) => r.toUpperCase() === oldName.toUpperCase())) {
+            userRoles = userRoles.map((r: string) => r.toUpperCase() === oldName.toUpperCase() ? newName : r);
+            needsUpdate = true;
+          }
+
+          for (const [bId, rList] of Object.entries(branchRoles)) {
+            if (Array.isArray(rList) && rList.some((r: string) => r.toUpperCase() === oldName.toUpperCase())) {
+              branchRoles[bId] = rList.map((r: string) => r.toUpperCase() === oldName.toUpperCase() ? newName : r);
+              needsUpdate = true;
+            }
+          }
+
+          if (needsUpdate) {
+            await this.db.query(
+              'UPDATE users SET roles = $1::text[], branch_roles = $2::jsonb, updated_at = NOW() WHERE id = $3',
+              [userRoles, JSON.stringify(branchRoles), u.id]
+            );
+          }
+        }
+      }
     }
 
     if (body.permissions && Array.isArray(body.permissions)) {
