@@ -42,6 +42,7 @@ export interface BranchResponse {
   workingDays: string[];
   shiftTiming: string;
   breakDurationMinutes: number;
+  enableGlobalRemarks: boolean;
   usersCount: number;
   jobsCount: number;
   members?: BranchMember[];
@@ -73,6 +74,7 @@ export class BranchesService {
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS working_days TEXT DEFAULT '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100) DEFAULT 'General Shift';
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS break_duration_minutes INTEGER DEFAULT 60;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS enable_global_remarks BOOLEAN DEFAULT FALSE;
     `).catch(() => {});
   }
 
@@ -115,12 +117,15 @@ export class BranchesService {
     const shiftTiming = dto.shiftTiming ? dto.shiftTiming.trim() : (market === 'US' ? 'US Shift' : 'General Shift');
     const breakDurationMinutes = dto.breakDurationMinutes ?? 60;
 
+    const enableGlobalRemarks = Boolean(dto.enableGlobalRemarks);
+
     const res = await this.db.query(
       `INSERT INTO branches (
         tenant_id, name, code, city, state, country, market,
-        timezone, work_start_time, work_end_time, working_days, shift_timing, break_duration_minutes
+        timezone, work_start_time, work_end_time, working_days, shift_timing, break_duration_minutes,
+        enable_global_remarks
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
         tenantId,
@@ -136,6 +141,7 @@ export class BranchesService {
         workingDays,
         shiftTiming,
         breakDurationMinutes,
+        enableGlobalRemarks,
       ]
     );
     const branch = res.rows[0];
@@ -214,6 +220,7 @@ export class BranchesService {
           })(),
           shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
           breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
+          enableGlobalRemarks: Boolean(row.enable_global_remarks),
           usersCount: branchMembers.length,
           jobsCount: row.jobs_count || 0,
           members: branchMembers,
@@ -295,6 +302,7 @@ export class BranchesService {
       })(),
       shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
       breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
+      enableGlobalRemarks: Boolean(row.enable_global_remarks),
       usersCount: members.length,
       jobsCount: row.jobs_count || 0,
       members,
@@ -346,6 +354,7 @@ export class BranchesService {
     const workingDays = dto.workingDays !== undefined ? JSON.stringify(dto.workingDays) : JSON.stringify(existing.workingDays);
     const shiftTiming = dto.shiftTiming !== undefined ? dto.shiftTiming : existing.shiftTiming;
     const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : existing.breakDurationMinutes;
+    const enableGlobalRemarks = dto.enableGlobalRemarks !== undefined ? Boolean(dto.enableGlobalRemarks) : existing.enableGlobalRemarks;
 
     await this.db.query(
       `UPDATE branches
@@ -356,8 +365,9 @@ export class BranchesService {
            require_job_approval = $17, roles_requiring_approval = $18,
            timezone = $19, work_start_time = $20, work_end_time = $21,
            working_days = $22, shift_timing = $23, break_duration_minutes = $24,
+           enable_global_remarks = $25,
            updated_at = NOW()
-       WHERE id = $25 AND tenant_id = $26`,
+       WHERE id = $26 AND tenant_id = $27`,
       [
         name, code, city, state, country, market, isActive,
         allowNone, allowPods, allowAll, allowUnassigned, podDistributionStrategy,
@@ -366,10 +376,23 @@ export class BranchesService {
         requireJobApproval, rolesRequiringApproval,
         timezone, workStartTime, workEndTime,
         workingDays, shiftTiming, breakDurationMinutes,
+        enableGlobalRemarks,
         id, tenantId
       ]
     );
 
+    return this.findOne(id, tenantId);
+  }
+
+  async toggleGlobalRemarks(id: string, tenantId: string, enabled?: boolean): Promise<BranchResponse> {
+    await this.ensureBranchSettingsColumns();
+    const existing = await this.findOne(id, tenantId);
+    const nextState = enabled !== undefined ? Boolean(enabled) : !existing.enableGlobalRemarks;
+
+    await this.db.query(
+      'UPDATE branches SET enable_global_remarks = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
+      [nextState, id, tenantId]
+    );
     return this.findOne(id, tenantId);
   }
 

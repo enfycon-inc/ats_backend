@@ -11,4 +11,5 @@ export class CreateBranchDto {
   workingDays?: string[];
   shiftTiming?: string;
   breakDurationMinutes?: number;
+  enableGlobalRemarks?: boolean;
 }

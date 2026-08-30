@@ -65,6 +65,17 @@ export class BranchesController {
     return this.branchesService.update(id, dto, tenantId);
   }
 
+  @Patch(':id/toggle-global-remarks')
+  async toggleGlobalRemarks(
+    @Param('id') id: string,
+    @Body() body: { enableGlobalRemarks?: boolean },
+    @Req() req: any,
+    @Headers('x-tenant-id') headerTenantId?: string,
+  ) {
+    const tenantId = resolveTenantId(req.user, headerTenantId);
+    return this.branchesService.toggleGlobalRemarks(id, tenantId, body?.enableGlobalRemarks);
+  }
+
   @Delete(':id')
   async remove(
     @Param('id') id: string,

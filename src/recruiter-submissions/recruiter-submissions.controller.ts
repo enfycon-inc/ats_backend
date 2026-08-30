@@ -110,11 +110,13 @@ export class RecruiterSubmissionsController {
   })
   async getCustomRemarks(
     @Query('branchId') branchId: string,
+    @Query('includeGlobal') includeGlobal: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.getCustomRemarks(tid, branchId);
+    const parsedIncludeGlobal = includeGlobal !== undefined ? includeGlobal === 'true' || includeGlobal === '1' : undefined;
+    return this.service.getCustomRemarks(tid, branchId, parsedIncludeGlobal);
   }
 
   @Post('custom-remarks')
@@ -123,12 +125,20 @@ export class RecruiterSubmissionsController {
     description: 'Adds a custom stage remark option for review, L1, L2, L3, or final stage.',
   })
   async createCustomRemark(
-    @Body() body: { stage: string; remarkText: string; branchId?: string },
+    @Body() body: { stage: string; remarkText: string; remarkType?: string; branchId?: string; isGlobal?: boolean },
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.createCustomRemark(tid, body.stage, body.remarkText, body.branchId, user.email || user.fullName || user.dbId);
+    return this.service.createCustomRemark(
+      tid,
+      body.stage,
+      body.remarkText,
+      body.remarkType || 'GENERAL',
+      body.branchId,
+      user.email || user.fullName || user.dbId,
+      body.isGlobal
+    );
   }
 
   @Delete('custom-remarks/:id')

@@ -23,4 +23,5 @@ export class UpdateBranchDto {
   workingDays?: string[];
   shiftTiming?: string;
   breakDurationMinutes?: number;
+  enableGlobalRemarks?: boolean;
 }
