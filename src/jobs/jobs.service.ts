@@ -347,6 +347,35 @@ export class JobsService implements OnModuleInit {
     const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
     const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
 
+    let assignedApproverId = dto.assignedApproverId || null;
+    let assignedApproverRole = dto.assignedApproverRole || null;
+
+    if (!assignedApproverId && createdByEmail && createdByEmail !== 'System') {
+      // Cascading reviewer resolution: 1. User's designated reviewer -> 2. Pod Head -> 3. Branch Manager
+      const creatorRes = await this.db.query(
+        `SELECT u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id
+         FROM users u
+         LEFT JOIN pods p ON p.id = u.pod_id
+         LEFT JOIN branches b ON b.id = u.branch_id
+         WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2 LIMIT 1`,
+        [createdByEmail, tenantId]
+      ).catch(() => ({ rows: [] }));
+
+      if (creatorRes.rows.length > 0) {
+        const cRow = creatorRes.rows[0];
+        if (cRow.job_reviewer_id) {
+          assignedApproverId = cRow.job_reviewer_id;
+          assignedApproverRole = 'DESIGNATED_REVIEWER';
+        } else if (cRow.pod_head_id) {
+          assignedApproverId = cRow.pod_head_id;
+          assignedApproverRole = 'POD_LEAD';
+        } else if (cRow.branch_manager_id) {
+          assignedApproverId = cRow.branch_manager_id;
+          assignedApproverRole = 'BRANCH_ADMIN';
+        }
+      }
+    }
+
     // ── Branch Timing Snapshot ────────────────────────────────────────────────
     let jobTimezone = (dto as any)?.jobTimezone || (dto as any)?.timezone || null;
     let workStartTime = (dto as any)?.workStartTime || null;
@@ -454,8 +483,8 @@ export class JobsService implements OnModuleInit {
       dto.market || 'US',                                            // $39
       branchId,                                                      // $40
       initialApprovalStatus,                                         // $41
-      dto.assignedApproverId || null,                                // $42
-      dto.assignedApproverRole || null,                              // $43
+      assignedApproverId,                                            // $42
+      assignedApproverRole,                                          // $43
       jobTimezone,                                                   // $44
       workStartTime,                                                 // $45
       workEndTime,                                                   // $46

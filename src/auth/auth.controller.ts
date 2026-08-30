@@ -230,17 +230,32 @@ Validates email + password and returns a signed JWT access token.
   // ─── PATCH /api/auth/users/:id ──────────────────────────────
   @Patch('users/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Update user profile details, email typo, password, branch [ADMIN only]',
+    summary: 'Update user profile details, email typo, password, branch, reviewer [ADMIN only]',
   })
   async updateUserDetails(
     @Param('id') userId: string,
-    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roles?: string[] },
+    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     @CurrentUser() currentUser: AuthUser,
   ) {
     return this.authService.updateUserDetails(userId, body, currentUser);
+  }
+
+  // ─── POST /api/auth/users/bulk-reviewer ─────────────────────
+  @Post('users/bulk-reviewer')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Bulk update designated job reviewer for selected users',
+  })
+  async bulkSetJobReviewer(
+    @Body() body: { userIds: string[]; reviewerId?: string | null },
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.bulkSetJobReviewer(currentUser.tenantId, body.userIds, body.reviewerId || null);
   }
 
   // ─── GET /api/auth/approvals/pending ────────────────────────

@@ -150,11 +150,12 @@ export class AuthService implements OnModuleInit {
       -- Ensure is_approved column exists on older tables
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
 
-      -- Add branch_id, assigned_branch_ids, branch_roles and business_unit_id to users
+      -- Add branch_id, assigned_branch_ids, branch_roles, business_unit_id, and job_reviewer_id to users
       ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_branch_ids UUID[] DEFAULT '{}';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_roles JSONB DEFAULT '{}';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS job_reviewer_id UUID REFERENCES users(id) ON DELETE SET NULL;
 
       -- Update any existing users with null value to true
       UPDATE users SET is_approved = true WHERE is_approved IS NULL;
@@ -1107,11 +1108,12 @@ export class AuthService implements OnModuleInit {
     `).catch(() => {});
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit, t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name, t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit, t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       LEFT JOIN users rev ON u.job_reviewer_id = rev.id
        WHERE u.id = $1 LIMIT 1`,
       [userId],
     );
@@ -1189,6 +1191,8 @@ export class AuthService implements OnModuleInit {
       branchName: u.branch_name || null,
       businessUnitId: u.business_unit_id,
       businessUnitName: u.business_unit_name || null,
+      jobReviewerId: u.job_reviewer_id || null,
+      jobReviewerName: u.job_reviewer_name || null,
       podSystemEnabled: u.pod_system_enabled !== false,
       candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
       jobAssignmentMode: u.job_assignment_mode || 'AUTO',
@@ -1205,11 +1209,12 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listUsers(tenantId: string) {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, r.name as role_name, r.system_role as system_role, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name, r.name as role_name, r.system_role as system_role, b.name as branch_name, bu.name as business_unit_name
        FROM users u 
        LEFT JOIN custom_roles r ON u.role_id = r.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       LEFT JOIN users rev ON u.job_reviewer_id = rev.id
        WHERE u.tenant_id = $1 ORDER BY u.full_name ASC`,
       [tenantId],
     );
@@ -1254,6 +1259,8 @@ export class AuthService implements OnModuleInit {
         branchName: u.branch_name || null,
         businessUnitId: u.business_unit_id,
         businessUnitName: u.business_unit_name || null,
+        jobReviewerId: u.job_reviewer_id || null,
+        jobReviewerName: u.job_reviewer_name || null,
       };
     });
   }
@@ -1352,7 +1359,7 @@ export class AuthService implements OnModuleInit {
 
   async updateUserDetails(
     userId: string,
-    dto: { fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[] },
+    dto: { fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     requester: any
   ) {
     const userRes = await this.db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
@@ -1371,6 +1378,7 @@ export class AuthService implements OnModuleInit {
     let salt = user.salt;
     let branchId = user.branch_id;
     let businessUnitId = user.business_unit_id;
+    let jobReviewerId = user.job_reviewer_id;
 
     if (dto.fullName && dto.fullName.trim().length >= 2) {
       fullName = dto.fullName.trim();
@@ -1414,11 +1422,15 @@ export class AuthService implements OnModuleInit {
       businessUnitId = dto.businessUnitId || null;
     }
 
+    if (dto.jobReviewerId !== undefined) {
+      jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
+    }
+
     await this.db.query(
       `UPDATE users
-       SET full_name = $1, email = $2, password_hash = $3, salt = $4, branch_id = $5, assigned_branch_ids = $6, branch_roles = $7, business_unit_id = $8, updated_at = NOW()
-       WHERE id = $9`,
-      [fullName, email, hash, salt, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, userId]
+       SET full_name = $1, email = $2, password_hash = $3, salt = $4, branch_id = $5, assigned_branch_ids = $6, branch_roles = $7, business_unit_id = $8, job_reviewer_id = $9, updated_at = NOW()
+       WHERE id = $10`,
+      [fullName, email, hash, salt, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, jobReviewerId, userId]
     );
 
     if (dto.roles && Array.isArray(dto.roles) && dto.roles.length > 0) {
@@ -1426,6 +1438,18 @@ export class AuthService implements OnModuleInit {
     }
 
     return this.getProfile(userId);
+  }
+
+  async bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) {
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      throw new BadRequestException('userIds array is required.');
+    }
+    const cleanReviewerId = reviewerId && reviewerId.trim().length > 0 ? reviewerId.trim() : null;
+    await this.db.query(
+      `UPDATE users SET job_reviewer_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND tenant_id = $3`,
+      [cleanReviewerId, userIds, tenantId]
+    );
+    return { success: true, count: userIds.length, reviewerId: cleanReviewerId };
   }
 
   // ─────────────────────────────────────────────────────────────
