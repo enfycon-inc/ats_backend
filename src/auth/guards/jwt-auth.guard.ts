@@ -82,14 +82,48 @@ export class JwtAuthGuard implements CanActivate {
       const decoded = this.decodeBase64Json(parts[1]);
       this.checkExpiry(decoded.exp, 'Keycloak token');
 
-      const realmRoles: string[] = decoded.realm_access?.roles || [];
+      const IGNORED_KEYCLOAK_ROLES = new Set([
+        'OFFLINE_ACCESS',
+        'UMA_AUTHORIZATION',
+        'MANAGE_ACCOUNT',
+        'MANAGE_ACCOUNT_LINKS',
+        'VIEW_PROFILE',
+        'ACCOUNT',
+        'ADMIN_CLI',
+        'BROKER',
+        'REALM_ADMIN',
+        'CREATE_CLIENT',
+        'MANAGE_USERS',
+        'MANAGE_REALM',
+        'MANAGE_EVENTS',
+        'MANAGE_CLIENTS',
+        'MANAGE_AUTHORIZATION',
+        'VIEW_USERS',
+        'VIEW_REALM',
+        'VIEW_EVENTS',
+        'VIEW_CLIENTS',
+        'VIEW_AUTHORIZATION',
+        'IMPERSONATION',
+        'USER',
+      ]);
+
+      const isTechnicalKeycloakRole = (r: string) => {
+        if (!r || typeof r !== 'string') return true;
+        const upper = r.trim().toUpperCase().replace(/[-\s]/g, '_');
+        if (upper.startsWith('DEFAULT_ROLES_') || upper.startsWith('DEFAULT_ROLES')) return true;
+        return IGNORED_KEYCLOAK_ROLES.has(upper);
+      };
+
+      const realmRoles: string[] = (decoded.realm_access?.roles || []).filter((r: string) => !isTechnicalKeycloakRole(r));
       const clientRoles: string[] = [];
       if (decoded.resource_access) {
         Object.values(decoded.resource_access).forEach((client: any) => {
-          if (client?.roles) clientRoles.push(...client.roles);
+          if (client?.roles) {
+            clientRoles.push(...client.roles.filter((r: string) => !isTechnicalKeycloakRole(r)));
+          }
         });
       }
-      const groupRoles: string[] = decoded.groups || [];
+      const groupRoles: string[] = (decoded.groups || []).filter((r: string) => !isTechnicalKeycloakRole(r));
       const allJwtRoles = [...realmRoles, ...clientRoles, ...groupRoles];
 
       const dbUser = await this.authService.syncKeycloakUser({
@@ -107,7 +141,9 @@ export class JwtAuthGuard implements CanActivate {
 
       const mergedRoles = Array.from(
         new Set([...allJwtRoles, ...(dbUser.roles || [])]),
-      ).map((r) => (r as string).toUpperCase().replace(/[\s-]/g, '_'));
+      )
+        .map((r) => (r as string).toUpperCase().replace(/[\s-]/g, '_'))
+        .filter((r) => !isTechnicalKeycloakRole(r));
 
       request.user = {
         dbId: dbUser.id,
