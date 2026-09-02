@@ -35,6 +35,9 @@ export class RegisterTenantDto {
   })
   fullName: string;
 
+  firstName?: string;
+  lastName?: string;
+
   @ApiProperty({
     example: 'SecurePassword123',
     description: 'Password for the first admin user',

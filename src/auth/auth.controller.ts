@@ -174,7 +174,13 @@ Validates email + password and returns a signed JWT access token.
     @Headers('x-tenant-id') tenantHeader?: string,
   ) {
     const tenantId = resolveTenantId(user, tenantHeader);
-    return this.authService.listUsers(tenantId);
+    // Branch Admins can only see their own branch's users
+    const isBranchAdmin =
+      Array.isArray((user as any).permissions) &&
+      (user as any).permissions.includes('branch_admin:manage') &&
+      !(user as any).permissions.includes('tenant:settings');
+    const scopedBranchId = isBranchAdmin ? ((user as any).branchId || null) : null;
+    return this.authService.listUsers(tenantId, scopedBranchId);
   }
 
   // ─── GET /api/auth/tenant-policy ───────────────────────────
@@ -456,8 +462,20 @@ Validates email + password and returns a signed JWT access token.
     @CurrentUser() user: AuthUser,
     @Query('branchId') branchId?: string,
     @Query('includeSystem') includeSystem?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
   ) {
-    const bid = branchId && branchId !== 'ALL' ? branchId : undefined;
+    const isBranchAdmin =
+      Array.isArray((user as any).permissions) &&
+      (user as any).permissions.includes('branch_admin:manage') &&
+      !(user as any).permissions.includes('tenant:settings');
+    const bid =
+      branchId && branchId !== 'ALL'
+        ? branchId
+        : isBranchAdmin
+        ? (user as any).branchId || headerBranchId
+        : headerBranchId && headerBranchId !== 'ALL'
+        ? headerBranchId
+        : undefined;
     return this.authService.listRoles(user.tenantId, bid, includeSystem === 'true');
   }
 

@@ -82,6 +82,56 @@ export class ClientsController {
     return this.clientsService.restoreClient(id, tid, user?.dbId || user?.email || 'System');
   }
 
+  @Patch(':id/approve')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Approve a client' })
+  async approve(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+    const canApprove = 
+      userPermissions.includes('client:approve') ||
+      userPermissions.includes('tenant:settings') ||
+      userPermissions.includes('tenant:manage');
+
+    if (!canApprove) {
+      throw new ForbiddenException('Only Delivery Heads, Tenant Admins, Branch Admins, and authorized staff with client:approve permission can approve client accounts.');
+    }
+
+    const approvedBy = (user as any)?.fullName || user?.email || 'Reviewer';
+    return this.clientsService.approveClient(id, tid, approvedBy);
+  }
+
+  @Patch(':id/reject')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reject a client' })
+  async reject(
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+    const canReject = 
+      userPermissions.includes('client:reject') ||
+      userPermissions.includes('client:approve') ||
+      userPermissions.includes('tenant:settings') ||
+      userPermissions.includes('tenant:manage');
+
+    if (!canReject) {
+      throw new ForbiddenException('Only Delivery Heads, Tenant Admins, Branch Admins, and authorized staff with client:reject permission can reject client accounts.');
+    }
+
+    const rejectedBy = (user as any)?.fullName || user?.email || 'Reviewer';
+    return this.clientsService.rejectClient(id, tid, rejectedBy, body?.reason);
+  }
+
   @Patch(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -108,16 +158,14 @@ export class ClientsController {
   ) {
     const tid = resolveTenantId(user, tenantId);
 
-    const userRoles = (user?.roles || []).map((r: string) => String(r).toUpperCase());
-    const userPermissions = user?.permissions || [];
+    const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
     const canDelete = 
-      userRoles.includes('ADMIN') || 
-      userRoles.includes('SUPER_ADMIN') || 
-      userRoles.includes('DELIVERY_HEAD') || 
-      userPermissions.includes('client:delete');
+      userPermissions.includes('client:delete') ||
+      userPermissions.includes('tenant:settings') ||
+      userPermissions.includes('tenant:manage');
 
     if (!canDelete) {
-      throw new ForbiddenException('Only Tenant Admins and Delivery Heads have permission to delete client accounts.');
+      throw new ForbiddenException('You do not have permission (client:delete) to delete client accounts.');
     }
 
     await this.clientsService.deleteClient(id, tid, user?.dbId || user?.email || 'System');

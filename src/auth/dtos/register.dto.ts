@@ -13,6 +13,12 @@ export class RegisterDto {
   })
   email: string;
 
+  @ApiPropertyOptional({ example: 'John', description: 'First name' })
+  firstName?: string;
+
+  @ApiPropertyOptional({ example: 'Doe', description: 'Last name' })
+  lastName?: string;
+
   @ApiProperty({ example: 'John Doe', description: 'Full display name' })
   fullName: string;
 

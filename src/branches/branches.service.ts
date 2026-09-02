@@ -404,21 +404,23 @@ export class BranchesService {
 
   async getMembers(branchId: string, tenantId: string): Promise<BranchMember[]> {
     const res = await this.db.query(
-      `SELECT id, email, full_name, roles, is_active, pod_id, branch_id, assigned_branch_ids, created_at
-       FROM users
-       WHERE tenant_id = $1
+      `SELECT u.id, u.email, u.full_name, u.is_active, u.pod_id, u.branch_id, u.assigned_branch_ids, u.created_at,
+              COALESCE(cr.name, cr.system_role, 'RECRUITER') as role_name
+       FROM users u
+       LEFT JOIN custom_roles cr ON cr.id = u.role_id
+       WHERE u.tenant_id = $1
          AND (
-           branch_id = $2
-           OR (assigned_branch_ids IS NOT NULL AND assigned_branch_ids::text LIKE '%' || $2 || '%')
+           u.branch_id = $2
+           OR (u.assigned_branch_ids IS NOT NULL AND u.assigned_branch_ids::text LIKE '%' || $2 || '%')
          )
-       ORDER BY full_name ASC`,
+       ORDER BY u.full_name ASC`,
       [tenantId, branchId]
     );
     return res.rows.map(r => ({
       id: r.id,
       email: r.email,
       fullName: r.full_name,
-      roles: r.roles || [],
+      roles: r.role_name ? [r.role_name] : ['RECRUITER'],
       isActive: r.is_active,
       podId: r.pod_id,
       createdAt: r.created_at
@@ -439,24 +441,25 @@ export class BranchesService {
       const customRoleRes = await this.db.query(
         `SELECT id, name FROM custom_roles 
          WHERE tenant_id = $1 AND (name = ANY($2::text[]) OR id::text = ANY($2::text[]) OR system_role = ANY($2::text[]))
-         ORDER BY (is_system = false) DESC, created_at DESC LIMIT 1`,
+         ORDER BY (is_system = false) DESC, created_at DESC`,
         [tenantId, roles]
       );
-      const roleId = customRoleRes.rows[0]?.id || null;
+      const roleIds: string[] = customRoleRes.rows.map((r: any) => r.id);
+      const roleId = roleIds[0] || null;
 
       if (roleId) {
         await this.db.query(
-          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, roles = $3, role_id = $4 WHERE id = $5 AND tenant_id = $6',
-          [branchId, branchIds, roles, roleId, userId, tenantId]
+          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, role_id = $3, assigned_role_ids = $4::uuid[], updated_at = NOW() WHERE id = $5 AND tenant_id = $6',
+          [branchId, branchIds, roleId, roleIds, userId, tenantId]
         );
       } else {
         await this.db.query(
-          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, roles = $3 WHERE id = $4 AND tenant_id = $5',
-          [branchId, branchIds, roles, userId, tenantId]
+          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, assigned_role_ids = $3::uuid[], updated_at = NOW() WHERE id = $4 AND tenant_id = $5',
+          [branchId, branchIds, roleIds, userId, tenantId]
         );
       }
     } else {
-      await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2 WHERE id = $3 AND tenant_id = $4', [branchId, branchIds, userId, tenantId]);
+      await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4', [branchId, branchIds, userId, tenantId]);
     }
     return { message: 'User assigned to branch and roles updated successfully.' };
   }
@@ -468,53 +471,85 @@ export class BranchesService {
       if (userRes.rows.length === 0) {
         throw new NotFoundException('Selected manager user not found in tenant.');
       }
-      const rolesRes = await this.db.query('SELECT roles, assigned_branch_ids FROM users WHERE id = $1', [managerId]);
-      const currentRoles: string[] = rolesRes.rows[0]?.roles || [];
+      const rolesRes = await this.db.query('SELECT assigned_branch_ids, assigned_role_ids, role_id FROM users WHERE id = $1', [managerId]);
       const currentBranchIds: string[] = rolesRes.rows[0]?.assigned_branch_ids || [];
+      const currentRoleIds: string[] = rolesRes.rows[0]?.assigned_role_ids || [];
+      const primaryRoleId = rolesRes.rows[0]?.role_id;
       const updatedBranchIds = Array.from(new Set([branchId, ...currentBranchIds]));
 
-      if (!currentRoles.includes('BRANCH_ADMIN')) {
-        const updatedRoles = [...currentRoles, 'BRANCH_ADMIN'];
-        await this.db.query('UPDATE users SET roles = $1, branch_id = $2, assigned_branch_ids = $3 WHERE id = $4', [updatedRoles, branchId, updatedBranchIds, managerId]);
-      } else {
-        await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2 WHERE id = $3', [branchId, updatedBranchIds, managerId]);
-      }
+      // Look up the Custom Role for this branch with archetype 'BRANCH_ADMIN'
+      const branchAdminRoleRes = await this.db.query(
+        `SELECT id FROM custom_roles 
+         WHERE tenant_id = $1 AND (branch_id = $2 OR branch_id IS NULL) 
+           AND (system_role = 'BRANCH_ADMIN' OR UPPER(name) = 'BRANCH_ADMIN' OR UPPER(name) = 'BRANCH ADMIN')
+         ORDER BY (branch_id = $2) DESC, (is_system = false) DESC, created_at ASC 
+         LIMIT 1`,
+        [tenantId, branchId]
+      );
+
+      const branchAdminRoleId = branchAdminRoleRes.rows[0]?.id;
+      const updatedRoleIds = branchAdminRoleId 
+        ? Array.from(new Set([...currentRoleIds, branchAdminRoleId]))
+        : currentRoleIds;
+
+      await this.db.query(
+        `UPDATE users 
+         SET branch_id = $1, 
+             assigned_branch_ids = $2,
+             assigned_role_ids = $3::uuid[],
+             role_id = COALESCE($4, role_id)
+         WHERE id = $5`,
+        [branchId, updatedBranchIds, updatedRoleIds, branchAdminRoleId, managerId]
+      );
     }
     await this.db.query('UPDATE branches SET manager_id = $1 WHERE id = $2 AND tenant_id = $3', [managerId, branchId, tenantId]);
     return this.findOne(branchId, tenantId);
   }
 
   async getHierarchy(tenantId: string) {
-    const tenantRes = await this.db.query(
-      `SELECT t.id, t.name, COALESCE(t.domain, td.domain_name, 'deb') as domain
-       FROM tenants t
-       LEFT JOIN tenant_domains td ON td.tenant_id = t.id AND td.is_primary = TRUE
-       WHERE t.id = $1 LIMIT 1`,
-      [tenantId]
-    );
-    const tenant = tenantRes.rows[0];
+    try {
+      const tenantRes = await this.db.query(
+        `SELECT id, name, domain FROM tenants WHERE id = $1 LIMIT 1`,
+        [tenantId]
+      );
+      const tenant = tenantRes.rows[0];
 
-    const branchesList = await this.findAll(tenantId);
-    
-    const branchesWithPods = await Promise.all(
-      branchesList.map(async (b) => {
-        const podsRes = await this.db.query(
-          'SELECT id, name, code FROM pods WHERE branch_id = $1 AND tenant_id = $2',
-          [b.id, tenantId]
-        );
-        const members = b.members || (await this.getMembers(b.id, tenantId));
-        
-        return {
-          ...b,
-          pods: podsRes.rows || [],
-          members,
-        };
-      })
-    );
+      const branchesList = await this.findAll(tenantId);
+      
+      const branchesWithPods = await Promise.all(
+        (branchesList || []).map(async (b) => {
+          try {
+            const podsRes = await this.db.query(
+              'SELECT id, name, code FROM pods WHERE branch_id = $1 AND tenant_id = $2',
+              [b.id, tenantId]
+            );
+            const members = b.members || (await this.getMembers(b.id, tenantId).catch(() => []));
+            
+            return {
+              ...b,
+              pods: podsRes?.rows || [],
+              members: members || [],
+            };
+          } catch (e) {
+            return {
+              ...b,
+              pods: [],
+              members: [],
+            };
+          }
+        })
+      );
 
-    return {
-      tenant: tenant || { name: 'Tenant HQ', domain: 'workspace' },
-      branches: branchesWithPods,
-    };
+      return {
+        tenant: tenant || { name: 'Tenant HQ', domain: 'workspace' },
+        branches: branchesWithPods || [],
+      };
+    } catch (err) {
+      this.logger.error('Error in getHierarchy:', err);
+      return {
+        tenant: { name: 'Tenant HQ', domain: 'workspace' },
+        branches: [],
+      };
+    }
   }
 }

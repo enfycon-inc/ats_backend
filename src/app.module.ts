@@ -14,6 +14,8 @@ import { PodsModule } from './pods/pods.module';
 import { BranchesModule } from './branches/branches.module';
 import { BusinessUnitsModule } from './business-units/business-units.module';
 import { AuditModule } from './audit/audit.module';
+import { EventsModule } from './events/events.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { DiceModule } from './integrations/dice/dice.module';
 
 @Module({
@@ -27,6 +29,8 @@ import { DiceModule } from './integrations/dice/dice.module';
     DatabaseModule,
     AuditModule,
     AuthModule,
+    EventsModule,
+    NotificationsModule,
     CandidatesModule,
     SourcingModule,
     JobsModule,

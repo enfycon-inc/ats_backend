@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { CreateJobDto } from './dtos/create-job.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export interface JobProfile {
   id: string;
@@ -124,7 +125,10 @@ export interface CandidateMatch {
 export class JobsService implements OnModuleInit {
   private readonly logger = new Logger(JobsService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async onModuleInit() {
     await this.ensureJobsTableV2();
@@ -190,6 +194,78 @@ export class JobsService implements OnModuleInit {
 
     this.logger.log('Jobs table V2 schema verified (all Ceipal fields + approval workflow present).');
   }
+
+  /**
+   * Resolve any user identifier (UUID, email, name, prefixed 'rec:uuid'/'dh:uuid') to a pure user UUID.
+   */
+  async resolveUserUuid(identifier?: string | null, tenantId?: string): Promise<string | null> {
+    if (!identifier || typeof identifier !== 'string') return null;
+    const clean = identifier.replace(/^(rec:|dh:|pod:|user:)/i, '').trim();
+    if (!clean || clean === 'N/A' || clean.toLowerCase() === 'all' || clean.toLowerCase() === 'none' || clean.toLowerCase() === 'unassigned') {
+      return null;
+    }
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
+    if (isUuid) {
+      if (!tenantId) return clean;
+      const res = await this.db.query('SELECT id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1', [clean, tenantId]);
+      if (res.rows.length > 0) return res.rows[0].id;
+    }
+
+    if (tenantId) {
+      const res = await this.db.query(
+        `SELECT id FROM users 
+         WHERE tenant_id = $1 
+           AND (LOWER(email) = LOWER($2) OR LOWER(full_name) = LOWER($2) OR LOWER(full_name) LIKE '%' || LOWER($2) || '%')
+         LIMIT 1`,
+        [tenantId, clean]
+      );
+      if (res.rows.length > 0) return res.rows[0].id;
+    }
+    return null;
+  }
+
+  /**
+   * Find all Delivery Head / Reviewer user IDs for a branch or tenant dynamically from the database
+   * using role permissions, custom roles, and branch manager assignments.
+   */
+  async getDeliveryHeadIds(tenantId: string, branchId?: string | null): Promise<string[]> {
+    try {
+      let sql = `
+        SELECT DISTINCT u.id 
+        FROM users u
+        LEFT JOIN custom_roles cr ON (
+          cr.id = u.role_id 
+          OR cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
+        )
+        LEFT JOIN role_permissions rp ON rp.role_id = cr.id
+        LEFT JOIN branches b ON b.id = u.branch_id
+        WHERE u.tenant_id = $1 AND u.is_active = true
+          AND (
+            rp.permission IN ('job:approve', 'branch_admin:manage', 'submission:internal_screening')
+            OR (b.manager_id = u.id)
+            OR UPPER(COALESCE(cr.system_role, '')) IN ('DELIVERY_HEAD', 'DELIVERYHEAD', 'BRANCH_ADMIN')
+            OR u.id IN (SELECT DISTINCT job_reviewer_id FROM users WHERE tenant_id = $1 AND job_reviewer_id IS NOT NULL)
+          )
+      `;
+      const params: any[] = [tenantId];
+      if (branchId) {
+        params.push(branchId);
+        sql += ` AND (
+          u.branch_id = $2 
+          OR $2 = ANY(COALESCE(u.assigned_branch_ids, '{}'))
+          OR rp.permission IN ('job:view_all_branches', 'tenant:settings', 'tenant:manage')
+          OR UPPER(COALESCE(cr.system_role, '')) = 'DELIVERY_HEAD'
+        )`;
+      }
+      const res = await this.db.query(sql, params);
+      return res.rows.map((r: any) => r.id);
+    } catch (e: any) {
+      this.logger.warn(`Failed to get delivery head IDs: ${e.message}`);
+      return [];
+    }
+  }
+
   async getNextJobCode(tenantId: string, branchId?: string | null, shiftInput?: string | null, offset = 0): Promise<string> {
     // 1. Resolve Branch Code (manual code set by admin, or first 3 letters of branch name, or 'GEN')
     let branchCode = 'GEN';
@@ -350,33 +426,86 @@ export class JobsService implements OnModuleInit {
     if (createdByEmail && createdByEmail !== 'System') {
       // Cascading reviewer resolution: 1. User's designated reviewer -> 2. Pod Head -> 3. Branch Manager
       const creatorRes = await this.db.query(
-        `SELECT u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
-                u.roles, u.role_id, r.name as role_name
+        `SELECT u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
+                u.role_id,
+                COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
          FROM users u
          LEFT JOIN pods p ON p.id = u.pod_id
          LEFT JOIN branches b ON b.id = u.branch_id
-         LEFT JOIN custom_roles r ON r.id = u.role_id
-         WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2 LIMIT 1`,
+         LEFT JOIN custom_roles cr ON (
+           cr.id = u.role_id
+           OR cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
+         )
+         LEFT JOIN role_permissions rp ON cr.id = rp.role_id
+         WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
+         GROUP BY u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id, u.role_id
+         LIMIT 1`,
         [createdByEmail, tenantId]
       ).catch(() => ({ rows: [] }));
 
       if (creatorRes.rows.length > 0) {
         const cRow = creatorRes.rows[0];
+        const cPerms: string[] = Array.isArray(cRow.permissions) ? cRow.permissions : [];
+        const hasDirectPublish = 
+          cPerms.includes('job:publish_direct') || 
+          cPerms.includes('tenant:settings') || 
+          cPerms.includes('tenant:manage') || 
+          cPerms.includes('branch_admin:manage');
+
         if (cRow.job_reviewer_id) {
           assignedApproverId = cRow.job_reviewer_id;
           assignedApproverRole = 'DESIGNATED_REVIEWER';
-          requiresApprovalGate = true;
+          requiresApprovalGate = !hasDirectPublish;
         } else if (cRow.pod_head_id) {
           assignedApproverId = assignedApproverId || cRow.pod_head_id;
           assignedApproverRole = assignedApproverRole || 'POD_LEAD';
+          requiresApprovalGate = !hasDirectPublish;
         } else if (cRow.branch_manager_id) {
           assignedApproverId = assignedApproverId || cRow.branch_manager_id;
           assignedApproverRole = assignedApproverRole || 'BRANCH_ADMIN';
+          requiresApprovalGate = !hasDirectPublish;
         }
       }
     }
 
-    const isApprovalRequested = dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval' || requiresApprovalGate;
+    // Auto-create client & end client if not present
+    await this.ensureClientExists(dto.client, tenantId, createdByEmail || 'System');
+    if (dto.endClientName && dto.endClientName !== dto.client) {
+      await this.ensureClientExists(dto.endClientName, tenantId, createdByEmail || 'System');
+    }
+
+    // Check if client (and end client) is in APPROVED status
+    let clientApproved = true;
+    if (dto.client) {
+      const clientCheck = await this.db.query(
+        `SELECT id, client_name, status, approval_status FROM clients 
+         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
+        [dto.client.trim(), tenantId]
+      );
+      if (clientCheck.rows.length > 0) {
+        const cRow = clientCheck.rows[0];
+        if (cRow.status === 'Pending Approval' || cRow.approval_status === 'PENDING_APPROVAL' || cRow.status === 'Rejected' || cRow.approval_status === 'REJECTED') {
+          clientApproved = false;
+        }
+      }
+    }
+
+    if (dto.endClientName && dto.endClientName !== dto.client) {
+      const endClientCheck = await this.db.query(
+        `SELECT id, client_name, status, approval_status FROM clients 
+         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
+        [dto.endClientName.trim(), tenantId]
+      );
+      if (endClientCheck.rows.length > 0) {
+        const ecRow = endClientCheck.rows[0];
+        if (ecRow.status === 'Pending Approval' || ecRow.approval_status === 'PENDING_APPROVAL' || ecRow.status === 'Rejected' || ecRow.approval_status === 'REJECTED') {
+          clientApproved = false;
+        }
+      }
+    }
+
+    // A job cannot be Active (Live) if the client is not approved
+    const isApprovalRequested = (dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval') || requiresApprovalGate || !clientApproved;
     const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
     const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
 
@@ -445,6 +574,10 @@ export class JobsService implements OnModuleInit {
       ) RETURNING *
     `;
 
+    const resolvedPrimaryRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId || dto.assignedTo, tenantId);
+    const resolvedRecruitmentManagerId = await this.resolveUserUuid(dto.recruitmentManagerId, tenantId);
+    const resolvedAssignedApproverId = await this.resolveUserUuid(assignedApproverId, tenantId);
+
     const params = [
       tenantId,                                                     // $1
       jobCode,                                                       // $2
@@ -474,8 +607,8 @@ export class JobsService implements OnModuleInit {
       dto.hoursPerWeek || 40,                                        // $26
       dto.duration || '',                                            // $27
       dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), // $28
-      dto.recruitmentManagerId || null,                               // $29
-      dto.primaryRecruiterId || null,                                 // $30
+      resolvedRecruitmentManagerId || null,                          // $29
+      resolvedPrimaryRecruiterId || null,                            // $30
       dto.assignedTo || 'N/A',                                       // $31
       dto.industry || '',                                            // $32
       dto.degree || '',                                              // $33
@@ -487,7 +620,7 @@ export class JobsService implements OnModuleInit {
       dto.market || 'US',                                            // $39
       branchId,                                                      // $40
       initialApprovalStatus,                                         // $41
-      assignedApproverId,                                            // $42
+      resolvedAssignedApproverId || null,                            // $42
       assignedApproverRole,                                          // $43
       jobTimezone,                                                   // $44
       workStartTime,                                                 // $45
@@ -495,12 +628,6 @@ export class JobsService implements OnModuleInit {
       workingDays,                                                   // $47
       shiftTiming,                                                   // $48
     ];
-
-    // Auto-create client & end client if not present
-    await this.ensureClientExists(dto.client, tenantId, createdByEmail || 'System');
-    if (dto.endClientName && dto.endClientName !== dto.client) {
-      await this.ensureClientExists(dto.endClientName, tenantId, createdByEmail || 'System');
-    }
 
     try {
       const result = await this.db.query(sql, params);
@@ -582,6 +709,135 @@ export class JobsService implements OnModuleInit {
         );
       }
 
+      // ─────────────────────────────────────────────────────────────
+      // Live Real-Time Role & Reviewer Notification Dispatch
+      // ─────────────────────────────────────────────────────────────
+      try {
+        const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, branchId);
+
+        if (initialApprovalStatus === 'PENDING_APPROVAL') {
+          // 1. Reviewer Gate: Notify designated reviewer/approver
+          if (resolvedAssignedApproverId) {
+            await this.notifications.create(tenantId, resolvedAssignedApproverId, {
+              type: 'JOB_PENDING_APPROVAL',
+              title: 'Job Requisition Pending Approval',
+              message: `${createdByEmail || 'A team member'} submitted job "${jobCode} - ${dto.title}" for your review & approval.`,
+              data: {
+                jobId: jobId,
+                jobCode: jobCode,
+                jobTitle: dto.title,
+                branchId: branchId,
+              },
+              initiatorId: createdByEmail || 'System',
+            });
+          }
+
+          // 2. Also notify Delivery Head(s) of pending requisition in their branch
+          const dhNotifTargets = deliveryHeadIds.filter(id => id !== resolvedAssignedApproverId);
+          if (dhNotifTargets.length > 0) {
+            await this.notifications.createMany(tenantId, dhNotifTargets, {
+              type: 'JOB_PENDING_APPROVAL',
+              title: 'New Requisition Submitted for Review',
+              message: `Job requisition "${jobCode} - ${dto.title}" was submitted for review in your branch by ${createdByEmail || 'AM'}.`,
+              data: {
+                jobId: jobId,
+                jobCode: jobCode,
+                jobTitle: dto.title,
+                branchId: branchId,
+              },
+              initiatorId: createdByEmail || 'System',
+            });
+          }
+        } else if (initialApprovalStatus === 'APPROVED') {
+          // Direct Publish:
+          // 1. Notify Assigned Primary Recruiter
+          if (resolvedPrimaryRecruiterId) {
+            await this.notifications.create(tenantId, resolvedPrimaryRecruiterId, {
+              type: 'JOB_NEW',
+              title: `New Job Assigned: ${jobCode}`,
+              message: `You have been assigned as primary recruiter for job "${jobCode} - ${dto.title}".`,
+              data: {
+                jobId: jobId,
+                jobCode: jobCode,
+                jobTitle: dto.title,
+                branchId: branchId,
+              },
+              initiatorId: createdByEmail || 'System',
+            });
+          }
+
+          // 2. Notify Delivery Head(s) & Reviewer
+          const dhTargets = new Set(deliveryHeadIds.filter(id => id !== resolvedPrimaryRecruiterId));
+          if (resolvedAssignedApproverId && resolvedAssignedApproverId !== resolvedPrimaryRecruiterId) {
+            dhTargets.add(resolvedAssignedApproverId);
+          }
+          if (dhTargets.size > 0) {
+            await this.notifications.createMany(tenantId, Array.from(dhTargets), {
+              type: 'JOB_NEW',
+              title: `New Active Job: ${jobCode}`,
+              message: `New active job requisition "${jobCode} - ${dto.title}" published for ${dto.client || 'Client'} in your branch.`,
+              data: {
+                jobId: jobId,
+                jobCode: jobCode,
+                jobTitle: dto.title,
+                branchId: branchId,
+              },
+              initiatorId: createdByEmail || 'System',
+            });
+            this.logger.log(`Dispatched JOB_NEW notification to ${dhTargets.size} Delivery Head(s)/Reviewer(s)`);
+          }
+
+          // 3. Notify Pod members or branch recruiters
+          const teamUserIds = new Set<string>();
+          if (resolvedRecruitmentManagerId && resolvedRecruitmentManagerId !== resolvedPrimaryRecruiterId && !dhTargets.has(resolvedRecruitmentManagerId)) {
+            teamUserIds.add(resolvedRecruitmentManagerId);
+          }
+
+          if (assignedPodId) {
+            const podUsersRes = await this.db.query(
+              'SELECT id FROM users WHERE pod_id = $1 AND tenant_id = $2 AND is_active = true',
+              [assignedPodId, tenantId]
+            );
+            podUsersRes.rows.forEach((r: any) => {
+              if (r.id !== resolvedPrimaryRecruiterId && !dhTargets.has(r.id)) {
+                teamUserIds.add(r.id);
+              }
+            });
+          } else if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
+            if (branchId) {
+              const branchUsersRes = await this.db.query(
+                `SELECT id FROM users WHERE tenant_id = $1 AND is_active = true 
+                 AND (branch_id = $2 OR $2 = ANY(assigned_branch_ids))`,
+                [tenantId, branchId]
+              );
+              branchUsersRes.rows.forEach((r: any) => {
+                if (r.id !== resolvedPrimaryRecruiterId && !dhTargets.has(r.id)) {
+                  teamUserIds.add(r.id);
+                }
+              });
+            }
+          }
+
+          if (teamUserIds.size > 0) {
+            await this.notifications.createMany(tenantId, Array.from(teamUserIds), {
+              type: 'JOB_NEW',
+              title: 'New Active Job Requisition',
+              message: `New active job "${jobCode} - ${dto.title}" has been published and assigned to your team.`,
+              data: {
+                jobId: jobId,
+                jobCode: jobCode,
+                jobTitle: dto.title,
+                branchId: branchId,
+              },
+              initiatorId: createdByEmail || 'System',
+            });
+            this.logger.log(`Dispatched JOB_NEW broadcast notification to ${teamUserIds.size} team user(s)`);
+          }
+        }
+      } catch (notifErr: any) {
+        this.logger.warn(`Failed to dispatch job creation notification: ${notifErr.message}`);
+      }
+
       return this.findOneJob(jobId, tenantId);
     } catch (err) {
       this.logger.error(`Failed to create job: ${err.message}`, err.stack);
@@ -622,7 +878,12 @@ export class JobsService implements OnModuleInit {
     const params: any[] = [tenantId];
     let paramIndex = 2;
 
-    const canViewAllBranches = user?.permissions?.includes('job:view_all_branches') || user?.roles?.includes('ADMIN') || user?.roles?.includes('SUPER_ADMIN');
+    const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+    const canViewAllBranches = 
+      userPermissions.includes('job:view_all_branches') || 
+      userPermissions.includes('tenant:settings') || 
+      userPermissions.includes('tenant:manage');
+
     const targetBranchId = activeBranchId || user?.branchId;
 
     if (targetBranchId && !canViewAllBranches) {
@@ -631,25 +892,22 @@ export class JobsService implements OnModuleInit {
       paramIndex++;
     }
 
-    // ── Recruiter scoping & Approval visibility gate ─────────────────────────
-    // If user has 'job:approve' permission or is privileged (Admin / Delivery Head / Pod Lead / Account Manager):
-    // They SHOULD see pending jobs so they can review, approve, and reject them!
-    // Standard recruiters (without job:approve or privileged roles) are gated from unapproved jobs.
-    const canApprove = user?.permissions?.includes('job:approve');
-    const isPrivileged =
-      canApprove ||
-      user?.roles?.includes('SUPER_ADMIN') ||
-      user?.roles?.includes('ADMIN') ||
-      user?.roles?.includes('DELIVERY_HEAD') ||
-      user?.roles?.includes('POD_LEAD') ||
-      user?.roles?.includes('ACCOUNT_MANAGER') ||
-      user?.permissions?.includes('job:view_all') ||
-      user?.permissions?.includes('job:publish_direct');
+    // ── Dynamic Capability-based Approval Visibility Gate ────────────────────
+    // Users with management/approval permissions (job:approve, job:publish_direct, job:view_all, branch_admin:manage, tenant:settings)
+    // have full visibility of all active and pending review jobs.
+    // Users with only scoped recruitment permissions (e.g. standard recruiters) see only approved live jobs
+    // assigned to them/their pod/their branch, unless they are explicitly assigned as reviewer for that job.
+    const canApproveOrManage = 
+      userPermissions.includes('job:approve') || 
+      userPermissions.includes('job:publish_direct') || 
+      userPermissions.includes('job:view_all') || 
+      userPermissions.includes('job:edit') || 
+      userPermissions.includes('branch_admin:manage') || 
+      userPermissions.includes('tenant:manage') || 
+      userPermissions.includes('tenant:settings');
 
-    const isRecruiter = user?.roles?.includes('RECRUITER');
-
-    if (isRecruiter && !isPrivileged && user?.dbId) {
-      // Gate unapproved jobs completely from standard recruiters (unless assigned directly as reviewer)
+    if (!canApproveOrManage && user?.dbId) {
+      // Gate unapproved jobs completely from scoped recruiters (unless assigned directly as reviewer)
       sql += ` AND (
         ((j.approval_status = 'APPROVED' OR j.approval_status IS NULL) AND UPPER(COALESCE(j.status, '')) NOT IN ('PENDING APPROVAL', 'PENDING_APPROVAL', 'DRAFT'))
         OR j.assigned_approver_id = $${paramIndex}::uuid
@@ -851,6 +1109,42 @@ export class JobsService implements OnModuleInit {
     }
 
     const currentJob = jobCheck.rows[0];
+
+    // Verify associated client (and end client) is in APPROVED status
+    if (currentJob.client_name) {
+      const clientCheck = await this.db.query(
+        `SELECT id, client_name, status, approval_status FROM clients 
+         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
+        [currentJob.client_name.trim(), tenantId]
+      );
+      if (clientCheck.rows.length > 0) {
+        const cRow = clientCheck.rows[0];
+        if (cRow.status === 'Pending Approval' || cRow.approval_status === 'PENDING_APPROVAL') {
+          throw new BadRequestException(`Cannot activate job requisition: Client "${cRow.client_name}" is pending approval. The client must be approved before jobs can go live.`);
+        }
+        if (cRow.status === 'Rejected' || cRow.approval_status === 'REJECTED') {
+          throw new BadRequestException(`Cannot activate job requisition: Client "${cRow.client_name}" was rejected. Please reactivate or approve the client first.`);
+        }
+      }
+    }
+
+    if (currentJob.end_client_name && currentJob.end_client_name !== currentJob.client_name) {
+      const endClientCheck = await this.db.query(
+        `SELECT id, client_name, status, approval_status FROM clients 
+         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
+        [currentJob.end_client_name.trim(), tenantId]
+      );
+      if (endClientCheck.rows.length > 0) {
+        const ecRow = endClientCheck.rows[0];
+        if (ecRow.status === 'Pending Approval' || ecRow.approval_status === 'PENDING_APPROVAL') {
+          throw new BadRequestException(`Cannot activate job requisition: End Client "${ecRow.client_name}" is pending approval. The client must be approved first.`);
+        }
+        if (ecRow.status === 'Rejected' || ecRow.approval_status === 'REJECTED') {
+          throw new BadRequestException(`Cannot activate job requisition: End Client "${ecRow.client_name}" was rejected.`);
+        }
+      }
+    }
+
     const assignedTo = overrides?.assignedTo || currentJob.assigned_to || 'All Branch Recruiters';
     const primaryRecruiterId = overrides?.primaryRecruiterId || currentJob.primary_recruiter_id;
 
@@ -874,6 +1168,74 @@ export class JobsService implements OnModuleInit {
       [approver?.dbId || null, assignedTo, primaryRecruiterId || null, jobId, tenantId]
     );
 
+    // Live Notification on Approval: Notify Creator & Assigned Recruiter/Pod
+    try {
+      if (currentJob.account_manager_id || currentJob.created_by) {
+        const creatorTarget = currentJob.account_manager_id || currentJob.created_by;
+        const creatorRes = await this.db.query(
+          'SELECT id FROM users WHERE id::text = $1 OR email = $1 LIMIT 1',
+          [creatorTarget]
+        );
+        if (creatorRes.rows.length > 0) {
+          await this.notifications.create(tenantId, creatorRes.rows[0].id, {
+            type: 'JOB_APPROVED',
+            title: 'Job Requisition Approved',
+            message: `Your job requisition "${currentJob.job_code} - ${currentJob.job_title}" was approved by ${approver?.fullName || approver?.email || 'Approver'}.`,
+            data: {
+              jobId: jobId,
+              jobCode: currentJob.job_code,
+              jobTitle: currentJob.job_title,
+            },
+            initiatorId: approver?.dbId || 'System',
+          });
+        }
+      }
+
+      const assignedRecruiters = new Set<string>();
+      if (primaryRecruiterId) assignedRecruiters.add(primaryRecruiterId);
+      const effectivePodId = overrides?.podId || currentJob.pod_id;
+      if (effectivePodId) {
+        const podUsers = await this.db.query(
+          'SELECT id FROM users WHERE pod_id = $1 AND tenant_id = $2 AND is_active = true',
+          [effectivePodId, tenantId]
+        );
+        podUsers.rows.forEach((r: any) => assignedRecruiters.add(r.id));
+      }
+
+      if (assignedRecruiters.size > 0) {
+        await this.notifications.createMany(tenantId, Array.from(assignedRecruiters), {
+          type: 'JOB_NEW',
+          title: 'New Job Active (Approved)',
+          message: `Job "${currentJob.job_code} - ${currentJob.job_title}" has been approved and is now active for recruitment.`,
+          data: {
+            jobId: jobId,
+            jobCode: currentJob.job_code,
+            jobTitle: currentJob.job_title,
+          },
+          initiatorId: approver?.dbId || 'System',
+        });
+      }
+
+      const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, currentJob.branch_id);
+      const dhTargets = deliveryHeadIds.filter(id => !assignedRecruiters.has(id));
+      if (dhTargets.length > 0) {
+        await this.notifications.createMany(tenantId, dhTargets, {
+          type: 'JOB_NEW',
+          title: `Job Approved: ${currentJob.job_code}`,
+          message: `Job "${currentJob.job_code} - ${currentJob.job_title}" was approved by ${approver?.fullName || 'Approver'} and is now active in your branch.`,
+          data: {
+            jobId: jobId,
+            jobCode: currentJob.job_code,
+            jobTitle: currentJob.job_title,
+            branchId: currentJob.branch_id,
+          },
+          initiatorId: approver?.dbId || 'System',
+        });
+      }
+    } catch (notifErr: any) {
+      this.logger.warn(`Failed to dispatch job approval notification: ${notifErr.message}`);
+    }
+
     return this.findOneJob(jobId, tenantId);
   }
 
@@ -888,6 +1250,8 @@ export class JobsService implements OnModuleInit {
       throw new NotFoundException(`Job with ID "${jobId}" not found.`);
     }
 
+    const currentJob = jobCheck.rows[0];
+
     await this.db.query(
       `UPDATE jobs
        SET status = 'Draft',
@@ -897,6 +1261,33 @@ export class JobsService implements OnModuleInit {
        WHERE id = $2 AND tenant_id = $3`,
       [reason || 'Job requirement rejected by reviewer.', jobId, tenantId]
     );
+
+    // Live Notification on Rejection: Notify Creator with Reason
+    try {
+      if (currentJob.account_manager_id || currentJob.created_by) {
+        const creatorTarget = currentJob.account_manager_id || currentJob.created_by;
+        const creatorRes = await this.db.query(
+          'SELECT id FROM users WHERE id::text = $1 OR email = $1 LIMIT 1',
+          [creatorTarget]
+        );
+        if (creatorRes.rows.length > 0) {
+          await this.notifications.create(tenantId, creatorRes.rows[0].id, {
+            type: 'JOB_REJECTED',
+            title: 'Job Requisition Rejected',
+            message: `Your job requisition "${currentJob.job_code} - ${currentJob.job_title}" was rejected. Feedback: ${reason || 'No specific feedback provided.'}`,
+            data: {
+              jobId: jobId,
+              jobCode: currentJob.job_code,
+              jobTitle: currentJob.job_title,
+              rejectionReason: reason,
+            },
+            initiatorId: approver?.dbId || 'System',
+          });
+        }
+      }
+    } catch (notifErr: any) {
+      this.logger.warn(`Failed to dispatch job rejection notification: ${notifErr.message}`);
+    }
 
     return this.findOneJob(jobId, tenantId);
   }
@@ -921,13 +1312,31 @@ export class JobsService implements OnModuleInit {
       throw new NotFoundException(`Job not found.`);
     }
 
+    // If attempting to set status to 'Active', ensure client is approved
+    if (dto.status === 'Active') {
+      const targetClient = dto.client || jobRes.rows[0].client_name;
+      if (targetClient) {
+        const clientCheck = await this.db.query(
+          `SELECT id, client_name, status, approval_status FROM clients 
+           WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
+          [targetClient.trim(), tenantId]
+        );
+        if (clientCheck.rows.length > 0) {
+          const cRow = clientCheck.rows[0];
+          if (cRow.status === 'Pending Approval' || cRow.approval_status === 'PENDING_APPROVAL') {
+            throw new BadRequestException(`Cannot make job Active: Client "${cRow.client_name}" is pending approval. The client must be approved before jobs can go live.`);
+          }
+          if (cRow.status === 'Rejected' || cRow.approval_status === 'REJECTED') {
+            throw new BadRequestException(`Cannot make job Active: Client "${cRow.client_name}" is rejected.`);
+          }
+        }
+      }
+    }
+
     // Define Tenant Admin, Branch Admin, Delivery Head, or Delegated Permission clearance
-    const userPermissions = user.permissions || [];
-    const userRoles = user.roles || [];
-    const isSuperAdmin = userRoles.includes('SUPER_ADMIN');
-    const isTenantAdmin = isSuperAdmin || userRoles.includes('ADMIN') || userPermissions.includes('tenant:settings');
+    const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+    const isTenantAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage');
     const isBranchAdmin = 
-      userRoles.includes('BRANCH_ADMIN') || 
       userPermissions.includes('branch_admin:manage') ||
       (jobRes.rows[0]?.branch_id && user?.branchRoles?.[jobRes.rows[0]?.branch_id]?.some((r: string) => ['ADMIN', 'BRANCH_ADMIN'].includes(r)));
 
@@ -936,9 +1345,9 @@ export class JobsService implements OnModuleInit {
       userPermissions.includes('job:assign_recruiter') ||
       userPermissions.includes('job:assign_pod') ||
       userPermissions.includes('job:edit') ||
+      userPermissions.includes('job:approve') ||
       userPermissions.includes('pod:edit') ||
-      userPermissions.includes('pod:overlap') ||
-      userRoles.includes('DELIVERY_HEAD');
+      userPermissions.includes('pod:overlap');
 
     const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission;
 
@@ -1092,6 +1501,47 @@ export class JobsService implements OnModuleInit {
           [tenantId, id, dto.podId, user?.email || 'System']
         );
       }
+    }
+
+    // Dispatch live notification if primary recruiter was assigned or changed
+    try {
+      if (dto.primaryRecruiterId !== undefined && dto.primaryRecruiterId) {
+        const resolvedRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId, tenantId);
+        if (resolvedRecruiterId && resolvedRecruiterId !== jobRes.rows[0].primary_recruiter_id) {
+          await this.notifications.create(tenantId, resolvedRecruiterId, {
+            type: 'JOB_NEW',
+            title: `Job Assigned: ${jobRes.rows[0].job_code}`,
+            message: `You have been assigned as primary recruiter for job "${jobRes.rows[0].job_code} - ${jobRes.rows[0].title}".`,
+            data: {
+              jobId: id,
+              jobCode: jobRes.rows[0].job_code,
+              jobTitle: jobRes.rows[0].title,
+              branchId: jobRes.rows[0].branch_id,
+            },
+            initiatorId: user?.dbId || user?.email || 'System',
+          });
+
+          // Also notify Delivery Head(s)
+          const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, jobRes.rows[0].branch_id);
+          const dhTargets = deliveryHeadIds.filter(dhId => dhId !== resolvedRecruiterId);
+          if (dhTargets.length > 0) {
+            await this.notifications.createMany(tenantId, dhTargets, {
+              type: 'JOB_NEW',
+              title: `Recruiter Assigned: ${jobRes.rows[0].job_code}`,
+              message: `Recruiter was assigned to job "${jobRes.rows[0].job_code} - ${jobRes.rows[0].title}" in your branch.`,
+              data: {
+                jobId: id,
+                jobCode: jobRes.rows[0].job_code,
+                jobTitle: jobRes.rows[0].title,
+                branchId: jobRes.rows[0].branch_id,
+              },
+              initiatorId: user?.dbId || user?.email || 'System',
+            });
+          }
+        }
+      }
+    } catch (notifErr: any) {
+      this.logger.warn(`Failed to dispatch job update notification: ${notifErr.message}`);
     }
 
     return this.findOneJob(id, tenantId);
@@ -1712,18 +2162,61 @@ export class JobsService implements OnModuleInit {
         const paddedSeq = String(seqNumber).padStart(3, '0');
         const clientCode = `${prefix}-CL-${paddedSeq}`;
 
+        let initialStatus = 'Active';
+        let approvalStatus = 'APPROVED';
+        let approvedBy: string | null = 'System';
+        let approvedAt: Date | null = new Date();
+
+        if (createdBy && createdBy !== 'System') {
+          const creatorRes = await this.db.query(
+            `SELECT u.id, u.role_id,
+                    COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
+             FROM users u
+             LEFT JOIN custom_roles cr ON (
+               (u.role_id IS NOT NULL AND cr.id = u.role_id)
+               OR (u.assigned_role_ids IS NOT NULL AND cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
+             )
+             LEFT JOIN role_permissions rp ON cr.id = rp.role_id
+             WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
+             GROUP BY u.id, u.role_id
+             LIMIT 1`,
+            [createdBy, tenantId]
+          ).catch(() => ({ rows: [] }));
+
+          if (creatorRes.rows.length > 0) {
+            const cRow = creatorRes.rows[0];
+            const perms: string[] = Array.isArray(cRow.permissions) ? cRow.permissions : [];
+            const hasDirectAdd = 
+              perms.includes('client:direct_add') || 
+              perms.includes('client:approve') || 
+              perms.includes('tenant:settings') || 
+              perms.includes('tenant:manage');
+
+            if (!hasDirectAdd) {
+              initialStatus = 'Pending Approval';
+              approvalStatus = 'PENDING_APPROVAL';
+              approvedBy = null;
+              approvedAt = null;
+            }
+          }
+        }
+
         await this.db.query(
           `INSERT INTO clients (
-            tenant_id, client_code, client_name, status, primary_owner, business_unit, created_by, modified_by
+            tenant_id, client_code, client_name, status, approval_status, primary_owner, business_unit, created_by, modified_by, approved_by, approved_at
           ) VALUES (
-            $1, $2, $3, 'Active', $4, $5, $4, $4
+            $1, $2, $3, $4, $5, $6, $7, $6, $6, $8, $9
           )`,
           [
             tenantId,
             clientCode,
             normalized,
+            initialStatus,
+            approvalStatus,
             createdBy,
-            tenant?.name || 'Default'
+            tenant?.name || 'Default',
+            approvedBy,
+            approvedAt,
           ]
         );
       }

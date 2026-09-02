@@ -636,6 +636,33 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS sow_executed BOOLEAN DEFAULT FALSE;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS coi_received BOOLEAN DEFAULT FALSE;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS vendor_portal_created BOOLEAN DEFAULT FALSE;
+
+      -- 20. Live Notifications & User Preferences Tables
+      CREATE TABLE IF NOT EXISTS notifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type VARCHAR(50) NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        data JSONB DEFAULT '{}'::jsonb,
+        is_read BOOLEAN DEFAULT FALSE,
+        initiator_id VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_tenant ON notifications(tenant_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS user_notification_settings (
+        user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        sound_enabled BOOLEAN DEFAULT TRUE,
+        sound_preset VARCHAR(50) DEFAULT 'CLASSIC_CHIME',
+        toast_enabled BOOLEAN DEFAULT TRUE,
+        job_alerts BOOLEAN DEFAULT TRUE,
+        review_alerts BOOLEAN DEFAULT TRUE,
+        submission_alerts BOOLEAN DEFAULT TRUE,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
     `;
 
 

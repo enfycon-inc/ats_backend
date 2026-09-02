@@ -7,6 +7,12 @@ export class InviteUserDto {
   })
   email: string;
 
+  @ApiPropertyOptional({ example: 'Sarah', description: 'First name' })
+  firstName?: string;
+
+  @ApiPropertyOptional({ example: 'Jenkins', description: 'Last name' })
+  lastName?: string;
+
   @ApiProperty({
     example: 'Sarah Jenkins',
     description: 'Full name of the user',

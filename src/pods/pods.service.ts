@@ -55,7 +55,7 @@ export class PodsService {
     }
     const roleId = roleRes.rows[0].id;
     await this.db.query(
-      "UPDATE users SET role_id = $1, roles = ARRAY['POD_LEAD'] WHERE id = $2 AND tenant_id = $3",
+      "UPDATE users SET role_id = $1, assigned_role_ids = ARRAY[$1::uuid] WHERE id = $2 AND tenant_id = $3",
       [roleId, userId, tenantId]
     );
   }
@@ -84,7 +84,7 @@ export class PodsService {
     }
     const roleId = roleRes.rows[0].id;
     await this.db.query(
-      "UPDATE users SET role_id = $1, roles = ARRAY['RECRUITER'] WHERE id = $2 AND tenant_id = $3",
+      "UPDATE users SET role_id = $1, assigned_role_ids = ARRAY[$1::uuid] WHERE id = $2 AND tenant_id = $3",
       [roleId, userId, tenantId]
     );
   }
@@ -261,7 +261,15 @@ export class PodsService {
          AND u.pod_id IS NULL 
          AND u.is_active = TRUE 
          AND u.is_approved = TRUE
-         AND (cr.system_role IN ('RECRUITER', 'POD_LEAD') OR cr.name = 'RECRUITER' OR 'RECRUITER' = ANY(u.roles) OR 'POD_LEAD' = ANY(u.roles))
+         AND (
+           cr.system_role IN ('RECRUITER', 'POD_LEAD') 
+           OR UPPER(cr.name) IN ('RECRUITER', 'POD_LEAD', 'POD LEAD')
+           OR EXISTS (
+             SELECT 1 FROM custom_roles sub_cr 
+             WHERE (sub_cr.id = u.role_id OR sub_cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))) 
+               AND sub_cr.system_role IN ('RECRUITER', 'POD_LEAD')
+           )
+         )
          AND ($2::uuid IS NULL OR u.branch_id = $2::uuid OR (u.assigned_branch_ids IS NOT NULL AND u.assigned_branch_ids::text LIKE '%' || $2 || '%'))
        ORDER BY u.full_name ASC`,
       [tenantId, branchId || null]

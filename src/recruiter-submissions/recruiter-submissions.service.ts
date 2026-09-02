@@ -59,6 +59,7 @@ export interface SubmissionDetails {
   accountManagerName?: string;
   submittedRate?: string | null;
   market?: string;
+  branchId?: string | null;
 }
 
 @Injectable()
@@ -165,20 +166,27 @@ export class RecruiterSubmissionsService implements OnModuleInit {
           { stage: 'final', text: '✕ Position closed / Put on hold by client' },
         ];
 
+        await this.db.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_stage_remarks_uniq ON tenant_stage_remarks(tenant_id, stage, remark_text)`);
         const tenantsRes = await this.db.query('SELECT id FROM tenants');
+        const values: string[] = [];
+        const params: any[] = [];
+        let pIdx = 1;
+
         for (const t of tenantsRes.rows) {
           for (const item of DEFAULT_REMARKS) {
-            const exists = await this.db.query(
-              'SELECT id FROM tenant_stage_remarks WHERE tenant_id = $1 AND stage = $2 AND remark_text = $3',
-              [t.id, item.stage, item.text]
-            );
-            if (exists.rows.length === 0) {
-              await this.db.query(
-                'INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, created_by) VALUES ($1, $2, $3, $4)',
-                [t.id, item.stage, item.text, 'system']
-              );
-            }
+            values.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, 'system')`);
+            params.push(t.id, item.stage, item.text);
+            pIdx += 3;
           }
+        }
+
+        if (values.length > 0) {
+          await this.db.query(
+            `INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, created_by)
+             VALUES ${values.join(', ')}
+             ON CONFLICT (tenant_id, stage, remark_text) DO NOTHING`,
+            params
+          );
         }
       } catch (seedErr: any) {
         this.logger.warn(`Could not seed default tenant stage remarks: ${seedErr.message}`);
@@ -363,6 +371,7 @@ export class RecruiterSubmissionsService implements OnModuleInit {
         j.client_name,
         j.end_client_name,
         j.market,
+        j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, cb.full_name, j.account_manager_id) AS am_name
@@ -564,6 +573,7 @@ export class RecruiterSubmissionsService implements OnModuleInit {
         j.client_name,
         j.end_client_name,
         j.market,
+        j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, cb.full_name, j.account_manager_id) AS am_name
@@ -949,6 +959,7 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       accountManagerName: row.am_name,
       submittedRate: row.submitted_rate,
       market: row.market,
+      branchId: row.branch_id || null,
     };
   }
 
@@ -957,18 +968,28 @@ export class RecruiterSubmissionsService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async getCustomRemarks(tenantId: string, branchId?: string, includeGlobal?: boolean) {
     let shouldIncludeGlobal = includeGlobal;
-    if (branchId && shouldIncludeGlobal === undefined) {
+    let resolvedBranchId = branchId?.trim();
+
+    if (resolvedBranchId && resolvedBranchId !== 'null' && resolvedBranchId !== 'undefined') {
       try {
         const branchRes = await this.db.query(
-          'SELECT enable_global_remarks FROM branches WHERE id = $1',
-          [branchId]
+          'SELECT id, enable_global_remarks FROM branches WHERE id::text = $1 OR LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1)',
+          [resolvedBranchId]
         );
-        shouldIncludeGlobal = Boolean(branchRes.rows[0]?.enable_global_remarks);
+        if (branchRes.rows.length > 0) {
+          resolvedBranchId = branchRes.rows[0].id;
+          if (shouldIncludeGlobal === undefined) {
+            shouldIncludeGlobal = Boolean(branchRes.rows[0].enable_global_remarks);
+          }
+        }
       } catch {
-        shouldIncludeGlobal = false;
+        // fallback
       }
-    } else if (!branchId && shouldIncludeGlobal === undefined) {
-      shouldIncludeGlobal = true;
+    } else {
+      resolvedBranchId = undefined;
+      if (shouldIncludeGlobal === undefined) {
+        shouldIncludeGlobal = true;
+      }
     }
 
     let query = `
@@ -982,13 +1003,12 @@ export class RecruiterSubmissionsService implements OnModuleInit {
     `;
     const params: any[] = [tenantId];
 
-    if (branchId) {
+    if (resolvedBranchId) {
+      params.push(resolvedBranchId);
       if (shouldIncludeGlobal) {
-        params.push(branchId);
         query += ` AND (branch_id = $2 OR branch_id IS NULL OR is_global = TRUE)`;
       } else {
-        params.push(branchId);
-        query += ` AND branch_id = $2`;
+        query += ` AND (branch_id = $2 OR (branch_id IS NULL AND is_global = TRUE AND NOT EXISTS (SELECT 1 FROM tenant_stage_remarks tsr2 WHERE tsr2.tenant_id = $1 AND tsr2.branch_id = $2 AND tsr2.stage = tenant_stage_remarks.stage)))`;
       }
     }
     query += ` ORDER BY id ASC`;
@@ -1010,18 +1030,25 @@ export class RecruiterSubmissionsService implements OnModuleInit {
       throw new BadRequestException('Stage and remarkText are required.');
     }
     const cleanStage = stage.toLowerCase().trim();
-    const cleanText = remarkText.trim();
     const cleanType = (remarkType || 'GENERAL').toUpperCase().trim();
     const cleanBranchId = branchId?.trim() || null;
     const cleanIsGlobal = Boolean(isGlobal || (!cleanBranchId));
 
-    const result = await this.db.query(
-      `INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, remark_type, branch_id, is_global, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, stage, remark_text as "remarkText", remark_type as "remarkType", branch_id as "branchId", is_global as "isGlobal", created_by as "createdBy", created_at as "createdAt"`,
-      [tenantId, cleanStage, cleanText, cleanType, cleanBranchId, cleanIsGlobal, createdBy || 'admin']
-    );
-    return result.rows[0];
+    // Support comma or newline separated multiple remarks in a single submission
+    const rawRemarks = remarkText.split(/[\n,]+/).map(r => r.trim()).filter(Boolean);
+    const results: any[] = [];
+
+    for (const text of (rawRemarks.length > 0 ? rawRemarks : [remarkText.trim()])) {
+      const result = await this.db.query(
+        `INSERT INTO tenant_stage_remarks (tenant_id, stage, remark_text, remark_type, branch_id, is_global, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, stage, remark_text as "remarkText", remark_type as "remarkType", branch_id as "branchId", is_global as "isGlobal", created_by as "createdBy", created_at as "createdAt"`,
+        [tenantId, cleanStage, text, cleanType, cleanBranchId, cleanIsGlobal, createdBy || 'admin']
+      );
+      results.push(result.rows[0]);
+    }
+
+    return results.length === 1 ? results[0] : results;
   }
 
   async deleteCustomRemark(tenantId: string, id: number) {

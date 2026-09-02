@@ -148,10 +148,11 @@ export class AuthService implements OnModuleInit {
         tenant_id     UUID NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
         keycloak_id   VARCHAR(255) UNIQUE,
         email         VARCHAR(255) NOT NULL UNIQUE,
+        first_name    VARCHAR(128),
+        last_name     VARCHAR(128),
         full_name     VARCHAR(255) NOT NULL,
         password_hash VARCHAR(512),
         salt          VARCHAR(128),
-        roles         TEXT[] NOT NULL DEFAULT '{}',
         is_active     BOOLEAN NOT NULL DEFAULT true,
         is_approved   BOOLEAN NOT NULL DEFAULT true,
         profile_picture TEXT,
@@ -159,9 +160,16 @@ export class AuthService implements OnModuleInit {
         updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      -- 4. Add role_id and assigned_role_ids to users if not exists
+      -- 4. Add first_name and last_name if not exists
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(128);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS last_name VARCHAR(128);
+
+      -- 5. Add role_id and assigned_role_ids to users if not exists
       ALTER TABLE users ADD COLUMN IF NOT EXISTS role_id UUID REFERENCES custom_roles(id) ON DELETE SET NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_role_ids UUID[] DEFAULT '{}';
+
+      -- 6. Drop redundant legacy roles column if it still exists
+      ALTER TABLE users DROP COLUMN IF EXISTS roles CASCADE;
 
       -- Ensure is_approved column exists on older tables
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
@@ -175,6 +183,12 @@ export class AuthService implements OnModuleInit {
 
       -- Update any existing users with null value to true
       UPDATE users SET is_approved = true WHERE is_approved IS NULL;
+
+      -- Auto-populate first_name and last_name from full_name if empty
+      UPDATE users
+      SET first_name = split_part(full_name, ' ', 1),
+          last_name = SUBSTRING(full_name FROM POSITION(' ' IN full_name) + 1)
+      WHERE (first_name IS NULL OR last_name IS NULL) AND full_name IS NOT NULL;
 
       -- Auto-approve active users belonging to active company tenants
       UPDATE users u
@@ -211,8 +225,117 @@ export class AuthService implements OnModuleInit {
     try {
       await this.db.query(ddl);
       this.logger.log('Users, default compulsory branches, and branch user assignments auto-resolved.');
+      await this.syncUserRoleIdsFromCustomRoles();
     } catch (err) {
       this.logger.error(`Failed to create users/RBAC tables: ${err.message}`);
+    }
+  }
+
+  private async syncUserRoleIdsFromCustomRoles() {
+    try {
+      const usersRes = await this.db.query('SELECT * FROM users');
+      const rolesRes = await this.db.query('SELECT * FROM custom_roles');
+
+      const ROLE_RANK: Record<string, number> = {
+        SUPER_ADMIN: 100,
+        ADMIN: 90,
+        BRANCH_ADMIN: 80,
+        DELIVERY_HEAD: 70,
+        ACCOUNT_MANAGER: 60,
+        POD_LEAD: 50,
+        RECRUITER: 40,
+      };
+
+      for (const user of usersRes.rows) {
+        const tenantRoles = rolesRes.rows.filter((r: any) => r.tenant_id === user.tenant_id);
+        const roleById: Record<string, any> = {};
+        const roleByName: Record<string, any> = {};
+        for (const r of tenantRoles) {
+          roleById[r.id] = r;
+          roleByName[r.name.toUpperCase().trim()] = r;
+          if (r.system_role) {
+            roleByName[r.system_role.toUpperCase().trim()] = r;
+            roleByName[r.system_role.replace(/_/g, ' ').toUpperCase().trim()] = r;
+          }
+        }
+
+        const resolvedRoleIds = new Set<string>();
+
+        if (user.role_id && roleById[user.role_id]) {
+          resolvedRoleIds.add(user.role_id);
+        }
+
+        if (Array.isArray(user.assigned_role_ids)) {
+          user.assigned_role_ids.forEach((rid: string) => {
+            if (roleById[rid]) resolvedRoleIds.add(rid);
+          });
+        }
+
+        const rawBranchRoles = user.branch_roles || {};
+        const normalizedBranchRoles: Record<string, string[]> = {};
+
+        if (rawBranchRoles && typeof rawBranchRoles === 'object') {
+          for (const [branchId, rList] of Object.entries(rawBranchRoles)) {
+            if (Array.isArray(rList)) {
+              const validBranchRoleIds: string[] = [];
+              for (const item of rList) {
+                if (!item) continue;
+                if (roleById[item]) {
+                  validBranchRoleIds.push(item);
+                  resolvedRoleIds.add(item);
+                } else {
+                  const nameKey = String(item).toUpperCase().trim();
+                  const matched = roleByName[nameKey] || tenantRoles.find((r: any) => r.name.toUpperCase().trim() === nameKey || (r.system_role && r.system_role.toUpperCase().trim() === nameKey));
+                  if (matched) {
+                    validBranchRoleIds.push(matched.id);
+                    resolvedRoleIds.add(matched.id);
+                  }
+                }
+              }
+              if (validBranchRoleIds.length > 0) {
+                normalizedBranchRoles[branchId] = Array.from(new Set(validBranchRoleIds));
+              }
+            }
+          }
+        }
+
+        if (resolvedRoleIds.size === 0) {
+          const defaultRole = tenantRoles.find((r: any) => r.name === 'RECRUITER' || r.system_role === 'RECRUITER') || tenantRoles[0];
+          if (defaultRole) {
+            resolvedRoleIds.add(defaultRole.id);
+          }
+        }
+
+        const assignedRoleObjs = Array.from(resolvedRoleIds).map((id) => roleById[id]).filter(Boolean);
+        let bestRoleObj: any = null;
+        let highestRank = -1;
+
+        for (const r of assignedRoleObjs) {
+          const sysKey = (r.system_role || r.name || '').toUpperCase().replace(/[\s-_]+/g, '');
+          const matchedKey = Object.keys(ROLE_RANK).find(k => k.replace(/_/g, '') === sysKey) || '';
+          const rank = ROLE_RANK[matchedKey] || 30;
+          if (rank > highestRank) {
+            highestRank = rank;
+            bestRoleObj = r;
+          }
+        }
+
+        const finalRoleId = bestRoleObj ? bestRoleObj.id : (user.role_id || Array.from(resolvedRoleIds)[0] || null);
+        const finalAssignedRoleIds = Array.from(resolvedRoleIds);
+
+        await this.db.query(
+          `UPDATE users
+           SET role_id = $1,
+               assigned_role_ids = $2::uuid[],
+               branch_roles = $3::jsonb,
+               updated_at = NOW()
+           WHERE id = $4`,
+          [finalRoleId, finalAssignedRoleIds, JSON.stringify(normalizedBranchRoles), user.id]
+        );
+      }
+      this.logger.log('User role IDs and branch roles auto-synchronized with custom_roles.');
+    } catch (err: any) {
+      this.logger.warn(`Failed to auto-sync user role IDs: ${err.message}`);
     }
   }
 
@@ -235,25 +358,20 @@ export class AuthService implements OnModuleInit {
       const superAdminRoleId = roleMap['SUPER_ADMIN'];
 
       const exists = await this.db.query(
-        'SELECT id, roles FROM users WHERE email = $1 LIMIT 1',
+        'SELECT id, role_id, assigned_role_ids FROM users WHERE email = $1 LIMIT 1',
         [adminEmail],
       );
 
       if (exists.rows.length > 0) {
         const user = exists.rows[0];
-        const roles = user.roles || [];
-        if (!roles.includes('SUPER_ADMIN')) {
-          this.logger.log(`Updating existing user ${adminEmail} to have SUPER_ADMIN role.`);
-          await this.db.query(
-            `UPDATE users SET roles = array_append(roles, 'SUPER_ADMIN'), is_approved = true, is_active = true, role_id = $1 WHERE id = $2`,
-            [superAdminRoleId, user.id],
-          );
-        } else {
-          await this.db.query(
-            `UPDATE users SET is_approved = true, is_active = true, role_id = $1 WHERE id = $2`,
-            [superAdminRoleId, user.id],
-          );
+        const assignedRoleIds = Array.isArray(user.assigned_role_ids) ? [...user.assigned_role_ids] : [];
+        if (superAdminRoleId && !assignedRoleIds.includes(superAdminRoleId)) {
+          assignedRoleIds.push(superAdminRoleId);
         }
+        await this.db.query(
+          `UPDATE users SET is_approved = true, is_active = true, role_id = $1, assigned_role_ids = $2::uuid[] WHERE id = $3`,
+          [superAdminRoleId, assignedRoleIds, user.id],
+        );
         this.logger.log(`✅ Platform SUPER_ADMIN already exists in DB (${adminEmail}) — skipping seed.`);
         return;
       }
@@ -261,9 +379,9 @@ export class AuthService implements OnModuleInit {
       // First boot only: create the platform super admin
       const { hash, salt } = this.hashPassword(adminPassword);
       await this.db.query(
-        `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
-         VALUES ($1, $2, $3, $4, $5, $6, true, true, $7)`,
-        [DEFAULT_TENANT_ID, adminEmail, adminName, hash, salt, ['SUPER_ADMIN'], superAdminRoleId],
+        `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, is_active, is_approved, role_id)
+         VALUES ($1, $2, $3, $4, $5, true, true, $6)`,
+        [DEFAULT_TENANT_ID, adminEmail, adminName, hash, salt, superAdminRoleId],
       );
       this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
     } catch (err) {
@@ -278,7 +396,7 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.password_hash, u.salt, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.password_hash, u.salt, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
@@ -333,8 +451,73 @@ export class AuthService implements OnModuleInit {
       }
     }
 
+    // Fetch dynamic permissions and roles assigned across all user custom roles
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const userRoleIds = new Set<string>();
+    const legacyRoleNames = new Set<string>();
+
+    if (user.role_id) {
+      if (uuidRegex.test(user.role_id)) userRoleIds.add(user.role_id);
+      else legacyRoleNames.add(user.role_id);
+    }
+    if (Array.isArray(user.assigned_role_ids)) {
+      user.assigned_role_ids.forEach((rid: string) => {
+        if (rid) {
+          if (uuidRegex.test(rid)) userRoleIds.add(rid);
+          else legacyRoleNames.add(rid);
+        }
+      });
+    }
+    if (user.branch_roles && typeof user.branch_roles === 'object') {
+      Object.values(user.branch_roles).forEach((bRoleList: any) => {
+        if (Array.isArray(bRoleList)) {
+          bRoleList.forEach((rid: string) => {
+            if (rid) {
+              if (uuidRegex.test(rid)) userRoleIds.add(rid);
+              else legacyRoleNames.add(rid);
+            }
+          });
+        }
+      });
+    }
+
+    let permissions: string[] = [];
+    let dynamicRoles: string[] = [];
+
+    if (legacyRoleNames.size > 0) {
+      const legacyRes = await this.db.query(
+        'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
+        [user.tenant_id, Array.from(legacyRoleNames).map(r => r.toUpperCase())]
+      ).catch(() => ({ rows: [] }));
+      legacyRes.rows.forEach((r: any) => userRoleIds.add(r.id));
+    }
+
+    if (userRoleIds.size > 0) {
+      const validUuids = Array.from(userRoleIds).filter(id => uuidRegex.test(id));
+      if (validUuids.length > 0) {
+        const [permsResult, rolesResult] = await Promise.all([
+          this.db.query(
+            'SELECT DISTINCT permission FROM role_permissions WHERE role_id = ANY($1::uuid[])',
+            [validUuids]
+          ).catch(() => ({ rows: [] })),
+          this.db.query(
+            'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
+            [validUuids]
+          ).catch(() => ({ rows: [] }))
+        ]);
+        permissions = permsResult.rows.map((row: any) => row.permission);
+        dynamicRoles = Array.from(new Set(rolesResult.rows.map((row: any) => row.name)));
+      }
+    }
+    if (dynamicRoles.length === 0 && user.role_name) {
+      dynamicRoles = [user.role_name];
+    }
+    if (dynamicRoles.length === 0) {
+      dynamicRoles = [user.system_role || 'RECRUITER'];
+    }
+
     // Validate subdomain / custom domain context
-    const isSuperAdmin = user.roles && user.roles.includes('SUPER_ADMIN');
+    const isSuperAdmin = dynamicRoles.includes('SUPER_ADMIN');
     if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
       throw new UnauthorizedException('Super Administrators can only log in from the main domain.');
     }
@@ -369,19 +552,9 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    // Fetch dynamic permissions assigned to the custom role
-    let permissions: string[] = [];
-    if (user.role_id) {
-      const permsResult = await this.db.query(
-        'SELECT permission FROM role_permissions WHERE role_id = $1',
-        [user.role_id]
-      );
-      permissions = permsResult.rows.map((row) => row.permission);
-    }
-
     // Resolve systemRole
     let systemRole = user.system_role || 'RECRUITER';
-    if (user.roles && user.roles.includes('SUPER_ADMIN')) {
+    if (dynamicRoles.includes('SUPER_ADMIN')) {
       systemRole = 'SUPER_ADMIN';
     }
 
@@ -410,18 +583,24 @@ export class AuthService implements OnModuleInit {
     }
     params.append('username', dto.email);
     params.append('password', dto.password);
-    params.append('scope', 'openid offline_access');
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
-      const res = await fetch(tokenUrl, {
+      let res = await fetch(tokenUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
-        signal: controller.signal,
       });
-      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const altUrl = tokenUrl.includes('localhost')
+          ? tokenUrl.replace('localhost', 'keycloak')
+          : tokenUrl.replace('keycloak', 'localhost');
+        res = await fetch(altUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString(),
+        });
+      }
 
       if (res.ok) {
         const tokenData = await res.json();
@@ -434,7 +613,7 @@ export class AuthService implements OnModuleInit {
           keycloakId: user.id,
           email: user.email,
           fullName: user.full_name,
-          roles: user.roles || [],
+          roles: dynamicRoles,
         }).catch(() => {});
       } else {
         this.logger.warn(`Keycloak direct grant returned status ${res.status} for ${dto.email}`);
@@ -451,7 +630,7 @@ export class AuthService implements OnModuleInit {
 
       // Password is valid in DB. Issue high-availability access token & trigger background Keycloak sync
       this.logger.log(`Password verified via database for ${dto.email}. Issuing access token & provisioning Keycloak user...`);
-      const internalToken = this.signInternalToken(user);
+      const internalToken = this.signInternalToken({ ...user, roles: dynamicRoles });
       keycloakToken = internalToken.accessToken;
       expiresIn = internalToken.expiresIn;
 
@@ -474,8 +653,10 @@ export class AuthService implements OnModuleInit {
       user: {
         id: user.id,
         email: user.email,
+        firstName: user.first_name || '',
+        lastName: user.last_name || '',
         fullName: user.full_name,
-        roles: user.roles || [],
+        roles: dynamicRoles,
         tenantId: user.tenant_id || DEFAULT_TENANT_ID,
         defaultMarket: user.default_market || 'US',
         tenantDomain: user.tenant_domain || '',
@@ -656,7 +837,9 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async register(dto: RegisterDto, authHeader?: string) {
     const email = (dto.email || '').trim().toLowerCase();
-    const fullName = (dto.fullName || '').trim();
+    const firstName = (dto.firstName || (dto.fullName ? dto.fullName.trim().split(/\s+/)[0] : '') || '').trim();
+    const lastName = (dto.lastName || (dto.fullName ? dto.fullName.trim().split(/\s+/).slice(1).join(' ') : '') || '').trim();
+    const fullName = (dto.fullName || `${firstName} ${lastName}`).trim();
     const password = dto.password;
 
     if (!email || !fullName || !password) {
@@ -720,24 +903,27 @@ export class AuthService implements OnModuleInit {
       await this.checkSeatLimit(tenantId);
     }
 
-    // Find the dynamic role ID corresponding to the requested role name
+    // Find the dynamic role ID corresponding to the requested role name or role ID
     let roleId = null;
+    let roleName = role;
     const roleResult = await this.db.query(
-      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
-      [tenantId, role]
+      'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (id::text = $2 OR UPPER(name) = $2 OR system_role = $2) LIMIT 1',
+      [tenantId, role.toUpperCase()]
     );
     if (roleResult.rows.length > 0) {
       roleId = roleResult.rows[0].id;
+      roleName = roleResult.rows[0].name;
     }
+    const assignedRoleIds = roleId ? [roleId] : [];
 
     const { hash, salt } = this.hashPassword(password);
 
     // If direct invite, user starts as active & approved immediately. Else pending.
     const result = await this.db.query(
-      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
-       VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8)
-       RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
-      [tenantId, email, fullName, hash, salt, [role], isApproved, roleId],
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, password_hash, salt, is_active, is_approved, role_id, assigned_role_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10::uuid[])
+       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids`,
+      [tenantId, email, firstName, lastName, fullName, hash, salt, isApproved, roleId, assignedRoleIds],
     );
 
     const user = result.rows[0];
@@ -762,7 +948,7 @@ export class AuthService implements OnModuleInit {
             subdomain: tenantDomain,
             tenantId,
             temporaryPassword: password,
-            roleName: role,
+            roleName: roleName,
           });
         })
         .catch((err) => {
@@ -777,8 +963,10 @@ export class AuthService implements OnModuleInit {
       user: {
         id: user.id,
         email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
         fullName: user.full_name,
-        roles: user.roles,
+        roles: [roleName],
         tenantId: user.tenant_id,
         createdAt: user.created_at,
       },
@@ -876,12 +1064,15 @@ export class AuthService implements OnModuleInit {
     const adminRoleId = roleMap['ADMIN'];
 
     // 6. Create the first admin user for this tenant (is_approved = false)
+    const firstName = fullName.split(/\s+/)[0] || '';
+    const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
     const { hash, salt } = this.hashPassword(password);
+    const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
     const userResult = await this.db.query(
-      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
-       VALUES ($1, $2, $3, $4, $5, $6, true, false, $7)
-       RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
-      [tenant.id, email, fullName, hash, salt, ['ADMIN'], adminRoleId],
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, password_hash, salt, is_active, is_approved, role_id, assigned_role_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true, false, $8, $9::uuid[])
+       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
+      [tenant.id, email, firstName, lastName, fullName, hash, salt, adminRoleId, assignedRoleIds],
     );
     const user = userResult.rows[0];
 
@@ -905,8 +1096,10 @@ export class AuthService implements OnModuleInit {
       user: {
         id: user.id,
         email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
         fullName: user.full_name,
-        roles: user.roles,
+        roles: ['ADMIN'],
         tenantId: user.tenant_id,
         createdAt: user.created_at,
       },
@@ -1069,43 +1262,35 @@ export class AuthService implements OnModuleInit {
 
     // Preserve internal roles that Keycloak doesn't manage
     const existing = await this.db.query(
-      'SELECT id, roles, tenant_id, is_active, role_id FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
+      'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, branch_roles, first_name, last_name, full_name FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
       [data.keycloakId, data.email],
     );
-
-    const existingRoles = existing.rows.length > 0 ? (existing.rows[0].roles || []) : [];
 
     let tenantId = existing.rows.length > 0
       ? existing.rows[0].tenant_id
       : DEFAULT_TENANT_ID;
 
-    // Union existing DB roles with Keycloak JWT roles so PostgreSQL roles are never erased
-    let mergedRoles = Array.from(new Set([...existingRoles, ...normalizedRoles]));
-
-    // Platform Super Admin email from .env ALWAYS retains SUPER_ADMIN role & Master Tenant
-    const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL ? process.env.PLATFORM_ADMIN_EMAIL.toLowerCase() : null;
-    const isPlatformAdmin = platformAdminEmail && data.email.toLowerCase() === platformAdminEmail;
-    if (isPlatformAdmin || normalizedRoles.includes('SUPER_ADMIN') || existingRoles.includes('SUPER_ADMIN')) {
-      if (!mergedRoles.includes('SUPER_ADMIN')) {
-        mergedRoles.push('SUPER_ADMIN');
-      }
-      tenantId = DEFAULT_TENANT_ID;
-    } else if (tenantId !== DEFAULT_TENANT_ID) {
-      mergedRoles = mergedRoles.filter(r => r !== 'SUPER_ADMIN');
-    }
-
     // Synchronize Keycloak role name to dynamic custom role ID
     let roleId = existing.rows.length > 0 ? existing.rows[0].role_id : null;
-    if (!roleId && mergedRoles.length > 0) {
-      const primaryRole = mergedRoles.includes('ADMIN') ? 'ADMIN' : mergedRoles[0];
+    let dynamicRoles: string[] = [];
+    if (normalizedRoles.length > 0) {
       const roleResult = await this.db.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
-        [tenantId, primaryRole]
+        'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
+        [tenantId, normalizedRoles]
       );
       if (roleResult.rows.length > 0) {
-        roleId = roleResult.rows[0].id;
+        if (!roleId) roleId = roleResult.rows[0].id;
+        dynamicRoles = Array.from(new Set(roleResult.rows.map(r => r.name)));
       }
     }
+    if (dynamicRoles.length === 0 && normalizedRoles.length > 0) {
+      dynamicRoles = normalizedRoles;
+    }
+
+    const firstName = data.fullName ? data.fullName.trim().split(/\s+/)[0] : '';
+    const lastName = data.fullName ? data.fullName.trim().split(/\s+/).slice(1).join(' ') : '';
+    const fullName = data.fullName ? data.fullName.trim() : `${firstName} ${lastName}`.trim();
+    const assignedRoleIds = roleId ? [roleId] : [];
 
     let dbUser: any;
     if (existing.rows.length > 0) {
@@ -1113,40 +1298,42 @@ export class AuthService implements OnModuleInit {
       const updateRes = await this.db.query(
         `UPDATE users
          SET keycloak_id = $1,
-             full_name   = COALESCE($2, full_name),
-             roles       = $3,
-             role_id     = COALESCE(users.role_id, $4),
+             first_name  = COALESCE(NULLIF($2, ''), first_name),
+             last_name   = COALESCE(NULLIF($3, ''), last_name),
+             full_name   = COALESCE($4, full_name),
+             role_id     = COALESCE(users.role_id, $5),
+             assigned_role_ids = CASE WHEN cardinality(assigned_role_ids) = 0 THEN $6::uuid[] ELSE assigned_role_ids END,
              updated_at  = NOW()
-         WHERE id = $5
-         RETURNING id, email, full_name, roles, tenant_id, is_active, role_id`,
-        [data.keycloakId, data.fullName, mergedRoles, roleId, existingUser.id],
+         WHERE id = $7
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids`,
+        [data.keycloakId, firstName, lastName, fullName, roleId, assignedRoleIds, existingUser.id],
       );
       dbUser = updateRes.rows[0];
     } else {
       const insertRes = await this.db.query(
-        `INSERT INTO users (keycloak_id, tenant_id, email, full_name, roles, is_active, is_approved, role_id)
-         VALUES ($1, $2, $3, $4, $5, true, true, $6)
-         RETURNING id, email, full_name, roles, tenant_id, is_active, role_id`,
-        [data.keycloakId, tenantId, data.email, data.fullName, mergedRoles, roleId],
+        `INSERT INTO users (keycloak_id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, true, true, $7, $8::uuid[])
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids`,
+        [data.keycloakId, tenantId, data.email, firstName, lastName, fullName, roleId, assignedRoleIds],
       );
       dbUser = insertRes.rows[0];
     }
 
     // Load custom role permissions dynamically across assigned role ID and all user roles
     let permissions: string[] = [];
-    const roleNamesUpper = (dbUser.roles || []).map((r: string) => r.toUpperCase());
     const permsRes = await this.db.query(
       `SELECT DISTINCT rp.permission 
        FROM custom_roles cr
        JOIN role_permissions rp ON rp.role_id = cr.id
        WHERE (cr.tenant_id = $1 OR cr.tenant_id IS NULL) 
          AND (cr.id = $2 OR UPPER(cr.name) = ANY($3) OR UPPER(cr.system_role) = ANY($3))`,
-      [dbUser.tenant_id || DEFAULT_TENANT_ID, dbUser.role_id || null, roleNamesUpper]
+      [dbUser.tenant_id || DEFAULT_TENANT_ID, dbUser.role_id || null, normalizedRoles]
     );
     permissions = permsRes.rows.map(row => row.permission);
 
     return {
       ...dbUser,
+      roles: dynamicRoles,
       permissions
     };
   }
@@ -1160,7 +1347,7 @@ export class AuthService implements OnModuleInit {
     `).catch(() => {});
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.tenant_id, u.is_active, u.created_at, u.updated_at,
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.created_at, u.updated_at,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
@@ -1230,15 +1417,6 @@ export class AuthService implements OnModuleInit {
       });
     }
 
-    const rawRoles: string[] = Array.isArray(u.roles) ? u.roles : [];
-    rawRoles.forEach((rName: string) => {
-      if (roleById[rName]) {
-        userRoleIds.add(rName);
-      } else if (roleByName[String(rName).toUpperCase()]) {
-        userRoleIds.add(roleByName[String(rName).toUpperCase()].id);
-      }
-    });
-
     // Compute effective permissions purely from assigned role IDs in role_permissions (respecting custom restrictions)
     const userPerms = new Set<string>();
     userRoleIds.forEach((rId) => {
@@ -1281,8 +1459,8 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    const roleName = bestRoleObj?.name || (u.role_id ? roleById[u.role_id]?.name : null) || rawRoles[0] || 'RECRUITER';
-    const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || (rawRoles[0] ? rawRoles[0].toUpperCase() : 'RECRUITER');
+    const roleName = bestRoleObj?.name || (u.role_id ? roleById[u.role_id]?.name : null) || 'RECRUITER';
+    const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || 'RECRUITER';
     const baseRoleId = bestRoleObj?.base_role_id || (u.role_id ? roleById[u.role_id]?.base_role_id : null) || null;
 
     // Clean & deduplicate role names by canonical key
@@ -1295,19 +1473,12 @@ export class AuthService implements OnModuleInit {
         cleanRoles.push(r.name);
       }
     }
-    if (cleanRoles.length === 0) {
-      rawRoles.forEach((r) => {
-        const cKey = r.toUpperCase().replace(/[\s-_]+/g, '');
-        if (!seenCanonicalRoles.has(cKey)) {
-          seenCanonicalRoles.add(cKey);
-          cleanRoles.push(r);
-        }
-      });
-    }
 
     return {
       id: u.id,
       email: u.email,
+      firstName: u.first_name || '',
+      lastName: u.last_name || '',
       fullName: u.full_name,
       roles: cleanRoles.length > 0 ? cleanRoles : [roleName],
       roleId: bestRoleObj?.id || u.role_id,
@@ -1346,9 +1517,15 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   // List all users (admin utility)
   // ─────────────────────────────────────────────────────────────
-  async listUsers(tenantId: string) {
+  async listUsers(tenantId: string, scopedBranchId?: string | null) {
+    // Build WHERE clause: scope to branch if caller is a Branch Admin
+    const branchFilter = scopedBranchId
+      ? `AND (u.branch_id = $2 OR $2 = ANY(COALESCE(u.assigned_branch_ids, '{}')::uuid[]))`
+      : '';
+    const queryParams: any[] = scopedBranchId ? [tenantId, scopedBranchId] : [tenantId];
+
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.created_at,
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles,
               u.business_unit_id, u.job_reviewer_id,
               rev.full_name as job_reviewer_name,
@@ -1359,8 +1536,8 @@ export class AuthService implements OnModuleInit {
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
        LEFT JOIN users rev ON u.job_reviewer_id = rev.id
-       WHERE u.tenant_id = $1 ORDER BY u.full_name ASC`,
-      [tenantId],
+       WHERE u.tenant_id = $1 ${branchFilter} ORDER BY u.full_name ASC`,
+      queryParams,
     );
 
     // Query all custom & system roles for this tenant
@@ -1417,16 +1594,6 @@ export class AuthService implements OnModuleInit {
         });
       }
 
-      // Ingest roles array for backward compatibility
-      const rawRoles: string[] = Array.isArray(u.roles) ? u.roles : [];
-      rawRoles.forEach((rName: string) => {
-        if (roleById[rName]) {
-          userRoleIds.add(rName);
-        } else if (roleByName[String(rName).toUpperCase()]) {
-          userRoleIds.add(roleByName[String(rName).toUpperCase()].id);
-        }
-      });
-
       // Compute effective permissions purely from assigned role IDs in role_permissions (respecting custom restrictions)
       const userPerms = new Set<string>();
       userRoleIds.forEach((rId) => {
@@ -1469,8 +1636,8 @@ export class AuthService implements OnModuleInit {
         }
       }
 
-      const primaryRole = bestRoleObj?.name || u.role_name || rawRoles[0] || 'RECRUITER';
-      const systemRole = bestRoleObj?.system_role || u.system_role || (rawRoles[0] ? rawRoles[0].toUpperCase() : 'RECRUITER');
+      const primaryRole = bestRoleObj?.name || u.role_name || 'RECRUITER';
+      const systemRole = bestRoleObj?.system_role || u.system_role || 'RECRUITER';
       const baseRoleId = bestRoleObj?.base_role_id || u.base_role_id || null;
 
       // Clean & deduplicate role names by canonical key
@@ -1483,19 +1650,12 @@ export class AuthService implements OnModuleInit {
           cleanRoles.push(r.name);
         }
       }
-      if (cleanRoles.length === 0) {
-        rawRoles.forEach((r) => {
-          const cKey = r.toUpperCase().replace(/[\s-_]+/g, '');
-          if (!seenCanonicalRoles.has(cKey)) {
-            seenCanonicalRoles.add(cKey);
-            cleanRoles.push(r);
-          }
-        });
-      }
 
       return {
         id: u.id,
         email: u.email,
+        firstName: u.first_name || '',
+        lastName: u.last_name || '',
         fullName: u.full_name,
         roles: cleanRoles.length > 0 ? cleanRoles : [primaryRole],
         roleId: bestRoleObj?.id || u.role_id,
@@ -1565,18 +1725,21 @@ export class AuthService implements OnModuleInit {
 
     // Fetch target user details
     const userRes = await this.db.query(
-      'SELECT tenant_id, roles FROM users WHERE id = $1 LIMIT 1',
+      `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role
+       FROM users u
+       LEFT JOIN custom_roles cr ON cr.id = u.role_id
+       WHERE u.id = $1 LIMIT 1`,
       [userId]
     );
     if (userRes.rows.length === 0) {
       throw new NotFoundException('User not found.');
     }
     const targetUser = userRes.rows[0];
-    const targetUserRoles = targetUser.roles || [];
+    const isTargetSuperAdmin = targetUser.system_role === 'SUPER_ADMIN' || targetUser.role_name === 'SUPER_ADMIN';
     const tenantId = targetUser.tenant_id;
 
     // Block modifying SUPER_ADMIN user roles unless requester is SUPER_ADMIN
-    if (targetUserRoles.includes('SUPER_ADMIN') && (!requesterRoles || !requesterRoles.includes('SUPER_ADMIN'))) {
+    if (isTargetSuperAdmin && (!requesterRoles || !requesterRoles.includes('SUPER_ADMIN'))) {
       throw new ForbiddenException('You are not authorized to modify roles of a SUPER_ADMIN.');
     }
 
@@ -1591,31 +1754,27 @@ export class AuthService implements OnModuleInit {
       await this.verifyLastAdminProtection(tenantId, userId, 'demote');
     }
 
-    // Find the custom role ID corresponding to any assigned custom role in the list
-    let roleId = null;
-    if (normalized.length > 0) {
-      for (const r of normalized) {
-        const roleResult = await this.db.query(
-          'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 LIMIT 1',
-          [tenantId, r]
-        );
-        if (roleResult.rows.length > 0) {
-          roleId = roleResult.rows[0].id;
-          break;
-        }
-      }
-    }
+    // Find all custom role IDs corresponding to assigned roles in the list
+    const customRolesRes = await this.db.query(
+      `SELECT id, name FROM custom_roles 
+       WHERE tenant_id = $1 AND (UPPER(name) = ANY($2::text[]) OR system_role = ANY($2::text[]) OR id::text = ANY($2::text[]))
+       ORDER BY (is_system = false) DESC, created_at DESC`,
+      [tenantId, normalized]
+    );
+    const roleIds: string[] = customRolesRes.rows.map((r: any) => r.id);
+    const cleanRoleNames: string[] = Array.from(new Set(customRolesRes.rows.map((r: any) => r.name)));
+    const roleId = roleIds[0] || null;
 
     await this.db.query(
-      `UPDATE users SET roles = $1, role_id = $2, updated_at = NOW() WHERE id = $3`,
-      [normalized, roleId, userId],
+      `UPDATE users SET role_id = $1, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3`,
+      [roleId, roleIds, userId],
     );
-    return { message: 'User roles updated successfully.', roles: normalized };
+    return { message: 'User roles updated successfully.', roles: cleanRoleNames.length > 0 ? cleanRoleNames : normalized };
   }
 
   async updateUserDetails(
     userId: string,
-    dto: { fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
+    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     requester: any
   ) {
     const userRes = await this.db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
@@ -1628,17 +1787,24 @@ export class AuthService implements OnModuleInit {
       throw new ForbiddenException('You are not authorized to update users in another company tenant.');
     }
 
+    let firstName = dto.firstName !== undefined ? dto.firstName.trim() : (user.first_name || '');
+    let lastName = dto.lastName !== undefined ? dto.lastName.trim() : (user.last_name || '');
     let fullName = user.full_name;
+
+    if (dto.firstName !== undefined || dto.lastName !== undefined) {
+      fullName = `${firstName} ${lastName}`.trim();
+    } else if (dto.fullName && dto.fullName.trim().length >= 2) {
+      fullName = dto.fullName.trim();
+      firstName = fullName.split(/\s+/)[0] || '';
+      lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
+    }
+
     let email = user.email;
     let hash = user.password_hash;
     let salt = user.salt;
     let branchId = user.branch_id;
     let businessUnitId = user.business_unit_id;
     let jobReviewerId = user.job_reviewer_id;
-
-    if (dto.fullName && dto.fullName.trim().length >= 2) {
-      fullName = dto.fullName.trim();
-    }
 
     if (dto.email && dto.email.trim().toLowerCase() !== user.email) {
       const cleanEmail = dto.email.trim().toLowerCase();
@@ -1682,11 +1848,25 @@ export class AuthService implements OnModuleInit {
       jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
     }
 
+    // Resolve combined role IDs from primary role_id and all branch_roles
+    const combinedRoleIds = new Set<string>();
+    if (user.role_id) combinedRoleIds.add(user.role_id);
+    if (Array.isArray(user.assigned_role_ids)) {
+      user.assigned_role_ids.forEach((rid: string) => combinedRoleIds.add(rid));
+    }
+    Object.values(branchRoles).forEach((rList: any) => {
+      if (Array.isArray(rList)) {
+        rList.forEach((rid: string) => {
+          if (rid) combinedRoleIds.add(rid);
+        });
+      }
+    });
+
     await this.db.query(
       `UPDATE users
-       SET full_name = $1, email = $2, password_hash = $3, salt = $4, branch_id = $5, assigned_branch_ids = $6, branch_roles = $7, business_unit_id = $8, job_reviewer_id = $9, updated_at = NOW()
-       WHERE id = $10`,
-      [fullName, email, hash, salt, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, jobReviewerId, userId]
+       SET first_name = $1, last_name = $2, full_name = $3, email = $4, password_hash = $5, salt = $6, branch_id = $7, assigned_branch_ids = $8, branch_roles = $9, business_unit_id = $10, job_reviewer_id = $11, assigned_role_ids = $12::uuid[], updated_at = NOW()
+       WHERE id = $13`,
+      [firstName, lastName, fullName, email, hash, salt, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, jobReviewerId, Array.from(combinedRoleIds), userId]
     );
 
     if (dto.roles && Array.isArray(dto.roles) && dto.roles.length > 0) {
@@ -1714,37 +1894,60 @@ export class AuthService implements OnModuleInit {
   async seedTenantRoles(tenantId: string): Promise<Record<string, string>> {
     const DEFAULT_PERMISSIONS: Record<string, string[]> = {
       ADMIN: [
-        'job:create', 'job:edit', 'job:view', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:edit',
+        'submission:create', 'submission:view', 'submission:edit', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject', 'client:delete',
+        'placement:view', 'placement:create', 'report:view',
         'tenant:settings', 'user:manage',
-        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'branch:create', 'branch:edit', 'branch:delete',
+        'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets'
       ],
       BRANCH_ADMIN: [
-        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:view', 'submission:edit',
-        'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit'
+        'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject',
+        'placement:view', 'placement:create', 'report:view',
+        // Branch Admin can manage/edit their own branch and assign users — CANNOT create or delete branches
+        'branch:edit', 'branch_admin:manage', 'branch:assign_user', 'branch:assign_manager', 'user:manage', 'pod:view', 'pod:edit'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
-        'submission:create', 'submission:view',
+        'submission:create', 'submission:view', 'submission:edit',
         'job:view',
+        'client:view',
         'pod:view'
       ],
       ACCOUNT_MANAGER: [
-        'job:create', 'job:edit', 'job:view',
-        'candidate:view', 'submission:view', 'submission:edit',
-        'pod:view'
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign_recruiter',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'pod:view',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit',
+        'placement:view', 'placement:create',
+        'report:view'
       ],
       DELIVERY_HEAD: [
-        'job:view', 'job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod',
-        'candidate:view', 'submission:view', 'submission:edit',
-        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle'
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'job:assign', 'job:assign_recruiter', 'job:assign_pod',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:edit', 'client:approve', 'client:reject',
+        'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
+        'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
+        'placement:view', 'report:view'
       ],
       POD_LEAD: [
-        'job:view', 'candidate:view', 'submission:view', 'submission:edit',
-        'pod:view', 'job:edit'
+        'job:view', 'job:edit', 'job:approve', 'job:reject',
+        'candidate:view', 'candidate:create',
+        'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
+        'client:view',
+        'pod:view', 'pod:edit', 'report:view'
       ]
     };
 
@@ -1838,7 +2041,7 @@ export class AuthService implements OnModuleInit {
 
     if (branchId) {
       params.push(branchId);
-      sql += ` AND cr.branch_id = $${params.length}::uuid`;
+      sql += ` AND (cr.branch_id = $${params.length}::uuid OR (cr.is_system = true AND cr.branch_id IS NULL))`;
     }
 
     sql += ' ORDER BY (cr.is_system = false) DESC, cr.name ASC';
@@ -1851,31 +2054,35 @@ export class AuthService implements OnModuleInit {
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject', 'client:delete',
         'tenant:settings', 'user:manage',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'placement:create', 'report:view'
       ],
       BRANCH_ADMIN: [
         'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject',
         'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'placement:create', 'report:view'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:edit',
         'job:view',
+        'client:view',
         'pod:view'
       ],
       ACCOUNT_MANAGER: [
-        'job:create', 'job:edit', 'job:view', 'job:approve',
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign_recruiter',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
         'pod:view',
-        'client:view', 'client:create', 'client:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit',
         'placement:view', 'placement:create',
         'report:view'
       ],
@@ -1884,45 +2091,71 @@ export class AuthService implements OnModuleInit {
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:edit', 'client:approve', 'client:reject',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'report:view'
       ],
       POD_LEAD: [
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
+        'client:view',
         'pod:view', 'pod:edit', 'report:view'
       ]
     };
 
-    const areEqual = (p1: string[], p2: string[]) => {
-      if (!p1 || !p2 || p1.length !== p2.length) return false;
-      const s1 = [...p1].sort();
-      const s2 = [...p2].sort();
-      return s1.every((val, index) => val === s2[index]);
-    };
+    // Track covered archetypes across custom roles
+    const coveredArchetypes = new Set<string>();
+    for (const r of roles) {
+      if (!r.isSystem) {
+        if (r.systemRole) coveredArchetypes.add(r.systemRole.toUpperCase().replace(/[\s-_]/g, ''));
+        if (r.baseRoleName) coveredArchetypes.add(r.baseRoleName.toUpperCase().replace(/[\s-_]/g, ''));
+        if (r.name) coveredArchetypes.add(r.name.toUpperCase().replace(/[\s-_]/g, ''));
+      }
+    }
 
     const result: any[] = [];
     for (const role of roles) {
+      const baseSysRole = (role.systemRole || role.name || '').toUpperCase();
+      const defaultPerms = DEFAULT_PERMS[baseSysRole] || [];
+
+      // Fetch dynamic permissions assigned to role
       const permsRes = await this.db.query(
         'SELECT permission FROM role_permissions WHERE role_id = $1',
         [role.id]
       );
       const rolePerms = permsRes.rows.map(row => row.permission);
-      const baseSysRole = (role.systemRole || role.name).toUpperCase();
-      const defaultPerms = DEFAULT_PERMS[baseSysRole] || [];
 
-      const isExactSubstitution = !role.isSystem && areEqual(rolePerms, defaultPerms);
+      // Clean role display name if it's the raw ADMIN system role
+      let displayName = role.name;
+      if (role.isSystem && (role.name === 'ADMIN' || role.name === 'TENANT_ADMIN')) {
+        displayName = 'Tenant Admin';
+      }
 
       result.push({
         ...role,
-        permissions: role.isSystem && defaultPerms.length > 0 ? defaultPerms : rolePerms,
-        isExactSubstitution,
-        replacesSystemRole: isExactSubstitution ? baseSysRole : null,
+        name: displayName,
+        permissions: role.isSystem && defaultPerms.length > 0 ? (rolePerms.length > 0 ? rolePerms : defaultPerms) : rolePerms,
+        isExactSubstitution: !role.isSystem,
+        replacesSystemRole: !role.isSystem && role.systemRole ? baseSysRole : null,
       });
     }
-    return result;
+
+    // Suppress system roles that are already superseded by custom roles in the branch
+    return result.filter(r => {
+      if (r.isSystem) {
+        const sysNorm = (r.systemRole || '').toUpperCase().replace(/[\s-_]/g, '');
+        const nameNorm = (r.name || '').toUpperCase().replace(/[\s-_]/g, '');
+        if (coveredArchetypes.has(sysNorm) || coveredArchetypes.has(nameNorm)) {
+          return false;
+        }
+        if (branchId && (nameNorm === 'ADMIN' || nameNorm === 'TENANTADMIN' || nameNorm === 'SUPERADMIN')) {
+          return false;
+        }
+      }
+      return true;
+    });
   }
 
   async getAssignableRolePool(tenantId: string, branchId?: string) {
@@ -1997,45 +2230,53 @@ export class AuthService implements OnModuleInit {
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject', 'client:delete',
         'tenant:settings', 'user:manage',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'placement:create', 'report:view'
       ],
       BRANCH_ADMIN: [
         'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject',
         'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'placement:create', 'report:view'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:edit',
         'job:view',
+        'client:view',
         'pod:view'
       ],
       ACCOUNT_MANAGER: [
-        'job:create', 'job:edit', 'job:view', 'job:approve',
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign_recruiter',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
-        'pod:view', 'client:view', 'client:create', 'client:edit',
-        'placement:view', 'placement:create', 'report:view'
+        'pod:view',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit',
+        'placement:view', 'placement:create',
+        'report:view'
       ],
       DELIVERY_HEAD: [
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:edit', 'client:approve', 'client:reject',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'report:view'
       ],
       POD_LEAD: [
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
+        'client:view',
         'pod:view', 'pod:edit', 'report:view'
       ]
     };
@@ -2166,31 +2407,25 @@ export class AuthService implements OnModuleInit {
         const newName = body.name.trim();
 
         const usersToUpdate = await this.db.query(
-          'SELECT id, roles, branch_roles FROM users WHERE tenant_id = $1',
+          'SELECT id, branch_roles FROM users WHERE tenant_id = $1',
           [tenantId]
         );
 
         for (const u of usersToUpdate.rows) {
           let needsUpdate = false;
-          let userRoles: string[] = u.roles || [];
           let branchRoles: Record<string, string[]> = u.branch_roles || {};
-
-          if (userRoles.some((r: string) => r.toUpperCase() === oldName.toUpperCase())) {
-            userRoles = userRoles.map((r: string) => r.toUpperCase() === oldName.toUpperCase() ? newName : r);
-            needsUpdate = true;
-          }
 
           for (const [bId, rList] of Object.entries(branchRoles)) {
             if (Array.isArray(rList) && rList.some((r: string) => r.toUpperCase() === oldName.toUpperCase())) {
-              branchRoles[bId] = rList.map((r: string) => r.toUpperCase() === oldName.toUpperCase() ? newName : r);
+              branchRoles[bId] = rList.map((r: string) => r.toUpperCase() === oldName.toUpperCase() ? roleId : r);
               needsUpdate = true;
             }
           }
 
           if (needsUpdate) {
             await this.db.query(
-              'UPDATE users SET roles = $1::text[], branch_roles = $2::jsonb, updated_at = NOW() WHERE id = $3',
-              [userRoles, JSON.stringify(branchRoles), u.id]
+              'UPDATE users SET branch_roles = $1::jsonb, updated_at = NOW() WHERE id = $2',
+              [JSON.stringify(branchRoles), u.id]
             );
           }
         }
@@ -2220,45 +2455,53 @@ export class AuthService implements OnModuleInit {
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject', 'client:delete',
         'tenant:settings', 'user:manage',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'placement:create', 'report:view'
       ],
       BRANCH_ADMIN: [
         'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject',
         'branch_admin:manage', 'user:manage', 'pod:view', 'pod:edit',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'placement:create', 'report:view'
       ],
       RECRUITER: [
         'candidate:create', 'candidate:view',
         'submission:create', 'submission:view', 'submission:edit',
         'job:view',
+        'client:view',
         'pod:view'
       ],
       ACCOUNT_MANAGER: [
-        'job:create', 'job:edit', 'job:view', 'job:approve',
+        'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
+        'job:assign_recruiter',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
-        'pod:view', 'client:view', 'client:create', 'client:edit',
-        'placement:view', 'placement:create', 'report:view'
+        'pod:view',
+        'client:view', 'client:create', 'client:direct_add', 'client:edit',
+        'placement:view', 'placement:create',
+        'report:view'
       ],
       DELIVERY_HEAD: [
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'job:assign', 'job:assign_recruiter', 'job:assign_pod',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
+        'client:view', 'client:create', 'client:edit', 'client:approve', 'client:reject',
         'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
         'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-        'client:view', 'placement:view', 'report:view'
+        'placement:view', 'report:view'
       ],
       POD_LEAD: [
         'job:view', 'job:edit', 'job:approve', 'job:reject',
         'candidate:view', 'candidate:create',
         'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
+        'client:view',
         'pod:view', 'pod:edit', 'report:view'
       ]
     };
@@ -2337,16 +2580,16 @@ export class AuthService implements OnModuleInit {
       );
       reassignedCount = updateRes.rows.length;
 
-      // Replace role name in users.roles array
+      // Replace role ID in users.assigned_role_ids array
       await this.db.query(
-        `UPDATE users SET roles = array_replace(roles, $1, $2) WHERE tenant_id = $3 AND $1 = ANY(roles)`,
-        [roleToDel.name, targetRole.name, tenantId]
+        `UPDATE users SET assigned_role_ids = array_replace(assigned_role_ids, $1::uuid, $2::uuid) WHERE tenant_id = $3 AND $1::uuid = ANY(assigned_role_ids)`,
+        [roleId, targetRole.id, tenantId]
       ).catch(() => {});
     } else {
-      // Remove role name from users.roles array
+      // Remove role ID from users.assigned_role_ids array
       await this.db.query(
-        `UPDATE users SET roles = array_remove(roles, $1) WHERE tenant_id = $2 AND $1 = ANY(roles)`,
-        [roleToDel.name, tenantId]
+        `UPDATE users SET assigned_role_ids = array_remove(assigned_role_ids, $1::uuid) WHERE tenant_id = $2 AND $1::uuid = ANY(assigned_role_ids)`,
+        [roleId, tenantId]
       ).catch(() => {});
     }
 
@@ -2575,8 +2818,12 @@ export class AuthService implements OnModuleInit {
 
       // 6. Clients & Placements
       { id: 'client:view', name: 'View Clients Directory', group: 'Clients & Placements' },
-      { id: 'client:create', name: 'Create New Clients', group: 'Clients & Placements' },
+      { id: 'client:create', name: 'Create New Clients (Pending Approval)', group: 'Clients & Placements' },
+      { id: 'client:direct_add', name: 'Direct Add Clients (Bypass Approval Gate)', group: 'Clients & Placements' },
       { id: 'client:edit', name: 'Edit Client Profiles & Terms', group: 'Clients & Placements' },
+      { id: 'client:approve', name: 'Approve & Activate Client Accounts', group: 'Clients & Placements' },
+      { id: 'client:reject', name: 'Reject Client Accounts with Feedback', group: 'Clients & Placements' },
+      { id: 'client:delete', name: 'Delete Client Accounts', group: 'Clients & Placements' },
       { id: 'placement:view', name: 'View Placements & Revenue Margins', group: 'Clients & Placements' },
       { id: 'placement:create', name: 'Create & Finalize Placements', group: 'Clients & Placements' },
       { id: 'report:view', name: 'View Analytics & Performance Reports', group: 'Clients & Placements' },
@@ -2590,6 +2837,9 @@ export class AuthService implements OnModuleInit {
       { id: 'pod:overlap', name: 'Authorize Pod Assignment Overlaps', group: 'Pods Management' },
 
       // 8. Branch & Multi-Office Management
+      { id: 'branch:create', name: 'Create New Branch Locations', group: 'Branch & Multi-Office Management' },
+      { id: 'branch:edit', name: 'Edit Branch Operating Hours, Timezone & Policies', group: 'Branch & Multi-Office Management' },
+      { id: 'branch:delete', name: 'Delete Branch Office Locations', group: 'Branch & Multi-Office Management' },
       { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_branches', name: 'Search Candidates Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'job:view_all_branches', name: 'View Jobs Across All Branches', group: 'Branch & Multi-Office Management' },
@@ -2606,17 +2856,22 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async listPendingApprovals() {
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.created_at, u.tenant_id, t.name as tenant_name, t.default_market, t.domain as tenant_domain
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.created_at, u.tenant_id, 
+              COALESCE(cr.name, 'Staff') as role_name,
+              t.name as tenant_name, t.default_market, t.domain as tenant_domain
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
+       LEFT JOIN custom_roles cr ON u.role_id = cr.id
        WHERE u.is_approved = false
        ORDER BY u.created_at DESC`
     );
     return result.rows.map(row => ({
       id: row.id,
       email: row.email,
+      firstName: row.first_name || '',
+      lastName: row.last_name || '',
       fullName: row.full_name,
-      roles: row.roles,
+      roles: [row.role_name],
       createdAt: row.created_at,
       tenantId: row.tenant_id,
       tenantName: row.tenant_name || 'N/A',
@@ -2731,12 +2986,16 @@ export class AuthService implements OnModuleInit {
     const roleMap = await this.seedTenantRoles(tenant.id);
     const adminRoleId = roleMap['ADMIN'];
 
+    const adminFullName = dto.adminFullName.trim();
+    const firstName = adminFullName.split(/\s+/)[0] || '';
+    const lastName = adminFullName.split(/\s+/).slice(1).join(' ') || '';
+    const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
     const { hash, salt } = this.hashPassword(password);
     const userResult = await this.db.query(
-      `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, roles, is_active, is_approved, role_id)
-       VALUES ($1, $2, $3, $4, $5, $6, true, true, $7)
-       RETURNING id, email, full_name, roles, tenant_id, created_at, role_id`,
-      [tenant.id, email, dto.adminFullName.trim(), hash, salt, ['ADMIN'], adminRoleId]
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, password_hash, salt, is_active, is_approved, role_id, assigned_role_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, true, true, $8, $9::uuid[])
+       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
+      [tenant.id, email, firstName, lastName, adminFullName, hash, salt, adminRoleId, assignedRoleIds]
     );
     const user = userResult.rows[0];
 
@@ -2746,6 +3005,8 @@ export class AuthService implements OnModuleInit {
       adminUser: {
         id: user.id,
         email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
         fullName: user.full_name,
         temporaryPassword: password,
       },
@@ -2776,7 +3037,7 @@ export class AuthService implements OnModuleInit {
     const tenant = tenantRes.rows[0];
 
     const usersRes = await this.db.query(
-      `SELECT u.id, u.email, u.full_name as "fullName", u.roles, u.is_active as "isActive", u.is_approved as "isApproved", u.created_at as "createdAt", cr.name as "roleName", cr.system_role as "systemRole"
+      `SELECT u.id, u.email, u.first_name as "firstName", u.last_name as "lastName", u.full_name as "fullName", u.is_active as "isActive", u.is_approved as "isApproved", u.created_at as "createdAt", cr.name as "roleName", cr.system_role as "systemRole"
        FROM users u
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
        WHERE u.tenant_id = $1
@@ -2989,19 +3250,26 @@ export class AuthService implements OnModuleInit {
   private async verifyLastAdminProtection(tenantId: string, targetUserId: string, action: 'demote' | 'deactivate') {
     // 1. Check if target user currently has the ADMIN role
     const userRes = await this.db.query(
-      "SELECT roles, is_active, is_approved FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+      `SELECT u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role, u.is_active, u.is_approved 
+       FROM users u
+       LEFT JOIN custom_roles cr ON cr.id = u.role_id
+       WHERE u.id = $1 AND u.tenant_id = $2 LIMIT 1`,
       [targetUserId, tenantId]
     );
     if (userRes.rows.length === 0) {
       return;
     }
     const user = userRes.rows[0];
-    const hasAdmin = user.roles && user.roles.includes('ADMIN');
+    const hasAdmin = user.system_role === 'ADMIN' || user.role_name === 'ADMIN';
 
     if (hasAdmin && user.is_active && user.is_approved) {
       // 2. Count active and approved admins in this tenant
       const adminsRes = await this.db.query(
-        "SELECT COUNT(*) as count FROM users WHERE tenant_id = $1 AND is_active = true AND is_approved = true AND 'ADMIN' = ANY(roles)",
+        `SELECT COUNT(*) as count 
+         FROM users u
+         LEFT JOIN custom_roles cr ON cr.id = u.role_id
+         WHERE u.tenant_id = $1 AND u.is_active = true AND u.is_approved = true 
+           AND (cr.system_role = 'ADMIN' OR cr.name = 'ADMIN')`,
         [tenantId]
       );
       const adminCount = parseInt(adminsRes.rows[0].count, 10);
@@ -3288,15 +3556,15 @@ export class AuthService implements OnModuleInit {
     // ZERO-TRUST INVITE-ONLY GATE:
     // Query users table for this email and tenant
     const userRes = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.roles, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, u.profile_picture,
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, u.profile_picture,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled,
-              cr.system_role, b.name as branch_name, bu.name as business_unit_name
+              cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
-       WHERE LOWER(u.email) = $1 AND (u.tenant_id = $2 OR 'SUPER_ADMIN' = ANY(u.roles))
+       WHERE LOWER(u.email) = $1 AND (u.tenant_id = $2 OR cr.system_role = 'SUPER_ADMIN' OR cr.name = 'SUPER_ADMIN')
        ORDER BY (u.tenant_id = $2) DESC
        LIMIT 1`,
       [cleanEmail, targetTenantId]
@@ -3363,18 +3631,34 @@ export class AuthService implements OnModuleInit {
       await this.db.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [dto.picture, user.id]).catch(() => {});
     }
 
-    // Fetch dynamic permissions
+    // Fetch dynamic permissions and roles
+    const userRoleIds = new Set<string>();
+    if (user.role_id) userRoleIds.add(user.role_id);
+    if (Array.isArray(user.assigned_role_ids)) {
+      user.assigned_role_ids.forEach((rid: string) => userRoleIds.add(rid));
+    }
     let permissions: string[] = [];
-    if (user.role_id) {
-      const permsResult = await this.db.query(
-        'SELECT permission FROM role_permissions WHERE role_id = $1',
-        [user.role_id]
-      );
-      permissions = permsResult.rows.map((row) => row.permission);
+    let dynamicRoles: string[] = [];
+    if (userRoleIds.size > 0) {
+      const [permsResult, rolesResult] = await Promise.all([
+        this.db.query(
+          'SELECT DISTINCT permission FROM role_permissions WHERE role_id = ANY($1::uuid[])',
+          [Array.from(userRoleIds)]
+        ).catch(() => ({ rows: [] })),
+        this.db.query(
+          'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
+          [Array.from(userRoleIds)]
+        ).catch(() => ({ rows: [] }))
+      ]);
+      permissions = permsResult.rows.map((row: any) => row.permission);
+      dynamicRoles = Array.from(new Set(rolesResult.rows.map((row: any) => row.name)));
+    }
+    if (dynamicRoles.length === 0 && user.role_name) {
+      dynamicRoles = [user.role_name];
     }
 
     let systemRole = user.system_role || 'RECRUITER';
-    if (user.roles && user.roles.includes('SUPER_ADMIN')) {
+    if (dynamicRoles.includes('SUPER_ADMIN')) {
       systemRole = 'SUPER_ADMIN';
     }
 
@@ -3382,7 +3666,7 @@ export class AuthService implements OnModuleInit {
       sub: user.id,
       email: user.email,
       fullName: user.full_name,
-      roles: user.roles,
+      roles: dynamicRoles,
       tenantId: user.tenant_id || DEFAULT_TENANT_ID,
       defaultMarket: user.default_market || 'US',
       tenantDomain: user.tenant_domain || '',
@@ -3401,8 +3685,10 @@ export class AuthService implements OnModuleInit {
       user: {
         id: user.id,
         email: user.email,
+        firstName: user.first_name || '',
+        lastName: user.last_name || '',
         fullName: user.full_name,
-        roles: user.roles,
+        roles: dynamicRoles,
         tenantId: user.tenant_id || DEFAULT_TENANT_ID,
         defaultMarket: user.default_market || 'US',
         tenantDomain: user.tenant_domain || '',
@@ -3481,16 +3767,21 @@ export class AuthService implements OnModuleInit {
     }
 
     // Create user record in PostgreSQL
+    const firstName = fullName.split(/\s+/)[0] || '';
+    const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
+    const assignedRoleIds = roleId ? [roleId] : [];
     const insertUserRes = await this.db.query(
-      `INSERT INTO users (tenant_id, email, full_name, roles, role_id, branch_id, pod_id, is_active, is_approved)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true, true)
-       RETURNING id, email, full_name, roles, created_at`,
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, pod_id, is_active, is_approved)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, $9, true, true)
+       RETURNING id, email, first_name, last_name, full_name, created_at`,
       [
         tenantId,
         cleanEmail,
+        firstName,
+        lastName,
         fullName,
-        [systemRole],
         roleId,
+        assignedRoleIds,
         dto.branchId || null,
         dto.podId || null,
       ]
