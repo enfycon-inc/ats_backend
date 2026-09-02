@@ -169,6 +169,28 @@ export class NotificationsService {
   }
 
   /**
+   * Toggle or update read status of a notification (Admin / System).
+   */
+  async toggleNotificationStatus(id: string, tenantId: string, isRead?: boolean) {
+    if (typeof isRead === 'boolean') {
+      await this.db.query(
+        'UPDATE notifications SET is_read = $1 WHERE id = $2 AND tenant_id = $3',
+        [isRead, id, tenantId]
+      );
+    } else {
+      await this.db.query(
+        'UPDATE notifications SET is_read = NOT is_read WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
+    }
+    const res = await this.db.query(
+      'SELECT id, is_read as "isRead" FROM notifications WHERE id = $1 AND tenant_id = $2',
+      [id, tenantId]
+    );
+    return res.rows[0] || { success: true };
+  }
+
+  /**
    * Mark all unread notifications as read for a user.
    */
   async markAllAsRead(userId: string, tenantId: string) {
@@ -279,13 +301,16 @@ export class NotificationsService {
       `SELECT n.id, n.tenant_id as "tenantId", n.user_id as "userId", n.type, n.title, n.message, n.data,
               n.is_read as "isRead", n.initiator_id as "initiatorId", n.created_at as "createdAt",
               u.full_name as "recipientName", u.email as "recipientEmail", COALESCE(cr_u.name, 'Staff') as "recipientRoleName",
-              b.name as "branchName",
+              COALESCE(job_b.name, init_b.name, b.name) as "branchName",
+              b.name as "recipientBranchName",
               init.full_name as "initiatorName", init.email as "initiatorEmail", COALESCE(cr_init.name, 'Staff') as "initiatorRoleName"
        FROM notifications n
        LEFT JOIN users u ON u.id = n.user_id
        LEFT JOIN custom_roles cr_u ON cr_u.id = u.role_id
        LEFT JOIN branches b ON b.id = u.branch_id
+       LEFT JOIN branches job_b ON job_b.id::text = (n.data->>'branchId')
        LEFT JOIN users init ON init.id::text = n.initiator_id OR init.email = n.initiator_id
+       LEFT JOIN branches init_b ON init_b.id = init.branch_id
        LEFT JOIN custom_roles cr_init ON cr_init.id = init.role_id
        ${whereSql}
        ORDER BY n.created_at DESC

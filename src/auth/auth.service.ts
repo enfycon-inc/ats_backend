@@ -151,14 +151,16 @@ export class AuthService implements OnModuleInit {
         first_name    VARCHAR(128),
         last_name     VARCHAR(128),
         full_name     VARCHAR(255) NOT NULL,
-        password_hash VARCHAR(512),
-        salt          VARCHAR(128),
         is_active     BOOLEAN NOT NULL DEFAULT true,
         is_approved   BOOLEAN NOT NULL DEFAULT true,
         profile_picture TEXT,
         created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
+
+      -- Ensure password_hash and salt columns are dropped (Keycloak is single source of truth)
+      ALTER TABLE users DROP COLUMN IF EXISTS password_hash CASCADE;
+      ALTER TABLE users DROP COLUMN IF EXISTS salt CASCADE;
 
       -- 4. Add first_name and last_name if not exists
       ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR(128);
@@ -377,11 +379,10 @@ export class AuthService implements OnModuleInit {
       }
 
       // First boot only: create the platform super admin
-      const { hash, salt } = this.hashPassword(adminPassword);
       await this.db.query(
-        `INSERT INTO users (tenant_id, email, full_name, password_hash, salt, is_active, is_approved, role_id)
-         VALUES ($1, $2, $3, $4, $5, true, true, $6)`,
-        [DEFAULT_TENANT_ID, adminEmail, adminName, hash, salt, superAdminRoleId],
+        `INSERT INTO users (tenant_id, email, full_name, is_active, is_approved, role_id)
+         VALUES ($1, $2, $3, true, true, $4)`,
+        [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId],
       );
       this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
     } catch (err) {
@@ -390,13 +391,13 @@ export class AuthService implements OnModuleInit {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // LOGIN IMPLEMENTATION (Supports both Mock mode and Keycloak mode)
+  // LOGIN IMPLEMENTATION (Keycloak is the single source of truth)
   // ─────────────────────────────────────────────────────────────
   async login(dto: LoginDto) {
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
     const result = await this.db.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.password_hash, u.salt, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
@@ -558,21 +559,11 @@ export class AuthService implements OnModuleInit {
       systemRole = 'SUPER_ADMIN';
     }
 
-    // ── KEYCLOAK / DB HYBRID AUTHENTICATION ───────────────────
+    // ── KEYCLOAK AUTHENTICATION (SINGLE SOURCE OF TRUTH) ───────────────────
     let keycloakToken: string | null = null;
     let refreshToken: string | null = null;
     let expiresIn: number = 36000;
 
-    // 1. Verify password against PostgreSQL DB hash if available
-    let passwordValid = false;
-    if (user.password_hash && user.salt) {
-      const computedHash = this.hashPassword(dto.password, user.salt).hash;
-      if (computedHash === user.password_hash) {
-        passwordValid = true;
-      }
-    }
-
-    // 2. Attempt Keycloak Direct Grant
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     const tokenUrl = `${issuer}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
@@ -591,7 +582,7 @@ export class AuthService implements OnModuleInit {
         body: params.toString(),
       });
 
-      if (!res.ok) {
+      if (!res.ok && res.status !== 401 && res.status !== 400) {
         const altUrl = tokenUrl.includes('localhost')
           ? tokenUrl.replace('localhost', 'keycloak')
           : tokenUrl.replace('keycloak', 'localhost');
@@ -607,7 +598,6 @@ export class AuthService implements OnModuleInit {
         keycloakToken = tokenData.access_token;
         refreshToken = tokenData.refresh_token;
         expiresIn = tokenData.expires_in || 36000;
-        passwordValid = true;
 
         await this.syncKeycloakUser({
           keycloakId: user.id,
@@ -616,33 +606,19 @@ export class AuthService implements OnModuleInit {
           roles: dynamicRoles,
         }).catch(() => {});
       } else {
-        this.logger.warn(`Keycloak direct grant returned status ${res.status} for ${dto.email}`);
-      }
-    } catch (kcErr: any) {
-      this.logger.warn(`Keycloak direct grant connection note: ${kcErr.message}`);
-    }
-
-    // 3. If Keycloak did not issue a token, check DB password validity
-    if (!keycloakToken) {
-      if (!passwordValid) {
+        this.logger.warn(`Keycloak direct grant rejected credentials for ${dto.email} (status ${res.status})`);
         throw new UnauthorizedException('Invalid email or password.');
       }
+    } catch (kcErr: any) {
+      if (kcErr instanceof UnauthorizedException) {
+        throw kcErr;
+      }
+      this.logger.error(`Keycloak direct grant error for ${dto.email}: ${kcErr.message}`);
+      throw new UnauthorizedException('Authentication failed or invalid credentials.');
+    }
 
-      // Password is valid in DB. Issue high-availability access token & trigger background Keycloak sync
-      this.logger.log(`Password verified via database for ${dto.email}. Issuing access token & provisioning Keycloak user...`);
-      const internalToken = this.signInternalToken({ ...user, roles: dynamicRoles });
-      keycloakToken = internalToken.accessToken;
-      expiresIn = internalToken.expiresIn;
-
-      // Auto-provision user into Keycloak asynchronously
-      this.provisionUserInKeycloak({
-        email: user.email,
-        password: dto.password,
-        fullName: user.full_name,
-        tenantId: user.tenant_id,
-      }).catch((err) => {
-        this.logger.warn(`Background Keycloak provisioning note: ${err.message}`);
-      });
+    if (!keycloakToken) {
+      throw new UnauthorizedException('Invalid email or password.');
     }
 
     return {
@@ -916,14 +892,12 @@ export class AuthService implements OnModuleInit {
     }
     const assignedRoleIds = roleId ? [roleId] : [];
 
-    const { hash, salt } = this.hashPassword(password);
-
     // If direct invite, user starts as active & approved immediately. Else pending.
     const result = await this.db.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, password_hash, salt, is_active, is_approved, role_id, assigned_role_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10::uuid[])
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
+       VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids`,
-      [tenantId, email, firstName, lastName, fullName, hash, salt, isApproved, roleId, assignedRoleIds],
+      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds],
     );
 
     const user = result.rows[0];
@@ -1066,13 +1040,12 @@ export class AuthService implements OnModuleInit {
     // 6. Create the first admin user for this tenant (is_approved = false)
     const firstName = fullName.split(/\s+/)[0] || '';
     const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
-    const { hash, salt } = this.hashPassword(password);
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
     const userResult = await this.db.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, password_hash, salt, is_active, is_approved, role_id, assigned_role_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true, false, $8, $9::uuid[])
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
+       VALUES ($1, $2, $3, $4, $5, true, false, $6, $7::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
-      [tenant.id, email, firstName, lastName, fullName, hash, salt, adminRoleId, assignedRoleIds],
+      [tenant.id, email, firstName, lastName, fullName, adminRoleId, assignedRoleIds],
     );
     const user = userResult.rows[0];
 
@@ -1774,7 +1747,7 @@ export class AuthService implements OnModuleInit {
 
   async updateUserDetails(
     userId: string,
-    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
+    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     requester: any
   ) {
     const userRes = await this.db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
@@ -1800,8 +1773,6 @@ export class AuthService implements OnModuleInit {
     }
 
     let email = user.email;
-    let hash = user.password_hash;
-    let salt = user.salt;
     let branchId = user.branch_id;
     let businessUnitId = user.business_unit_id;
     let jobReviewerId = user.job_reviewer_id;
@@ -1813,12 +1784,6 @@ export class AuthService implements OnModuleInit {
         throw new ConflictException(`Email ${cleanEmail} is already registered to another user.`);
       }
       email = cleanEmail;
-    }
-
-    if (dto.password && dto.password.length >= 8) {
-      const pwdRes = this.hashPassword(dto.password);
-      hash = pwdRes.hash;
-      salt = pwdRes.salt;
     }
 
     let assignedBranchIds = user.assigned_branch_ids || [];
@@ -1848,29 +1813,59 @@ export class AuthService implements OnModuleInit {
       jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
     }
 
-    // Resolve combined role IDs from primary role_id and all branch_roles
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const combinedRoleIds = new Set<string>();
-    if (user.role_id) combinedRoleIds.add(user.role_id);
-    if (Array.isArray(user.assigned_role_ids)) {
-      user.assigned_role_ids.forEach((rid: string) => combinedRoleIds.add(rid));
-    }
-    Object.values(branchRoles).forEach((rList: any) => {
-      if (Array.isArray(rList)) {
-        rList.forEach((rid: string) => {
-          if (rid) combinedRoleIds.add(rid);
+
+    if (dto.branchRoles !== undefined) {
+      Object.values(branchRoles).forEach((rList: any) => {
+        if (Array.isArray(rList)) {
+          rList.forEach((rid: string) => {
+            if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid);
+          });
+        }
+      });
+    } else {
+      if (user.role_id && uuidRegex.test(user.role_id)) combinedRoleIds.add(user.role_id);
+      if (Array.isArray(user.assigned_role_ids)) {
+        user.assigned_role_ids.forEach((rid: string) => {
+          if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid);
         });
       }
-    });
+    }
+
+    if (dto.roleId && uuidRegex.test(dto.roleId)) {
+      combinedRoleIds.add(dto.roleId);
+    }
+
+    let primaryRoleId = user.role_id;
+    if (dto.roleId && uuidRegex.test(dto.roleId)) {
+      primaryRoleId = dto.roleId;
+    } else if (branchId && branchRoles[branchId] && Array.isArray(branchRoles[branchId]) && branchRoles[branchId].length > 0) {
+      primaryRoleId = branchRoles[branchId][0];
+    } else if (combinedRoleIds.size > 0 && (!primaryRoleId || !combinedRoleIds.has(primaryRoleId))) {
+      primaryRoleId = Array.from(combinedRoleIds)[0];
+    }
 
     await this.db.query(
       `UPDATE users
-       SET first_name = $1, last_name = $2, full_name = $3, email = $4, password_hash = $5, salt = $6, branch_id = $7, assigned_branch_ids = $8, branch_roles = $9, business_unit_id = $10, job_reviewer_id = $11, assigned_role_ids = $12::uuid[], updated_at = NOW()
-       WHERE id = $13`,
-      [firstName, lastName, fullName, email, hash, salt, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, jobReviewerId, Array.from(combinedRoleIds), userId]
+       SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, assigned_branch_ids = $6, branch_roles = $7, business_unit_id = $8, job_reviewer_id = $9, role_id = $10, assigned_role_ids = $11::uuid[], updated_at = NOW()
+       WHERE id = $12`,
+      [firstName, lastName, fullName, email, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds), userId]
     );
 
     if (dto.roles && Array.isArray(dto.roles) && dto.roles.length > 0) {
       await this.updateUserRoles(userId, dto.roles, requester.roles || []);
+    }
+
+    if (dto.password && dto.password.length >= 8) {
+      this.provisionUserInKeycloak({
+        email,
+        password: dto.password,
+        fullName,
+        tenantId: user.tenant_id,
+      }).catch((err) => {
+        this.logger.warn(`Keycloak password update note: ${err.message}`);
+      });
     }
 
     return this.getProfile(userId);
@@ -2990,14 +2985,20 @@ export class AuthService implements OnModuleInit {
     const firstName = adminFullName.split(/\s+/)[0] || '';
     const lastName = adminFullName.split(/\s+/).slice(1).join(' ') || '';
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
-    const { hash, salt } = this.hashPassword(password);
     const userResult = await this.db.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, password_hash, salt, is_active, is_approved, role_id, assigned_role_ids)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true, true, $8, $9::uuid[])
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
+       VALUES ($1, $2, $3, $4, $5, true, true, $6, $7::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
-      [tenant.id, email, firstName, lastName, adminFullName, hash, salt, adminRoleId, assignedRoleIds]
+      [tenant.id, email, firstName, lastName, adminFullName, adminRoleId, assignedRoleIds]
     );
     const user = userResult.rows[0];
+
+    await this.provisionUserInKeycloak({
+      email: user.email,
+      password: password,
+      fullName: user.full_name,
+      tenantId: tenant.id,
+    });
 
     return {
       message: `Tenant "${companyName}" created and activated successfully!`,
@@ -3892,12 +3893,18 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('Invitation has expired. Please contact your administrator for a new invite.');
     }
 
-    const { hash, salt } = this.hashPassword(dto.password);
     await this.db.query(
-      `UPDATE users SET password_hash = $1, salt = $2, is_active = true, is_approved = true, updated_at = NOW()
-       WHERE LOWER(email) = LOWER($3) AND tenant_id = $4`,
-      [hash, salt, invite.email, invite.tenant_id]
+      `UPDATE users SET is_active = true, is_approved = true, updated_at = NOW()
+       WHERE LOWER(email) = LOWER($1) AND tenant_id = $2`,
+      [invite.email, invite.tenant_id]
     );
+
+    await this.provisionUserInKeycloak({
+      email: invite.email,
+      password: dto.password,
+      fullName: invite.full_name,
+      tenantId: invite.tenant_id,
+    });
 
     await this.db.query(
       `UPDATE user_invitations SET is_accepted = true WHERE id = $1`,

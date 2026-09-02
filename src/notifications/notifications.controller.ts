@@ -47,6 +47,17 @@ export class NotificationsController {
     return this.notificationsService.markAsRead(id, user.dbId, user.tenantId);
   }
 
+  // ─── PATCH /api/notifications/:id/toggle-read ─────────────────
+  @Patch(':id/toggle-read')
+  @ApiOperation({ summary: 'Toggle or update notification read status' })
+  async toggleNotificationStatus(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() body?: { isRead?: boolean },
+  ) {
+    return this.notificationsService.toggleNotificationStatus(id, user.tenantId, body?.isRead);
+  }
+
   // ─── PATCH /api/notifications/read-all ────────────────────────
   @Patch('read-all')
   @ApiOperation({ summary: 'Mark all unread notifications as read' })
