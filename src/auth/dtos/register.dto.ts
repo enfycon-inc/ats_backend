@@ -53,4 +53,16 @@ export class RegisterDto {
     description: 'Whether to dispatch welcome email with credentials and login guide',
   })
   sendEmailInvite?: boolean;
+
+  @ApiPropertyOptional({ description: 'Primary branch office UUID' })
+  branchId?: string;
+
+  @ApiPropertyOptional({ description: 'Assigned branch office UUIDs' })
+  assignedBranchIds?: string[];
+
+  @ApiPropertyOptional({ description: 'Branch role mapping' })
+  branchRoles?: Record<string, string[]>;
+
+  @ApiPropertyOptional({ description: 'Multiple roles to assign' })
+  roles?: string[];
 }

@@ -218,7 +218,7 @@ Validates email + password and returns a signed JWT access token.
   // ─── PATCH /api/auth/users/:id/status ───────────────────────
   @Patch('users/:id/status')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Activate or deactivate a user account [ADMIN only]',
@@ -231,6 +231,23 @@ Validates email + password and returns a signed JWT access token.
     @CurrentUser() currentUser: AuthUser,
   ) {
     return this.authService.setUserActive(userId, body.isActive, currentUser.dbId);
+  }
+
+  // ─── DELETE /api/auth/users/:id ─────────────────────────────
+  @Delete('users/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Permanently delete a user account and revoke Keycloak access [ADMIN only]',
+  })
+  @ApiResponse({ status: 200, description: 'User deleted successfully.' })
+  @ApiResponse({ status: 403, description: 'ADMIN role required.' })
+  async deleteUser(
+    @Param('id') userId: string,
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.deleteUser(userId, currentUser);
   }
 
   // ─── PATCH /api/auth/users/:id ──────────────────────────────

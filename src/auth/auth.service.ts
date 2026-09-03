@@ -879,25 +879,47 @@ export class AuthService implements OnModuleInit {
       await this.checkSeatLimit(tenantId);
     }
 
-    // Find the dynamic role ID corresponding to the requested role name or role ID
-    let roleId = null;
-    let roleName = role;
-    const roleResult = await this.db.query(
-      'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (id::text = $2 OR UPPER(name) = $2 OR system_role = $2) LIMIT 1',
-      [tenantId, role.toUpperCase()]
-    );
-    if (roleResult.rows.length > 0) {
-      roleId = roleResult.rows[0].id;
-      roleName = roleResult.rows[0].name;
+    // Collect all requested roles from dto.roles and dto.role
+    const rawRolesList: string[] = [];
+    if (Array.isArray(dto.roles) && dto.roles.length > 0) {
+      rawRolesList.push(...dto.roles);
+    } else if (dto.role) {
+      rawRolesList.push(dto.role);
     }
-    const assignedRoleIds = roleId ? [roleId] : [];
+    if (rawRolesList.length === 0) rawRolesList.push('RECRUITER');
+
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const resolvedRoleIds = new Set<string>();
+    let primaryRoleName = rawRolesList[0];
+
+    const rolesRes = await this.db.query(
+      `SELECT id, name, system_role FROM custom_roles 
+       WHERE tenant_id = $1 AND (id::text = ANY($2) OR UPPER(name) = ANY($3) OR system_role = ANY($3))`,
+      [tenantId, rawRolesList, rawRolesList.map(r => r.toUpperCase())]
+    );
+    rolesRes.rows.forEach((r: any) => {
+      resolvedRoleIds.add(r.id);
+      if (!primaryRoleName || primaryRoleName === 'RECRUITER') primaryRoleName = r.name;
+    });
+
+    const assignedRoleIds: string[] = Array.from(resolvedRoleIds);
+    const roleId: string | null = assignedRoleIds[0] || null;
+
+    const branchId: string | null = dto.branchId && uuidRegex.test(dto.branchId) ? dto.branchId : null;
+    let assignedBranchIds: string[] = Array.isArray(dto.assignedBranchIds)
+      ? dto.assignedBranchIds.filter(b => b && uuidRegex.test(b))
+      : (branchId ? [branchId] : []);
+    if (branchId && !assignedBranchIds.includes(branchId)) {
+      assignedBranchIds.push(branchId);
+    }
+    const branchRoles = dto.branchRoles || (branchId && assignedRoleIds.length > 0 ? { [branchId]: assignedRoleIds } : {});
 
     // If direct invite, user starts as active & approved immediately. Else pending.
     const result = await this.db.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
-       VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[])
-       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids`,
-      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds],
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles)
+       VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[], $9, $10, $11)
+       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids, branch_id, assigned_branch_ids`,
+      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds, branchId, assignedBranchIds, JSON.stringify(branchRoles)],
     );
 
     const user = result.rows[0];
@@ -922,7 +944,7 @@ export class AuthService implements OnModuleInit {
             subdomain: tenantDomain,
             tenantId,
             temporaryPassword: password,
-            roleName: roleName,
+            roleName: primaryRoleName,
           });
         })
         .catch((err) => {
@@ -940,7 +962,7 @@ export class AuthService implements OnModuleInit {
         firstName: user.first_name,
         lastName: user.last_name,
         fullName: user.full_name,
-        roles: [roleName],
+        roles: [primaryRoleName],
         tenantId: user.tenant_id,
         createdAt: user.created_at,
       },
@@ -1245,17 +1267,38 @@ export class AuthService implements OnModuleInit {
 
     // Synchronize Keycloak role name to dynamic custom role ID
     let roleId = existing.rows.length > 0 ? existing.rows[0].role_id : null;
+    const existingAssigned: string[] = existing.rows.length > 0 && Array.isArray(existing.rows[0].assigned_role_ids)
+      ? existing.rows[0].assigned_role_ids
+      : (roleId ? [roleId] : []);
+
     let dynamicRoles: string[] = [];
     if (normalizedRoles.length > 0) {
       const roleResult = await this.db.query(
-        'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
+        'SELECT id, name, system_role FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
         [tenantId, normalizedRoles]
       );
       if (roleResult.rows.length > 0) {
         if (!roleId) roleId = roleResult.rows[0].id;
-        dynamicRoles = Array.from(new Set(roleResult.rows.map(r => r.name)));
+        roleResult.rows.forEach(r => {
+          if (r.name) dynamicRoles.push(r.name);
+          if (r.system_role) dynamicRoles.push(r.system_role);
+        });
       }
     }
+
+    // ALWAYS also load roles from database role_id and assigned_role_ids
+    const allRoleIds = Array.from(new Set([roleId, ...existingAssigned])).filter(Boolean);
+    if (allRoleIds.length > 0) {
+      const dbRolesRes = await this.db.query(
+        'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
+        [allRoleIds]
+      );
+      dbRolesRes.rows.forEach(r => {
+        if (r.name) dynamicRoles.push(r.name);
+        if (r.system_role) dynamicRoles.push(r.system_role);
+      });
+    }
+
     if (dynamicRoles.length === 0 && normalizedRoles.length > 0) {
       dynamicRoles = normalizedRoles;
     }
@@ -1263,7 +1306,7 @@ export class AuthService implements OnModuleInit {
     const firstName = data.fullName ? data.fullName.trim().split(/\s+/)[0] : '';
     const lastName = data.fullName ? data.fullName.trim().split(/\s+/).slice(1).join(' ') : '';
     const fullName = data.fullName ? data.fullName.trim() : `${firstName} ${lastName}`.trim();
-    const assignedRoleIds = roleId ? [roleId] : [];
+    const assignedRoleIds = allRoleIds.length > 0 ? allRoleIds : (roleId ? [roleId] : []);
 
     let dbUser: any;
     if (existing.rows.length > 0) {
@@ -1294,19 +1337,21 @@ export class AuthService implements OnModuleInit {
 
     // Load custom role permissions dynamically across assigned role ID and all user roles
     let permissions: string[] = [];
+    const effectiveRoleIds = Array.from(new Set([dbUser.role_id, ...(dbUser.assigned_role_ids || [])])).filter(Boolean);
     const permsRes = await this.db.query(
       `SELECT DISTINCT rp.permission 
        FROM custom_roles cr
        JOIN role_permissions rp ON rp.role_id = cr.id
        WHERE (cr.tenant_id = $1 OR cr.tenant_id IS NULL) 
-         AND (cr.id = $2 OR UPPER(cr.name) = ANY($3) OR UPPER(cr.system_role) = ANY($3))`,
-      [dbUser.tenant_id || DEFAULT_TENANT_ID, dbUser.role_id || null, normalizedRoles]
+         AND (cr.id = ANY($2::uuid[]) OR UPPER(cr.name) = ANY($3) OR UPPER(cr.system_role) = ANY($3))`,
+      [dbUser.tenant_id || DEFAULT_TENANT_ID, effectiveRoleIds.length > 0 ? effectiveRoleIds : ['00000000-0000-0000-0000-000000000000'], normalizedRoles]
     );
     permissions = permsRes.rows.map(row => row.permission);
 
+    const uniqueRoles = Array.from(new Set(dynamicRoles));
     return {
       ...dbUser,
-      roles: dynamicRoles,
+      roles: uniqueRoles,
       permissions
     };
   }
@@ -1552,17 +1597,26 @@ export class AuthService implements OnModuleInit {
         u.assigned_role_ids.forEach((rid: string) => userRoleIds.add(rid));
       }
 
-      // Ingest branch_roles (supporting role IDs or role names)
+      // Ingest branch_roles and resolve to human-readable role names
+      const resolvedBranchRoles: Record<string, string[]> = {};
       if (u.branch_roles && typeof u.branch_roles === 'object') {
-        Object.values(u.branch_roles).forEach((bRoleList: any) => {
+        Object.entries(u.branch_roles).forEach(([bId, bRoleList]: [string, any]) => {
           if (Array.isArray(bRoleList)) {
+            const bNames: string[] = [];
             bRoleList.forEach((item: string) => {
               if (roleById[item]) {
                 userRoleIds.add(item);
+                bNames.push(roleById[item].name);
               } else if (roleByName[String(item).toUpperCase()]) {
                 userRoleIds.add(roleByName[String(item).toUpperCase()].id);
+                bNames.push(roleByName[String(item).toUpperCase()].name);
+              } else {
+                bNames.push(item);
               }
             });
+            if (bNames.length > 0) {
+              resolvedBranchRoles[bId] = bNames;
+            }
           }
         });
       }
@@ -1642,7 +1696,7 @@ export class AuthService implements OnModuleInit {
         podId: u.pod_id,
         branchId: u.branch_id,
         assignedBranchIds: u.assigned_branch_ids && u.assigned_branch_ids.length > 0 ? u.assigned_branch_ids : (u.branch_id ? [u.branch_id] : []),
-        branchRoles: u.branch_roles || {},
+        branchRoles: Object.keys(resolvedBranchRoles).length > 0 ? resolvedBranchRoles : (u.branch_roles || {}),
         branchName: u.branch_name || null,
         businessUnitId: u.business_unit_id,
         businessUnitName: u.business_unit_name || null,
@@ -1688,6 +1742,95 @@ export class AuthService implements OnModuleInit {
       [isActive, userId],
     );
     return { message: `User ${isActive ? 'activated' : 'deactivated'} successfully.` };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Delete user permanently (admin utility)
+  // ─────────────────────────────────────────────────────────────
+  async deleteKeycloakUser(email: string): Promise<boolean> {
+    try {
+      const adminToken = await this.getKeycloakAdminToken();
+      if (!adminToken) return false;
+
+      const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+      const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
+      const baseUrl = issuer.split('/realms/')[0];
+
+      const targetEndpoints = [
+        `${baseUrl}/admin/realms/${realm}/users`,
+        `${baseUrl.includes('localhost') ? baseUrl.replace('localhost', 'keycloak') : baseUrl.replace('keycloak', 'localhost')}/admin/realms/${realm}/users`,
+      ];
+
+      for (const url of targetEndpoints) {
+        try {
+          const searchUrl = `${url}?email=${encodeURIComponent(email)}`;
+          const searchRes = await fetch(searchUrl, {
+            headers: { Authorization: `Bearer ${adminToken}` },
+          });
+          if (searchRes.ok) {
+            const usersList = await searchRes.json();
+            if (Array.isArray(usersList) && usersList.length > 0) {
+              const kcUserId = usersList[0].id;
+              const deleteUrl = `${url}/${kcUserId}`;
+              const delRes = await fetch(deleteUrl, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${adminToken}` },
+              });
+              if (delRes.ok) {
+                this.logger.log(`Keycloak user ${email} deleted from realm ${realm}`);
+                return true;
+              }
+            }
+          }
+        } catch (err) {}
+      }
+      return false;
+    } catch (e: any) {
+      this.logger.warn(`Could not delete Keycloak user ${email}: ${e.message}`);
+      return false;
+    }
+  }
+
+  async deleteUser(userId: string, requester: any) {
+    if (userId === requester.dbId || userId === requester.keycloakId) {
+      throw new BadRequestException('You cannot delete your own account.');
+    }
+
+    const userRes = await this.db.query(
+      'SELECT id, email, tenant_id, full_name, is_active FROM users WHERE id = $1 LIMIT 1',
+      [userId]
+    );
+    if (userRes.rows.length === 0) {
+      throw new NotFoundException('User not found.');
+    }
+    const targetUser = userRes.rows[0];
+
+    const requesterRoles = requester.roles || [];
+    if (!requesterRoles.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
+      throw new ForbiddenException('You are not authorized to delete users in another company tenant.');
+    }
+
+    // Protect last admin in the tenant
+    await this.verifyLastAdminProtection(targetUser.tenant_id, userId, 'delete');
+
+    // 1. Reassign or nullify references to target user before deletion
+    await this.db.query('UPDATE users SET job_reviewer_id = NULL WHERE job_reviewer_id = $1', [userId]).catch(() => {});
+    await this.db.query('UPDATE branches SET branch_manager_id = NULL WHERE branch_manager_id = $1', [userId]).catch(() => {});
+    await this.db.query('UPDATE pods SET pod_head_id = NULL WHERE pod_head_id = $1', [userId]).catch(() => {});
+    await this.db.query('DELETE FROM user_invitations WHERE LOWER(email) = LOWER($1) AND tenant_id = $2', [targetUser.email, targetUser.tenant_id]).catch(() => {});
+
+    // 2. Delete the user from PostgreSQL users table
+    await this.db.query('DELETE FROM users WHERE id = $1', [userId]);
+
+    // 3. Remove user from Keycloak
+    this.deleteKeycloakUser(targetUser.email).catch((err) => {
+      this.logger.warn(`Keycloak delete error note for ${targetUser.email}: ${err.message}`);
+    });
+
+    return {
+      success: true,
+      message: `User ${targetUser.full_name} (${targetUser.email}) has been permanently deleted.`,
+    };
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1814,36 +1957,49 @@ export class AuthService implements OnModuleInit {
     }
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    const combinedRoleIds = new Set<string>();
+    const rawRoleIdentifiers = new Set<string>();
 
     if (dto.branchRoles !== undefined) {
       Object.values(branchRoles).forEach((rList: any) => {
         if (Array.isArray(rList)) {
-          rList.forEach((rid: string) => {
-            if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid);
+          rList.forEach((r: string) => {
+            if (r && typeof r === 'string') rawRoleIdentifiers.add(r.trim());
           });
         }
       });
-    } else {
-      if (user.role_id && uuidRegex.test(user.role_id)) combinedRoleIds.add(user.role_id);
-      if (Array.isArray(user.assigned_role_ids)) {
-        user.assigned_role_ids.forEach((rid: string) => {
-          if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid);
-        });
-      }
+    }
+    if (dto.roleId && typeof dto.roleId === 'string') rawRoleIdentifiers.add(dto.roleId.trim());
+    if (Array.isArray(dto.roles)) {
+      dto.roles.forEach((r: string) => {
+        if (r && typeof r === 'string') rawRoleIdentifiers.add(r.trim());
+      });
     }
 
-    if (dto.roleId && uuidRegex.test(dto.roleId)) {
-      combinedRoleIds.add(dto.roleId);
+    const combinedRoleIds = new Set<string>();
+    if (rawRoleIdentifiers.size > 0) {
+      const rawList = Array.from(rawRoleIdentifiers);
+      const matchedRolesRes = await this.db.query(
+        `SELECT id, name, system_role FROM custom_roles 
+         WHERE tenant_id = $1 AND (id::text = ANY($2) OR UPPER(name) = ANY($3) OR system_role = ANY($3))`,
+        [user.tenant_id, rawList, rawList.map(r => r.toUpperCase())]
+      );
+      matchedRolesRes.rows.forEach((r: any) => combinedRoleIds.add(r.id));
     }
 
-    let primaryRoleId = user.role_id;
+    if (user.role_id && uuidRegex.test(user.role_id)) combinedRoleIds.add(user.role_id);
+    if (Array.isArray(user.assigned_role_ids)) {
+      user.assigned_role_ids.forEach((rid: string) => {
+        if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid);
+      });
+    }
+
+    let primaryRoleId: string | null = null;
     if (dto.roleId && uuidRegex.test(dto.roleId)) {
       primaryRoleId = dto.roleId;
-    } else if (branchId && branchRoles[branchId] && Array.isArray(branchRoles[branchId]) && branchRoles[branchId].length > 0) {
-      primaryRoleId = branchRoles[branchId][0];
-    } else if (combinedRoleIds.size > 0 && (!primaryRoleId || !combinedRoleIds.has(primaryRoleId))) {
+    } else if (combinedRoleIds.size > 0) {
       primaryRoleId = Array.from(combinedRoleIds)[0];
+    } else if (user.role_id && uuidRegex.test(user.role_id)) {
+      primaryRoleId = user.role_id;
     }
 
     await this.db.query(
@@ -2626,34 +2782,25 @@ export class AuthService implements OnModuleInit {
 
     // Fetch target user details
     const userRes = await this.db.query(
-      'SELECT tenant_id, roles, role_id, assigned_role_ids, branch_roles FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT tenant_id, role_id, assigned_role_ids, branch_roles FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (userRes.rows.length === 0) {
       throw new NotFoundException('User not found.');
     }
     const targetUser = userRes.rows[0];
-    const targetUserRoles = Array.isArray(targetUser.roles) ? targetUser.roles : [];
-    const targetAssignedRoleIds = Array.isArray(targetUser.assigned_role_ids) ? targetUser.assigned_role_ids : [];
+    const targetAssignedRoleIds: string[] = Array.isArray(targetUser.assigned_role_ids) ? targetUser.assigned_role_ids : [];
     const targetBranchRoles = targetUser.branch_roles || {};
 
-    // Block modifying SUPER_ADMIN user roles unless requester is SUPER_ADMIN
-    if (targetUserRoles.includes('SUPER_ADMIN') && (!requesterRoles || !requesterRoles.includes('SUPER_ADMIN'))) {
-      throw new ForbiddenException('You are not authorized to modify roles of a SUPER_ADMIN.');
-    }
-
-    // Determine final combined roles array
-    let finalRoles: string[];
+    // Determine final assigned role IDs array
     let finalAssignedRoleIds: string[];
     let finalBranchRoles: any;
 
     if (append) {
-      finalRoles = [...targetUserRoles];
       finalAssignedRoleIds = [...targetAssignedRoleIds];
       finalBranchRoles = { ...targetBranchRoles };
       
       for (const r of newRolesData) {
-        if (!finalRoles.includes(r.name)) finalRoles.push(r.name);
         if (!finalAssignedRoleIds.includes(r.id)) finalAssignedRoleIds.push(r.id);
         if (r.branch_id) {
           const bList = Array.isArray(finalBranchRoles[r.branch_id]) ? finalBranchRoles[r.branch_id] : [];
@@ -2661,7 +2808,6 @@ export class AuthService implements OnModuleInit {
         }
       }
     } else {
-      finalRoles = newRoleNames;
       finalAssignedRoleIds = newRolesData.map(r => r.id);
       finalBranchRoles = {};
       for (const r of newRolesData) {
@@ -2673,20 +2819,20 @@ export class AuthService implements OnModuleInit {
     }
 
     // Demoting check: if new roles do not contain ADMIN, protect last admin lockout
-    const isNewAdmin = finalRoles.some(r => r.toUpperCase() === 'ADMIN');
+    const isNewAdmin = newRolesData.some(r => r.system_role === 'ADMIN' || (r.name && r.name.toUpperCase() === 'ADMIN'));
     if (!isNewAdmin) {
       await this.verifyLastAdminProtection(tenantId, userId, 'demote');
     }
 
-    // Update user: link primary role_id (first item) and synchronize roles array
+    // Update user: link primary role_id (first item) and assigned_role_ids array
     await this.db.query(
       `UPDATE users 
-       SET role_id = $1, roles = $2, assigned_role_ids = $3, branch_roles = $4, updated_at = NOW() 
-       WHERE id = $5 AND tenant_id = $6`,
-      [roleIds[0] || targetUser.role_id, finalRoles, finalAssignedRoleIds, JSON.stringify(finalBranchRoles), userId, tenantId]
+       SET role_id = $1, assigned_role_ids = $2::uuid[], branch_roles = $3, updated_at = NOW() 
+       WHERE id = $4 AND tenant_id = $5`,
+      [roleIds[0] || targetUser.role_id, finalAssignedRoleIds, JSON.stringify(finalBranchRoles), userId, tenantId]
     );
 
-    return { message: 'User roles assigned successfully.', roles: finalRoles };
+    return { message: 'User roles assigned successfully.', roles: newRoleNames };
   }
 
   async batchAssignUsersToRole(tenantId: string, roleId: string, userIds: string[], requesterRoles: string[]) {
@@ -2706,22 +2852,19 @@ export class AuthService implements OnModuleInit {
     let assignedCount = 0;
     for (const userId of userIds) {
       const uRes = await this.db.query(
-        'SELECT id, roles, role_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        'SELECT id, role_id, assigned_role_ids FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [userId, tenantId]
       );
       if (uRes.rows.length === 0) continue;
       const user = uRes.rows[0];
-      const currentRoles: string[] = user.roles || [];
-
-      // Add targetRole.name if not present
-      const hasRole = currentRoles.some(r => r.toUpperCase() === targetRole.name.toUpperCase());
-      const updatedRoles = hasRole ? currentRoles : [...currentRoles, targetRole.name];
+      const currentAssigned: string[] = Array.isArray(user.assigned_role_ids) ? user.assigned_role_ids : [];
+      const updatedAssigned = currentAssigned.includes(targetRole.id) ? currentAssigned : [...currentAssigned, targetRole.id];
 
       await this.db.query(
         `UPDATE users 
-         SET role_id = $1, roles = $2, updated_at = NOW() 
+         SET role_id = COALESCE(role_id, $1), assigned_role_ids = $2::uuid[], updated_at = NOW() 
          WHERE id = $3 AND tenant_id = $4`,
-        [targetRole.id, updatedRoles, userId, tenantId]
+        [targetRole.id, updatedAssigned, userId, tenantId]
       );
       assignedCount++;
     }
@@ -2740,41 +2883,37 @@ export class AuthService implements OnModuleInit {
     const role = roleRes.rows[0];
 
     const uRes = await this.db.query(
-      'SELECT id, roles, role_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, role_id, assigned_role_ids FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (uRes.rows.length === 0) {
       throw new NotFoundException('User not found.');
     }
     const user = uRes.rows[0];
-    const currentRoles: string[] = user.roles || [];
-
-    // Filter out this role name
-    let remainingRoles = currentRoles.filter(r => r.toUpperCase() !== role.name.toUpperCase());
-
-    // If no roles remain, fallback to RECRUITER
-    if (remainingRoles.length === 0) {
-      remainingRoles = ['RECRUITER'];
-    }
+    const currentAssigned: string[] = Array.isArray(user.assigned_role_ids) ? user.assigned_role_ids : [];
+    const remainingAssigned = currentAssigned.filter(rId => rId !== roleId);
 
     // Find next valid custom role ID if current role_id was this role
-    let nextRoleId = user.role_id === role.id ? null : user.role_id;
-    if (!nextRoleId && remainingRoles.length > 0) {
-      const nextRoleRes = await this.db.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR UPPER(name) = UPPER($2)) LIMIT 1',
-        [tenantId, remainingRoles[0]]
+    let nextRoleId = user.role_id === role.id ? (remainingAssigned[0] || null) : user.role_id;
+    if (!nextRoleId) {
+      const defaultRoleRes = await this.db.query(
+        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND system_role = $2 LIMIT 1',
+        [tenantId, 'RECRUITER']
       );
-      nextRoleId = nextRoleRes.rows[0]?.id || null;
+      nextRoleId = defaultRoleRes.rows[0]?.id || null;
+      if (nextRoleId && !remainingAssigned.includes(nextRoleId)) {
+        remainingAssigned.push(nextRoleId);
+      }
     }
 
     await this.db.query(
       `UPDATE users 
-       SET role_id = $1, roles = $2, updated_at = NOW() 
+       SET role_id = $1, assigned_role_ids = $2::uuid[], updated_at = NOW() 
        WHERE id = $3 AND tenant_id = $4`,
-      [nextRoleId, remainingRoles, userId, tenantId]
+      [nextRoleId, remainingAssigned, userId, tenantId]
     );
 
-    return { message: `Removed user from role "${role.name}".`, remainingRoles };
+    return { message: `Removed user from role "${role.name}".`, remainingAssigned };
   }
 
   listAllPermissions() {
@@ -3248,7 +3387,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   // Helpers: Protect last active administrator lockout
   // ─────────────────────────────────────────────────────────────
-  private async verifyLastAdminProtection(tenantId: string, targetUserId: string, action: 'demote' | 'deactivate') {
+  private async verifyLastAdminProtection(tenantId: string, targetUserId: string, action: 'demote' | 'deactivate' | 'delete') {
     // 1. Check if target user currently has the ADMIN role
     const userRes = await this.db.query(
       `SELECT u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role, u.is_active, u.is_approved 
@@ -4271,12 +4410,28 @@ export class AuthService implements OnModuleInit {
     let dbTenantId: string | null = null;
     if (email || sub) {
       const userRes = await this.db.query(
-        `SELECT tenant_id, roles FROM users WHERE email = $1 OR keycloak_id = $2 OR id::text = $3 LIMIT 1`,
+        `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role
+         FROM users u
+         LEFT JOIN custom_roles cr ON cr.id = u.role_id
+         WHERE u.email = $1 OR u.keycloak_id = $2 OR u.id::text = $3 LIMIT 1`,
         [email, sub, sub]
       );
       if (userRes.rows.length > 0) {
-        dbRoles = userRes.rows[0].roles || [];
-        dbTenantId = userRes.rows[0].tenant_id || null;
+        const uRow = userRes.rows[0];
+        dbTenantId = uRow.tenant_id || null;
+        if (uRow.role_name) dbRoles.push(uRow.role_name);
+        if (uRow.system_role) dbRoles.push(uRow.system_role);
+
+        if (Array.isArray(uRow.assigned_role_ids) && uRow.assigned_role_ids.length > 0) {
+          const extraRolesRes = await this.db.query(
+            `SELECT name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])`,
+            [uRow.assigned_role_ids]
+          );
+          extraRolesRes.rows.forEach((r: any) => {
+            if (r.name) dbRoles.push(r.name);
+            if (r.system_role) dbRoles.push(r.system_role);
+          });
+        }
       }
     }
 
@@ -4287,7 +4442,7 @@ export class AuthService implements OnModuleInit {
 
     const allRoles = Array.from(new Set([...jwtRoles, ...dbRoles])).map((r) => r.toUpperCase());
     const tenantId = dbTenantId || payload.tenantId || null;
-    const isAdmin = allRoles.includes('ADMIN') || allRoles.includes('SUPER_ADMIN');
+    const isAdmin = allRoles.includes('ADMIN') || allRoles.includes('SUPER_ADMIN') || allRoles.includes('TENANT_ADMIN') || allRoles.includes('BRANCH_ADMIN');
 
     return { roles: allRoles, tenantId, isAdmin };
   }

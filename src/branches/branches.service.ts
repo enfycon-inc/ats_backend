@@ -409,6 +409,7 @@ export class BranchesService {
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.role_id
        WHERE u.tenant_id = $1
+         AND u.is_active = true
          AND (
            u.branch_id = $2
            OR (u.assigned_branch_ids IS NOT NULL AND u.assigned_branch_ids::text LIKE '%' || $2 || '%')

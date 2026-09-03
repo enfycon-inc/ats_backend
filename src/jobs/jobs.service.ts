@@ -713,11 +713,12 @@ export class JobsService implements OnModuleInit {
       // Live Real-Time Role & Reviewer Notification Dispatch
       // ─────────────────────────────────────────────────────────────
       try {
+        const creatorUserId = await this.resolveUserUuid(createdByEmail, tenantId);
         const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, branchId);
 
         if (initialApprovalStatus === 'PENDING_APPROVAL') {
-          // 1. Reviewer Gate: Notify designated reviewer/approver
-          if (resolvedAssignedApproverId) {
+          // 1. Reviewer Gate: Notify designated reviewer/approver (if not self)
+          if (resolvedAssignedApproverId && resolvedAssignedApproverId !== creatorUserId) {
             await this.notifications.create(tenantId, resolvedAssignedApproverId, {
               type: 'JOB_PENDING_APPROVAL',
               title: 'Job Requisition Pending Approval',
@@ -732,8 +733,8 @@ export class JobsService implements OnModuleInit {
             });
           }
 
-          // 2. Also notify Delivery Head(s) of pending requisition in their branch
-          const dhNotifTargets = deliveryHeadIds.filter(id => id !== resolvedAssignedApproverId);
+          // 2. Also notify Delivery Head(s) of pending requisition in their branch (exclude creator and assigned approver)
+          const dhNotifTargets = deliveryHeadIds.filter(id => id !== resolvedAssignedApproverId && id !== creatorUserId);
           if (dhNotifTargets.length > 0) {
             await this.notifications.createMany(tenantId, dhNotifTargets, {
               type: 'JOB_PENDING_APPROVAL',
@@ -750,8 +751,8 @@ export class JobsService implements OnModuleInit {
           }
         } else if (initialApprovalStatus === 'APPROVED') {
           // Direct Publish:
-          // 1. Notify Assigned Primary Recruiter
-          if (resolvedPrimaryRecruiterId) {
+          // 1. Notify Assigned Primary Recruiter (if not self)
+          if (resolvedPrimaryRecruiterId && resolvedPrimaryRecruiterId !== creatorUserId) {
             await this.notifications.create(tenantId, resolvedPrimaryRecruiterId, {
               type: 'JOB_NEW',
               title: `New Job Assigned: ${jobCode}`,
@@ -766,9 +767,11 @@ export class JobsService implements OnModuleInit {
             });
           }
 
-          // 2. Notify Delivery Head(s) & Reviewer
-          const dhTargets = new Set(deliveryHeadIds.filter(id => id !== resolvedPrimaryRecruiterId));
-          if (resolvedAssignedApproverId && resolvedAssignedApproverId !== resolvedPrimaryRecruiterId) {
+          // 2. Notify Delivery Head(s) & Reviewer (excluding creator and assigned recruiter)
+          const dhTargets = new Set(
+            deliveryHeadIds.filter(id => id !== resolvedPrimaryRecruiterId && id !== creatorUserId)
+          );
+          if (resolvedAssignedApproverId && resolvedAssignedApproverId !== resolvedPrimaryRecruiterId && resolvedAssignedApproverId !== creatorUserId) {
             dhTargets.add(resolvedAssignedApproverId);
           }
           if (dhTargets.size > 0) {
@@ -787,9 +790,14 @@ export class JobsService implements OnModuleInit {
             this.logger.log(`Dispatched JOB_NEW notification to ${dhTargets.size} Delivery Head(s)/Reviewer(s)`);
           }
 
-          // 3. Notify Pod members or branch recruiters
+          // 3. Notify Pod members or branch recruiters (excluding creator, assigned recruiter, and DHs)
           const teamUserIds = new Set<string>();
-          if (resolvedRecruitmentManagerId && resolvedRecruitmentManagerId !== resolvedPrimaryRecruiterId && !dhTargets.has(resolvedRecruitmentManagerId)) {
+          if (
+            resolvedRecruitmentManagerId &&
+            resolvedRecruitmentManagerId !== resolvedPrimaryRecruiterId &&
+            resolvedRecruitmentManagerId !== creatorUserId &&
+            !dhTargets.has(resolvedRecruitmentManagerId)
+          ) {
             teamUserIds.add(resolvedRecruitmentManagerId);
           }
 
@@ -799,7 +807,7 @@ export class JobsService implements OnModuleInit {
               [assignedPodId, tenantId]
             );
             podUsersRes.rows.forEach((r: any) => {
-              if (r.id !== resolvedPrimaryRecruiterId && !dhTargets.has(r.id)) {
+              if (r.id !== resolvedPrimaryRecruiterId && r.id !== creatorUserId && !dhTargets.has(r.id)) {
                 teamUserIds.add(r.id);
               }
             });
@@ -811,7 +819,7 @@ export class JobsService implements OnModuleInit {
                 [tenantId, branchId]
               );
               branchUsersRes.rows.forEach((r: any) => {
-                if (r.id !== resolvedPrimaryRecruiterId && !dhTargets.has(r.id)) {
+                if (r.id !== resolvedPrimaryRecruiterId && r.id !== creatorUserId && !dhTargets.has(r.id)) {
                   teamUserIds.add(r.id);
                 }
               });

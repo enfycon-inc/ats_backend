@@ -28,6 +28,15 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Maps userId / userEmail -> Set of active socket IDs
   private userSockets = new Map<string, Set<string>>();
 
+  private broadcastOnlineUsers() {
+    try {
+      const onlineKeys = Array.from(this.userSockets.keys());
+      this.server?.emit('online_users_list', onlineKeys);
+    } catch (e) {
+      this.logger.error('Failed to broadcast online users list', e);
+    }
+  }
+
   handleConnection(client: Socket) {
     const userId = (client.handshake.auth?.userId || client.handshake.query?.userId) as string;
     const userEmail = (client.handshake.auth?.email || client.handshake.query?.email) as string;
@@ -51,6 +60,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     this.logger.log(`[WS] Client connected: ${client.id}`);
+    this.broadcastOnlineUsers();
   }
 
   handleDisconnect(client: Socket) {
@@ -78,11 +88,17 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     this.logger.log(`[WS] Client disconnected: ${client.id}`);
+    this.broadcastOnlineUsers();
   }
 
   @SubscribeMessage('ping')
   handlePing(@ConnectedSocket() client: Socket) {
     client.emit('pong', { time: new Date().toISOString() });
+  }
+
+  @SubscribeMessage('get_online_users')
+  handleGetOnlineUsers(@ConnectedSocket() client: Socket) {
+    client.emit('online_users_list', Array.from(this.userSockets.keys()));
   }
 
   /**
@@ -104,15 +120,20 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     } catch {}
 
-    let sent = false;
+    const targetSocketIds = new Set<string>();
     for (const key of targetKeys) {
       const sockets = this.userSockets.get(key);
       if (sockets && sockets.size > 0) {
         for (const socketId of sockets) {
-          this.server.to(socketId).emit(event, payload);
-          sent = true;
+          targetSocketIds.add(socketId);
         }
       }
+    }
+
+    let sent = false;
+    for (const socketId of targetSocketIds) {
+      this.server?.to(socketId).emit(event, payload);
+      sent = true;
     }
 
     if (!sent) {
@@ -124,10 +145,9 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * Broadcast an event to multiple user IDs or emails.
    */
   async sendToUsers(userIds: string[], event: string, payload: any) {
-    for (const id of userIds) {
-      if (id) {
-        await this.sendToUser(id, event, payload);
-      }
+    const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+    for (const id of uniqueUserIds) {
+      await this.sendToUser(id, event, payload);
     }
   }
 
