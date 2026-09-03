@@ -17,6 +17,7 @@ import { AuditModule } from './audit/audit.module';
 import { EventsModule } from './events/events.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DiceModule } from './integrations/dice/dice.module';
+import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { DiceModule } from './integrations/dice/dice.module';
       },
     }),
     DatabaseModule,
+    PrismaModule,
     AuditModule,
     AuthModule,
     EventsModule,

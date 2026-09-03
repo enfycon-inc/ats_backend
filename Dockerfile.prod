@@ -8,6 +8,9 @@ RUN npm install
 
 COPY . .
 
+# Generate Prisma client from schema
+RUN npx prisma generate
+
 RUN npm run build
 
 # ─── Stage 2: Production ────────────────────────────────────────────
@@ -20,9 +23,16 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm install --omit=dev
 
+# Copy Prisma schema and generated client
+COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=build /app/node_modules/@prisma ./node_modules/@prisma
+
 COPY --from=build /app/dist ./dist
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
+# Run migrations then start the app
+CMD ["sh", "-c", "npx prisma migrate deploy && if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
+
 
