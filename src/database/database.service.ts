@@ -30,7 +30,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log('Initializing PostgreSQL connection pool...');
-    
+
     this.pool = new Pool({
       connectionString,
       max: 10,
@@ -64,7 +64,7 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
    */
   private async ensureTablesExist() {
     this.logger.log('Executing database schema checks for tenants, jobs, and recruiter_submissions...');
-    
+
     const ddl = `
       -- 1. Create tenants table
       CREATE TABLE IF NOT EXISTS tenants (
