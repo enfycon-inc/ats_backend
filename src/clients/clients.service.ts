@@ -1,22 +1,102 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class ClientsService {
   private readonly logger = new Logger(ClientsService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
+
+  private formatClient(
+    client: any,
+    extra?: {
+      primaryOwnerName?: string;
+      branchName?: string;
+      activeJobsCount?: number;
+      associatedJobs?: any[];
+    },
+  ) {
+    if (!client) return null;
+
+    return {
+      ...client,
+      primaryOwner: extra?.primaryOwnerName || client.primaryOwner || 'N/A',
+      tenant_id: client.tenantId,
+      client_code: client.clientCode,
+      client_name: client.clientName,
+      contact_number: client.contactNumber,
+      website: client.website,
+      industry: client.industry,
+      state: client.state,
+      city: client.city,
+      status: client.status,
+      category: client.category,
+      primary_owner: extra?.primaryOwnerName || client.primaryOwner || 'N/A',
+      business_unit: client.businessUnit,
+      ownership: client.ownership,
+      display_on_job_posting: client.displayOnJobPosting,
+      created_by: client.createdBy,
+      federal_id: client.federalId,
+      email_id: client.emailId,
+      fax: client.fax,
+      payment_terms: client.paymentTerms,
+      address: client.address,
+      client_lead: client.clientLead,
+      postal_code: client.postalCode,
+      country: client.country,
+      practice: client.practice,
+      required_documents: client.requiredDocuments,
+      tag: client.tag,
+      client_short_name: client.clientShortName,
+      geopolitical_zone: client.geopoliticalZone,
+      primary_business_unit: client.primaryBusinessUnit,
+      facility_management: client.facilityManagement,
+      modified_by: client.modifiedBy,
+      about_company: client.aboutCompany,
+      stop_notifications: client.stopNotifications,
+      market: client.market,
+      end_client_name: client.endClientName,
+      is_same_as_primary: client.isSameAsPrimary,
+      contact_person: client.contactPerson,
+      contact_designation: client.contactDesignation,
+      gstin: client.gstin,
+      pan_number: client.panNumber,
+      currency: client.currency,
+      tier_rating: client.tierRating,
+      credit_check_status: client.creditCheckStatus,
+      fillability_score: client.fillabilityScore,
+      vetting_notes: client.vettingNotes,
+      onboarding_status: client.onboardingStatus,
+      msa_signed: client.msaSigned,
+      sow_executed: client.sowExecuted,
+      coi_received: client.coiReceived,
+      vendor_portal_created: client.vendorPortalCreated,
+      approval_status: client.approvalStatus,
+      assigned_approver_id: client.assignedApproverId,
+      approved_by: client.approvedBy,
+      approved_at: client.approvedAt,
+      rejection_reason: client.rejectionReason,
+      created_at: client.createdAt,
+      updated_at: client.updatedAt,
+      deleted_at: client.deletedAt,
+      ...(extra?.activeJobsCount !== undefined ? { active_jobs_count: extra.activeJobsCount } : {}),
+      ...(extra?.associatedJobs !== undefined ? { associated_jobs: extra.associatedJobs } : {}),
+      ...(extra?.branchName !== undefined ? { branch_name: extra.branchName } : {}),
+    };
+  }
 
   async createClient(dto: any, tenantId: string, createdBy: string) {
     this.logger.log(`Creating client for tenant ${tenantId}`);
 
     // Fetch tenant details first
-    const tenantRes = await this.db.query('SELECT prefix_code, name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
-    const tenant = tenantRes.rows[0];
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { prefixCode: true, name: true, domain: true },
+    });
 
     let clientCode = dto.client_code;
     if (!clientCode) {
-      let prefix = tenant?.prefix_code;
+      let prefix = tenant?.prefixCode;
       if (!prefix) {
         const rawName = tenant?.name || '';
         const cleanName = rawName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
@@ -30,23 +110,32 @@ export class ClientsService {
       }
 
       // Atomic counter increment
-      const counterRes = await this.db.query(`
-        INSERT INTO tenant_counters (tenant_id, entity_type, current_value)
-        VALUES ($1, 'client', 1)
-        ON CONFLICT (tenant_id, entity_type) 
-        DO UPDATE SET current_value = tenant_counters.current_value + 1
-        RETURNING current_value
-      `, [tenantId]);
-      
-      const seqNumber = counterRes.rows[0].current_value;
+      const counter = await this.prisma.tenantCounters.upsert({
+        where: {
+          tenantId_entityType: {
+            tenantId,
+            entityType: 'client',
+          },
+        },
+        update: {
+          currentValue: { increment: 1 },
+        },
+        create: {
+          tenantId,
+          entityType: 'client',
+          currentValue: 1,
+        },
+      });
+
+      const seqNumber = counter.currentValue;
       const paddedSeq = String(seqNumber).padStart(5, '0');
-      
       clientCode = `${prefix}-CL-${paddedSeq}`;
     }
 
-    const endClientName = dto.is_same_as_primary !== false
-      ? (dto.end_client_name || dto.client_name)
-      : (dto.end_client_name || dto.client_name);
+    const endClientName =
+      dto.is_same_as_primary !== false
+        ? dto.end_client_name || dto.client_name
+        : dto.end_client_name || dto.client_name;
 
     // Resolve creator permissions and reviewer for client approval gate
     let initialStatus = 'Active';
@@ -56,228 +145,303 @@ export class ClientsService {
     let approvedAt: Date | null = new Date();
 
     if (createdBy && createdBy !== 'System') {
-      const creatorRes = await this.db.query(
-        `SELECT u.id, u.job_reviewer_id, u.role_id, u.full_name, u.email,
-                COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
-         FROM users u
-         LEFT JOIN custom_roles cr ON (
-           (u.role_id IS NOT NULL AND cr.id = u.role_id)
-           OR (u.assigned_role_ids IS NOT NULL AND cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-         )
-         LEFT JOIN role_permissions rp ON cr.id = rp.role_id
-         WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
-         GROUP BY u.id, u.job_reviewer_id, u.role_id, u.full_name, u.email
-         LIMIT 1`,
-        [createdBy, tenantId]
-      ).catch(() => ({ rows: [] }));
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(createdBy);
+      try {
+        const creator = await this.prisma.user.findFirst({
+          where: {
+            tenantId,
+            OR: isUuid ? [{ id: createdBy }, { email: createdBy }] : [{ email: createdBy }],
+          },
+          select: {
+            id: true,
+            jobReviewerId: true,
+            roleId: true,
+            assignedRoleIds: true,
+            fullName: true,
+            email: true,
+          },
+        });
 
-      if (creatorRes.rows.length > 0) {
-        const cRow = creatorRes.rows[0];
-        const perms: string[] = Array.isArray(cRow.permissions) ? cRow.permissions : [];
-        
-        // Direct Add clearance: Strictly honors granular permissions ('client:direct_add', 'client:approve', 'tenant:settings', 'tenant:manage')
-        // Unchecking 'client:direct_add' in the permissions matrix will enforce 'Pending Approval'.
-        const hasDirectAddPerm = 
-          perms.includes('client:direct_add') || 
-          perms.includes('client:approve') || 
-          perms.includes('tenant:settings') || 
-          perms.includes('tenant:manage');
+        if (creator) {
+          let roleIds: string[] = [];
+          if (creator.roleId) roleIds.push(creator.roleId);
+          if (creator.assignedRoleIds && creator.assignedRoleIds.length > 0) {
+            roleIds.push(...creator.assignedRoleIds);
+          }
+          roleIds = [...new Set(roleIds)];
 
-        if (!hasDirectAddPerm) {
-          initialStatus = 'Pending Approval';
-          approvalStatus = 'PENDING_APPROVAL';
-          assignedApproverId = cRow.job_reviewer_id || null;
-          approvedBy = null;
-          approvedAt = null;
-        } else {
-          initialStatus = 'Active';
-          approvalStatus = 'APPROVED';
-          approvedBy = cRow.full_name || cRow.email || 'System';
-          approvedAt = new Date();
+          let perms: string[] = [];
+          if (roleIds.length > 0) {
+            const rolePerms = await this.prisma.rolePermission.findMany({
+              where: { roleId: { in: roleIds } },
+              select: { permission: true },
+            });
+            perms = rolePerms.map((rp) => rp.permission);
+          }
+
+          const hasDirectAddPerm =
+            perms.includes('client:direct_add') ||
+            perms.includes('client:approve') ||
+            perms.includes('tenant:settings') ||
+            perms.includes('tenant:manage');
+
+          if (!hasDirectAddPerm) {
+            initialStatus = 'Pending Approval';
+            approvalStatus = 'PENDING_APPROVAL';
+            assignedApproverId = creator.jobReviewerId || null;
+            approvedBy = null;
+            approvedAt = null;
+          } else {
+            initialStatus = 'Active';
+            approvalStatus = 'APPROVED';
+            approvedBy = creator.fullName || creator.email || 'System';
+            approvedAt = new Date();
+          }
         }
+      } catch (err) {
+        this.logger.warn(`Could not resolve creator permissions for ${createdBy}: ${err}`);
       }
     }
 
-    const res = await this.db.query(
-      `INSERT INTO clients (
-        tenant_id, client_code, client_name, contact_number, website, industry,
-        state, city, status, category, primary_owner, business_unit, ownership,
-        display_on_job_posting, created_by, federal_id, email_id, fax,
-        payment_terms, address, client_lead, postal_code, country, practice,
-        required_documents, tag, client_short_name, geopolitical_zone,
-        primary_business_unit, facility_management, modified_by, about_company, stop_notifications,
-        market, end_client_name, is_same_as_primary, contact_person, contact_designation,
-        gstin, pan_number, currency, tier_rating, credit_check_status, fillability_score,
-        vetting_notes, onboarding_status, msa_signed, sow_executed, coi_received, vendor_portal_created,
-        approval_status, assigned_approver_id, approved_by, approved_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18,
-        $19, $20, $21, $22, $23, $24,
-        $25, $26, $27, $28,
-        $29, $30, $31, $32, $33,
-        $34, $35, $36, $37, $38,
-        $39, $40, $41, $42, $43, $44,
-        $45, $46, $47, $48, $49, $50,
-        $51, $52, $53, $54
-      ) RETURNING *`,
-      [
+    const created = await this.prisma.client.create({
+      data: {
         tenantId,
         clientCode,
-        dto.client_name,
-        dto.contact_number,
-        dto.website,
-        dto.industry,
-        dto.state,
-        dto.city,
-        dto.status || initialStatus,
-        dto.category,
+        clientName: dto.client_name,
+        contactNumber: dto.contact_number,
+        website: dto.website,
+        industry: dto.industry,
+        state: dto.state,
+        city: dto.city,
+        status: dto.status || initialStatus,
+        category: dto.category,
+        primaryOwner: createdBy,
+        businessUnit: dto.business_unit || tenant?.name || 'Default',
+        ownership: dto.ownership,
+        displayOnJobPosting: dto.display_on_job_posting !== undefined ? dto.display_on_job_posting : true,
         createdBy,
-        dto.business_unit || tenant?.name || 'Default',
-        dto.ownership,
-        dto.display_on_job_posting !== undefined ? dto.display_on_job_posting : true,
-        createdBy,
-        dto.federal_id,
-        dto.email_id,
-        dto.fax,
-        dto.payment_terms || 'Net 30',
-        dto.address,
-        dto.client_lead || dto.contact_person,
-        dto.postal_code,
-        dto.country,
-        dto.practice,
-        dto.required_documents,
-        dto.tag,
-        dto.client_short_name,
-        dto.geopolitical_zone,
-        dto.primary_business_unit,
-        dto.facility_management,
-        createdBy,
-        dto.about_company,
-        dto.stop_notifications || false,
-        dto.market || 'US',
+        federalId: dto.federal_id,
+        emailId: dto.email_id,
+        fax: dto.fax,
+        paymentTerms: dto.payment_terms || 'Net 30',
+        address: dto.address,
+        clientLead: dto.client_lead || dto.contact_person,
+        postalCode: dto.postal_code,
+        country: dto.country,
+        practice: dto.practice,
+        requiredDocuments: dto.required_documents,
+        tag: dto.tag,
+        clientShortName: dto.client_short_name,
+        geopoliticalZone: dto.geopolitical_zone,
+        primaryBusinessUnit: dto.primary_business_unit,
+        facilityManagement: dto.facility_management,
+        modifiedBy: createdBy,
+        aboutCompany: dto.about_company,
+        stopNotifications: dto.stop_notifications || false,
+        market: dto.market || 'US',
         endClientName,
-        dto.is_same_as_primary !== undefined ? dto.is_same_as_primary : true,
-        dto.contact_person || dto.contact_name,
-        dto.contact_designation,
-        dto.gstin,
-        dto.pan_number,
-        dto.currency || (dto.market === 'INDIA' ? 'INR' : 'USD'),
-        dto.tier_rating || 'TIER_1',
-        dto.credit_check_status || 'APPROVED',
-        dto.fillability_score || 'HIGH',
-        dto.vetting_notes,
-        dto.onboarding_status || 'ACTIVE',
-        dto.msa_signed || false,
-        dto.sow_executed || false,
-        dto.coi_received || false,
-        dto.vendor_portal_created || false,
+        isSameAsPrimary: dto.is_same_as_primary !== undefined ? dto.is_same_as_primary : true,
+        contactPerson: dto.contact_person || dto.contact_name,
+        contactDesignation: dto.contact_designation,
+        gstin: dto.gstin,
+        panNumber: dto.pan_number,
+        currency: dto.currency || (dto.market === 'INDIA' ? 'INR' : 'USD'),
+        tierRating: dto.tier_rating || 'TIER_1',
+        creditCheckStatus: dto.credit_check_status || 'APPROVED',
+        fillabilityScore: dto.fillability_score || 'HIGH',
+        vettingNotes: dto.vetting_notes,
+        onboardingStatus: dto.onboarding_status || 'ACTIVE',
+        msaSigned: dto.msa_signed || false,
+        sowExecuted: dto.sow_executed || false,
+        coiReceived: dto.coi_received || false,
+        vendorPortalCreated: dto.vendor_portal_created || false,
         approvalStatus,
         assignedApproverId,
         approvedBy,
         approvedAt,
-      ]
-    );
-    return res.rows[0];
+      },
+    });
+
+    return this.formatClient(created);
   }
 
   async findAllClients(tenantId: string, user?: any, includeDeleted = false) {
-    let sql = `
-      SELECT 
-        c.*, 
-        po.full_name AS primary_owner_name,
-        (
-          SELECT COUNT(*) 
-          FROM jobs j 
-          WHERE j.tenant_id::text = c.tenant_id::text 
-            AND (
-              j.client_id::text = c.id::text 
-              OR j.end_client_id::text = c.id::text 
-              OR LOWER(j.client_name) = LOWER(c.client_name) 
-              OR LOWER(j.end_client_name) = LOWER(c.client_name)
-            )
-        ) AS active_jobs_count
-      FROM clients c
-      LEFT JOIN users po ON po.id::text = c.primary_owner
-      WHERE c.tenant_id::text = $1
-    `;
-
-    const params: any[] = [tenantId];
-
+    const where: any = { tenantId };
     if (!includeDeleted) {
-      sql += ` AND c.deleted_at IS NULL`;
+      where.deletedAt = null;
     }
 
-    sql += ' ORDER BY c.created_at DESC';
+    const [clients, jobs] = await Promise.all([
+      this.prisma.client.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.job.findMany({
+        where: { tenantId, deletedAt: null },
+        select: {
+          clientId: true,
+          endClientId: true,
+          clientName: true,
+          endClientName: true,
+        },
+      }),
+    ]);
 
-    const res = await this.db.query(sql, params);
-    return res.rows.map(row => ({
-      ...row,
-      primary_owner: row.primary_owner_name || row.primary_owner || 'N/A'
-    }));
-  }
+    // Resolve primary owner names in bulk
+    const ownerIds = [...new Set(clients.map((c) => c.primaryOwner).filter(Boolean) as string[])];
+    const isUuid = (str: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+    const uuidOwners = ownerIds.filter(isUuid);
+    const emailOwners = ownerIds.filter((o) => !isUuid(o));
 
-  async approveClient(id: string, tenantId: string, approvedBy: string) {
-    const res = await this.db.query(
-      `UPDATE clients 
-       SET status = 'Active', approval_status = 'APPROVED', approved_by = $1, approved_at = NOW(), rejection_reason = NULL, updated_at = NOW()
-       WHERE id::text = $2 AND tenant_id::text = $3 AND deleted_at IS NULL
-       RETURNING *`,
-      [approvedBy, id, tenantId]
-    );
-    if (res.rows.length === 0) {
-      throw new NotFoundException(`Client with ID ${id} not found`);
-    }
-    return res.rows[0];
-  }
+    const owners = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        OR: [
+          ...(uuidOwners.length > 0 ? [{ id: { in: uuidOwners } }] : []),
+          ...(emailOwners.length > 0 ? [{ email: { in: emailOwners } }] : []),
+        ],
+      },
+      select: { id: true, email: true, fullName: true },
+    });
 
-  async rejectClient(id: string, tenantId: string, rejectedBy: string, reason?: string) {
-    const res = await this.db.query(
-      `UPDATE clients 
-       SET status = 'Rejected', approval_status = 'REJECTED', approved_by = $1, approved_at = NOW(), rejection_reason = $2, updated_at = NOW()
-       WHERE id::text = $3 AND tenant_id::text = $4 AND deleted_at IS NULL
-       RETURNING *`,
-      [rejectedBy, reason || 'Rejected by Reviewer', id, tenantId]
-    );
-    if (res.rows.length === 0) {
-      throw new NotFoundException(`Client with ID ${id} not found`);
-    }
-    return res.rows[0];
+    const ownerMap = new Map<string, string>();
+    owners.forEach((u) => {
+      ownerMap.set(u.id, u.fullName);
+      ownerMap.set(u.email, u.fullName);
+    });
+
+    return clients.map((c) => {
+      const primaryOwnerName = c.primaryOwner ? ownerMap.get(c.primaryOwner) : undefined;
+      const cNameLower = c.clientName.toLowerCase();
+
+      const activeJobsCount = jobs.filter((j) => {
+        return (
+          j.clientId === c.id ||
+          j.endClientId === c.id ||
+          (j.clientName && j.clientName.toLowerCase() === cNameLower) ||
+          (j.endClientName && j.endClientName.toLowerCase() === cNameLower)
+        );
+      }).length;
+
+      return this.formatClient(c, {
+        primaryOwnerName,
+        activeJobsCount,
+      });
+    });
   }
 
   async findOneClient(id: string, tenantId: string) {
-    const res = await this.db.query(
-      `SELECT c.*, po.full_name AS primary_owner_name, b.name AS branch_name
-       FROM clients c
-       LEFT JOIN users po ON po.id::text = c.primary_owner
-       LEFT JOIN branches b ON b.id::text = c.branch_id::text
-       WHERE c.id::text = $1 AND c.tenant_id::text = $2 AND c.deleted_at IS NULL`,
-      [id, tenantId]
-    );
-    if (res.rows.length === 0) {
+    const client = await this.prisma.client.findFirst({
+      where: { id, tenantId, deletedAt: null },
+      include: {
+        branch: { select: { name: true } },
+      },
+    });
+
+    if (!client) {
       throw new NotFoundException(`Client with ID ${id} not found`);
     }
-    const row = res.rows[0];
+
+    let primaryOwnerName: string | undefined;
+    if (client.primaryOwner) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(client.primaryOwner);
+      const owner = await this.prisma.user.findFirst({
+        where: {
+          tenantId,
+          OR: isUuid ? [{ id: client.primaryOwner }, { email: client.primaryOwner }] : [{ email: client.primaryOwner }],
+        },
+        select: { fullName: true },
+      });
+      primaryOwnerName = owner?.fullName;
+    }
 
     // Fetch associated jobs
-    const jobsRes = await this.db.query(
-      `SELECT j.id, j.job_code, j.job_title, j.job_location, j.job_type, j.status, j.client_name, j.end_client_name, j.created_at
-       FROM jobs j
-       WHERE j.tenant_id::text = $1 
-         AND (j.client_id::text = $2 OR j.end_client_id::text = $2 OR LOWER(j.client_name) = LOWER($3) OR LOWER(j.end_client_name) = LOWER($3))
-       ORDER BY j.created_at DESC`,
-      [tenantId, id, row.client_name]
-    );
+    const jobs = await this.prisma.job.findMany({
+      where: {
+        tenantId,
+        OR: [
+          { clientId: id },
+          { endClientId: id },
+          { clientName: { equals: client.clientName, mode: 'insensitive' } },
+          { endClientName: { equals: client.clientName, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        jobCode: true,
+        jobTitle: true,
+        jobLocation: true,
+        jobType: true,
+        status: true,
+        clientName: true,
+        endClientName: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
-    return {
-      ...row,
-      primary_owner: row.primary_owner_name || row.primary_owner || 'N/A',
-      associated_jobs: jobsRes.rows || [],
-      active_jobs_count: jobsRes.rows.length
-    };
+    const formattedJobs = jobs.map((j) => ({
+      ...j,
+      job_code: j.jobCode,
+      job_title: j.jobTitle,
+      job_location: j.jobLocation,
+      job_type: j.jobType,
+      client_name: j.clientName,
+      end_client_name: j.endClientName,
+      created_at: j.createdAt,
+    }));
+
+    return this.formatClient(client, {
+      primaryOwnerName,
+      branchName: client.branch?.name,
+      activeJobsCount: formattedJobs.length,
+      associatedJobs: formattedJobs,
+    });
   }
 
+  async approveClient(id: string, tenantId: string, approvedBy: string) {
+    const existing = await this.prisma.client.findFirst({
+      where: { id, tenantId, deletedAt: null },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Client with ID ${id} not found`);
+    }
+
+    const updated = await this.prisma.client.update({
+      where: { id },
+      data: {
+        status: 'Active',
+        approvalStatus: 'APPROVED',
+        approvedBy,
+        approvedAt: new Date(),
+        rejectionReason: null,
+      },
+    });
+
+    return this.formatClient(updated);
+  }
+
+  async rejectClient(id: string, tenantId: string, rejectedBy: string, reason?: string) {
+    const existing = await this.prisma.client.findFirst({
+      where: { id, tenantId, deletedAt: null },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Client with ID ${id} not found`);
+    }
+
+    const updated = await this.prisma.client.update({
+      where: { id },
+      data: {
+        status: 'Rejected',
+        approvalStatus: 'REJECTED',
+        approvedBy: rejectedBy,
+        approvedAt: new Date(),
+        rejectionReason: reason || 'Rejected by Reviewer',
+      },
+    });
+
+    return this.formatClient(updated);
+  }
 
   async updateClient(id: string, dto: any, tenantId: string, modifiedBy: string, user?: any) {
     this.logger.log(`Updating client ${id} for tenant ${tenantId}`);
@@ -285,25 +449,28 @@ export class ClientsService {
     // Check ownership & permissions for client editing
     if (user) {
       const userPermissions: string[] = Array.isArray(user.permissions) ? user.permissions : [];
-      const canEditAll = 
-        userPermissions.includes('client:edit_all') || 
-        userPermissions.includes('client:approve') || 
-        userPermissions.includes('tenant:settings') || 
+      const canEditAll =
+        userPermissions.includes('client:edit_all') ||
+        userPermissions.includes('client:approve') ||
+        userPermissions.includes('tenant:settings') ||
         userPermissions.includes('tenant:manage');
 
       const canEditOwn = userPermissions.includes('client:edit');
 
       if (!canEditAll && canEditOwn) {
-        // Verify user is primary owner or creator of this client
-        const ownerCheck = await this.db.query(
-          `SELECT primary_owner, created_by FROM clients WHERE id::text = $1 AND tenant_id::text = $2`,
-          [id, tenantId]
-        );
-        if (ownerCheck.rows.length > 0) {
-          const client = ownerCheck.rows[0];
+        const client = await this.prisma.client.findFirst({
+          where: { id, tenantId },
+          select: { primaryOwner: true, createdBy: true },
+        });
+
+        if (client) {
           const userId = user.dbId || user.sub || user.id;
           const userEmail = user.email;
-          const isOwner = client.primary_owner === userId || client.primary_owner === userEmail || client.created_by === userId || client.created_by === userEmail;
+          const isOwner =
+            client.primaryOwner === userId ||
+            client.primaryOwner === userEmail ||
+            client.createdBy === userId ||
+            client.createdBy === userEmail;
           if (!isOwner) {
             throw new ForbiddenException('You can only edit your own assigned client accounts.');
           }
@@ -313,87 +480,119 @@ export class ClientsService {
       }
     }
 
-    // Extract allowed fields and construct dynamic query
-    const updates: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
+    const existing = await this.prisma.client.findFirst({
+      where: { id, tenantId, deletedAt: null },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Client with ID ${id} not found`);
+    }
 
+    const data: any = { modifiedBy };
+    const fieldMap: Record<string, string> = {
+      client_code: 'clientCode', clientCode: 'clientCode',
+      client_name: 'clientName', clientName: 'clientName',
+      contact_number: 'contactNumber', contactNumber: 'contactNumber',
+      website: 'website',
+      industry: 'industry',
+      state: 'state',
+      city: 'city',
+      status: 'status',
+      category: 'category',
+      primary_owner: 'primaryOwner', primaryOwner: 'primaryOwner',
+      business_unit: 'businessUnit', businessUnit: 'businessUnit',
+      ownership: 'ownership',
+      display_on_job_posting: 'displayOnJobPosting', displayOnJobPosting: 'displayOnJobPosting',
+      federal_id: 'federalId', federalId: 'federalId',
+      email_id: 'emailId', emailId: 'emailId',
+      fax: 'fax',
+      payment_terms: 'paymentTerms', paymentTerms: 'paymentTerms',
+      address: 'address',
+      client_lead: 'clientLead', clientLead: 'clientLead',
+      postal_code: 'postalCode', postalCode: 'postalCode',
+      country: 'country',
+      practice: 'practice',
+      required_documents: 'requiredDocuments', requiredDocuments: 'requiredDocuments',
+      tag: 'tag',
+      client_short_name: 'clientShortName', clientShortName: 'clientShortName',
+      geopolitical_zone: 'geopoliticalZone', geopoliticalZone: 'geopoliticalZone',
+      primary_business_unit: 'primaryBusinessUnit', primaryBusinessUnit: 'primaryBusinessUnit',
+      facility_management: 'facilityManagement', facilityManagement: 'facilityManagement',
+      market: 'market',
+      end_client_name: 'endClientName', endClientName: 'endClientName',
+      is_same_as_primary: 'isSameAsPrimary', isSameAsPrimary: 'isSameAsPrimary',
+      contact_person: 'contactPerson', contactPerson: 'contactPerson',
+      contact_designation: 'contactDesignation', contactDesignation: 'contactDesignation',
+      gstin: 'gstin',
+      pan_number: 'panNumber', panNumber: 'panNumber',
+      currency: 'currency',
+      tier_rating: 'tierRating', tierRating: 'tierRating',
+      credit_check_status: 'creditCheckStatus', creditCheckStatus: 'creditCheckStatus',
+      fillability_score: 'fillabilityScore', fillabilityScore: 'fillabilityScore',
+      vetting_notes: 'vettingNotes', vettingNotes: 'vettingNotes',
+      onboarding_status: 'onboardingStatus', onboardingStatus: 'onboardingStatus',
+      msa_signed: 'msaSigned', msaSigned: 'msaSigned',
+      sow_executed: 'sowExecuted', sowExecuted: 'sowExecuted',
+      coi_received: 'coiReceived', coiReceived: 'coiReceived',
+      vendor_portal_created: 'vendorPortalCreated', vendorPortalCreated: 'vendorPortalCreated',
+    };
 
-    // List of allowed column names to update
-    const allowedColumns = [
-      'client_code', 'client_name', 'contact_number', 'website', 'industry',
-      'state', 'city', 'status', 'category', 'primary_owner', 'business_unit', 'ownership',
-      'display_on_job_posting', 'federal_id', 'email_id', 'fax',
-      'payment_terms', 'address', 'client_lead', 'postal_code', 'country', 'practice',
-      'required_documents', 'tag', 'client_short_name', 'geopolitical_zone',
-      'primary_business_unit', 'facility_management',
-      'market', 'end_client_name', 'is_same_as_primary', 'contact_person', 'contact_designation',
-      'gstin', 'pan_number', 'currency', 'tier_rating', 'credit_check_status', 'fillability_score',
-      'vetting_notes', 'onboarding_status', 'msa_signed', 'sow_executed', 'coi_received', 'vendor_portal_created'
-    ];
-
-
-    for (const key of allowedColumns) {
+    let hasUpdates = false;
+    for (const [key, prismaField] of Object.entries(fieldMap)) {
       if (dto[key] !== undefined) {
-        updates.push(`"${key}" = $${paramIndex}`);
-        values.push(dto[key]);
-        paramIndex++;
+        data[prismaField] = dto[key];
+        hasUpdates = true;
       }
     }
 
-    if (updates.length === 0) {
-      return this.findOneClient(id, tenantId); // Nothing to update
+    if (!hasUpdates) {
+      return this.findOneClient(id, tenantId);
     }
 
-    updates.push(`modified_by = $${paramIndex}`);
-    values.push(modifiedBy);
-    paramIndex++;
+    await this.prisma.client.update({
+      where: { id },
+      data,
+    });
 
-    updates.push(`updated_at = NOW()`);
-
-    values.push(id);
-    const idIndex = paramIndex;
-    paramIndex++;
-
-    values.push(tenantId);
-    const tenantIndex = paramIndex;
-
-    const query = `
-      UPDATE clients
-      SET ${updates.join(', ')}
-      WHERE id::text = $${idIndex} AND tenant_id::text = $${tenantIndex} AND deleted_at IS NULL
-      RETURNING *
-    `;
-
-    const res = await this.db.query(query, values);
-    if (res.rows.length === 0) {
-      throw new NotFoundException(`Client with ID ${id} not found`);
-    }
-    return res.rows[0];
+    return this.findOneClient(id, tenantId);
   }
 
   async deleteClient(id: string, tenantId: string, modifiedBy?: string) {
     this.logger.log(`Soft deleting client ${id} for tenant ${tenantId}`);
-    const res = await this.db.query(
-      `UPDATE clients SET deleted_at = NOW(), modified_by = $3 WHERE id::text = $1 AND tenant_id::text = $2 AND deleted_at IS NULL RETURNING id`,
-      [id, tenantId, modifiedBy || 'System']
-    );
-    if (res.rows.length === 0) {
+    const existing = await this.prisma.client.findFirst({
+      where: { id, tenantId, deletedAt: null },
+    });
+    if (!existing) {
       throw new NotFoundException(`Client with ID ${id} not found or already deleted`);
     }
+
+    await this.prisma.client.update({
+      where: { id },
+      data: {
+        deletedAt: new Date(),
+        modifiedBy: modifiedBy || 'System',
+      },
+    });
     return true;
   }
 
   async restoreClient(id: string, tenantId: string, modifiedBy?: string) {
     this.logger.log(`Restoring client ${id} for tenant ${tenantId}`);
-    const res = await this.db.query(
-      `UPDATE clients SET deleted_at = NULL, modified_by = $3 WHERE id::text = $1 AND tenant_id::text = $2 AND deleted_at IS NOT NULL RETURNING *`,
-      [id, tenantId, modifiedBy || 'System']
-    );
-    if (res.rows.length === 0) {
+    const existing = await this.prisma.client.findFirst({
+      where: { id, tenantId, deletedAt: { not: null } },
+    });
+    if (!existing) {
       throw new NotFoundException(`Client with ID ${id} not found or not deleted`);
     }
-    return res.rows[0];
+
+    const updated = await this.prisma.client.update({
+      where: { id },
+      data: {
+        deletedAt: null,
+        modifiedBy: modifiedBy || 'System',
+      },
+    });
+
+    return this.formatClient(updated);
   }
 
   async isClientApproved(clientNameOrId: string, tenantId: string): Promise<{ approved: boolean; status: string; clientName: string }> {
@@ -401,30 +600,34 @@ export class ClientsService {
       return { approved: true, status: 'Active', clientName: '' };
     }
     const lookup = clientNameOrId.trim();
-    const res = await this.db.query(
-      `SELECT id, client_name, status, approval_status FROM clients
-       WHERE (id::text = $1 OR LOWER(client_name) = LOWER($1) OR LOWER(client_code) = LOWER($1))
-         AND tenant_id::text = $2
-         AND deleted_at IS NULL
-       LIMIT 1`,
-      [lookup, tenantId]
-    );
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lookup);
 
-    if (res.rows.length === 0) {
+    const client = await this.prisma.client.findFirst({
+      where: {
+        tenantId,
+        deletedAt: null,
+        OR: [
+          ...(isUuid ? [{ id: lookup }] : []),
+          { clientName: { equals: lookup, mode: 'insensitive' } },
+          { clientCode: { equals: lookup, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true, clientName: true, status: true, approvalStatus: true },
+    });
+
+    if (!client) {
       return { approved: false, status: 'Not Found', clientName: lookup };
     }
 
-    const row = res.rows[0];
     const isApproved =
-      (row.approval_status === 'APPROVED' || !row.approval_status) &&
-      row.status !== 'Pending Approval' &&
-      row.status !== 'Rejected';
+      (client.approvalStatus === 'APPROVED' || !client.approvalStatus) &&
+      client.status !== 'Pending Approval' &&
+      client.status !== 'Rejected';
 
     return {
       approved: isApproved,
-      status: row.status || (row.approval_status === 'PENDING_APPROVAL' ? 'Pending Approval' : 'Active'),
-      clientName: row.client_name,
+      status: client.status || (client.approvalStatus === 'PENDING_APPROVAL' ? 'Pending Approval' : 'Active'),
+      clientName: client.clientName,
     };
   }
 }
-

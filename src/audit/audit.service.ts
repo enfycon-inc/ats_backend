@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export interface AuditLogOptions {
   tenantId?: string;
@@ -16,29 +16,27 @@ export interface AuditLogOptions {
 export class AuditService {
   private readonly logger = new Logger(AuditService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Records an audit log entry in the PostgreSQL `audit_logs` table.
+   * Records an audit log entry in the PostgreSQL `ats.audit_logs` table via Prisma.
    */
   async log(options: AuditLogOptions): Promise<void> {
     try {
-      await this.db.query(
-        `INSERT INTO audit_logs (tenant_id, actor_id, actor_email, action, target_type, target_id, details, ip_address)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [
-          options.tenantId || null,
-          options.actorId,
-          options.actorEmail || null,
-          options.action,
-          options.targetType || null,
-          options.targetId || null,
-          options.details ? JSON.stringify(options.details) : '{}',
-          options.ipAddress || null,
-        ]
-      );
+      await this.prisma.auditLog.create({
+        data: {
+          tenantId: options.tenantId || null,
+          actorId: options.actorId,
+          actorEmail: options.actorEmail || null,
+          action: options.action,
+          targetType: options.targetType || null,
+          targetId: options.targetId || null,
+          details: options.details ?? {},
+          ipAddress: options.ipAddress || null,
+        },
+      });
       this.logger.log(`[AUDIT] Action logged: ${options.action} by actor=${options.actorEmail || options.actorId} (Tenant: ${options.tenantId || 'GLOBAL'})`);
-    } catch (err) {
+    } catch (err: any) {
       this.logger.error(`[AUDIT ERROR] Failed to record audit log: ${err.message}`, err.stack);
     }
   }
@@ -47,16 +45,11 @@ export class AuditService {
    * Retrieves audit logs with pagination and filters for Super Admin inspection.
    */
   async listLogs(tenantId?: string, limit = 100, offset = 0) {
-    let sql = `SELECT * FROM audit_logs`;
-    const params: any[] = [];
-    if (tenantId) {
-      sql += ` WHERE tenant_id = $1`;
-      params.push(tenantId);
-    }
-    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
-
-    const res = await this.db.query(sql, params);
-    return res.rows;
+    return await this.prisma.auditLog.findMany({
+      where: tenantId ? { tenantId } : undefined,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+    });
   }
 }
