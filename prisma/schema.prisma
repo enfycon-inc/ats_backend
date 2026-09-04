@@ -759,6 +759,7 @@ model EmailAccount {
   campaigns        Campaign[]
   emailPreferences EmailPreference[]
 
+  @@unique([provider, emailAddress, tenantId])
   @@map("email_accounts")
   @@schema("mass_mail")
 }

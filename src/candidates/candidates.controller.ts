@@ -4,7 +4,7 @@ import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CandidatesService } from './candidates.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
 import { CandidateQueryDto } from './dtos/candidate-query.dto';
@@ -22,7 +22,7 @@ import { resolveBranchId } from '../auth/utils/branch-resolver';
 export class CandidatesController {
   constructor(
     private readonly candidatesService: CandidatesService,
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
     @InjectQueue('bulk_cv') private readonly bulkQueue: Queue,
   ) {}
 
@@ -325,13 +325,16 @@ export class CandidatesController {
     }
 
     // 1. Create bulk_uploads record
-    const batchRes = await this.db.query(
-      `INSERT INTO bulk_uploads (tenant_id, created_by, total_files, status)
-       VALUES ($1, $2, $3, 'processing')
-       RETURNING id`,
-      [activeTenantId, createdBy, files.length]
-    );
-    const bulkUploadId = batchRes.rows[0].id;
+    const batch = await this.prisma.bulkUpload.create({
+      data: {
+        tenantId: activeTenantId,
+        createdBy,
+        totalFiles: files.length,
+        status: 'processing',
+      },
+      select: { id: true },
+    });
+    const bulkUploadId = batch.id;
 
     // Create temp directory inside workspace cwd
     const fs = require('fs');
@@ -352,13 +355,15 @@ export class CandidatesController {
       fs.writeFileSync(tempFilePath, file.buffer);
 
       // Create tracking item in database
-      const itemRes = await this.db.query(
-        `INSERT INTO bulk_upload_items (bulk_upload_id, filename, status)
-         VALUES ($1, $2, 'queued')
-         RETURNING id`,
-        [bulkUploadId, file.originalname]
-      );
-      const itemId = itemRes.rows[0].id;
+      const item = await this.prisma.bulkUploadItem.create({
+        data: {
+          bulkUploadId,
+          filename: file.originalname,
+          status: 'queued',
+        },
+        select: { id: true },
+      });
+      const itemId = item.id;
 
       // Enqueue job in BullMQ
       await this.bulkQueue.add('parse_cv', {
@@ -384,14 +389,29 @@ export class CandidatesController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<any[]> {
     const activeTenantId = resolveTenantId(user, tenantId);
-    const res = await this.db.query(
-      `SELECT id, created_by, total_files, processed_files, failed_files, status, created_at
-       FROM bulk_uploads
-       WHERE tenant_id = $1
-       ORDER BY created_at DESC LIMIT 50`,
-      [activeTenantId]
-    );
-    return res.rows;
+    const batches = await this.prisma.bulkUpload.findMany({
+      where: { tenantId: activeTenantId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        createdBy: true,
+        totalFiles: true,
+        processedFiles: true,
+        failedFiles: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    return batches.map((b) => ({
+      id: b.id,
+      created_by: b.createdBy,
+      total_files: b.totalFiles,
+      processed_files: b.processedFiles,
+      failed_files: b.failedFiles,
+      status: b.status,
+      created_at: b.createdAt,
+    }));
   }
 
   @Get('bulk-uploads/:id')
@@ -407,28 +427,39 @@ export class CandidatesController {
   ): Promise<any> {
     const activeTenantId = resolveTenantId(user, tenantId);
     
-    const batchRes = await this.db.query(
-      `SELECT id, created_by, total_files, processed_files, failed_files, status, created_at
-       FROM bulk_uploads
-       WHERE id = $1 AND tenant_id = $2`,
-      [id, activeTenantId]
-    );
+    const batch = await this.prisma.bulkUpload.findFirst({
+      where: { id, tenantId: activeTenantId },
+      include: {
+        items: {
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
     
-    if (batchRes.rows.length === 0) {
+    if (!batch) {
       return { error: 'Batch not found.' };
     }
 
-    const itemsRes = await this.db.query(
-      `SELECT id, filename, status, error_message, candidate_id, candidate_name, candidate_email, created_at
-       FROM bulk_upload_items
-       WHERE bulk_upload_id = $1
-       ORDER BY created_at ASC`,
-      [id]
-    );
-
     return {
-      batch: batchRes.rows[0],
-      items: itemsRes.rows,
+      batch: {
+        id: batch.id,
+        created_by: batch.createdBy,
+        total_files: batch.totalFiles,
+        processed_files: batch.processedFiles,
+        failed_files: batch.failedFiles,
+        status: batch.status,
+        created_at: batch.createdAt,
+      },
+      items: batch.items.map((item) => ({
+        id: item.id,
+        filename: item.filename,
+        status: item.status,
+        error_message: item.errorMessage,
+        candidate_id: item.candidateId,
+        candidate_name: item.candidateName,
+        candidate_email: item.candidateEmail,
+        created_at: item.createdAt,
+      })),
     };
   }
 }

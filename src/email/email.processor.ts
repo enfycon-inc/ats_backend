@@ -2,7 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Processor('mass_mail')
 export class EmailProcessor extends WorkerHost {
@@ -10,7 +10,7 @@ export class EmailProcessor extends WorkerHost {
 
   constructor(
     private readonly emailService: EmailService,
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
   ) {
     super();
   }
@@ -21,8 +21,11 @@ export class EmailProcessor extends WorkerHost {
       
       try {
         // Check if recipient was cancelled
-        const statusRes = await this.db.query('SELECT status FROM mass_mail.recipients WHERE id = $1', [recipientId]);
-        if (statusRes.rows.length > 0 && statusRes.rows[0].status === 'Cancelled') {
+        const recipient = await this.prisma.recipients.findUnique({
+          where: { id: recipientId },
+          select: { status: true },
+        });
+        if (recipient && recipient.status === 'Cancelled') {
           return; // Silently skip cancelled jobs to avoid log flooding
         }
 
@@ -47,16 +50,16 @@ export class EmailProcessor extends WorkerHost {
         await this.emailService.sendMicrosoftEmail(accountId, personalizedSubject, personalizedBody, toEmail);
 
         // Update status to SENT
-        await this.db.query(
-          `UPDATE mass_mail.recipients SET status = 'Sent', sent_at = NOW() WHERE id = $1`,
-          [recipientId]
-        );
-      } catch (err) {
+        await this.prisma.recipients.update({
+          where: { id: recipientId },
+          data: { status: 'Sent', sentAt: new Date() },
+        });
+      } catch (err: any) {
         this.logger.error(`Failed to send email to ${toEmail}: ${err.message}`);
-        await this.db.query(
-          `UPDATE mass_mail.recipients SET status = 'Failed', sent_at = NOW() WHERE id = $1`,
-          [recipientId]
-        );
+        await this.prisma.recipients.update({
+          where: { id: recipientId },
+          data: { status: 'Failed', sentAt: new Date() },
+        });
         throw err;
       }
     }

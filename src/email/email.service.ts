@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 import * as nodemailer from 'nodemailer';
 import axios from 'axios';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -11,7 +11,7 @@ export class EmailService {
   private transporter: nodemailer.Transporter;
 
   constructor(
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
     @InjectQueue('mass_mail') private emailQueue: Queue,
   ) {
     this.transporter = nodemailer.createTransport({
@@ -29,24 +29,23 @@ export class EmailService {
     this.logger.log(`DTO: ${JSON.stringify({ ...dto, recipients: dto.recipients?.length + ' recipients' })}`);
     
     try {
-      // Create Campaign
-      this.logger.log(`Executing INSERT INTO mass_mail.campaigns...`);
-      const campRes = await this.db.query(
-        `INSERT INTO mass_mail.campaigns (tenant_id, name, subject, body_template, rate_per_minute, rate_per_hour, randomize_delay, email_account_id, status, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Processing', $9) RETURNING id`,
-        [
+      this.logger.log(`Executing campaign create...`);
+      const campaign = await this.prisma.campaign.create({
+        data: {
           tenantId,
-          dto.name || 'Untitled Campaign',
-          dto.subject,
-          dto.body,
-          dto.ratePerMinute || 30,
-          dto.ratePerHour || 500,
-          dto.randomizeDelay || false,
-          dto.accountId || null,
-          userId
-        ]
-      );
-      const campaignId = campRes.rows[0].id;
+          name: dto.name || 'Untitled Campaign',
+          subject: dto.subject,
+          bodyTemplate: dto.body,
+          ratePerMinute: dto.ratePerMinute || 30,
+          ratePerHour: dto.ratePerHour || 500,
+          randomizeDelay: dto.randomizeDelay || false,
+          emailAccountId: dto.accountId || null,
+          status: 'Processing',
+          createdBy: userId,
+        },
+        select: { id: true },
+      });
+      const campaignId = campaign.id;
       this.logger.log(`Campaign created with ID: ${campaignId}`);
 
       // Default delay calculation
@@ -56,21 +55,27 @@ export class EmailService {
       for (let i = 0; i < dto.recipients.length; i++) {
         const rec = dto.recipients[i];
         
-        const recRes = await this.db.query(
-          `INSERT INTO mass_mail.recipients (campaign_id, email, first_name, last_name, metadata, status)
-           VALUES ($1, $2, $3, $4, $5, 'Pending') RETURNING id`,
-          [campaignId, rec.email, rec.firstName, rec.lastName, rec.metadata || {}]
-        );
+        const recipient = await this.prisma.recipients.create({
+          data: {
+            campaignId,
+            email: rec.email,
+            firstName: rec.firstName,
+            lastName: rec.lastName,
+            metadata: rec.metadata || {},
+            status: 'Pending',
+          },
+          select: { id: true },
+        });
       
-      const recipientId = recRes.rows[0].id;
+        const recipientId = recipient.id;
 
-      let jitter = 0;
-      if (dto.randomizeDelay) {
-        // Adds up to 50% random jitter (positive or negative)
-        jitter = (Math.random() - 0.5) * baseDelayMs;
-      }
-      
-      currentDelay += Math.max(baseDelayMs + jitter, 1000); // At least 1 second apart
+        let jitter = 0;
+        if (dto.randomizeDelay) {
+          // Adds up to 50% random jitter (positive or negative)
+          jitter = (Math.random() - 0.5) * baseDelayMs;
+        }
+        
+        currentDelay += Math.max(baseDelayMs + jitter, 1000); // At least 1 second apart
 
         await this.emailQueue.add(
           'send_email',
@@ -91,21 +96,22 @@ export class EmailService {
 
       this.logger.log(`Successfully queued ${dto.recipients.length} jobs in Redis.`);
       return { success: true, message: `Campaign created and ${dto.recipients.length} emails queued.`, campaignId };
-    } catch (err) {
+    } catch (err: any) {
       this.logger.error(`Error in createCampaign: ${err.message}`, err.stack);
       throw err;
     }
   }
 
   async getCampaignStatus(campaignId: string) {
-    const res = await this.db.query(
-      `SELECT status, COUNT(*) as count FROM mass_mail.recipients WHERE campaign_id = $1 GROUP BY status`,
-      [campaignId]
-    );
+    const statusCounts = await this.prisma.recipients.groupBy({
+      by: ['status'],
+      where: { campaignId },
+      _count: { status: true },
+    });
     
     const stats = { total: 0, pending: 0, sent: 0, failed: 0 };
-    for (const row of res.rows) {
-      const count = parseInt(row.count, 10);
+    for (const row of statusCounts) {
+      const count = row._count.status;
       stats.total += count;
       if (row.status === 'Pending') stats.pending += count;
       if (row.status === 'Sent') stats.sent += count;
@@ -114,7 +120,10 @@ export class EmailService {
     
     // Also update campaign status to Completed if all done
     if (stats.total > 0 && stats.pending === 0 && stats.total === (stats.sent + stats.failed)) {
-      await this.db.query(`UPDATE mass_mail.campaigns SET status = 'Completed' WHERE id = $1 AND status != 'Completed'`, [campaignId]);
+      await this.prisma.campaign.updateMany({
+        where: { id: campaignId, status: { not: 'Completed' } },
+        data: { status: 'Completed' },
+      });
     }
     
     return stats;
@@ -123,21 +132,26 @@ export class EmailService {
   async cancelCampaign(campaignId: string) {
     this.logger.log(`Cancelling campaign: ${campaignId}`);
     
-    // Update campaign status
-    await this.db.query(`UPDATE mass_mail.campaigns SET status = 'Cancelled' WHERE id = $1`, [campaignId]);
+    await this.prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: 'Cancelled' },
+    });
     
-    // Update pending recipients
-    const res = await this.db.query(`UPDATE mass_mail.recipients SET status = 'Cancelled' WHERE campaign_id = $1 AND status = 'Pending' RETURNING id`, [campaignId]);
+    const res = await this.prisma.recipients.updateMany({
+      where: { campaignId, status: 'Pending' },
+      data: { status: 'Cancelled' },
+    });
     
-    return { success: true, message: `Campaign cancelled. ${res.rowCount} pending emails stopped.` };
+    return { success: true, message: `Campaign cancelled. ${res.count} pending emails stopped.` };
   }
 
   async getActiveCampaign() {
-    const res = await this.db.query(`SELECT id FROM mass_mail.campaigns WHERE status = 'Processing' ORDER BY created_at DESC LIMIT 1`);
-    if (res.rows.length > 0) {
-      return { activeCampaignId: res.rows[0].id };
-    }
-    return { activeCampaignId: null };
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { status: 'Processing' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    return { activeCampaignId: campaign?.id || null };
   }
 
   async getCampaigns(tenantId: string, user: any) {
@@ -161,7 +175,7 @@ export class EmailService {
         SUM(CASE WHEN r.status = 'Cancelled' THEN 1 ELSE 0 END) as cancelled_count
       FROM mass_mail.campaigns c
       LEFT JOIN mass_mail.recipients r ON c.id = r.campaign_id
-      LEFT JOIN public.users u ON c.created_by = u.id::varchar
+      LEFT JOIN ats.users u ON c.created_by = u.id::varchar
       WHERE c.tenant_id = $1
     `;
     
@@ -185,25 +199,43 @@ export class EmailService {
       ORDER BY c.created_at DESC
     `;
 
-    const res = await this.db.query(query, params);
-    return res.rows;
+    return await this.prisma.$queryRawUnsafe<any[]>(query, ...params);
   }
 
   async getCampaignRecipients(campaignId: string) {
-    const res = await this.db.query(`
-      SELECT id, email, first_name, last_name, status, metadata, sent_at
-      FROM mass_mail.recipients 
-      WHERE campaign_id = $1
-      ORDER BY sent_at DESC NULLS LAST, id ASC
-    `, [campaignId]);
-    return res.rows;
+    const recipients = await this.prisma.recipients.findMany({
+      where: { campaignId },
+      orderBy: [
+        { sentAt: { sort: 'desc', nulls: 'last' } },
+        { id: 'asc' },
+      ],
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        status: true,
+        metadata: true,
+        sentAt: true,
+      },
+    });
+    return recipients.map((r) => ({
+      id: r.id,
+      email: r.email,
+      first_name: r.firstName,
+      last_name: r.lastName,
+      status: r.status,
+      metadata: r.metadata,
+      sent_at: r.sentAt,
+    }));
   }
 
   async getTemplates(tenantId: string) {
     try {
-      const res = await this.db.query('SELECT * FROM mass_mail.templates WHERE tenant_id = $1', [tenantId]);
-      return res.rows;
-    } catch (e) {
+      return await this.prisma.emailTemplate.findMany({
+        where: { tenantId },
+      });
+    } catch (e: any) {
       this.logger.error('Failed to get templates', e);
       return [];
     }
@@ -264,43 +296,60 @@ export class EmailService {
   }
 
   private async saveEmailAccount(provider: string, email: string, accessToken: string, tenantId: string, userId: string | null, refreshToken?: string) {
-    const query = `
-      INSERT INTO mass_mail.email_accounts (provider, email_address, access_token, refresh_token, tenant_id, user_id)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (provider, email_address, tenant_id) DO UPDATE
-        SET access_token = EXCLUDED.access_token,
-            refresh_token = EXCLUDED.refresh_token,
-            user_id = COALESCE(EXCLUDED.user_id, mass_mail.email_accounts.user_id),
-            is_active = true
-    `;
-    await this.db.query(query, [provider, email, accessToken, refreshToken || null, tenantId, userId]);
+    await this.prisma.emailAccount.upsert({
+      where: {
+        provider_emailAddress_tenantId: {
+          provider,
+          emailAddress: email,
+          tenantId,
+        },
+      },
+      create: {
+        provider,
+        emailAddress: email,
+        accessToken,
+        refreshToken: refreshToken || null,
+        tenantId,
+        userId,
+        isActive: true,
+      },
+      update: {
+        accessToken,
+        refreshToken: refreshToken || undefined,
+        userId: userId || undefined,
+        isActive: true,
+      },
+    });
   }
   
   async getConnectedAccounts(tenantId: string, user: any) {
-    // If no user provided, just return tenant accounts (fallback)
-    if (!user || !user.dbId) {
-      const res = await this.db.query(`
-        SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name, user_id, shared_with_all, shared_with_users, shared_with_branches
-        FROM mass_mail.email_accounts 
-        WHERE tenant_id = $1 AND is_active = true
-      `, [tenantId]);
-      return res.rows;
-    }
-    
-    // Determine if admin
-    const isAdmin = user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+    const isAdmin = !user || !user.dbId || (user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN')));
     
     if (isAdmin) {
-      const res = await this.db.query(`
-        SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name, user_id, shared_with_all, shared_with_users, shared_with_branches
-        FROM mass_mail.email_accounts 
-        WHERE tenant_id = $1 AND is_active = true
-      `, [tenantId]);
-      return res.rows;
+      const rows = await this.prisma.emailAccount.findMany({
+        where: { tenantId, isActive: true },
+        select: {
+          id: true,
+          provider: true,
+          emailAddress: true,
+          isDefault: true,
+          isActive: true,
+          createdAt: true,
+          profileName: true,
+          userId: true,
+          sharedWithAll: true,
+          sharedWithUsers: true,
+          sharedWithBranches: true,
+        },
+      });
+      return rows.map((r) => ({
+        ...r,
+        email: r.emailAddress,
+      }));
     }
     
     // Regular user: Return accounts they own, or that are shared with them/their branch/tenant
-    const res = await this.db.query(`
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(`
       SELECT id, provider, email_address as email, is_default, is_active, created_at, profile_name, user_id, shared_with_all, shared_with_users, shared_with_branches
       FROM mass_mail.email_accounts 
       WHERE tenant_id = $1 AND is_active = true
@@ -311,25 +360,39 @@ export class EmailService {
         OR $2::uuid = ANY(shared_with_users)
         OR ($3::uuid IS NOT NULL AND $3::uuid = ANY(shared_with_branches))
       )
-    `, [tenantId, user.dbId, user.branchId || null]);
-    return res.rows;
+    `, tenantId, user.dbId, user.branchId || null);
+    return rows;
   }
 
   async addCustomAccount(dto: any, tenantId: string, userId: string) {
-    const query = `
-      INSERT INTO mass_mail.email_accounts (
-        provider, email_address, profile_name, password, 
-        smtp_host, smtp_port, imap_host, imap_port, require_ssl, require_tls, tenant_id, user_id
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      RETURNING id, provider, email_address as email, profile_name
-    `;
-    const res = await this.db.query(query, [
-      'smtp', dto.email, dto.profileName, dto.password, 
-      dto.smtpHost, dto.smtpPort, dto.imapHost, dto.imapPort, 
-      dto.requireSsl, dto.requireTls, tenantId, userId
-    ]);
-    return res.rows[0];
+    const account = await this.prisma.emailAccount.create({
+      data: {
+        provider: 'smtp',
+        emailAddress: dto.email,
+        profileName: dto.profileName,
+        password: dto.password,
+        smtpHost: dto.smtpHost,
+        smtpPort: dto.smtpPort,
+        imapHost: dto.imapHost,
+        imapPort: dto.imapPort,
+        requireSsl: dto.requireSsl || false,
+        requireTls: dto.requireTls || false,
+        tenantId,
+        userId,
+      },
+      select: {
+        id: true,
+        provider: true,
+        emailAddress: true,
+        profileName: true,
+      },
+    });
+    return {
+      id: account.id,
+      provider: account.provider,
+      email: account.emailAddress,
+      profile_name: account.profileName,
+    };
   }
 
   async deleteAccount(id: string, tenantId: string, user: any) {
@@ -337,9 +400,9 @@ export class EmailService {
     const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
     
     if (isAdmin) {
-      await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+      await this.prisma.emailAccount.deleteMany({ where: { id, tenantId } });
     } else if (userId) {
-      await this.db.query('DELETE FROM mass_mail.email_accounts WHERE id = $1 AND tenant_id = $2 AND user_id = $3', [id, tenantId, userId]);
+      await this.prisma.emailAccount.deleteMany({ where: { id, tenantId, userId } });
     }
     return { success: true };
   }
@@ -349,57 +412,81 @@ export class EmailService {
     const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
     
     if (isAdmin) {
-      await this.db.query(`
-        UPDATE mass_mail.email_accounts 
-        SET shared_with_all = $1, shared_with_users = $2::uuid[], shared_with_branches = $3::uuid[]
-        WHERE id = $4 AND tenant_id = $5
-      `, [dto.sharedWithAll, dto.sharedWithUsers || [], dto.sharedWithBranches || [], id, tenantId]);
+      await this.prisma.emailAccount.updateMany({
+        where: { id, tenantId },
+        data: {
+          sharedWithAll: dto.sharedWithAll,
+          sharedWithUsers: dto.sharedWithUsers || [],
+          sharedWithBranches: dto.sharedWithBranches || [],
+        },
+      });
     } else if (userId) {
-      await this.db.query(`
-        UPDATE mass_mail.email_accounts 
-        SET shared_with_all = $1, shared_with_users = $2::uuid[], shared_with_branches = $3::uuid[]
-        WHERE id = $4 AND tenant_id = $5 AND user_id = $6
-      `, [dto.sharedWithAll, dto.sharedWithUsers || [], dto.sharedWithBranches || [], id, tenantId, userId]);
+      await this.prisma.emailAccount.updateMany({
+        where: { id, tenantId, userId },
+        data: {
+          sharedWithAll: dto.sharedWithAll,
+          sharedWithUsers: dto.sharedWithUsers || [],
+          sharedWithBranches: dto.sharedWithBranches || [],
+        },
+      });
     }
     return { success: true };
   }
 
   async setDefaultAccount(id: string, tenantId: string) {
-    await this.db.query('UPDATE mass_mail.email_accounts SET is_default = false WHERE tenant_id = $1', [tenantId]);
-    await this.db.query('UPDATE mass_mail.email_accounts SET is_default = true WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+    await this.prisma.emailAccount.updateMany({
+      where: { tenantId },
+      data: { isDefault: false },
+    });
+    await this.prisma.emailAccount.updateMany({
+      where: { id, tenantId },
+      data: { isDefault: true },
+    });
     return { success: true };
   }
 
   async getPreferences(tenantId: string) {
-    const res = await this.db.query('SELECT action_name, email_account_id FROM mass_mail.email_preferences WHERE tenant_id = $1', [tenantId]);
-    return res.rows;
+    const rows = await this.prisma.emailPreference.findMany({
+      where: { tenantId },
+      select: { actionName: true, emailAccountId: true },
+    });
+    return rows.map((r) => ({
+      action_name: r.actionName,
+      email_account_id: r.emailAccountId,
+    }));
   }
 
   async savePreference(actionName: string, accountId: string, tenantId: string) {
-    const query = `
-      INSERT INTO mass_mail.email_preferences (tenant_id, action_name, email_account_id)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (action_name) DO UPDATE SET email_account_id = EXCLUDED.email_account_id, updated_at = NOW()
-    `;
-    await this.db.query(query, [tenantId, actionName, accountId]);
+    await this.prisma.emailPreference.upsert({
+      where: { actionName },
+      create: {
+        tenantId,
+        actionName,
+        emailAccountId: accountId,
+      },
+      update: {
+        emailAccountId: accountId,
+      },
+    });
     return { success: true };
   }
 
   async sendMicrosoftEmail(accountId: string, subject: string, body: string, toEmail: string) {
     // 1. Get the account from DB
-    const res = await this.db.query('SELECT * FROM mass_mail.email_accounts WHERE id = $1', [accountId]);
-    if (res.rowCount === 0) throw new Error('Account not found');
-    const account = res.rows[0];
+    const account = await this.prisma.emailAccount.findUnique({
+      where: { id: accountId },
+    });
+    if (!account) throw new Error('Account not found');
 
-    // 2. Refresh token logic (Simplified: we can just use the current token, if it fails, refresh and retry)
-    let accessToken = account.access_token;
+    // 2. Refresh token logic
+    let accessToken = account.accessToken || '';
     
     try {
       await this.postToGraphApi(accessToken, subject, body, toEmail);
-    } catch (error) {
-      if (error.response && error.response.status === 401) {
-        this.logger.log(`Token expired for ${account.email_address}. Refreshing...`);
-        accessToken = await this.refreshMicrosoftToken(account.id, account.refresh_token);
+    } catch (error: any) {
+      if (error.response && error.response.status === 401 && account.refreshToken) {
+        this.logger.log(`Token expired for ${account.emailAddress}. Refreshing...`);
+        accessToken = await this.refreshMicrosoftToken(account.id, account.refreshToken);
         await this.postToGraphApi(accessToken, subject, body, toEmail);
       } else {
         throw error;
@@ -453,10 +540,13 @@ export class EmailService {
     const newAccessToken = tokenResponse.data.access_token;
     const newRefreshToken = tokenResponse.data.refresh_token || refreshToken;
 
-    await this.db.query(
-      'UPDATE mass_mail.email_accounts SET access_token = $1, refresh_token = $2 WHERE id = $3',
-      [newAccessToken, newRefreshToken, accountId]
-    );
+    await this.prisma.emailAccount.update({
+      where: { id: accountId },
+      data: {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+      },
+    });
 
     return newAccessToken;
   }
@@ -464,22 +554,23 @@ export class EmailService {
   async getDeliverySettings(tenantId: string, branchId?: string) {
     const targetBranch = branchId && branchId.trim().length > 0 ? branchId.trim() : 'default';
     try {
-      const res = await this.db.query(
-        `SELECT rate_per_minute as "ratePerMinute", rate_per_hour as "ratePerHour", randomize_delay as "randomizeDelay"
-         FROM mass_mail.delivery_settings
-         WHERE tenant_id = $1 AND (branch_id = $2 OR branch_id = 'default')
-         ORDER BY CASE WHEN branch_id = $2 THEN 1 ELSE 2 END
-         LIMIT 1`,
-        [tenantId, targetBranch]
-      );
-      if (res.rows.length > 0) {
+      const setting = await this.prisma.deliverySettings.findFirst({
+        where: {
+          tenantId,
+          OR: [{ branchId: targetBranch }, { branchId: 'default' }],
+        },
+        orderBy: {
+          branchId: targetBranch === 'default' ? 'desc' : 'asc',
+        },
+      });
+      if (setting) {
         return {
-          ratePerMinute: res.rows[0].ratePerMinute,
-          ratePerHour: res.rows[0].ratePerHour,
-          randomizeDelay: res.rows[0].randomizeDelay
+          ratePerMinute: setting.ratePerMinute,
+          ratePerHour: setting.ratePerHour,
+          randomizeDelay: setting.randomizeDelay,
         };
       }
-    } catch (err) {
+    } catch (err: any) {
       this.logger.error(`Failed to fetch delivery settings: ${err.message}`);
     }
     return { ratePerMinute: 30, ratePerHour: 500, randomizeDelay: false };
@@ -491,16 +582,26 @@ export class EmailService {
     const ratePerHour = typeof dto.ratePerHour === 'number' ? dto.ratePerHour : 500;
     const randomizeDelay = typeof dto.randomizeDelay === 'boolean' ? dto.randomizeDelay : false;
 
-    await this.db.query(
-      `INSERT INTO mass_mail.delivery_settings (tenant_id, branch_id, rate_per_minute, rate_per_hour, randomize_delay, updated_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (tenant_id, branch_id) DO UPDATE
-       SET rate_per_minute = EXCLUDED.rate_per_minute,
-           rate_per_hour = EXCLUDED.rate_per_hour,
-           randomize_delay = EXCLUDED.randomize_delay,
-           updated_at = NOW()`,
-      [tenantId, targetBranch, ratePerMinute, ratePerHour, randomizeDelay]
-    );
+    await this.prisma.deliverySettings.upsert({
+      where: {
+        tenantId_branchId: {
+          tenantId,
+          branchId: targetBranch,
+        },
+      },
+      create: {
+        tenantId,
+        branchId: targetBranch,
+        ratePerMinute,
+        ratePerHour,
+        randomizeDelay,
+      },
+      update: {
+        ratePerMinute,
+        ratePerHour,
+        randomizeDelay,
+      },
+    });
 
     return { success: true, ratePerMinute, ratePerHour, randomizeDelay };
   }
@@ -509,29 +610,30 @@ export class EmailService {
    * Dispatches email using custom SMTP account configured by a tenant
    */
   async sendSmtpEmail(accountId: string, subject: string, body: string, toEmail: string) {
-    const res = await this.db.query('SELECT * FROM mass_mail.email_accounts WHERE id = $1', [accountId]);
-    if (res.rowCount === 0) throw new Error('SMTP Account not found');
-    const account = res.rows[0];
+    const account = await this.prisma.emailAccount.findUnique({
+      where: { id: accountId },
+    });
+    if (!account) throw new Error('SMTP Account not found');
 
-    const port = account.smtp_port || 587;
-    const isSecure = account.require_ssl || port === 465;
+    const port = account.smtpPort || 587;
+    const isSecure = account.requireSsl || port === 465;
 
     const transporter = nodemailer.createTransport({
-      host: account.smtp_host,
+      host: account.smtpHost || '',
       port: port,
       secure: isSecure,
       auth: {
-        user: account.email_address,
-        pass: account.password,
+        user: account.emailAddress,
+        pass: account.password || '',
       },
       tls: {
         rejectUnauthorized: false,
       },
     });
 
-    const fromHeader = account.profile_name 
-      ? `"${account.profile_name}" <${account.email_address}>`
-      : account.email_address;
+    const fromHeader = account.profileName 
+      ? `"${account.profileName}" <${account.emailAddress}>`
+      : account.emailAddress;
 
     await transporter.sendMail({
       from: fromHeader,
@@ -559,14 +661,21 @@ export class EmailService {
     const { tenantId, to, subject, html, replyTo } = options;
 
     // Fetch tenant configuration
-    const tenantRes = await this.db.query(
-      'SELECT id, name, domain, email_dispatch_mode, custom_email_domain, custom_email_domain_verified FROM tenants WHERE id = $1 LIMIT 1',
-      [tenantId]
-    );
-    const tenant = tenantRes.rows[0] || { name: 'Enfycon ATS', domain: 'enfy', email_dispatch_mode: 'DEFAULT_SUBDOMAIN' };
-    const tenantName = tenant.name || 'Enfycon Workspace';
-    const tenantDomain = tenant.domain || 'enfy';
-    const dispatchMode = tenant.email_dispatch_mode || 'DEFAULT_SUBDOMAIN';
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        id: true,
+        name: true,
+        domain: true,
+        emailDispatchMode: true,
+        customEmailDomain: true,
+        customEmailDomainVerified: true,
+      },
+    });
+    
+    const tenantName = tenant?.name || 'Enfycon Workspace';
+    const tenantDomain = tenant?.domain || 'enfy';
+    const dispatchMode = tenant?.emailDispatchMode || 'DEFAULT_SUBDOMAIN';
 
     const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
 
@@ -574,25 +683,21 @@ export class EmailService {
     // STRATEGY 1: DIRECT ACCOUNT (BYOE - Microsoft 365, Google, SMTP)
     // ─────────────────────────────────────────────────────────────
     if (dispatchMode === 'DIRECT_ACCOUNT' || dispatchMode === 'BYOE') {
-      const accRes = await this.db.query(
-        `SELECT id, provider, email_address, profile_name 
-         FROM mass_mail.email_accounts 
-         WHERE tenant_id = $1 AND is_active = true 
-         ORDER BY is_default DESC, created_at DESC LIMIT 1`,
-        [tenantId]
-      );
+      const account = await this.prisma.emailAccount.findFirst({
+        where: { tenantId, isActive: true },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      });
 
-      if (accRes.rows.length > 0) {
-        const account = accRes.rows[0];
+      if (account) {
         try {
           if (account.provider === 'microsoft') {
             await this.sendMicrosoftEmail(account.id, subject, html, to);
-            this.logger.log(`[TENANT_MAILER] Dispatched via Tenant Microsoft 365 (${account.email_address}) to ${to}`);
-            return { success: true, provider: 'microsoft', from: account.email_address };
+            this.logger.log(`[TENANT_MAILER] Dispatched via Tenant Microsoft 365 (${account.emailAddress}) to ${to}`);
+            return { success: true, provider: 'microsoft', from: account.emailAddress };
           } else if (account.provider === 'smtp') {
             await this.sendSmtpEmail(account.id, subject, html, to);
-            this.logger.log(`[TENANT_MAILER] Dispatched via Tenant Custom SMTP (${account.email_address}) to ${to}`);
-            return { success: true, provider: 'smtp', from: account.email_address };
+            this.logger.log(`[TENANT_MAILER] Dispatched via Tenant Custom SMTP (${account.emailAddress}) to ${to}`);
+            return { success: true, provider: 'smtp', from: account.emailAddress };
           }
         } catch (err: any) {
           this.logger.warn(`[TENANT_MAILER] Direct account dispatch failed (${err.message}). Falling back to platform relay.`);
@@ -603,12 +708,12 @@ export class EmailService {
     // ─────────────────────────────────────────────────────────────
     // STRATEGY 2: CUSTOM DOMAIN DELEGATION
     // ─────────────────────────────────────────────────────────────
-    if (dispatchMode === 'CUSTOM_DOMAIN' && tenant.custom_email_domain) {
-      const fromCustom = `"${tenantName}" <no-reply@${tenant.custom_email_domain}>`;
+    if (dispatchMode === 'CUSTOM_DOMAIN' && tenant?.customEmailDomain) {
+      const fromCustom = `"${tenantName}" <no-reply@${tenant.customEmailDomain}>`;
       if (process.env.SMTP_HOST) {
         await this.transporter.sendMail({
           from: fromCustom,
-          replyTo: replyTo || `admin@${tenant.custom_email_domain}`,
+          replyTo: replyTo || `admin@${tenant.customEmailDomain}`,
           to,
           subject,
           html,
@@ -646,81 +751,108 @@ export class EmailService {
    * Retrieves full tenant email settings, active strategy, and DNS delegation records
    */
   async getTenantEmailSettings(tenantId: string) {
-    const tenantRes = await this.db.query(
-      `SELECT name, domain, email_dispatch_mode as "dispatchMode", 
-              custom_email_domain as "customDomain", 
-              custom_email_domain_verified as "customDomainVerified"
-       FROM tenants WHERE id = $1 LIMIT 1`,
-      [tenantId]
-    );
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: {
+        name: true,
+        domain: true,
+        emailDispatchMode: true,
+        customEmailDomain: true,
+        customEmailDomainVerified: true,
+      },
+    });
 
-    const tenant = tenantRes.rows[0] || { domain: 'enfy', dispatchMode: 'DEFAULT_SUBDOMAIN' };
     const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
-    const sub = tenant.domain || 'workspace';
+    const sub = tenant?.domain || 'workspace';
     const defaultSubdomainSender = sub === 'enfy' ? `no-reply@${baseDomain}` : `no-reply@${sub}.${baseDomain}`;
 
-    const accountsRes = await this.db.query(
-      `SELECT id, provider, email_address as email, profile_name as "profileName", is_default as "isDefault", is_active as "isActive", created_at as "createdAt"
-       FROM mass_mail.email_accounts
-       WHERE tenant_id = $1 AND is_active = true
-       ORDER BY is_default DESC, created_at DESC`,
-      [tenantId]
-    );
+    const accounts = await this.prisma.emailAccount.findMany({
+      where: { tenantId, isActive: true },
+      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        provider: true,
+        emailAddress: true,
+        profileName: true,
+        isDefault: true,
+        isActive: true,
+        createdAt: true,
+      },
+    });
 
-    const customDomain = tenant.customDomain || '';
+    const formattedAccounts = accounts.map((a) => ({
+      id: a.id,
+      provider: a.provider,
+      email: a.emailAddress,
+      profileName: a.profileName,
+      isDefault: a.isDefault,
+      isActive: a.isActive,
+      createdAt: a.createdAt,
+    }));
+
+    const customDomain = tenant?.customEmailDomain || '';
     const dnsRecords = customDomain ? [
       {
         type: 'TXT',
         host: customDomain,
         value: `v=spf1 include:spf.${baseDomain} ~all`,
         purpose: 'SPF Sender Authorization',
-        status: tenant.customDomainVerified ? 'verified' : 'pending'
+        status: tenant?.customEmailDomainVerified ? 'verified' : 'pending'
       },
       {
         type: 'CNAME',
         host: `enfy._domainkey.${customDomain}`,
         value: `dkim.${baseDomain}`,
         purpose: 'DKIM Cryptographic Signature',
-        status: tenant.customDomainVerified ? 'verified' : 'pending'
+        status: tenant?.customEmailDomainVerified ? 'verified' : 'pending'
       },
       {
         type: 'CNAME',
         host: `_dmarc.${customDomain}`,
         value: `dmarc.${baseDomain}`,
         purpose: 'DMARC Security Policy',
-        status: tenant.customDomainVerified ? 'verified' : 'pending'
+        status: tenant?.customEmailDomainVerified ? 'verified' : 'pending'
       }
     ] : [];
 
     return {
-      dispatchMode: tenant.dispatchMode || 'DEFAULT_SUBDOMAIN',
+      dispatchMode: tenant?.emailDispatchMode || 'DEFAULT_SUBDOMAIN',
       defaultSubdomainSender,
       customDomain,
-      customDomainVerified: !!tenant.customDomainVerified,
+      customDomainVerified: !!tenant?.customEmailDomainVerified,
       dnsRecords,
-      connectedAccounts: accountsRes.rows,
-      defaultAccount: accountsRes.rows.find((a: any) => a.isDefault) || accountsRes.rows[0] || null,
+      connectedAccounts: formattedAccounts,
+      defaultAccount: formattedAccounts.find((a: any) => a.isDefault) || formattedAccounts[0] || null,
     };
   }
 
   async setTenantEmailMode(tenantId: string, mode: string) {
     const validModes = ['DEFAULT_SUBDOMAIN', 'DIRECT_ACCOUNT', 'CUSTOM_DOMAIN'];
     const chosen = validModes.includes(mode) ? mode : 'DEFAULT_SUBDOMAIN';
-    await this.db.query('UPDATE tenants SET email_dispatch_mode = $1 WHERE id = $2', [chosen, tenantId]);
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { emailDispatchMode: chosen },
+    });
     return { success: true, mode: chosen };
   }
 
   async setTenantCustomDomain(tenantId: string, customDomain: string) {
     const clean = (customDomain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-    await this.db.query(
-      'UPDATE tenants SET custom_email_domain = $1, custom_email_domain_verified = false WHERE id = $2',
-      [clean || null, tenantId]
-    );
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        customEmailDomain: clean || null,
+        customEmailDomainVerified: false,
+      },
+    });
     return { success: true, customDomain: clean };
   }
 
   async verifyTenantCustomDomain(tenantId: string) {
-    await this.db.query('UPDATE tenants SET custom_email_domain_verified = true WHERE id = $1', [tenantId]);
+    await this.prisma.tenant.update({
+      where: { id: tenantId },
+      data: { customEmailDomainVerified: true },
+    });
     return { success: true, verified: true, message: 'Custom domain DNS records verified successfully!' };
   }
 }

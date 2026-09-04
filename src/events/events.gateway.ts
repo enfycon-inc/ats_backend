@@ -9,7 +9,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Injectable, Logger } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 @WebSocketGateway({
@@ -23,7 +23,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   // Maps userId / userEmail -> Set of active socket IDs
   private userSockets = new Map<string, Set<string>>();
@@ -110,13 +110,19 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     targetKeys.add(String(userIdOrEmail).toLowerCase());
 
     try {
-      const res = await this.db.query(
-        'SELECT id, email FROM users WHERE id::text = $1 OR LOWER(email) = LOWER($1) LIMIT 1',
-        [userIdOrEmail]
-      );
-      if (res.rows.length > 0) {
-        if (res.rows[0].id) targetKeys.add(String(res.rows[0].id).toLowerCase());
-        if (res.rows[0].email) targetKeys.add(String(res.rows[0].email).toLowerCase());
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userIdOrEmail);
+      const user = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            ...(isUuid ? [{ id: userIdOrEmail }] : []),
+            { email: { equals: userIdOrEmail, mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true, email: true },
+      });
+      if (user) {
+        if (user.id) targetKeys.add(String(user.id).toLowerCase());
+        if (user.email) targetKeys.add(String(user.email).toLowerCase());
       }
     } catch {}
 
@@ -156,13 +162,18 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    */
   async sendToBranch(tenantId: string, branchId: string, event: string, payload: any) {
     try {
-      const res = await this.db.query(
-        `SELECT id, email FROM users 
-         WHERE tenant_id = $1 AND is_active = true 
-           AND (branch_id = $2 OR $2 = ANY(assigned_branch_ids))`,
-        [tenantId, branchId]
-      );
-      const userKeys = res.rows.flatMap(u => [u.id, u.email]);
+      const users = await this.prisma.user.findMany({
+        where: {
+          tenantId,
+          isActive: true,
+          OR: [
+            { branchId },
+            { assignedBranchIds: { has: branchId } },
+          ],
+        },
+        select: { id: true, email: true },
+      });
+      const userKeys = users.flatMap(u => [u.id, u.email]);
       this.sendToUsers(userKeys, event, payload);
     } catch (e: any) {
       this.logger.error(`Failed to broadcast to branch ${branchId}: ${e.message}`);
@@ -174,28 +185,28 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    */
   async sendToAdmins(tenantId: string, event: string, payload: any) {
     try {
-      const res = await this.db.query(
+      const rows = await this.prisma.$queryRawUnsafe<any[]>(
         `SELECT u.id, u.email 
-         FROM users u
-         LEFT JOIN custom_roles cr ON cr.id = u.role_id
+         FROM ats.users u
+         LEFT JOIN ats.custom_roles cr ON cr.id = u.role_id
          WHERE u.tenant_id = $1 AND u.is_active = true
            AND (
              cr.system_role IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR
              UPPER(cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN') OR
              EXISTS (
-               SELECT 1 FROM custom_roles sub_cr
+               SELECT 1 FROM ats.custom_roles sub_cr
                WHERE (sub_cr.id = u.role_id OR sub_cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
                  AND (sub_cr.system_role IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR UPPER(sub_cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN'))
              ) OR
              EXISTS (
-               SELECT 1 FROM role_permissions rp 
+               SELECT 1 FROM ats.role_permissions rp 
                WHERE (rp.role_id = u.role_id OR rp.role_id = ANY(COALESCE(u.assigned_role_ids, '{}')))
                  AND rp.permission IN ('tenant:settings', 'branch_admin:manage', 'user:manage')
              )
            )`,
-        [tenantId]
+        tenantId
       );
-      const adminKeys = res.rows.flatMap(u => [u.id, u.email]);
+      const adminKeys = rows.flatMap(u => [u.id, u.email]);
       this.sendToUsers(adminKeys, event, payload);
     } catch (e: any) {
       this.logger.error(`Failed to broadcast to admins: ${e.message}`);

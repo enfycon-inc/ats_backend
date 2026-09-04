@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CandidatesService } from './candidates.service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,7 +11,7 @@ export class BulkCvProcessor extends WorkerHost {
   private readonly logger = new Logger(BulkCvProcessor.name);
 
   constructor(
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
     private readonly candidatesService: CandidatesService,
   ) {
     super();
@@ -23,10 +23,10 @@ export class BulkCvProcessor extends WorkerHost {
       this.logger.log(`[BULK CV PROCESSOR] Starting processing for job ${job.id}, file: ${filename}`);
 
       // 1. Update item status to processing
-      await this.db.query(
-        `UPDATE bulk_upload_items SET status = 'processing' WHERE id = $1`,
-        [itemId]
-      );
+      await this.prisma.bulkUploadItem.update({
+        where: { id: itemId },
+        data: { status: 'processing' },
+      });
 
       let fileBuffer: Buffer;
       try {
@@ -34,14 +34,12 @@ export class BulkCvProcessor extends WorkerHost {
           throw new Error(`Temp file not found at ${filePath}`);
         }
         fileBuffer = fs.readFileSync(filePath);
-      } catch (err) {
+      } catch (err: any) {
         this.logger.error(`[BULK CV PROCESSOR] File read error: ${err.message}`);
-        await this.db.query(
-          `UPDATE bulk_upload_items 
-           SET status = 'failed', error_message = $1 
-           WHERE id = $2`,
-          [err.message, itemId]
-        );
+        await this.prisma.bulkUploadItem.update({
+          where: { id: itemId },
+          data: { status: 'failed', errorMessage: err.message },
+        });
         await this.updateBatchStatus(itemId);
         return;
       }
@@ -68,32 +66,33 @@ export class BulkCvProcessor extends WorkerHost {
         });
 
         // 4. Update item status to completed
-        await this.db.query(
-          `UPDATE bulk_upload_items 
-           SET status = 'completed', 
-               candidate_id = $1, 
-               candidate_name = $2, 
-               candidate_email = $3
-           WHERE id = $4`,
-          [result.candidate.dbId || result.candidate.id, result.candidate.fullName, result.candidate.email || null, itemId]
-        );
+        await this.prisma.bulkUploadItem.update({
+          where: { id: itemId },
+          data: {
+            status: 'completed',
+            candidateId: Number(result.candidate.dbId || result.candidate.id) || null,
+            candidateName: result.candidate.fullName,
+            candidateEmail: result.candidate.email || null,
+          },
+        });
 
         this.logger.log(`[BULK CV PROCESSOR] Successfully processed CV: ${filename} -> Candidate ID ${result.candidate.id}`);
-      } catch (err) {
+      } catch (err: any) {
         this.logger.error(`[BULK CV PROCESSOR] Parsing failed for ${filename}: ${err.message}`);
-        await this.db.query(
-          `UPDATE bulk_upload_items 
-           SET status = 'failed', error_message = $1 
-           WHERE id = $2`,
-          [`Parsing error: ${err.message}`, itemId]
-        );
+        await this.prisma.bulkUploadItem.update({
+          where: { id: itemId },
+          data: {
+            status: 'failed',
+            errorMessage: `Parsing error: ${err.message}`,
+          },
+        });
       } finally {
         // Clean up temp file
         try {
           if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
           }
-        } catch (unlinkErr) {
+        } catch (unlinkErr: any) {
           this.logger.warn(`Failed to delete temp file ${filePath}: ${unlinkErr.message}`);
         }
 
@@ -105,29 +104,21 @@ export class BulkCvProcessor extends WorkerHost {
 
   private async updateBatchStatus(itemId: string) {
     try {
-      // Find parent bulk_upload_id
-      const itemRes = await this.db.query(
-        `SELECT bulk_upload_id FROM bulk_upload_items WHERE id = $1`,
-        [itemId]
-      );
-      if (itemRes.rows.length === 0) return;
-      const batchId = itemRes.rows[0].bulk_upload_id;
+      const item = await this.prisma.bulkUploadItem.findUnique({
+        where: { id: itemId },
+        select: { bulkUploadId: true },
+      });
+      if (!item) return;
+      const batchId = item.bulkUploadId;
 
-      // Count completed / failed items
-      const statsRes = await this.db.query(
-        `SELECT 
-           COUNT(*) as total,
-           COUNT(*) FILTER (WHERE status = 'completed') as completed,
-           COUNT(*) FILTER (WHERE status = 'failed') as failed
-         FROM bulk_upload_items 
-         WHERE bulk_upload_id = $1`,
-        [batchId]
-      );
-      
-      const stats = statsRes.rows[0];
-      const total = parseInt(stats.total, 10);
-      const completed = parseInt(stats.completed, 10);
-      const failed = parseInt(stats.failed, 10);
+      const items = await this.prisma.bulkUploadItem.findMany({
+        where: { bulkUploadId: batchId },
+        select: { status: true },
+      });
+
+      const total = items.length;
+      const completed = items.filter((i) => i.status === 'completed').length;
+      const failed = items.filter((i) => i.status === 'failed').length;
       const processed = completed + failed;
 
       let status = 'processing';
@@ -135,16 +126,15 @@ export class BulkCvProcessor extends WorkerHost {
         status = 'completed';
       }
 
-      await this.db.query(
-        `UPDATE bulk_uploads 
-         SET processed_files = $1, 
-             failed_files = $2, 
-             status = $3,
-             updated_at = NOW()
-         WHERE id = $4`,
-        [completed, failed, status, batchId]
-      );
-    } catch (err) {
+      await this.prisma.bulkUpload.update({
+        where: { id: batchId },
+        data: {
+          processedFiles: completed,
+          failedFiles: failed,
+          status,
+        },
+      });
+    } catch (err: any) {
       this.logger.error(`Failed to update batch progress: ${err.message}`);
     }
   }

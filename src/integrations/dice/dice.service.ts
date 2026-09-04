@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
-import { DatabaseService } from '../../database/database.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { CandidatesService } from '../../candidates/candidates.service';
 import type { AuthUser } from '../../auth/interfaces/auth-user.interface';
 
@@ -34,7 +34,7 @@ export class DiceService {
   private readonly logger = new Logger(DiceService.name);
 
   constructor(
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
     private readonly candidatesService: CandidatesService,
   ) {}
 
@@ -42,14 +42,19 @@ export class DiceService {
    * Get tenant Dice API integration settings & view quota
    */
   async getSettings(tenantId: string): Promise<DiceSettings> {
-    const res = await this.db.query(
-      `SELECT client_id, client_secret, account_id, is_active, daily_view_limit, views_used_today
-       FROM tenant_dice_integrations
-       WHERE tenant_id = $1 LIMIT 1`,
-      [tenantId]
-    );
+    const row = await this.prisma.tenantDiceIntegration.findUnique({
+      where: { tenantId },
+      select: {
+        clientId: true,
+        clientSecret: true,
+        accountId: true,
+        isActive: true,
+        dailyViewLimit: true,
+        viewsUsedToday: true,
+      },
+    });
 
-    if (res.rows.length === 0) {
+    if (!row) {
       return {
         clientId: '',
         clientSecret: '',
@@ -61,16 +66,15 @@ export class DiceService {
       };
     }
 
-    const row = res.rows[0];
-    const hasKeys = Boolean(row.client_id && row.client_secret);
+    const hasKeys = Boolean(row.clientId && row.clientSecret);
     return {
-      clientId: row.client_id || '',
-      clientSecret: row.client_secret ? '••••••••••••' : '',
-      accountId: row.account_id || '',
-      isActive: Boolean(row.is_active),
-      dailyViewLimit: row.daily_view_limit || 500,
-      viewsUsedToday: row.views_used_today || 0,
-      mode: hasKeys && row.is_active ? 'LIVE' : 'SANDBOX',
+      clientId: row.clientId || '',
+      clientSecret: row.clientSecret ? '••••••••••••' : '',
+      accountId: row.accountId || '',
+      isActive: Boolean(row.isActive),
+      dailyViewLimit: row.dailyViewLimit || 500,
+      viewsUsedToday: row.viewsUsedToday || 0,
+      mode: hasKeys && row.isActive ? 'LIVE' : 'SANDBOX',
     };
   }
 
@@ -80,35 +84,33 @@ export class DiceService {
   async saveSettings(tenantId: string, dto: { clientId?: string; clientSecret?: string; accountId?: string; isActive?: boolean; dailyViewLimit?: number }): Promise<DiceSettings> {
     this.logger.log(`Saving Dice integration settings for tenant: ${tenantId}`);
 
-    const existing = await this.db.query(
-      `SELECT client_secret FROM tenant_dice_integrations WHERE tenant_id = $1 LIMIT 1`,
-      [tenantId]
-    );
+    const existing = await this.prisma.tenantDiceIntegration.findUnique({
+      where: { tenantId },
+      select: { clientSecret: true },
+    });
 
     const secretToSave = (dto.clientSecret && !dto.clientSecret.includes('•'))
       ? dto.clientSecret.trim()
-      : (existing.rows[0]?.client_secret || '');
+      : (existing?.clientSecret || '');
 
-    await this.db.query(
-      `INSERT INTO tenant_dice_integrations (tenant_id, client_id, client_secret, account_id, is_active, daily_view_limit, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (tenant_id)
-       DO UPDATE SET
-         client_id = EXCLUDED.client_id,
-         client_secret = EXCLUDED.client_secret,
-         account_id = EXCLUDED.account_id,
-         is_active = EXCLUDED.is_active,
-         daily_view_limit = EXCLUDED.daily_view_limit,
-         updated_at = NOW()`,
-      [
+    await this.prisma.tenantDiceIntegration.upsert({
+      where: { tenantId },
+      create: {
         tenantId,
-        dto.clientId ? dto.clientId.trim() : '',
-        secretToSave,
-        dto.accountId ? dto.accountId.trim() : '',
-        dto.isActive !== undefined ? dto.isActive : true,
-        dto.dailyViewLimit || 500,
-      ]
-    );
+        clientId: dto.clientId ? dto.clientId.trim() : '',
+        clientSecret: secretToSave,
+        accountId: dto.accountId ? dto.accountId.trim() : '',
+        isActive: dto.isActive !== undefined ? dto.isActive : true,
+        dailyViewLimit: dto.dailyViewLimit || 500,
+      },
+      update: {
+        clientId: dto.clientId ? dto.clientId.trim() : '',
+        clientSecret: secretToSave,
+        accountId: dto.accountId ? dto.accountId.trim() : '',
+        isActive: dto.isActive !== undefined ? dto.isActive : true,
+        dailyViewLimit: dto.dailyViewLimit || 500,
+      },
+    });
 
     return this.getSettings(tenantId);
   }
@@ -202,61 +204,51 @@ export class DiceService {
     }
 
     // Increment usage meter
-    await this.db.query(
-      `UPDATE tenant_dice_integrations SET views_used_today = views_used_today + 1 WHERE tenant_id = $1`,
-      [tenantId]
-    );
+    await this.prisma.tenantDiceIntegration.update({
+      where: { tenantId },
+      data: { viewsUsedToday: { increment: 1 } },
+    });
 
-    // Create candidate record in database using correct schema columns
-    const client = await this.db.getClient();
-    let candidateId: number = 0;
-    try {
-      await client.query('BEGIN');
-      const resumeRes = await client.query(
-        `INSERT INTO resumes (filename, candidate_name, email, raw_text, file_mime, created_at)
-         VALUES ($1, $2, $3, $4, 'text/plain', NOW())
-         RETURNING id`,
-        [
-          `dice-${mockOrLiveProfile.diceId}.txt`,
-          mockOrLiveProfile.fullName,
-          mockOrLiveProfile.email,
-          `DICE RESUME PROFILE: ${mockOrLiveProfile.fullName}\nTitle: ${mockOrLiveProfile.jobTitle}\nSkills: ${mockOrLiveProfile.skills.join(', ')}\nSummary: ${mockOrLiveProfile.summary}`
-        ]
-      );
-      const resumeId = resumeRes.rows[0].id;
+    // Create candidate record in database using correct schema columns in a transaction
+    const candidateId = await this.prisma.$transaction(async (tx) => {
+      const resume = await tx.resume.create({
+        data: {
+          filename: `dice-${mockOrLiveProfile.diceId}.txt`,
+          candidateName: mockOrLiveProfile.fullName,
+          email: mockOrLiveProfile.email,
+          rawText: `DICE RESUME PROFILE: ${mockOrLiveProfile.fullName}\nTitle: ${mockOrLiveProfile.jobTitle}\nSkills: ${mockOrLiveProfile.skills.join(', ')}\nSummary: ${mockOrLiveProfile.summary}`,
+          fileMime: 'text/plain',
+        },
+      });
 
-      const candRes = await client.query(
-        `INSERT INTO candidates
-          (tenant_id, full_name, email, phone, raw_current_location, raw_current_designation, total_experience_years, source, work_authorization, resume_record_id, market, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'Dice', $8, $9, 'US', NOW())
-         RETURNING id`,
-        [
+      const cand = await tx.candidate.create({
+        data: {
           tenantId,
-          mockOrLiveProfile.fullName,
-          mockOrLiveProfile.email,
-          mockOrLiveProfile.phone,
-          mockOrLiveProfile.location,
-          mockOrLiveProfile.jobTitle,
-          mockOrLiveProfile.experienceYears,
-          mockOrLiveProfile.workAuthorization,
-          resumeId
-        ]
-      );
-      candidateId = candRes.rows[0].id;
-      const candidateCode = `CAN-${String(candidateId).padStart(6, '0')}`;
-      await client.query('UPDATE candidates SET candidate_code = $1 WHERE id = $2', [candidateCode, candidateId]);
-      await client.query('COMMIT');
-    } catch (err: any) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+          fullName: mockOrLiveProfile.fullName,
+          email: mockOrLiveProfile.email,
+          phone: mockOrLiveProfile.phone,
+          rawCurrentLocation: mockOrLiveProfile.location,
+          rawCurrentDesignation: mockOrLiveProfile.jobTitle,
+          totalExperienceYears: mockOrLiveProfile.experienceYears,
+          source: 'Dice',
+          workAuthorization: mockOrLiveProfile.workAuthorization,
+          resumeRecordId: resume.id,
+          market: 'US',
+        },
+      });
+
+      const candidateCode = `CAN-${String(cand.id).padStart(6, '0')}`;
+      await tx.candidate.update({
+        where: { id: cand.id },
+        data: { candidateCode },
+      });
+
+      return cand.id;
+    });
 
     const createdCandidate = candidateId ? await this.candidatesService.findOne(candidateId, tenantId) : null;
     return { candidate: createdCandidate, duplicate: false, message: 'Candidate imported from Dice successfully.' };
   }
-
 
   /**
    * Internal helper to simulate Dice API candidate results for Sandbox/Demo Mode
@@ -332,7 +324,6 @@ export class DiceService {
    * Internal helper for live Dice API OAuth & search execution
    */
   private async fetchLiveDiceSearch(tenantId: string, query: any): Promise<any[]> {
-    // Dice OAuth 2.0 Live API Call Placeholder
     return this.getSandboxResults(query);
   }
 }
