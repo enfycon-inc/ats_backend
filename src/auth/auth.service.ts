@@ -12,7 +12,7 @@ import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
 import * as dns from 'dns/promises';
 import axios from 'axios';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
 import { RegisterTenantDto } from './dtos/register-tenant.dto';
@@ -42,7 +42,50 @@ export class AuthService implements OnModuleInit {
     process.env.JWT_SECRET ||
     'enfy-ats-jwt-secret-secure-key';
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Universal query helper executing through Prisma ORM ($queryRawUnsafe / $executeRawUnsafe).
+   * Ensures 100% backward compatibility with PostgreSQL QueryResult ({ rows: T[], rowCount: number }).
+   */
+  async query<T = any>(sql: string, params: any[] = []): Promise<{ rows: T[]; rowCount: number }> {
+    const trimmed = sql.trim();
+    const cleanSql = trimmed.replace(/^(\s*--[^\n]*\n)+/g, '').trim();
+    const isMutationWithoutReturning =
+      /^(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|DO)\b/i.test(cleanSql) &&
+      !/RETURNING/i.test(cleanSql);
+
+    try {
+      if (isMutationWithoutReturning) {
+        const count = await this.prisma.$executeRawUnsafe(sql, ...(params || []));
+        return { rows: [], rowCount: count };
+      } else {
+        const rawRows = await this.prisma.$queryRawUnsafe<T[]>(sql, ...(params || []));
+        const rows = this.convertBigInts(Array.isArray(rawRows) ? rawRows : []);
+        return {
+          rows,
+          rowCount: rows.length,
+        };
+      }
+    } catch (err: any) {
+      this.logger.error(`Query error in AuthService: ${err.message} | SQL: ${sql.slice(0, 150)}...`);
+      throw err;
+    }
+  }
+
+  private convertBigInts(obj: any): any {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'bigint') return Number(obj);
+    if (Array.isArray(obj)) return obj.map((item) => this.convertBigInts(item));
+    if (typeof obj === 'object') {
+      const converted = {};
+      for (const [key, val] of Object.entries(obj)) {
+        converted[key] = typeof val === 'bigint' ? Number(val) : val;
+      }
+      return converted;
+    }
+    return obj;
+  }
 
   // ─────────────────────────────────────────────────────────────
   // Module boot: ensure users table exists and seed defaults
@@ -76,7 +119,7 @@ export class AuthService implements OnModuleInit {
 
   private async syncAllTenantRoles() {
     try {
-      const tenantsResult = await this.db.query('SELECT id FROM tenants');
+      const tenantsResult = await this.query('SELECT id FROM tenants');
       await Promise.all(tenantsResult.rows.map((tenant) => this.seedTenantRoles(tenant.id)));
       this.logger.log('All tenant default roles and permissions successfully synchronized.');
     } catch (err: any) {
@@ -225,7 +268,7 @@ export class AuthService implements OnModuleInit {
       UPDATE users SET assigned_branch_ids = ARRAY[branch_id] WHERE branch_id IS NOT NULL AND (assigned_branch_ids IS NULL OR cardinality(assigned_branch_ids) = 0);
     `;
     try {
-      await this.db.query(ddl);
+      await this.query(ddl);
       this.logger.log('Users, default compulsory branches, and branch user assignments auto-resolved.');
       await this.syncUserRoleIdsFromCustomRoles();
     } catch (err) {
@@ -235,8 +278,8 @@ export class AuthService implements OnModuleInit {
 
   private async syncUserRoleIdsFromCustomRoles() {
     try {
-      const usersRes = await this.db.query('SELECT * FROM users');
-      const rolesRes = await this.db.query('SELECT * FROM custom_roles');
+      const usersRes = await this.query('SELECT * FROM users');
+      const rolesRes = await this.query('SELECT * FROM custom_roles');
 
       const ROLE_RANK: Record<string, number> = {
         SUPER_ADMIN: 100,
@@ -325,7 +368,7 @@ export class AuthService implements OnModuleInit {
         const finalRoleId = bestRoleObj ? bestRoleObj.id : (user.role_id || Array.from(resolvedRoleIds)[0] || null);
         const finalAssignedRoleIds = Array.from(resolvedRoleIds);
 
-        await this.db.query(
+        await this.query(
           `UPDATE users
            SET role_id = $1,
                assigned_role_ids = $2::uuid[],
@@ -359,7 +402,7 @@ export class AuthService implements OnModuleInit {
       const roleMap = await this.seedTenantRoles(DEFAULT_TENANT_ID);
       const superAdminRoleId = roleMap['SUPER_ADMIN'];
 
-      const exists = await this.db.query(
+      const exists = await this.query(
         'SELECT id, role_id, assigned_role_ids FROM users WHERE email = $1 LIMIT 1',
         [adminEmail],
       );
@@ -370,7 +413,7 @@ export class AuthService implements OnModuleInit {
         if (superAdminRoleId && !assignedRoleIds.includes(superAdminRoleId)) {
           assignedRoleIds.push(superAdminRoleId);
         }
-        await this.db.query(
+        await this.query(
           `UPDATE users SET is_approved = true, is_active = true, role_id = $1, assigned_role_ids = $2::uuid[] WHERE id = $3`,
           [superAdminRoleId, assignedRoleIds, user.id],
         );
@@ -379,7 +422,7 @@ export class AuthService implements OnModuleInit {
       }
 
       // First boot only: create the platform super admin
-      await this.db.query(
+      await this.query(
         `INSERT INTO users (tenant_id, email, full_name, is_active, is_approved, role_id)
          VALUES ($1, $2, $3, true, true, $4)`,
         [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId],
@@ -396,7 +439,7 @@ export class AuthService implements OnModuleInit {
   async login(dto: LoginDto) {
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
-    const result = await this.db.query(
+    const result = await this.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
@@ -430,7 +473,7 @@ export class AuthService implements OnModuleInit {
     if (!user.is_approved) {
       if (user.tenant_status === 'ACTIVE') {
         this.logger.log(`Auto-approving active user ${user.email} in active tenant workspace (${user.tenant_id})`);
-        await this.db.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
+        await this.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
         user.is_approved = true;
       } else {
         throw new UnauthorizedException(
@@ -486,7 +529,7 @@ export class AuthService implements OnModuleInit {
     let dynamicRoles: string[] = [];
 
     if (legacyRoleNames.size > 0) {
-      const legacyRes = await this.db.query(
+      const legacyRes = await this.query(
         'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
         [user.tenant_id, Array.from(legacyRoleNames).map(r => r.toUpperCase())]
       ).catch(() => ({ rows: [] }));
@@ -497,11 +540,11 @@ export class AuthService implements OnModuleInit {
       const validUuids = Array.from(userRoleIds).filter(id => uuidRegex.test(id));
       if (validUuids.length > 0) {
         const [permsResult, rolesResult] = await Promise.all([
-          this.db.query(
+          this.query(
             'SELECT DISTINCT permission FROM role_permissions WHERE role_id = ANY($1::uuid[])',
             [validUuids]
           ).catch(() => ({ rows: [] })),
-          this.db.query(
+          this.query(
             'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
             [validUuids]
           ).catch(() => ({ rows: [] }))
@@ -525,7 +568,7 @@ export class AuthService implements OnModuleInit {
 
     if (!isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
       const cleanSubdomain = dto.subdomain.split(':')[0].replace(/^https?:\/\//, '').trim().toLowerCase();
-      const domainMapping = await this.db.query(
+      const domainMapping = await this.query(
         `SELECT tenant_id FROM tenant_domains WHERE LOWER(TRIM(domain_name)) = $1 OR LOWER(TRIM(domain_name)) = $2
          UNION
          SELECT id as tenant_id FROM tenants WHERE LOWER(TRIM(domain)) = $1 OR LOWER(TRIM(domain || '.enfyjobs.com')) = $1
@@ -539,7 +582,7 @@ export class AuthService implements OnModuleInit {
         }
       } else {
         // Fallback: Check if cleanSubdomain matches the user tenant's slug
-        const userTenant = await this.db.query('SELECT domain FROM tenants WHERE id = $1', [user.tenant_id]);
+        const userTenant = await this.query('SELECT domain FROM tenants WHERE id = $1', [user.tenant_id]);
         if (userTenant.rows.length > 0) {
           const tenantSlug = (userTenant.rows[0].domain || '').toLowerCase().trim();
           if (cleanSubdomain === tenantSlug || cleanSubdomain === `${tenantSlug}.enfyjobs.com` || cleanSubdomain.startsWith(tenantSlug)) {
@@ -688,7 +731,7 @@ export class AuthService implements OnModuleInit {
         throw new UnauthorizedException('Token payload missing user identifier.');
       }
 
-      const userResult = await this.db.query(
+      const userResult = await this.query(
         `SELECT u.*, cr.system_role
          FROM users u
          LEFT JOIN custom_roles cr ON cr.id = u.role_id
@@ -758,7 +801,7 @@ export class AuthService implements OnModuleInit {
         const keycloakSub = payload.sub;
 
         if (userEmail || keycloakSub) {
-          const userRes = await this.db.query(
+          const userRes = await this.query(
             `SELECT u.*, cr.system_role
              FROM users u
              LEFT JOIN custom_roles cr ON cr.id = u.role_id
@@ -837,7 +880,7 @@ export class AuthService implements OnModuleInit {
 
     this.logger.log(`Registering user: ${email} [${dto.role}]`);
 
-    const exists = await this.db.query(
+    const exists = await this.query(
       'SELECT id FROM users WHERE email = $1 LIMIT 1',
       [email],
     );
@@ -892,7 +935,7 @@ export class AuthService implements OnModuleInit {
     const resolvedRoleIds = new Set<string>();
     let primaryRoleName = rawRolesList[0];
 
-    const rolesRes = await this.db.query(
+    const rolesRes = await this.query(
       `SELECT id, name, system_role FROM custom_roles 
        WHERE tenant_id = $1 AND (id::text = ANY($2) OR UPPER(name) = ANY($3) OR system_role = ANY($3))`,
       [tenantId, rawRolesList, rawRolesList.map(r => r.toUpperCase())]
@@ -915,7 +958,7 @@ export class AuthService implements OnModuleInit {
     const branchRoles = dto.branchRoles || (branchId && assignedRoleIds.length > 0 ? { [branchId]: assignedRoleIds } : {});
 
     // If direct invite, user starts as active & approved immediately. Else pending.
-    const result = await this.db.query(
+    const result = await this.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles)
        VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[], $9, $10, $11)
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids, branch_id, assigned_branch_ids`,
@@ -933,7 +976,7 @@ export class AuthService implements OnModuleInit {
 
     // Dispatch welcome email with credentials and login guide
     if (dto.sendEmailInvite !== false) {
-      this.db.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId])
+      this.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId])
         .then((tRes) => {
           const tenantName = tRes.rows[0]?.name || 'Enfycon Workspace';
           const tenantDomain = tRes.rows[0]?.domain || '';
@@ -1008,7 +1051,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // 2. Check subdomain uniqueness
-    const subdomainExists = await this.db.query(
+    const subdomainExists = await this.query(
       'SELECT id FROM tenants WHERE domain = $1 UNION SELECT tenant_id as id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
       [dto.subdomain],
     );
@@ -1017,7 +1060,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // 3. Check email uniqueness
-    const emailExists = await this.db.query(
+    const emailExists = await this.query(
       'SELECT id FROM users WHERE email = $1 LIMIT 1',
       [email],
     );
@@ -1033,14 +1076,14 @@ export class AuthService implements OnModuleInit {
     let prefixCode = basePrefix;
     let counter = 1;
     while (true) {
-      const prefixExists = await this.db.query('SELECT id FROM tenants WHERE prefix_code = $1 LIMIT 1', [prefixCode]);
+      const prefixExists = await this.query('SELECT id FROM tenants WHERE prefix_code = $1 LIMIT 1', [prefixCode]);
       if (prefixExists.rows.length === 0) break;
       prefixCode = `${basePrefix.substring(0, 3)}${counter}`;
       counter++;
     }
 
     // 4. Create the new tenant (status = PENDING until admin approves)
-    const tenantResult = await this.db.query(
+    const tenantResult = await this.query(
       `INSERT INTO tenants (name, domain, status, default_market, prefix_code)
        VALUES ($1, $2, 'PENDING', 'US', $3)
        RETURNING id, name, domain, status, prefix_code`,
@@ -1049,7 +1092,7 @@ export class AuthService implements OnModuleInit {
     const tenant = tenantResult.rows[0];
 
     // Map default subdomain in tenant_domains
-    await this.db.query(
+    await this.query(
       `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary)
        VALUES ($1, $2, TRUE)`,
       [tenant.id, dto.subdomain]
@@ -1063,7 +1106,7 @@ export class AuthService implements OnModuleInit {
     const firstName = fullName.split(/\s+/)[0] || '';
     const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
-    const userResult = await this.db.query(
+    const userResult = await this.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
        VALUES ($1, $2, $3, $4, $5, true, false, $6, $7::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
@@ -1256,7 +1299,7 @@ export class AuthService implements OnModuleInit {
       .filter((r) => r.length > 0);
 
     // Preserve internal roles that Keycloak doesn't manage
-    const existing = await this.db.query(
+    const existing = await this.query(
       'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, branch_roles, first_name, last_name, full_name FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
       [data.keycloakId, data.email],
     );
@@ -1273,7 +1316,7 @@ export class AuthService implements OnModuleInit {
 
     let dynamicRoles: string[] = [];
     if (normalizedRoles.length > 0) {
-      const roleResult = await this.db.query(
+      const roleResult = await this.query(
         'SELECT id, name, system_role FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
         [tenantId, normalizedRoles]
       );
@@ -1289,7 +1332,7 @@ export class AuthService implements OnModuleInit {
     // ALWAYS also load roles from database role_id and assigned_role_ids
     const allRoleIds = Array.from(new Set([roleId, ...existingAssigned])).filter(Boolean);
     if (allRoleIds.length > 0) {
-      const dbRolesRes = await this.db.query(
+      const dbRolesRes = await this.query(
         'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
         [allRoleIds]
       );
@@ -1311,7 +1354,7 @@ export class AuthService implements OnModuleInit {
     let dbUser: any;
     if (existing.rows.length > 0) {
       const existingUser = existing.rows[0];
-      const updateRes = await this.db.query(
+      const updateRes = await this.query(
         `UPDATE users
          SET keycloak_id = $1,
              first_name  = COALESCE(NULLIF($2, ''), first_name),
@@ -1326,7 +1369,7 @@ export class AuthService implements OnModuleInit {
       );
       dbUser = updateRes.rows[0];
     } else {
-      const insertRes = await this.db.query(
+      const insertRes = await this.query(
         `INSERT INTO users (keycloak_id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
          VALUES ($1, $2, $3, $4, $5, $6, true, true, $7, $8::uuid[])
          RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids`,
@@ -1338,7 +1381,7 @@ export class AuthService implements OnModuleInit {
     // Load custom role permissions dynamically across assigned role ID and all user roles
     let permissions: string[] = [];
     const effectiveRoleIds = Array.from(new Set([dbUser.role_id, ...(dbUser.assigned_role_ids || [])])).filter(Boolean);
-    const permsRes = await this.db.query(
+    const permsRes = await this.query(
       `SELECT DISTINCT rp.permission 
        FROM custom_roles cr
        JOIN role_permissions rp ON rp.role_id = cr.id
@@ -1359,12 +1402,12 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   async getProfile(userId: string) {
     // Ensure columns exist on tenants table
-    await this.db.query(`
+    await this.query(`
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_options JSONB DEFAULT '{"allowAuto":true,"allowAll":true,"allowUnassigned":true,"allowedPodIds":[]}';
     `).catch(() => {});
 
-    const result = await this.db.query(
+    const result = await this.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.created_at, u.updated_at,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
@@ -1385,7 +1428,7 @@ export class AuthService implements OnModuleInit {
     const u = result.rows[0];
 
     // Query tenant roles to build ID-to-role lookup
-    const rolesRes = await this.db.query(
+    const rolesRes = await this.query(
       `SELECT cr.id, cr.name, cr.is_system, cr.system_role, cr.base_role_id
        FROM custom_roles cr
        WHERE cr.tenant_id = $1`,
@@ -1401,7 +1444,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Query role permissions indexed by role ID
-    const rolePermsRes = await this.db.query(
+    const rolePermsRes = await this.query(
       `SELECT rp.role_id, rp.permission
        FROM role_permissions rp
        JOIN custom_roles cr ON cr.id = rp.role_id
@@ -1542,7 +1585,7 @@ export class AuthService implements OnModuleInit {
       : '';
     const queryParams: any[] = scopedBranchId ? [tenantId, scopedBranchId] : [tenantId];
 
-    const result = await this.db.query(
+    const result = await this.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles,
               u.business_unit_id, u.job_reviewer_id,
@@ -1559,7 +1602,7 @@ export class AuthService implements OnModuleInit {
     );
 
     // Query all custom & system roles for this tenant
-    const rolesRes = await this.db.query(
+    const rolesRes = await this.query(
       `SELECT cr.id, cr.name, cr.is_system, cr.system_role, cr.base_role_id
        FROM custom_roles cr
        WHERE cr.tenant_id = $1`,
@@ -1576,7 +1619,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Query all role permissions indexed by role ID (UUID)
-    const rolePermsRes = await this.db.query(
+    const rolePermsRes = await this.query(
       `SELECT rp.role_id, rp.permission
        FROM role_permissions rp
        JOIN custom_roles cr ON cr.id = rp.role_id
@@ -1717,7 +1760,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Find the user's tenant ID, active, and approved status first
-    const userRes = await this.db.query(
+    const userRes = await this.query(
       'SELECT tenant_id, is_active, is_approved FROM users WHERE id = $1 LIMIT 1',
       [userId]
     );
@@ -1737,7 +1780,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Activating a user also approves them
-    await this.db.query(
+    await this.query(
       `UPDATE users SET is_active = $1, is_approved = true, updated_at = NOW() WHERE id = $2`,
       [isActive, userId],
     );
@@ -1796,7 +1839,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('You cannot delete your own account.');
     }
 
-    const userRes = await this.db.query(
+    const userRes = await this.query(
       'SELECT id, email, tenant_id, full_name, is_active FROM users WHERE id = $1 LIMIT 1',
       [userId]
     );
@@ -1814,13 +1857,13 @@ export class AuthService implements OnModuleInit {
     await this.verifyLastAdminProtection(targetUser.tenant_id, userId, 'delete');
 
     // 1. Reassign or nullify references to target user before deletion
-    await this.db.query('UPDATE users SET job_reviewer_id = NULL WHERE job_reviewer_id = $1', [userId]).catch(() => {});
-    await this.db.query('UPDATE branches SET branch_manager_id = NULL WHERE branch_manager_id = $1', [userId]).catch(() => {});
-    await this.db.query('UPDATE pods SET pod_head_id = NULL WHERE pod_head_id = $1', [userId]).catch(() => {});
-    await this.db.query('DELETE FROM user_invitations WHERE LOWER(email) = LOWER($1) AND tenant_id = $2', [targetUser.email, targetUser.tenant_id]).catch(() => {});
+    await this.query('UPDATE users SET job_reviewer_id = NULL WHERE job_reviewer_id = $1', [userId]).catch(() => {});
+    await this.query('UPDATE branches SET branch_manager_id = NULL WHERE branch_manager_id = $1', [userId]).catch(() => {});
+    await this.query('UPDATE pods SET pod_head_id = NULL WHERE pod_head_id = $1', [userId]).catch(() => {});
+    await this.query('DELETE FROM user_invitations WHERE LOWER(email) = LOWER($1) AND tenant_id = $2', [targetUser.email, targetUser.tenant_id]).catch(() => {});
 
     // 2. Delete the user from PostgreSQL users table
-    await this.db.query('DELETE FROM users WHERE id = $1', [userId]);
+    await this.query('DELETE FROM users WHERE id = $1', [userId]);
 
     // 3. Remove user from Keycloak
     this.deleteKeycloakUser(targetUser.email).catch((err) => {
@@ -1840,7 +1883,7 @@ export class AuthService implements OnModuleInit {
     const normalized = roles.map((r) => r.toUpperCase());
 
     // Fetch target user details
-    const userRes = await this.db.query(
+    const userRes = await this.query(
       `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.role_id
@@ -1871,7 +1914,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Find all custom role IDs corresponding to assigned roles in the list
-    const customRolesRes = await this.db.query(
+    const customRolesRes = await this.query(
       `SELECT id, name FROM custom_roles 
        WHERE tenant_id = $1 AND (UPPER(name) = ANY($2::text[]) OR system_role = ANY($2::text[]) OR id::text = ANY($2::text[]))
        ORDER BY (is_system = false) DESC, created_at DESC`,
@@ -1881,7 +1924,7 @@ export class AuthService implements OnModuleInit {
     const cleanRoleNames: string[] = Array.from(new Set(customRolesRes.rows.map((r: any) => r.name)));
     const roleId = roleIds[0] || null;
 
-    await this.db.query(
+    await this.query(
       `UPDATE users SET role_id = $1, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3`,
       [roleId, roleIds, userId],
     );
@@ -1893,7 +1936,7 @@ export class AuthService implements OnModuleInit {
     dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     requester: any
   ) {
-    const userRes = await this.db.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const userRes = await this.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
     if (userRes.rows.length === 0) {
       throw new NotFoundException('User not found.');
     }
@@ -1922,7 +1965,7 @@ export class AuthService implements OnModuleInit {
 
     if (dto.email && dto.email.trim().toLowerCase() !== user.email) {
       const cleanEmail = dto.email.trim().toLowerCase();
-      const dup = await this.db.query('SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1', [cleanEmail, userId]);
+      const dup = await this.query('SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1', [cleanEmail, userId]);
       if (dup.rows.length > 0) {
         throw new ConflictException(`Email ${cleanEmail} is already registered to another user.`);
       }
@@ -1978,7 +2021,7 @@ export class AuthService implements OnModuleInit {
     const combinedRoleIds = new Set<string>();
     if (rawRoleIdentifiers.size > 0) {
       const rawList = Array.from(rawRoleIdentifiers);
-      const matchedRolesRes = await this.db.query(
+      const matchedRolesRes = await this.query(
         `SELECT id, name, system_role FROM custom_roles 
          WHERE tenant_id = $1 AND (id::text = ANY($2) OR UPPER(name) = ANY($3) OR system_role = ANY($3))`,
         [user.tenant_id, rawList, rawList.map(r => r.toUpperCase())]
@@ -2002,7 +2045,7 @@ export class AuthService implements OnModuleInit {
       primaryRoleId = user.role_id;
     }
 
-    await this.db.query(
+    await this.query(
       `UPDATE users
        SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, assigned_branch_ids = $6, branch_roles = $7, business_unit_id = $8, job_reviewer_id = $9, role_id = $10, assigned_role_ids = $11::uuid[], updated_at = NOW()
        WHERE id = $12`,
@@ -2032,7 +2075,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('userIds array is required.');
     }
     const cleanReviewerId = reviewerId && reviewerId.trim().length > 0 ? reviewerId.trim() : null;
-    await this.db.query(
+    await this.query(
       `UPDATE users SET job_reviewer_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND tenant_id = $3`,
       [cleanReviewerId, userIds, tenantId]
     );
@@ -2116,13 +2159,13 @@ export class AuthService implements OnModuleInit {
 
     for (const [roleName, permissions] of Object.entries(DEFAULT_PERMISSIONS)) {
       // 1. Check or insert system role
-      let roleRes = await this.db.query(
+      let roleRes = await this.query(
         "SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = UPPER($2) AND is_system = true LIMIT 1",
         [tenantId, roleName]
       );
       let roleId: string;
       if (roleRes.rows.length === 0) {
-        const ins = await this.db.query(`
+        const ins = await this.query(`
           INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role)
           VALUES ($1, NULL, $2, $3, true, $4)
           RETURNING id
@@ -2135,7 +2178,7 @@ export class AuthService implements OnModuleInit {
         roleId = ins.rows[0].id;
       } else {
         roleId = roleRes.rows[0].id;
-        await this.db.query(
+        await this.query(
           "UPDATE custom_roles SET system_role = $1, description = $2 WHERE id = $3",
           [roleName, `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`, roleId]
         );
@@ -2144,9 +2187,9 @@ export class AuthService implements OnModuleInit {
       roleMap[roleName] = roleId;
 
       // 2. Insert permissions
-      await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+      await this.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
       for (const perm of permissions) {
-        await this.db.query(`
+        await this.query(`
           INSERT INTO role_permissions (role_id, permission)
           VALUES ($1, $2)
         `, [roleId, perm]);
@@ -2157,7 +2200,7 @@ export class AuthService implements OnModuleInit {
   }
 
   private async ensureRolesTableBranchColumn(): Promise<void> {
-    await this.db.query(`
+    await this.query(`
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
       UPDATE custom_roles cr
@@ -2196,7 +2239,7 @@ export class AuthService implements OnModuleInit {
     }
 
     sql += ' ORDER BY (cr.is_system = false) DESC, cr.name ASC';
-    const rolesRes = await this.db.query(sql, params);
+    const rolesRes = await this.query(sql, params);
     const roles = rolesRes.rows;
 
     const DEFAULT_PERMS: Record<string, string[]> = {
@@ -2272,7 +2315,7 @@ export class AuthService implements OnModuleInit {
       const defaultPerms = DEFAULT_PERMS[baseSysRole] || [];
 
       // Fetch dynamic permissions assigned to role
-      const permsRes = await this.db.query(
+      const permsRes = await this.query(
         'SELECT permission FROM role_permissions WHERE role_id = $1',
         [role.id]
       );
@@ -2347,7 +2390,7 @@ export class AuthService implements OnModuleInit {
     let resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
 
     if (resolvedBaseRoleId) {
-      const baseRoleRes = await this.db.query(
+      const baseRoleRes = await this.query(
         'SELECT id, name, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [resolvedBaseRoleId, tenantId]
       );
@@ -2355,7 +2398,7 @@ export class AuthService implements OnModuleInit {
         resolvedSystemRole = baseRoleRes.rows[0].system_role || baseRoleRes.rows[0].name;
       }
     } else {
-      const baseRoleRes = await this.db.query(
+      const baseRoleRes = await this.query(
         'SELECT id FROM custom_roles WHERE tenant_id = $1 AND is_system = true AND (UPPER(name) = $2 OR UPPER(system_role) = $2) LIMIT 1',
         [tenantId, resolvedSystemRole]
       );
@@ -2368,7 +2411,7 @@ export class AuthService implements OnModuleInit {
 
     let effectiveBranchId = branchId || null;
     if (!effectiveBranchId) {
-      const defaultBranchRes = await this.db.query(
+      const defaultBranchRes = await this.query(
         'SELECT id FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1',
         [tenantId]
       );
@@ -2447,7 +2490,7 @@ export class AuthService implements OnModuleInit {
     // Enforce permission ceiling: custom roles can NEVER have extra permissions beyond their base system archetype
     resolvedPermissions = resolvedPermissions.filter(p => allowedBaseCeiling.has(p));
 
-    const exists = await this.db.query(
+    const exists = await this.query(
       'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) LIMIT 1',
       [tenantId, nameUpper, effectiveBranchId]
     );
@@ -2455,7 +2498,7 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException(`A custom role with name "${name}" already exists in this branch.`);
     }
 
-    const roleRes = await this.db.query(
+    const roleRes = await this.query(
       `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role, base_role_id, created_by)
        VALUES ($1, $2, $3, $4, false, $5, $6, $7)
        RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role as "systemRole", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById"`,
@@ -2464,7 +2507,7 @@ export class AuthService implements OnModuleInit {
     const role = roleRes.rows[0];
 
     for (const perm of resolvedPermissions) {
-      await this.db.query(
+      await this.query(
         'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
         [role.id, perm]
       );
@@ -2472,7 +2515,7 @@ export class AuthService implements OnModuleInit {
 
     let branchName = null;
     if (effectiveBranchId) {
-      const bRes = await this.db.query('SELECT name FROM branches WHERE id = $1', [effectiveBranchId]);
+      const bRes = await this.query('SELECT name FROM branches WHERE id = $1', [effectiveBranchId]);
       branchName = bRes.rows[0]?.name || null;
     }
 
@@ -2490,7 +2533,7 @@ export class AuthService implements OnModuleInit {
     userId?: string,
   ) {
     await this.ensureRolesTableBranchColumn();
-    const roleResult = await this.db.query(
+    const roleResult = await this.query(
       'SELECT id, name, is_system, branch_id, base_role_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
@@ -2511,7 +2554,7 @@ export class AuthService implements OnModuleInit {
         throw new BadRequestException('Role name SUPER_ADMIN is reserved.');
       }
       const targetBranchId = body.branchId !== undefined ? body.branchId : existingRole.branch_id;
-      const exists = await this.db.query(
+      const exists = await this.query(
         'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) AND id <> $4 LIMIT 1',
         [tenantId, nameUpper, targetBranchId, roleId]
       );
@@ -2547,7 +2590,7 @@ export class AuthService implements OnModuleInit {
     }
 
     if (updates.length > 1) {
-      await this.db.query(
+      await this.query(
         `UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1 AND tenant_id = $2`,
         params
       );
@@ -2557,7 +2600,7 @@ export class AuthService implements OnModuleInit {
         const oldName = existingRole.name;
         const newName = body.name.trim();
 
-        const usersToUpdate = await this.db.query(
+        const usersToUpdate = await this.query(
           'SELECT id, branch_roles FROM users WHERE tenant_id = $1',
           [tenantId]
         );
@@ -2574,7 +2617,7 @@ export class AuthService implements OnModuleInit {
           }
 
           if (needsUpdate) {
-            await this.db.query(
+            await this.query(
               'UPDATE users SET branch_roles = $1::jsonb, updated_at = NOW() WHERE id = $2',
               [JSON.stringify(branchRoles), u.id]
             );
@@ -2591,7 +2634,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async updateRolePermissions(tenantId: string, roleId: string, permissions: string[]) {
-    const roleResult = await this.db.query(
+    const roleResult = await this.query(
       'SELECT id, is_system, system_role, base_role_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
@@ -2662,9 +2705,9 @@ export class AuthService implements OnModuleInit {
     const filteredPermissions = role.is_system ? permissions : permissions.filter(p => allowedCeiling.has(p));
 
     // Update permissions in database
-    await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
+    await this.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
     for (const perm of filteredPermissions) {
-      await this.db.query(
+      await this.query(
         'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
         [roleId, perm]
       );
@@ -2674,7 +2717,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string) {
-    const roleResult = await this.db.query(
+    const roleResult = await this.query(
       'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
@@ -2687,7 +2730,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Check staff count currently assigned to this role
-    const staffCountRes = await this.db.query(
+    const staffCountRes = await this.query(
       'SELECT COUNT(*)::int as count FROM users WHERE role_id = $1 OR $2 = ANY(roles)',
       [roleId, roleToDel.name]
     );
@@ -2705,7 +2748,7 @@ export class AuthService implements OnModuleInit {
 
     let targetRole: any = null;
     if (targetRoleId) {
-      const targetRes = await this.db.query(
+      const targetRes = await this.query(
         'SELECT id, name FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [targetRoleId, tenantId]
       );
@@ -2716,7 +2759,7 @@ export class AuthService implements OnModuleInit {
     } else {
       // Default fallback if staffCount is 0
       const baseSysRole = roleToDel.system_role || 'RECRUITER';
-      const fallbackRes = await this.db.query(
+      const fallbackRes = await this.query(
         "SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR system_role = $2) AND is_system = true LIMIT 1",
         [tenantId, baseSysRole]
       );
@@ -2725,31 +2768,31 @@ export class AuthService implements OnModuleInit {
 
     let reassignedCount = 0;
     if (targetRole) {
-      const updateRes = await this.db.query(
+      const updateRes = await this.query(
         'UPDATE users SET role_id = $1 WHERE role_id = $2 RETURNING id',
         [targetRole.id, roleId]
       );
       reassignedCount = updateRes.rows.length;
 
       // Replace role ID in users.assigned_role_ids array
-      await this.db.query(
+      await this.query(
         `UPDATE users SET assigned_role_ids = array_replace(assigned_role_ids, $1::uuid, $2::uuid) WHERE tenant_id = $3 AND $1::uuid = ANY(assigned_role_ids)`,
         [roleId, targetRole.id, tenantId]
       ).catch(() => {});
     } else {
       // Remove role ID from users.assigned_role_ids array
-      await this.db.query(
+      await this.query(
         `UPDATE users SET assigned_role_ids = array_remove(assigned_role_ids, $1::uuid) WHERE tenant_id = $2 AND $1::uuid = ANY(assigned_role_ids)`,
         [roleId, tenantId]
       ).catch(() => {});
     }
 
     // 1. Clear associated permissions and user role mappings first to prevent FK constraint errors
-    await this.db.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]).catch(() => {});
-    await this.db.query('DELETE FROM user_roles WHERE role_id = $1', [roleId]).catch(() => {});
+    await this.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]).catch(() => {});
+    await this.query('DELETE FROM user_roles WHERE role_id = $1', [roleId]).catch(() => {});
 
     // 2. Delete the custom role
-    await this.db.query('DELETE FROM custom_roles WHERE id = $1', [roleId]);
+    await this.query('DELETE FROM custom_roles WHERE id = $1', [roleId]);
     return {
       message: `Custom role "${roleToDel.name}" deleted successfully.${reassignedCount > 0 ? ` Reassigned ${reassignedCount} staff member(s) to ${targetRole?.name || 'default role'}.` : ''}`,
       reassignedCount,
@@ -2764,7 +2807,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Get selected roles details
-    const rolesResult = await this.db.query(
+    const rolesResult = await this.query(
       'SELECT id, name, branch_id FROM custom_roles WHERE id = ANY($1) AND tenant_id = $2',
       [roleIds, tenantId]
     );
@@ -2781,7 +2824,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Fetch target user details
-    const userRes = await this.db.query(
+    const userRes = await this.query(
       'SELECT tenant_id, role_id, assigned_role_ids, branch_roles FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
@@ -2825,7 +2868,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Update user: link primary role_id (first item) and assigned_role_ids array
-    await this.db.query(
+    await this.query(
       `UPDATE users 
        SET role_id = $1, assigned_role_ids = $2::uuid[], branch_roles = $3, updated_at = NOW() 
        WHERE id = $4 AND tenant_id = $5`,
@@ -2840,7 +2883,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('Please provide at least one user ID.');
     }
 
-    const roleRes = await this.db.query(
+    const roleRes = await this.query(
       'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
@@ -2851,7 +2894,7 @@ export class AuthService implements OnModuleInit {
 
     let assignedCount = 0;
     for (const userId of userIds) {
-      const uRes = await this.db.query(
+      const uRes = await this.query(
         'SELECT id, role_id, assigned_role_ids FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [userId, tenantId]
       );
@@ -2860,7 +2903,7 @@ export class AuthService implements OnModuleInit {
       const currentAssigned: string[] = Array.isArray(user.assigned_role_ids) ? user.assigned_role_ids : [];
       const updatedAssigned = currentAssigned.includes(targetRole.id) ? currentAssigned : [...currentAssigned, targetRole.id];
 
-      await this.db.query(
+      await this.query(
         `UPDATE users 
          SET role_id = COALESCE(role_id, $1), assigned_role_ids = $2::uuid[], updated_at = NOW() 
          WHERE id = $3 AND tenant_id = $4`,
@@ -2873,7 +2916,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async unassignUserFromRole(tenantId: string, roleId: string, userId: string) {
-    const roleRes = await this.db.query(
+    const roleRes = await this.query(
       'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
@@ -2882,7 +2925,7 @@ export class AuthService implements OnModuleInit {
     }
     const role = roleRes.rows[0];
 
-    const uRes = await this.db.query(
+    const uRes = await this.query(
       'SELECT id, role_id, assigned_role_ids FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
@@ -2896,7 +2939,7 @@ export class AuthService implements OnModuleInit {
     // Find next valid custom role ID if current role_id was this role
     let nextRoleId = user.role_id === role.id ? (remainingAssigned[0] || null) : user.role_id;
     if (!nextRoleId) {
-      const defaultRoleRes = await this.db.query(
+      const defaultRoleRes = await this.query(
         'SELECT id FROM custom_roles WHERE tenant_id = $1 AND system_role = $2 LIMIT 1',
         [tenantId, 'RECRUITER']
       );
@@ -2906,7 +2949,7 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    await this.db.query(
+    await this.query(
       `UPDATE users 
        SET role_id = $1, assigned_role_ids = $2::uuid[], updated_at = NOW() 
        WHERE id = $3 AND tenant_id = $4`,
@@ -2989,7 +3032,7 @@ export class AuthService implements OnModuleInit {
   // List all users pending approval (admin utility)
   // ─────────────────────────────────────────────────────────────
   async listPendingApprovals() {
-    const result = await this.db.query(
+    const result = await this.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.created_at, u.tenant_id, 
               COALESCE(cr.name, 'Staff') as role_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain
@@ -3018,7 +3061,7 @@ export class AuthService implements OnModuleInit {
   // Approve user and set tenant's market settings (admin utility)
   // ─────────────────────────────────────────────────────────────
   async approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number) {
-    const userResult = await this.db.query(
+    const userResult = await this.query(
       'SELECT tenant_id FROM users WHERE id = $1 LIMIT 1',
       [userId]
     );
@@ -3027,27 +3070,27 @@ export class AuthService implements OnModuleInit {
     }
     const tenantId = userResult.rows[0].tenant_id;
 
-    await this.db.query(
+    await this.query(
       'UPDATE users SET is_approved = true, is_active = true WHERE id = $1',
       [userId]
     );
 
-    await this.db.query(
+    await this.query(
       "UPDATE tenants SET status = 'ACTIVE' WHERE id = $1",
       [tenantId]
     );
 
     if (market && (market === 'US' || market === 'IN')) {
-      await this.db.query(
+      await this.query(
         'UPDATE tenants SET default_market = $1 WHERE id = $2',
         [market, tenantId]
       );
     }
     if (userLimit && userLimit > 0) {
-      await this.db.query('UPDATE tenants SET user_limit = $1 WHERE id = $2', [userLimit, tenantId]);
+      await this.query('UPDATE tenants SET user_limit = $1 WHERE id = $2', [userLimit, tenantId]);
     }
     if (maxBranches && maxBranches > 0) {
-      await this.db.query('UPDATE tenants SET max_branches = $1 WHERE id = $2', [maxBranches, tenantId]);
+      await this.query('UPDATE tenants SET max_branches = $1 WHERE id = $2', [maxBranches, tenantId]);
     }
     if (subdomain && subdomain.trim()) {
       await this.updateTenantSubdomain(tenantId, subdomain.trim());
@@ -3080,7 +3123,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('Subdomain must contain only lowercase letters, numbers, and hyphens.');
     }
 
-    const subdomainExists = await this.db.query(
+    const subdomainExists = await this.query(
       'SELECT id FROM tenants WHERE domain = $1 UNION SELECT tenant_id as id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
       [dto.subdomain]
     );
@@ -3088,7 +3131,7 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException(`Subdomain "${dto.subdomain}" is already taken.`);
     }
 
-    const emailExists = await this.db.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email]);
+    const emailExists = await this.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email]);
     if (emailExists.rows.length > 0) {
       throw new ConflictException(`Email "${email}" is already registered.`);
     }
@@ -3098,13 +3141,13 @@ export class AuthService implements OnModuleInit {
     let prefixCode = basePrefix;
     let counter = 1;
     while (true) {
-      const prefixExists = await this.db.query('SELECT id FROM tenants WHERE prefix_code = $1 LIMIT 1', [prefixCode]);
+      const prefixExists = await this.query('SELECT id FROM tenants WHERE prefix_code = $1 LIMIT 1', [prefixCode]);
       if (prefixExists.rows.length === 0) break;
       prefixCode = `${basePrefix.substring(0, 3)}${counter}`;
       counter++;
     }
 
-    const tenantResult = await this.db.query(
+    const tenantResult = await this.query(
       `INSERT INTO tenants (name, domain, status, default_market, user_limit, max_branches, prefix_code)
        VALUES ($1, $2, 'ACTIVE', $3, $4, $5, $6)
        RETURNING id, name, domain, status, user_limit, max_branches, default_market, prefix_code`,
@@ -3112,7 +3155,7 @@ export class AuthService implements OnModuleInit {
     );
     const tenant = tenantResult.rows[0];
 
-    await this.db.query(
+    await this.query(
       `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1, $2, TRUE)`,
       [tenant.id, dto.subdomain]
     );
@@ -3124,7 +3167,7 @@ export class AuthService implements OnModuleInit {
     const firstName = adminFullName.split(/\s+/)[0] || '';
     const lastName = adminFullName.split(/\s+/).slice(1).join(' ') || '';
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
-    const userResult = await this.db.query(
+    const userResult = await this.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
        VALUES ($1, $2, $3, $4, $5, true, true, $6, $7::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
@@ -3157,7 +3200,7 @@ export class AuthService implements OnModuleInit {
   // List all tenants in the system (admin utility)
   // ─────────────────────────────────────────────────────────────
   async listTenants() {
-    const result = await this.db.query(
+    const result = await this.query(
       `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", created_at as "createdAt"
        FROM tenants
        ORDER BY name ASC`
@@ -3166,7 +3209,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async getTenantDetails(tenantId: string) {
-    const tenantRes = await this.db.query(
+    const tenantRes = await this.query(
       `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", created_at as "createdAt"
        FROM tenants WHERE id = $1 LIMIT 1`,
       [tenantId]
@@ -3176,7 +3219,7 @@ export class AuthService implements OnModuleInit {
     }
     const tenant = tenantRes.rows[0];
 
-    const usersRes = await this.db.query(
+    const usersRes = await this.query(
       `SELECT u.id, u.email, u.first_name as "firstName", u.last_name as "lastName", u.full_name as "fullName", u.is_active as "isActive", u.is_approved as "isApproved", u.created_at as "createdAt", cr.name as "roleName", cr.system_role as "systemRole"
        FROM users u
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
@@ -3186,9 +3229,9 @@ export class AuthService implements OnModuleInit {
     );
 
     const statsRes = await Promise.all([
-      this.db.query(`SELECT COUNT(*) FROM jobs WHERE tenant_id = $1`, [tenantId]),
-      this.db.query(`SELECT COUNT(*) FROM candidates WHERE tenant_id = $1`, [tenantId]),
-      this.db.query(`SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1`, [tenantId]),
+      this.query(`SELECT COUNT(*) FROM jobs WHERE tenant_id = $1`, [tenantId]),
+      this.query(`SELECT COUNT(*) FROM candidates WHERE tenant_id = $1`, [tenantId]),
+      this.query(`SELECT COUNT(*) FROM recruiter_submissions WHERE tenant_id = $1`, [tenantId]),
     ]);
 
     return {
@@ -3211,7 +3254,7 @@ export class AuthService implements OnModuleInit {
     if (upperStatus !== 'ACTIVE' && upperStatus !== 'INACTIVE' && upperStatus !== 'PENDING') {
       throw new BadRequestException('Invalid tenant status. Must be ACTIVE, INACTIVE, or PENDING.');
     }
-    await this.db.query(
+    await this.query(
       'UPDATE tenants SET status = $1, updated_at = NOW() WHERE id = $2',
       [upperStatus, tenantId]
     );
@@ -3225,7 +3268,7 @@ export class AuthService implements OnModuleInit {
     if (isNaN(limit) || limit < 1) {
       throw new BadRequestException('Invalid user limit. Must be a positive integer.');
     }
-    await this.db.query(
+    await this.query(
       'UPDATE tenants SET user_limit = $1, updated_at = NOW() WHERE id = $2',
       [limit, tenantId]
     );
@@ -3236,7 +3279,7 @@ export class AuthService implements OnModuleInit {
     if (isNaN(limit) || limit < 1) {
       throw new BadRequestException('Invalid branch limit. Must be a positive integer.');
     }
-    await this.db.query(
+    await this.query(
       'UPDATE tenants SET max_branches = $1, updated_at = NOW() WHERE id = $2',
       [limit, tenantId]
     );
@@ -3250,7 +3293,7 @@ export class AuthService implements OnModuleInit {
     if (market !== 'US' && market !== 'IN') {
       throw new BadRequestException('Invalid market type. Must be US or IN.');
     }
-    await this.db.query(
+    await this.query(
       'UPDATE tenants SET default_market = $1, updated_at = NOW() WHERE id = $2',
       [market, tenantId]
     );
@@ -3266,7 +3309,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Check if subdomain is already taken by another tenant
-    const exists = await this.db.query(
+    const exists = await this.query(
       'SELECT id FROM tenant_domains WHERE domain_name = $1 AND tenant_id <> $2 LIMIT 1',
       [subdomain, tenantId]
     );
@@ -3274,13 +3317,13 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException('Subdomain is already taken by another company.');
     }
 
-    await this.db.query(
+    await this.query(
       'UPDATE tenants SET domain = $1, updated_at = NOW() WHERE id = $2',
       [subdomain, tenantId]
     );
 
     // Update primary subdomain mapping
-    await this.db.query(
+    await this.query(
       'UPDATE tenant_domains SET domain_name = $1 WHERE tenant_id = $2 AND is_primary = TRUE',
       [subdomain, tenantId]
     );
@@ -3361,7 +3404,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   private async checkSeatLimit(tenantId: string) {
     // 1. Get the tenant user limit
-    const tenantRes = await this.db.query(
+    const tenantRes = await this.query(
       'SELECT user_limit FROM tenants WHERE id = $1 LIMIT 1',
       [tenantId]
     );
@@ -3371,7 +3414,7 @@ export class AuthService implements OnModuleInit {
     const userLimit = tenantRes.rows[0].user_limit || 5;
 
     // 2. Count active and approved users for this tenant
-    const activeRes = await this.db.query(
+    const activeRes = await this.query(
       'SELECT COUNT(*) as count FROM users WHERE tenant_id = $1 AND is_active = true AND is_approved = true',
       [tenantId]
     );
@@ -3389,7 +3432,7 @@ export class AuthService implements OnModuleInit {
   // ─────────────────────────────────────────────────────────────
   private async verifyLastAdminProtection(tenantId: string, targetUserId: string, action: 'demote' | 'deactivate' | 'delete') {
     // 1. Check if target user currently has the ADMIN role
-    const userRes = await this.db.query(
+    const userRes = await this.query(
       `SELECT u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role, u.is_active, u.is_approved 
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.role_id
@@ -3404,7 +3447,7 @@ export class AuthService implements OnModuleInit {
 
     if (hasAdmin && user.is_active && user.is_approved) {
       // 2. Count active and approved admins in this tenant
-      const adminsRes = await this.db.query(
+      const adminsRes = await this.query(
         `SELECT COUNT(*) as count 
          FROM users u
          LEFT JOIN custom_roles cr ON cr.id = u.role_id
@@ -3425,7 +3468,7 @@ export class AuthService implements OnModuleInit {
 
   // ─── Custom Domain Helpers ────────────────────────────────────
   async getTenantDomains(tenantId: string) {
-    const res = await this.db.query(
+    const res = await this.query(
       `SELECT id, domain_name, is_primary, 
               CASE 
                 WHEN is_primary = TRUE THEN 'VERIFIED'
@@ -3451,7 +3494,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Check if domain is already mapped anywhere
-    const exists = await this.db.query(
+    const exists = await this.query(
       'SELECT id FROM tenant_domains WHERE domain_name = $1 LIMIT 1',
       [normalizedDomain]
     );
@@ -3459,7 +3502,7 @@ export class AuthService implements OnModuleInit {
       throw new ConflictException('Domain name is already registered by another workspace.');
     }
 
-    const res = await this.db.query(
+    const res = await this.query(
       `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary, verification_status, ssl_status)
        VALUES ($1, $2, FALSE, 'PENDING', 'PENDING')
        RETURNING id, domain_name, is_primary, verification_status, ssl_status, created_at`,
@@ -3470,7 +3513,7 @@ export class AuthService implements OnModuleInit {
 
   async deleteTenantDomain(tenantId: string, domainId: string) {
     // Check if it's the primary subdomain (cannot delete primary)
-    const check = await this.db.query(
+    const check = await this.query(
       'SELECT is_primary FROM tenant_domains WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [domainId, tenantId]
     );
@@ -3481,7 +3524,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('Cannot delete the primary subdomain of the company workspace.');
     }
 
-    await this.db.query(
+    await this.query(
       'DELETE FROM tenant_domains WHERE id = $1 AND tenant_id = $2',
       [domainId, tenantId]
     );
@@ -3492,7 +3535,7 @@ export class AuthService implements OnModuleInit {
     const normalized = domainName.toLowerCase().trim();
     if (!normalized) return false;
     try {
-      const res = await this.db.query(
+      const res = await this.query(
         `SELECT 1 FROM tenant_domains WHERE domain_name = $1
          UNION
          SELECT 1 FROM tenants WHERE LOWER(domain) = $1 OR LOWER(domain || '.enfyjobs.com') = $1
@@ -3514,7 +3557,7 @@ export class AuthService implements OnModuleInit {
     this.logger.log(`Updating tenant settings for ${tenantId}: ${JSON.stringify(settings)}`);
 
     // Ensure columns exist on tenants table
-    await this.db.query(`
+    await this.query(`
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_options JSONB DEFAULT '{"allowAuto":true,"allowAll":true,"allowUnassigned":true,"allowedPodIds":[]}';
     `).catch(() => {});
@@ -3560,7 +3603,7 @@ export class AuthService implements OnModuleInit {
     }
     
     const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`;
-    const res = await this.db.query(sql, params);
+    const res = await this.query(sql, params);
     return res.rows[0];
   }
 
@@ -3569,7 +3612,7 @@ export class AuthService implements OnModuleInit {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantIdOrSubdomain);
     let tenantId = tenantIdOrSubdomain;
     if (!isUuid) {
-      const res = await this.db.query(
+      const res = await this.query(
         `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
          UNION SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1 LIMIT 1`,
         [tenantIdOrSubdomain.toLowerCase()]
@@ -3581,7 +3624,7 @@ export class AuthService implements OnModuleInit {
       }
     }
 
-    const result = await this.db.query(
+    const result = await this.query(
       'SELECT * FROM tenant_auth_settings WHERE tenant_id = $1 LIMIT 1',
       [tenantId]
     );
@@ -3617,7 +3660,7 @@ export class AuthService implements OnModuleInit {
   }
 
   async updateTenantAuthPolicy(tenantId: string, dto: any) {
-    const result = await this.db.query(
+    const result = await this.query(
       `INSERT INTO tenant_auth_settings (
          tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret
        )
@@ -3681,7 +3724,7 @@ export class AuthService implements OnModuleInit {
     let targetTenantId = DEFAULT_TENANT_ID;
     if (dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
       const cleanSub = dto.subdomain.split(':')[0].replace(/^https?:\/\//, '').trim().toLowerCase();
-      const domainMapping = await this.db.query(
+      const domainMapping = await this.query(
         `SELECT tenant_id FROM tenant_domains WHERE LOWER(TRIM(domain_name)) = $1 OR LOWER(TRIM(domain_name)) = $2
          UNION
          SELECT id as tenant_id FROM tenants WHERE LOWER(TRIM(domain)) = $1 OR LOWER(TRIM(domain || '.enfyjobs.com')) = $1
@@ -3695,7 +3738,7 @@ export class AuthService implements OnModuleInit {
 
     // ZERO-TRUST INVITE-ONLY GATE:
     // Query users table for this email and tenant
-    const userRes = await this.db.query(
+    const userRes = await this.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, u.profile_picture,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled,
               cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
@@ -3730,7 +3773,7 @@ export class AuthService implements OnModuleInit {
 
     if (!user.is_approved) {
       if (user.tenant_status === 'ACTIVE') {
-        await this.db.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
+        await this.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
         user.is_approved = true;
       } else {
         throw new UnauthorizedException('Your account is pending administrator approval.');
@@ -3768,7 +3811,7 @@ export class AuthService implements OnModuleInit {
 
     // Sync profile picture if provided
     if (dto.picture && !user.profile_picture) {
-      await this.db.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [dto.picture, user.id]).catch(() => {});
+      await this.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [dto.picture, user.id]).catch(() => {});
     }
 
     // Fetch dynamic permissions and roles
@@ -3781,11 +3824,11 @@ export class AuthService implements OnModuleInit {
     let dynamicRoles: string[] = [];
     if (userRoleIds.size > 0) {
       const [permsResult, rolesResult] = await Promise.all([
-        this.db.query(
+        this.query(
           'SELECT DISTINCT permission FROM role_permissions WHERE role_id = ANY($1::uuid[])',
           [Array.from(userRoleIds)]
         ).catch(() => ({ rows: [] })),
-        this.db.query(
+        this.query(
           'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
           [Array.from(userRoleIds)]
         ).catch(() => ({ rows: [] }))
@@ -3869,7 +3912,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Check if user is already in this tenant
-    const existing = await this.db.query(
+    const existing = await this.query(
       'SELECT id, is_active FROM users WHERE LOWER(email) = $1 AND tenant_id = $2 LIMIT 1',
       [cleanEmail, tenantId]
     );
@@ -3897,7 +3940,7 @@ export class AuthService implements OnModuleInit {
     const systemRole = (dto.systemRole || 'RECRUITER').toUpperCase();
     let roleId = dto.roleId || null;
     if (!roleId) {
-      const defaultRoleRes = await this.db.query(
+      const defaultRoleRes = await this.query(
         'SELECT id FROM custom_roles WHERE tenant_id = $1 AND (system_role = $2 OR name = $2) LIMIT 1',
         [tenantId, systemRole]
       );
@@ -3910,7 +3953,7 @@ export class AuthService implements OnModuleInit {
     const firstName = fullName.split(/\s+/)[0] || '';
     const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
     const assignedRoleIds = roleId ? [roleId] : [];
-    const insertUserRes = await this.db.query(
+    const insertUserRes = await this.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, pod_id, is_active, is_approved)
        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, $9, true, true)
        RETURNING id, email, first_name, last_name, full_name, created_at`,
@@ -3932,7 +3975,7 @@ export class AuthService implements OnModuleInit {
     const invitationToken = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    await this.db.query(
+    await this.query(
       `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role, branch_id, pod_id, invitation_token, token_expires_at, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (tenant_id, email) DO UPDATE SET
@@ -3954,7 +3997,7 @@ export class AuthService implements OnModuleInit {
     );
 
     // Fetch tenant details for email branding
-    const tenantRes = await this.db.query(
+    const tenantRes = await this.query(
       'SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1',
       [tenantId]
     );
@@ -3986,7 +4029,7 @@ export class AuthService implements OnModuleInit {
 
   async getInvitationDetails(token: string) {
     if (!token) throw new BadRequestException('Token is required.');
-    const res = await this.db.query(
+    const res = await this.query(
       `SELECT ui.id, ui.email, ui.full_name, ui.system_role, ui.token_expires_at, ui.is_accepted,
               t.name as tenant_name, t.domain as tenant_domain
        FROM user_invitations ui
@@ -4018,7 +4061,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('Password must be at least 8 characters long.');
     }
 
-    const res = await this.db.query(
+    const res = await this.query(
       `SELECT ui.*, t.domain as tenant_domain FROM user_invitations ui
        JOIN tenants t ON ui.tenant_id = t.id
        WHERE ui.invitation_token = $1 LIMIT 1`,
@@ -4032,7 +4075,7 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('Invitation has expired. Please contact your administrator for a new invite.');
     }
 
-    await this.db.query(
+    await this.query(
       `UPDATE users SET is_active = true, is_approved = true, updated_at = NOW()
        WHERE LOWER(email) = LOWER($1) AND tenant_id = $2`,
       [invite.email, invite.tenant_id]
@@ -4045,7 +4088,7 @@ export class AuthService implements OnModuleInit {
       tenantId: invite.tenant_id,
     });
 
-    await this.db.query(
+    await this.query(
       `UPDATE user_invitations SET is_accepted = true WHERE id = $1`,
       [invite.id]
     );
@@ -4062,7 +4105,7 @@ export class AuthService implements OnModuleInit {
     const normalized = (domainName || '').toLowerCase().trim();
     if (!normalized) throw new BadRequestException('Domain name is required.');
 
-    const res = await this.db.query(
+    const res = await this.query(
       'SELECT id, verification_token, verification_status FROM tenant_domains WHERE LOWER(domain_name) = $1 AND tenant_id = $2 LIMIT 1',
       [normalized, tenantId]
     );
@@ -4072,7 +4115,7 @@ export class AuthService implements OnModuleInit {
 
     const isLocal = normalized.endsWith('.local') || normalized.includes('localhost') || (process.env.NODE_ENV !== 'production' && !normalized.includes('.'));
     if (isLocal) {
-      await this.db.query(
+      await this.query(
         `UPDATE tenant_domains SET verification_status = 'VERIFIED', ssl_status = 'ACTIVE', verified_at = NOW()
          WHERE id = $1`,
         [res.rows[0].id]
@@ -4127,7 +4170,7 @@ export class AuthService implements OnModuleInit {
     }
 
     if (!dnsMatched) {
-      await this.db.query(
+      await this.query(
         `UPDATE tenant_domains SET verification_status = 'PENDING', ssl_status = 'PENDING'
          WHERE id = $1`,
         [res.rows[0].id]
@@ -4143,7 +4186,7 @@ export class AuthService implements OnModuleInit {
     }
 
     // Mark as VERIFIED and SSL ACTIVE
-    await this.db.query(
+    await this.query(
       `UPDATE tenant_domains SET verification_status = 'VERIFIED', ssl_status = 'ACTIVE', verified_at = NOW()
        WHERE id = $1`,
       [res.rows[0].id]
@@ -4298,7 +4341,7 @@ export class AuthService implements OnModuleInit {
 
       // Check if tenant has connected a direct email account (Model 1: BYOE)
       if (options.tenantId) {
-        const accRes = await this.db.query(
+        const accRes = await this.query(
           `SELECT id, provider, email_address, access_token, refresh_token, smtp_host, smtp_port, password, require_ssl
            FROM mass_mail.email_accounts 
            WHERE tenant_id = $1 AND is_active = true 
@@ -4409,7 +4452,7 @@ export class AuthService implements OnModuleInit {
     let dbRoles: string[] = [];
     let dbTenantId: string | null = null;
     if (email || sub) {
-      const userRes = await this.db.query(
+      const userRes = await this.query(
         `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role
          FROM users u
          LEFT JOIN custom_roles cr ON cr.id = u.role_id
@@ -4423,7 +4466,7 @@ export class AuthService implements OnModuleInit {
         if (uRow.system_role) dbRoles.push(uRow.system_role);
 
         if (Array.isArray(uRow.assigned_role_ids) && uRow.assigned_role_ids.length > 0) {
-          const extraRolesRes = await this.db.query(
+          const extraRolesRes = await this.query(
             `SELECT name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])`,
             [uRow.assigned_role_ids]
           );

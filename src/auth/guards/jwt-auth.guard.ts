@@ -9,7 +9,7 @@ import * as crypto from 'crypto';
 import * as https from 'https';
 import * as http from 'http';
 import { AuthService } from '../auth.service';
-import { DatabaseService } from '../../database/database.service';
+import { PrismaService } from '../../prisma/prisma.service';
 
 const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -34,15 +34,15 @@ export class JwtAuthGuard implements CanActivate {
 
   constructor(
     private readonly authService: AuthService,
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
   ) {
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     this.logger.log(
       `[AUTH] KEYCLOAK mode active. JWKS: ${issuer}/protocol/openid-connect/certs`,
     );
     // Ensure kv_store table exists for JWKS key persistence
-    this.db.query(`
-      CREATE TABLE IF NOT EXISTS kv_store (
+    this.prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS ats.kv_store (
         key   VARCHAR(255) PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -232,12 +232,11 @@ export class JwtAuthGuard implements CanActivate {
         // Keycloak is unreachable — try DB-persisted key before failing
         this.logger.warn(`[JwtAuthGuard] JWKS fallback also failed. Checking DB cache for kid="${kid}"...`);
         try {
-          const dbRes = await this.db.query(
-            `SELECT value FROM kv_store WHERE key = $1 LIMIT 1`,
-            [`jwks_pem:${kid}`],
-          );
-          if (dbRes.rows.length > 0) {
-            const cachedPem = dbRes.rows[0].value;
+          const cached = await this.prisma.kvStore.findUnique({
+            where: { key: `jwks_pem:${kid}` },
+          });
+          if (cached?.value) {
+            const cachedPem = cached.value;
             this.jwksCache.set(kid, cachedPem);
             this.logger.log(`[JwtAuthGuard] Recovered public key for kid="${kid}" from DB cache.`);
             return cachedPem;
@@ -267,8 +266,13 @@ export class JwtAuthGuard implements CanActivate {
       .createPublicKey({ key, format: 'jwk' })
       .export({ type: 'spki', format: 'pem' }) as string;
 
-    // Cache for the lifetime of this process instance
+    // Cache for the lifetime of this process instance and persist to DB cache
     this.jwksCache.set(kid, publicKey);
+    this.prisma.kvStore.upsert({
+      where: { key: `jwks_pem:${kid}` },
+      update: { value: publicKey, updatedAt: new Date() },
+      create: { key: `jwks_pem:${kid}`, value: publicKey },
+    }).catch(() => {});
     this.logger.debug(`[Keycloak] Cached public key for kid="${kid}"`);
 
     return publicKey;

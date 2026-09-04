@@ -729,6 +729,15 @@ model SkillAlias {
   @@schema("ats")
 }
 
+model KvStore {
+  key       String    @id @db.VarChar(255)
+  value     String    @db.Text
+  updatedAt DateTime? @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("kv_store")
+  @@schema("ats")
+}
+
 // ════════════════════════════════════════════════════════════
 // MASS_MAIL SCHEMA — Email Campaign Tables
 // ════════════════════════════════════════════════════════════
