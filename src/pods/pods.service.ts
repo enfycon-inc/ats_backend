@@ -1,5 +1,5 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreatePodDto } from './dtos/create-pod.dto';
 import { UpdatePodDto } from './dtos/update-pod.dto';
 
@@ -28,116 +28,126 @@ export interface PodResponse {
 export class PodsService {
   private readonly logger = new Logger(PodsService.name);
 
-  constructor(private readonly db: DatabaseService) {}
-
-  private async ensurePodBranchColumn(): Promise<void> {
-    await this.db.query(`
-      ALTER TABLE pods ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
-      UPDATE pods p
-      SET branch_id = (
-        SELECT id FROM branches b WHERE b.tenant_id = p.tenant_id ORDER BY b.created_at ASC LIMIT 1
-      )
-      WHERE p.branch_id IS NULL;
-    `).catch(() => {});
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Helper: Promotes a user to POD_LEAD role
    */
   private async promoteToPodHead(userId: string, tenantId: string) {
-    const roleRes = await this.db.query(
-      "SELECT id FROM custom_roles WHERE tenant_id = $1 AND (name = 'POD_LEAD' OR system_role = 'POD_LEAD') LIMIT 1",
-      [tenantId]
-    );
-    if (roleRes.rows.length === 0) {
+    const role = await this.prisma.customRole.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { systemRole: 'POD_LEAD' },
+          { name: { in: ['POD_LEAD', 'Pod Lead', 'POD LEAD'], mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!role) {
       this.logger.warn(`POD_LEAD role not found for tenant ${tenantId}. Skipping automatic role promotion.`);
       return;
     }
-    const roleId = roleRes.rows[0].id;
-    await this.db.query(
-      "UPDATE users SET role_id = $1, assigned_role_ids = ARRAY[$1::uuid] WHERE id = $2 AND tenant_id = $3",
-      [roleId, userId, tenantId]
-    );
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        roleId: role.id,
+        assignedRoleIds: [role.id],
+      },
+    });
   }
 
   /**
    * Helper: Demotes a user back to RECRUITER role
    */
   private async demoteFromPodHead(userId: string, tenantId: string) {
-    // Check if user is head of any other pod
-    const otherPods = await this.db.query(
-      "SELECT id FROM pods WHERE pod_head_id = $1 AND tenant_id = $2 LIMIT 1",
-      [userId, tenantId]
-    );
-    if (otherPods.rows.length > 0) {
-      // User is still head of another pod, do not demote
+    const otherPods = await this.prisma.pod.findFirst({
+      where: { podHeadId: userId, tenantId },
+      select: { id: true },
+    });
+
+    if (otherPods) {
       return;
     }
 
-    const roleRes = await this.db.query(
-      "SELECT id FROM custom_roles WHERE tenant_id = $1 AND (name = 'RECRUITER' OR system_role = 'RECRUITER') LIMIT 1",
-      [tenantId]
-    );
-    if (roleRes.rows.length === 0) {
+    const role = await this.prisma.customRole.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { systemRole: 'RECRUITER' },
+          { name: { in: ['RECRUITER', 'Recruiter'], mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!role) {
       this.logger.warn(`RECRUITER role not found for tenant ${tenantId}. Skipping automatic role demotion.`);
       return;
     }
-    const roleId = roleRes.rows[0].id;
-    await this.db.query(
-      "UPDATE users SET role_id = $1, assigned_role_ids = ARRAY[$1::uuid] WHERE id = $2 AND tenant_id = $3",
-      [roleId, userId, tenantId]
-    );
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        roleId: role.id,
+        assignedRoleIds: [role.id],
+      },
+    });
   }
 
   /**
    * Create a new recruitment pod
    */
   async create(dto: CreatePodDto, tenantId: string, branchId?: string): Promise<PodResponse> {
-    await this.ensurePodBranchColumn();
     this.logger.log(`Creating pod "${dto.name}" for tenant ${tenantId}`);
 
     let effectiveBranchId = dto.branchId || branchId || null;
     if (!effectiveBranchId) {
-      const defaultBranchRes = await this.db.query(
-        'SELECT id FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1',
-        [tenantId]
-      );
-      effectiveBranchId = defaultBranchRes.rows[0]?.id || null;
+      const defaultBranch = await this.prisma.branch.findFirst({
+        where: { tenantId },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      });
+      effectiveBranchId = defaultBranch?.id || null;
     }
 
-    // Check name uniqueness in tenant & branch
-    const nameCheck = await this.db.query(
-      "SELECT 1 FROM pods WHERE tenant_id = $1 AND UPPER(name) = $2 AND (branch_id = $3 OR $3::uuid IS NULL)",
-      [tenantId, dto.name.toUpperCase().trim(), effectiveBranchId]
-    );
-    if (nameCheck.rows.length > 0) {
+    const nameCheck = await this.prisma.pod.findFirst({
+      where: {
+        tenantId,
+        name: { equals: dto.name.trim(), mode: 'insensitive' },
+        branchId: effectiveBranchId,
+      },
+    });
+    if (nameCheck) {
       throw new ConflictException(`A pod with the name "${dto.name}" already exists in this branch.`);
     }
 
-    // Insert Pod
-    const res = await this.db.query(
-      `INSERT INTO pods (tenant_id, branch_id, name, pod_head_id, description, is_available_for_assignment)
-       VALUES ($1, $2, $3, $4, $5, TRUE)
-       RETURNING *`,
-      [tenantId, effectiveBranchId, dto.name.trim(), dto.podHeadId || null, dto.description || null]
-    );
-    const pod = res.rows[0];
+    const pod = await this.prisma.pod.create({
+      data: {
+        tenantId,
+        branchId: effectiveBranchId,
+        name: dto.name.trim(),
+        podHeadId: dto.podHeadId || null,
+        description: dto.description || null,
+        isAvailableForAssignment: true,
+      },
+    });
 
-    // If pod head is designated, promote them and assign to the pod
     if (dto.podHeadId) {
       await this.promoteToPodHead(dto.podHeadId, tenantId);
-      await this.db.query(
-        "UPDATE users SET pod_id = $1 WHERE id = $2 AND tenant_id = $3",
-        [pod.id, dto.podHeadId, tenantId]
-      );
+      await this.prisma.user.update({
+        where: { id: dto.podHeadId },
+        data: { podId: pod.id },
+      });
     }
 
-    // Assign recruiter members if provided
     if (dto.recruiterIds && dto.recruiterIds.length > 0) {
-      await this.db.query(
-        "UPDATE users SET pod_id = $1 WHERE id = ANY($2) AND tenant_id = $3",
-        [pod.id, dto.recruiterIds, tenantId]
-      );
+      await this.prisma.user.updateMany({
+        where: { id: { in: dto.recruiterIds }, tenantId },
+        data: { podId: pod.id },
+      });
     }
 
     return this.findOne(pod.id, tenantId);
@@ -147,91 +157,87 @@ export class PodsService {
    * List all pods for a tenant (optionally scoped to a branch)
    */
   async findAll(tenantId: string, branchId?: string): Promise<PodResponse[]> {
-    await this.ensurePodBranchColumn();
-    const podsRes = await this.db.query(
-      `SELECT p.*, h.full_name as pod_head_name, b.name as branch_name,
-              (SELECT COUNT(*)::int FROM job_pods WHERE pod_id = p.id) as jobs_count
-       FROM pods p
-       LEFT JOIN users h ON h.id = p.pod_head_id
-       LEFT JOIN branches b ON b.id = p.branch_id
-       WHERE p.tenant_id = $1
-         AND ($2::uuid IS NULL OR p.branch_id = $2::uuid)
-       ORDER BY p.name ASC`,
-      [tenantId, branchId || null]
-    );
-
-    const pods = podsRes.rows;
-    const result: PodResponse[] = [];
-
-    for (const pod of pods) {
-      const membersRes = await this.db.query(
-        `SELECT u.id, u.full_name as "fullName", u.email, cr.system_role as "systemRole"
-         FROM users u
-         LEFT JOIN custom_roles cr ON u.role_id = cr.id
-         WHERE u.pod_id = $1 AND u.tenant_id = $2
-         ORDER BY u.full_name ASC`,
-        [pod.id, tenantId]
-      );
-
-      result.push({
-        id: pod.id,
-        name: pod.name,
-        branchId: pod.branch_id || null,
-        branchName: pod.branch_name || null,
-        podHeadId: pod.pod_head_id,
-        podHeadName: pod.pod_head_name,
-        description: pod.description,
-        isAvailableForAssignment: pod.is_available_for_assignment,
-        members: membersRes.rows,
-        jobsCount: pod.jobs_count || 0,
-        createdAt: pod.created_at,
-      });
+    const where: any = { tenantId };
+    if (branchId) {
+      where.branchId = branchId;
     }
 
-    return result;
+    const pods = await this.prisma.pod.findMany({
+      where,
+      include: {
+        podHead: { select: { fullName: true } },
+        branch: { select: { name: true } },
+        _count: { select: { jobPods: true } },
+        users: {
+          include: {
+            customRole: { select: { systemRole: true } },
+          },
+          orderBy: { fullName: 'asc' },
+        },
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    return pods.map((p) => ({
+      id: p.id,
+      name: p.name,
+      branchId: p.branchId || null,
+      branchName: p.branch?.name || null,
+      podHeadId: p.podHeadId || null,
+      podHeadName: p.podHead?.fullName || null,
+      description: p.description,
+      isAvailableForAssignment: p.isAvailableForAssignment,
+      members: p.users.map((u) => ({
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        systemRole: u.customRole?.systemRole || 'RECRUITER',
+      })),
+      jobsCount: p._count.jobPods,
+      createdAt: p.createdAt.toISOString(),
+    }));
   }
 
   /**
    * Find a single pod by ID
    */
   async findOne(id: string, tenantId: string): Promise<PodResponse> {
-    await this.ensurePodBranchColumn();
-    const res = await this.db.query(
-      `SELECT p.*, h.full_name as pod_head_name, b.name as branch_name,
-              (SELECT COUNT(*)::int FROM job_pods WHERE pod_id = p.id) as jobs_count
-       FROM pods p
-       LEFT JOIN users h ON h.id = p.pod_head_id
-       LEFT JOIN branches b ON b.id = p.branch_id
-       WHERE p.id = $1 AND p.tenant_id = $2`,
-      [id, tenantId]
-    );
+    const pod = await this.prisma.pod.findFirst({
+      where: { id, tenantId },
+      include: {
+        podHead: { select: { fullName: true } },
+        branch: { select: { name: true } },
+        _count: { select: { jobPods: true } },
+        users: {
+          include: {
+            customRole: { select: { systemRole: true } },
+          },
+          orderBy: { fullName: 'asc' },
+        },
+      },
+    });
 
-    if (res.rows.length === 0) {
+    if (!pod) {
       throw new NotFoundException(`Recruitment Pod with ID ${id} not found.`);
     }
-
-    const pod = res.rows[0];
-    const membersRes = await this.db.query(
-      `SELECT u.id, u.full_name as "fullName", u.email, cr.system_role as "systemRole"
-       FROM users u
-       LEFT JOIN custom_roles cr ON u.role_id = cr.id
-       WHERE u.pod_id = $1 AND u.tenant_id = $2
-       ORDER BY u.full_name ASC`,
-      [pod.id, tenantId]
-    );
 
     return {
       id: pod.id,
       name: pod.name,
-      branchId: pod.branch_id || null,
-      branchName: pod.branch_name || null,
-      podHeadId: pod.pod_head_id,
-      podHeadName: pod.pod_head_name,
+      branchId: pod.branchId || null,
+      branchName: pod.branch?.name || null,
+      podHeadId: pod.podHeadId || null,
+      podHeadName: pod.podHead?.fullName || null,
       description: pod.description,
-      isAvailableForAssignment: pod.is_available_for_assignment,
-      members: membersRes.rows,
-      jobsCount: pod.jobs_count || 0,
-      createdAt: pod.created_at,
+      isAvailableForAssignment: pod.isAvailableForAssignment,
+      members: pod.users.map((u) => ({
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        systemRole: u.customRole?.systemRole || 'RECRUITER',
+      })),
+      jobsCount: pod._count.jobPods,
+      createdAt: pod.createdAt.toISOString(),
     };
   }
 
@@ -239,124 +245,134 @@ export class PodsService {
    * Find the team (pod) of the logged-in user
    */
   async findMyTeam(userId: string, tenantId: string): Promise<PodResponse> {
-    const userRes = await this.db.query(
-      "SELECT pod_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-      [userId, tenantId]
-    );
-    if (userRes.rows.length === 0 || !userRes.rows[0].pod_id) {
-      throw new NotFoundException("You are not currently assigned to any Recruitment Pod.");
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+      select: { podId: true },
+    });
+
+    if (!user || !user.podId) {
+      throw new NotFoundException('You are not currently assigned to any Recruitment Pod.');
     }
-    return this.findOne(userRes.rows[0].pod_id, tenantId);
+
+    return this.findOne(user.podId, tenantId);
   }
 
   /**
    * Get recruiters not assigned to any pod (optionally scoped to a branch)
    */
   async getAvailableRecruiters(tenantId: string, branchId?: string): Promise<any[]> {
-    const res = await this.db.query(
-      `SELECT u.id, u.full_name as "fullName", u.email, cr.name as "roleName", cr.system_role as "systemRole"
-       FROM users u
-       LEFT JOIN custom_roles cr ON u.role_id = cr.id
-       WHERE u.tenant_id = $1 
-         AND u.pod_id IS NULL 
-         AND u.is_active = TRUE 
-         AND u.is_approved = TRUE
-         AND (
-           cr.system_role IN ('RECRUITER', 'POD_LEAD') 
-           OR UPPER(cr.name) IN ('RECRUITER', 'POD_LEAD', 'POD LEAD')
-           OR EXISTS (
-             SELECT 1 FROM custom_roles sub_cr 
-             WHERE (sub_cr.id = u.role_id OR sub_cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))) 
-               AND sub_cr.system_role IN ('RECRUITER', 'POD_LEAD')
-           )
-         )
-         AND ($2::uuid IS NULL OR u.branch_id = $2::uuid OR (u.assigned_branch_ids IS NOT NULL AND u.assigned_branch_ids::text LIKE '%' || $2 || '%'))
-       ORDER BY u.full_name ASC`,
-      [tenantId, branchId || null]
-    );
-    return res.rows;
+    const where: any = {
+      tenantId,
+      podId: null,
+      isActive: true,
+      isApproved: true,
+      customRole: {
+        OR: [
+          { systemRole: { in: ['RECRUITER', 'POD_LEAD'] } },
+          { name: { in: ['RECRUITER', 'POD_LEAD', 'POD LEAD', 'Recruiter', 'Pod Lead'], mode: 'insensitive' } },
+        ],
+      },
+    };
+
+    if (branchId) {
+      where.OR = [
+        { branchId },
+        { assignedBranchIds: { has: branchId } },
+      ];
+    }
+
+    const users = await this.prisma.user.findMany({
+      where,
+      include: {
+        customRole: { select: { name: true, systemRole: true } },
+      },
+      orderBy: { fullName: 'asc' },
+    });
+
+    return users.map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      email: u.email,
+      roleName: u.customRole?.name || 'Staff',
+      systemRole: u.customRole?.systemRole || 'RECRUITER',
+    }));
   }
 
   /**
    * Update a pod
    */
   async update(id: string, dto: UpdatePodDto, tenantId: string): Promise<PodResponse> {
-    const podRes = await this.db.query(
-      "SELECT * FROM pods WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-      [id, tenantId]
-    );
-    if (podRes.rows.length === 0) {
+    const existingPod = await this.prisma.pod.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!existingPod) {
       throw new NotFoundException(`Pod not found.`);
     }
-    const existingPod = podRes.rows[0];
 
-    // Check name uniqueness if changed
-    if (dto.name && dto.name.toUpperCase().trim() !== existingPod.name.toUpperCase().trim()) {
-      const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branch_id;
-      const nameCheck = await this.db.query(
-        "SELECT 1 FROM pods WHERE tenant_id = $1 AND UPPER(name) = $2 AND (branch_id = $3 OR $3::uuid IS NULL) AND id <> $4",
-        [tenantId, dto.name.toUpperCase().trim(), branchId, id]
-      );
-      if (nameCheck.rows.length > 0) {
+    if (dto.name && dto.name.trim().toUpperCase() !== existingPod.name.toUpperCase()) {
+      const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branchId;
+      const nameCheck = await this.prisma.pod.findFirst({
+        where: {
+          tenantId,
+          name: { equals: dto.name.trim(), mode: 'insensitive' },
+          branchId,
+          id: { not: id },
+        },
+      });
+      if (nameCheck) {
         throw new ConflictException(`A pod with the name "${dto.name}" already exists in this branch.`);
       }
     }
 
     const name = dto.name !== undefined ? dto.name.trim() : existingPod.name;
-    const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branch_id;
-    const podHeadId = dto.podHeadId !== undefined ? dto.podHeadId : existingPod.pod_head_id;
+    const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branchId;
+    const podHeadId = dto.podHeadId !== undefined ? dto.podHeadId : existingPod.podHeadId;
     const description = dto.description !== undefined ? dto.description : existingPod.description;
 
-    // Update pod
-    await this.db.query(
-      `UPDATE pods 
-       SET name = $1, branch_id = $2, pod_head_id = $3, description = $4, updated_at = NOW() 
-       WHERE id = $5 AND tenant_id = $6`,
-      [name, branchId, podHeadId, description, id, tenantId]
-    );
+    await this.prisma.pod.update({
+      where: { id },
+      data: {
+        name,
+        branchId,
+        podHeadId,
+        description,
+      },
+    });
 
-    // If pod head changed, demote old head, promote new head
-    if (dto.podHeadId !== undefined && dto.podHeadId !== existingPod.pod_head_id) {
-      if (existingPod.pod_head_id) {
-        await this.demoteFromPodHead(existingPod.pod_head_id, tenantId);
+    if (dto.podHeadId !== undefined && dto.podHeadId !== existingPod.podHeadId) {
+      if (existingPod.podHeadId) {
+        await this.demoteFromPodHead(existingPod.podHeadId, tenantId);
       }
       if (podHeadId) {
         await this.promoteToPodHead(podHeadId, tenantId);
-        // Ensure the new head is member of this pod
-        await this.db.query(
-          "UPDATE users SET pod_id = $1 WHERE id = $2 AND tenant_id = $3",
-          [id, podHeadId, tenantId]
-        );
+        await this.prisma.user.update({
+          where: { id: podHeadId },
+          data: { podId: id },
+        });
       }
     }
 
-    // Sync recruiter members
     if (dto.recruiterIds !== undefined) {
       const newRecruiterIds = dto.recruiterIds || [];
-      // If pod head is set, keep them in the recruiters list
       if (podHeadId && !newRecruiterIds.includes(podHeadId)) {
         newRecruiterIds.push(podHeadId);
       }
 
-      // Remove members who are no longer in this pod
-      if (newRecruiterIds.length > 0) {
-        await this.db.query(
-          "UPDATE users SET pod_id = NULL WHERE pod_id = $1 AND id NOT IN (SELECT unnest($2::uuid[])) AND tenant_id = $3",
-          [id, newRecruiterIds, tenantId]
-        );
-      } else {
-        await this.db.query(
-          "UPDATE users SET pod_id = NULL WHERE pod_id = $1 AND tenant_id = $2",
-          [id, tenantId]
-        );
-      }
+      await this.prisma.user.updateMany({
+        where: {
+          podId: id,
+          tenantId,
+          id: { notIn: newRecruiterIds },
+        },
+        data: { podId: null },
+      });
 
-      // Add new members
       if (newRecruiterIds.length > 0) {
-        await this.db.query(
-          "UPDATE users SET pod_id = $1 WHERE id = ANY($2) AND tenant_id = $3",
-          [id, newRecruiterIds, tenantId]
-        );
+        await this.prisma.user.updateMany({
+          where: { id: { in: newRecruiterIds }, tenantId },
+          data: { podId: id },
+        });
       }
     }
 
@@ -367,31 +383,26 @@ export class PodsService {
    * Delete a pod and release members
    */
   async remove(id: string, tenantId: string) {
-    const podRes = await this.db.query(
-      "SELECT * FROM pods WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-      [id, tenantId]
-    );
-    if (podRes.rows.length === 0) {
+    const pod = await this.prisma.pod.findFirst({
+      where: { id, tenantId },
+    });
+
+    if (!pod) {
       throw new NotFoundException(`Pod not found.`);
     }
-    const pod = podRes.rows[0];
 
-    // Demote pod head if applicable
-    if (pod.pod_head_id) {
-      await this.demoteFromPodHead(pod.pod_head_id, tenantId);
+    if (pod.podHeadId) {
+      await this.demoteFromPodHead(pod.podHeadId, tenantId);
     }
 
-    // Remove users' pod association
-    await this.db.query(
-      "UPDATE users SET pod_id = NULL WHERE pod_id = $1 AND tenant_id = $2",
-      [id, tenantId]
-    );
+    await this.prisma.user.updateMany({
+      where: { podId: id, tenantId },
+      data: { podId: null },
+    });
 
-    // Delete pod
-    await this.db.query(
-      "DELETE FROM pods WHERE id = $1 AND tenant_id = $2",
-      [id, tenantId]
-    );
+    await this.prisma.pod.delete({
+      where: { id },
+    });
 
     return { message: 'Pod deleted successfully.' };
   }
@@ -400,10 +411,16 @@ export class PodsService {
    * Reset the round robin cycle for all pods
    */
   async resetCycle(tenantId: string, branchId?: string) {
-    await this.db.query(
-      "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1 AND ($2::uuid IS NULL OR branch_id = $2::uuid)",
-      [tenantId, branchId || null]
-    );
+    const where: any = { tenantId };
+    if (branchId) {
+      where.branchId = branchId;
+    }
+
+    await this.prisma.pod.updateMany({
+      where,
+      data: { isAvailableForAssignment: true },
+    });
+
     return { message: 'Round-robin assignment availability cycle has been reset.' };
   }
 }

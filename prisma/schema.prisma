@@ -461,38 +461,72 @@ model Candidate {
 }
 
 model Job {
-  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId           String    @map("tenant_id") @db.Uuid
-  branchId           String?   @map("branch_id") @db.Uuid
-  businessUnitId     String?   @map("business_unit_id") @db.Uuid
-  jobCode            String    @unique @map("job_code") @db.VarChar(100)
-  jobTitle           String    @map("job_title") @db.VarChar(255)
-  jobLocation        String    @map("job_location") @db.VarChar(255)
-  jobType            String    @default("Full-time") @map("job_type") @db.VarChar(100)
-  jobDescription     String?   @map("job_description")
-  skillsRequired     String[]  @map("skills_required")
-  visaType           String?   @map("visa_type") @db.VarChar(100)
-  clientBillRate     String    @map("client_bill_rate") @db.VarChar(100)
-  payRate            String    @map("pay_rate") @db.VarChar(100)
-  clientName         String    @map("client_name") @db.VarChar(255)
-  endClientName      String    @map("end_client_name") @db.VarChar(255)
-  clientId           String?   @map("client_id") @db.Uuid
-  endClientId        String?   @map("end_client_id") @db.Uuid
-  noOfPositions      Int       @default(1) @map("no_of_positions")
-  submissionRequired Int       @default(5) @map("submission_required")
-  submissionDone     Int       @default(0) @map("submission_done")
-  urgency            String    @default("WARM") @db.VarChar(50)
-  status             String    @default("ACTIVE") @db.VarChar(50)
-  market             String    @default("US") @db.VarChar(50)
-  accountManagerId   String?   @map("account_manager_id") @db.VarChar(255)
-  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz
-  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  tenant             Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branch             Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  businessUnit       BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
-  clientRef          Client?       @relation("JobClient", fields: [clientId], references: [id], onDelete: SetNull)
-  endClientRef       Client?       @relation("JobEndClient", fields: [endClientId], references: [id], onDelete: SetNull)
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String    @map("tenant_id") @db.Uuid
+  branchId             String?   @map("branch_id") @db.Uuid
+  businessUnitId       String?   @map("business_unit_id") @db.Uuid
+  jobCode              String    @unique @map("job_code") @db.VarChar(100)
+  jobTitle             String    @map("job_title") @db.VarChar(255)
+  jobLocation          String    @map("job_location") @db.VarChar(255)
+  jobType              String    @default("Full-time") @map("job_type") @db.VarChar(100)
+  jobDescription       String?   @map("job_description")
+  skillsRequired       String[]  @map("skills_required")
+  secondarySkills      String[]  @default([]) @map("secondary_skills")
+  businessUnit         String?   @map("business_unit") @db.VarChar(100)
+  state                String?   @db.VarChar(100)
+  country              String?   @default("United States") @db.VarChar(100)
+  clientJobId          String?   @map("client_job_id") @db.VarChar(100)
+  visaType             String?   @map("visa_type") @db.VarChar(500)
+  clientBillRate       String    @map("client_bill_rate") @db.VarChar(100)
+  payRate              String    @map("pay_rate") @db.VarChar(100)
+  taxTerms             String?   @map("tax_terms") @db.VarChar(100)
+  clientName           String    @map("client_name") @db.VarChar(255)
+  endClientName        String    @map("end_client_name") @db.VarChar(255)
+  clientId             String?   @map("client_id") @db.Uuid
+  endClientId          String?   @map("end_client_id") @db.Uuid
+  noOfPositions        Int       @default(1) @map("no_of_positions")
+  submissionRequired   Int       @default(5) @map("submission_required")
+  submissionDone       Int       @default(0) @map("submission_done")
+  urgency              String    @default("WARM") @db.VarChar(50)
+  status               String    @default("ACTIVE") @db.VarChar(50)
+  market               String    @default("US") @db.VarChar(50)
+  remoteJob            String?   @default("No") @map("remote_job") @db.VarChar(50)
+  startDate            DateTime? @map("start_date") @db.Date
+  endDate              DateTime? @map("end_date") @db.Date
+  hoursPerWeek         Int?      @default(40) @map("hours_per_week")
+  duration             String?   @db.VarChar(100)
+  accountManagerId     String?   @map("account_manager_id") @db.VarChar(255)
+  recruitmentManagerId String?   @map("recruitment_manager_id") @db.VarChar(255)
+  primaryRecruiterId   String?   @map("primary_recruiter_id") @db.VarChar(255)
+  assignedTo           String?   @map("assigned_to") @db.VarChar(255)
+  industry             String?   @db.VarChar(100)
+  degree               String?   @db.VarChar(100)
+  expMin               Int?      @default(0) @map("exp_min")
+  expMax               Int?      @default(10) @map("exp_max")
+  createdBy            String?   @map("created_by") @db.VarChar(255)
+  respondBy            DateTime? @map("respond_by") @db.Date
+  noticePeriod         String?   @map("notice_period") @db.VarChar(100)
+  approvalStatus       String?   @default("APPROVED") @map("approval_status") @db.VarChar(50)
+  assignedApproverId   String?   @map("assigned_approver_id") @db.Uuid
+  assignedApproverRole String?   @map("assigned_approver_role") @db.VarChar(50)
+  approvedBy           String?   @map("approved_by") @db.VarChar(255)
+  approvedAt           DateTime? @map("approved_at") @db.Timestamptz
+  rejectionReason      String?   @map("rejection_reason")
+  jobTimezone          String?   @map("job_timezone") @db.VarChar(100)
+  workStartTime        String?   @map("work_start_time") @db.VarChar(20)
+  workEndTime          String?   @map("work_end_time") @db.VarChar(20)
+  workingDays          String?   @map("working_days")
+  shiftTiming          String?   @map("shift_timing") @db.VarChar(100)
+  timingSnapshotAt     DateTime? @map("timing_snapshot_at") @db.Timestamptz
+  deletedAt            DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  businessUnitRef BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
+  clientRef    Client?       @relation("JobClient", fields: [clientId], references: [id], onDelete: SetNull)
+  endClientRef Client?       @relation("JobEndClient", fields: [endClientId], references: [id], onDelete: SetNull)
 
   jobPods           JobPod[]
   submissions       RecruiterSubmission[]
@@ -530,35 +564,50 @@ model JobAssignmentLog {
 }
 
 model RecruiterSubmission {
-  id                Int       @id @default(autoincrement())
-  tenantId          String    @map("tenant_id") @db.Uuid
-  jobId             String    @map("job_id") @db.Uuid
-  candidateId       Int       @map("candidate_id")
-  recruiterId       String    @map("recruiter_id") @db.VarChar(255)
-  l1Status          String    @default("PENDING") @map("l1_status") @db.VarChar(50)
-  l1Date            DateTime? @map("l1_date") @db.Timestamptz
-  l1Remarks         String?   @map("l1_remarks")
-  l1Interviewer     String?   @map("l1_interviewer") @db.VarChar(255)
-  l2Status          String?   @map("l2_status") @db.VarChar(50)
-  l2Date            DateTime? @map("l2_date") @db.Timestamptz
-  l2Remarks         String?   @map("l2_remarks")
-  l2Interviewer     String?   @map("l2_interviewer") @db.VarChar(255)
-  l3Status          String?   @map("l3_status") @db.VarChar(50)
-  l3Date            DateTime? @map("l3_date") @db.Timestamptz
-  l3Remarks         String?   @map("l3_remarks")
-  l3Interviewer     String?   @map("l3_interviewer") @db.VarChar(255)
-  finalStatus       String    @default("SUBMITTED") @map("final_status") @db.VarChar(50)
-  remarks           String?
-  recruiterComment  String?   @map("recruiter_comment")
-  podLeadRemarks    String?   @map("pod_lead_remarks")
-  reviewFeedback    String?   @map("review_feedback")
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  tenant            Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  job               Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  candidate         Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  id               Int       @id @default(autoincrement())
+  tenantId         String    @map("tenant_id") @db.Uuid
+  jobId            String    @map("job_id") @db.Uuid
+  candidateId      Int       @map("candidate_id")
+  recruiterId      String    @map("recruiter_id") @db.VarChar(255)
+  l1Status         String    @default("PENDING") @map("l1_status") @db.VarChar(50)
+  l1Date           DateTime? @map("l1_date") @db.Timestamptz
+  l1Remarks        String?   @map("l1_remarks")
+  l1Interviewer    String?   @map("l1_interviewer") @db.VarChar(255)
+  l2Status         String?   @map("l2_status") @db.VarChar(50)
+  l2Date           DateTime? @map("l2_date") @db.Timestamptz
+  l2Remarks        String?   @map("l2_remarks")
+  l2Interviewer    String?   @map("l2_interviewer") @db.VarChar(255)
+  l3Status         String?   @map("l3_status") @db.VarChar(50)
+  l3Date           DateTime? @map("l3_date") @db.Timestamptz
+  l3Remarks        String?   @map("l3_remarks")
+  l3Interviewer    String?   @map("l3_interviewer") @db.VarChar(255)
+  submittedRate    String?   @map("submitted_rate") @db.VarChar(100)
+  meetingLink      String?   @map("meeting_link")
+  finalStatus      String    @default("SUBMITTED") @map("final_status") @db.VarChar(50)
+  remarks          String?
+  recruiterComment String?   @map("recruiter_comment")
+  podLeadRemarks   String?   @map("pod_lead_remarks")
+  reviewFeedback   String?   @map("review_feedback")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  job              Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidate        Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
   @@map("recruiter_submissions")
+  @@schema("ats")
+}
+
+model TenantStageRemark {
+  id         Int      @id @default(autoincrement())
+  tenantId   String   @map("tenant_id") @db.VarChar(100)
+  stage      String   @db.VarChar(50)
+  remarkText String   @map("remark_text")
+  createdBy  String?  @map("created_by") @db.VarChar(100)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("tenant_stage_remarks")
   @@schema("ats")
 }
 
@@ -655,6 +704,28 @@ model PendingNormalization {
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   @@map("pending_normalizations")
+  @@schema("ats")
+}
+
+model SkillMaster {
+  id            Int          @id @default(autoincrement())
+  canonicalName String       @map("canonical_name") @db.VarChar(255)
+  category      String?      @db.VarChar(100)
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  aliases       SkillAlias[]
+
+  @@map("skills_master")
+  @@schema("ats")
+}
+
+model SkillAlias {
+  id        Int         @id @default(autoincrement())
+  skillId   Int         @map("skill_id")
+  aliasName String      @map("alias_name") @db.VarChar(255)
+  createdAt DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  skill     SkillMaster @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@map("skill_aliases")
   @@schema("ats")
 }
 

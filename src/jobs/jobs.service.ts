@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreateJobDto } from './dtos/create-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -126,7 +126,7 @@ export class JobsService implements OnModuleInit {
   private readonly logger = new Logger(JobsService.name);
 
   constructor(
-    private readonly db: DatabaseService,
+    private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
   ) {}
 
@@ -139,8 +139,8 @@ export class JobsService implements OnModuleInit {
    */
   private async ensureJobsTableV2() {
     try {
-      await this.db.query(`
-        ALTER TABLE jobs
+      await this.prisma.$executeRawUnsafe(`
+        ALTER TABLE ats.jobs
           ADD COLUMN IF NOT EXISTS business_unit VARCHAR(255) DEFAULT 'enfysync Inc',
           ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT '',
           ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT 'United States',
@@ -182,13 +182,13 @@ export class JobsService implements OnModuleInit {
 
     // Auto-heal existing jobs created under Hydrabad Branch that have GEN- prefix
     try {
-      await this.db.query(`
-        UPDATE jobs
+      await this.prisma.$executeRawUnsafe(`
+        UPDATE ats.jobs
         SET job_code = REPLACE(job_code, 'GEN-', 'HYD-')
         WHERE job_code LIKE 'GEN-%' 
           AND (business_unit ILIKE '%hydrabad%' OR business_unit ILIKE '%hyderabad%')
       `);
-    } catch (e) {
+    } catch (e: any) {
       this.logger.warn(`Auto-heal GEN job codes failed: ${e.message}`);
     }
 
@@ -208,19 +208,26 @@ export class JobsService implements OnModuleInit {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clean);
     if (isUuid) {
       if (!tenantId) return clean;
-      const res = await this.db.query('SELECT id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1', [clean, tenantId]);
-      if (res.rows.length > 0) return res.rows[0].id;
+      const user = await this.prisma.user.findFirst({
+        where: { id: clean, tenantId },
+        select: { id: true },
+      });
+      if (user) return user.id;
     }
 
     if (tenantId) {
-      const res = await this.db.query(
-        `SELECT id FROM users 
-         WHERE tenant_id = $1 
-           AND (LOWER(email) = LOWER($2) OR LOWER(full_name) = LOWER($2) OR LOWER(full_name) LIKE '%' || LOWER($2) || '%')
-         LIMIT 1`,
-        [tenantId, clean]
-      );
-      if (res.rows.length > 0) return res.rows[0].id;
+      const user = await this.prisma.user.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            { email: { equals: clean, mode: 'insensitive' } },
+            { fullName: { equals: clean, mode: 'insensitive' } },
+            { fullName: { contains: clean, mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true },
+      });
+      if (user) return user.id;
     }
     return null;
   }
@@ -233,19 +240,19 @@ export class JobsService implements OnModuleInit {
     try {
       let sql = `
         SELECT DISTINCT u.id 
-        FROM users u
-        LEFT JOIN custom_roles cr ON (
+        FROM ats.users u
+        LEFT JOIN ats.custom_roles cr ON (
           cr.id = u.role_id 
           OR cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
         )
-        LEFT JOIN role_permissions rp ON rp.role_id = cr.id
-        LEFT JOIN branches b ON b.id = u.branch_id
+        LEFT JOIN ats.role_permissions rp ON rp.role_id = cr.id
+        LEFT JOIN ats.branches b ON b.id = u.branch_id
         WHERE u.tenant_id = $1 AND u.is_active = true
           AND (
             rp.permission IN ('job:approve', 'branch_admin:manage', 'submission:internal_screening')
             OR (b.manager_id = u.id)
             OR UPPER(COALESCE(cr.system_role, '')) IN ('DELIVERY_HEAD', 'DELIVERYHEAD', 'BRANCH_ADMIN')
-            OR u.id IN (SELECT DISTINCT job_reviewer_id FROM users WHERE tenant_id = $1 AND job_reviewer_id IS NOT NULL)
+            OR u.id IN (SELECT DISTINCT job_reviewer_id FROM ats.users WHERE tenant_id = $1 AND job_reviewer_id IS NOT NULL)
           )
       `;
       const params: any[] = [tenantId];
@@ -258,8 +265,8 @@ export class JobsService implements OnModuleInit {
           OR UPPER(COALESCE(cr.system_role, '')) = 'DELIVERY_HEAD'
         )`;
       }
-      const res = await this.db.query(sql, params);
-      return res.rows.map((r: any) => r.id);
+      const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
+      return rows.map((r: any) => r.id);
     } catch (e: any) {
       this.logger.warn(`Failed to get delivery head IDs: ${e.message}`);
       return [];
@@ -274,32 +281,38 @@ export class JobsService implements OnModuleInit {
 
     const lookupId = branchId ? branchId.trim() : '';
 
-    let branchRes: any = null;
+    let branch: any = null;
     if (lookupId && lookupId !== 'null' && lookupId !== 'undefined') {
-      branchRes = await this.db.query(
-        `SELECT id, code, name, market FROM branches 
-         WHERE (id::text = $1 OR LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1) OR LOWER(name) LIKE LOWER($2) OR LOWER($1) LIKE '%' || LOWER(name) || '%') 
-           AND tenant_id = $3 
-         LIMIT 1`,
-        [lookupId, `%${lookupId}%`, tenantId]
-      );
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lookupId);
+      branch = await this.prisma.branch.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            ...(isUuid ? [{ id: lookupId }] : []),
+            { name: { equals: lookupId, mode: 'insensitive' } },
+            { code: { equals: lookupId, mode: 'insensitive' } },
+            { name: { contains: lookupId, mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true, code: true, name: true, market: true },
+      });
     }
 
-    if (!branchRes || branchRes.rows.length === 0) {
-      branchRes = await this.db.query(
-        `SELECT id, code, name, market FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1`,
-        [tenantId]
-      );
+    if (!branch) {
+      branch = await this.prisma.branch.findFirst({
+        where: { tenantId },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, code: true, name: true, market: true },
+      });
     }
 
-    if (branchRes && branchRes.rows.length > 0) {
-      const row = branchRes.rows[0];
-      branchMarket = row.market || '';
-      branchName = row.name || '';
-      if (row.code && row.code.trim().length > 0) {
-        branchCode = row.code.trim().toUpperCase();
-      } else if (row.name && row.name.trim().length > 0) {
-        branchCode = row.name.trim().replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
+    if (branch) {
+      branchMarket = branch.market || '';
+      branchName = branch.name || '';
+      if (branch.code && branch.code.trim().length > 0) {
+        branchCode = branch.code.trim().toUpperCase();
+      } else if (branch.name && branch.name.trim().length > 0) {
+        branchCode = branch.name.trim().replace(/[^a-zA-Z]/g, '').substring(0, 3).toUpperCase();
       }
     }
 
@@ -333,15 +346,18 @@ export class JobsService implements OnModuleInit {
     const dateStamp = `${yy}${mm}${dd}`;
     const monthScope = `${branchCode}-${yy}${mm}`;
 
-    // 4. Find highest sequence for this branch in current month and shift (e.g., BBS-2608...-D00001)
-    const jobsRes = await this.db.query(
-      'SELECT job_code FROM jobs WHERE tenant_id = $1 AND job_code LIKE $2',
-      [tenantId, `${monthScope}%`]
-    );
+    // 4. Find highest sequence for this branch in current month and shift
+    const jobs = await this.prisma.job.findMany({
+      where: {
+        tenantId,
+        jobCode: { startsWith: monthScope },
+      },
+      select: { jobCode: true },
+    });
 
     let maxSequence = 0;
-    for (const row of jobsRes.rows) {
-      const jobCodeStr = row.job_code || '';
+    for (const row of jobs) {
+      const jobCodeStr = row.jobCode || '';
       const match = jobCodeStr.match(new RegExp(`-${shiftCode}(\\d{1,6})$`));
       if (match) {
         const seq = parseInt(match[1], 10);
@@ -362,43 +378,56 @@ export class JobsService implements OnModuleInit {
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
-    const tenantRes = await this.db.query('SELECT name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
-    const tenantName = tenantRes.rows[0]?.name || 'enfysync Inc';
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, podSystemEnabled: true },
+    });
+    const tenantName = tenant?.name || 'enfysync Inc';
 
     const rawLookup = (dto as any)?.branchId || activeBranchId || dto?.businessUnit || null;
     let branchId: string | null = null;
     let branchCodeHint: string | null = null;
 
     if (rawLookup && rawLookup.trim().length > 0 && rawLookup !== 'null' && rawLookup !== 'undefined') {
-      const bRes = await this.db.query(
-        `SELECT id, code FROM branches 
-         WHERE (id::text = $1 OR LOWER(name) = LOWER($1) OR LOWER(code) = LOWER($1) OR LOWER(name) LIKE LOWER($2) OR LOWER($1) LIKE '%' || LOWER(name) || '%') 
-           AND tenant_id = $3 
-         LIMIT 1`,
-        [rawLookup.trim(), `%${rawLookup.trim()}%`, tenantId]
-      );
-      if (bRes.rows.length > 0) {
-        branchId = bRes.rows[0].id;
-        branchCodeHint = bRes.rows[0].code;
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawLookup.trim());
+      const bRes = await this.prisma.branch.findFirst({
+        where: {
+          tenantId,
+          OR: [
+            ...(isUuid ? [{ id: rawLookup.trim() }] : []),
+            { name: { equals: rawLookup.trim(), mode: 'insensitive' } },
+            { code: { equals: rawLookup.trim(), mode: 'insensitive' } },
+            { name: { contains: rawLookup.trim(), mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true, code: true },
+      });
+      if (bRes) {
+        branchId = bRes.id;
+        branchCodeHint = bRes.code;
       }
     }
 
     if (!branchId) {
-      const defaultB = await this.db.query(
-        `SELECT id, code FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1`,
-        [tenantId]
-      );
-      if (defaultB.rows.length > 0) {
-        branchId = defaultB.rows[0].id;
-        branchCodeHint = defaultB.rows[0].code;
+      const defaultB = await this.prisma.branch.findFirst({
+        where: { tenantId },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, code: true },
+      });
+      if (defaultB) {
+        branchId = defaultB.id;
+        branchCodeHint = defaultB.code;
       }
     }
 
     // Use submitted jobCode if provided and unique, otherwise auto-generate
     let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
     if (jobCode) {
-      const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
-      if (check.rows.length > 0) {
+      const check = await this.prisma.job.findUnique({
+        where: { jobCode },
+        select: { id: true },
+      });
+      if (check) {
         jobCode = ''; // Code already taken, regenerate
       }
     }
@@ -409,8 +438,11 @@ export class JobsService implements OnModuleInit {
 
       while (!isUnique && attempts < 10) {
         jobCode = await this.getNextJobCode(tenantId, branchId || branchCodeHint || dto.businessUnit, (dto as any)?.shift, attempts);
-        const check = await this.db.query('SELECT 1 FROM jobs WHERE job_code = $1', [jobCode]);
-        if (check.rows.length === 0) {
+        const check = await this.prisma.job.findUnique({
+          where: { jobCode },
+          select: { id: true },
+        });
+        if (!check) {
           isUnique = true;
         } else {
           attempts++;
@@ -425,26 +457,26 @@ export class JobsService implements OnModuleInit {
 
     if (createdByEmail && createdByEmail !== 'System') {
       // Cascading reviewer resolution: 1. User's designated reviewer -> 2. Pod Head -> 3. Branch Manager
-      const creatorRes = await this.db.query(
+      const creatorRows = await this.prisma.$queryRawUnsafe<any[]>(
         `SELECT u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
                 u.role_id,
                 COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
-         FROM users u
-         LEFT JOIN pods p ON p.id = u.pod_id
-         LEFT JOIN branches b ON b.id = u.branch_id
-         LEFT JOIN custom_roles cr ON (
+         FROM ats.users u
+         LEFT JOIN ats.pods p ON p.id = u.pod_id
+         LEFT JOIN ats.branches b ON b.id = u.branch_id
+         LEFT JOIN ats.custom_roles cr ON (
            cr.id = u.role_id
            OR cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
          )
-         LEFT JOIN role_permissions rp ON cr.id = rp.role_id
+         LEFT JOIN ats.role_permissions rp ON cr.id = rp.role_id
          WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
          GROUP BY u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id, u.role_id
          LIMIT 1`,
-        [createdByEmail, tenantId]
-      ).catch(() => ({ rows: [] }));
+        createdByEmail, tenantId
+      ).catch(() => []);
 
-      if (creatorRes.rows.length > 0) {
-        const cRow = creatorRes.rows[0];
+      if (creatorRows.length > 0) {
+        const cRow = creatorRows[0];
         const cPerms: string[] = Array.isArray(cRow.permissions) ? cRow.permissions : [];
         const hasDirectPublish = 
           cPerms.includes('job:publish_direct') || 
@@ -477,28 +509,40 @@ export class JobsService implements OnModuleInit {
     // Check if client (and end client) is in APPROVED status
     let clientApproved = true;
     if (dto.client) {
-      const clientCheck = await this.db.query(
-        `SELECT id, client_name, status, approval_status FROM clients 
-         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
-        [dto.client.trim(), tenantId]
-      );
-      if (clientCheck.rows.length > 0) {
-        const cRow = clientCheck.rows[0];
-        if (cRow.status === 'Pending Approval' || cRow.approval_status === 'PENDING_APPROVAL' || cRow.status === 'Rejected' || cRow.approval_status === 'REJECTED') {
+      const isClientUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.client.trim());
+      const clientCheck = await this.prisma.client.findFirst({
+        where: {
+          tenantId,
+          deletedAt: null,
+          OR: [
+            { clientName: { equals: dto.client.trim(), mode: 'insensitive' } },
+            ...(isClientUuid ? [{ id: dto.client.trim() }] : []),
+          ],
+        },
+        select: { id: true, clientName: true, status: true, approvalStatus: true },
+      });
+      if (clientCheck) {
+        if (clientCheck.status === 'Pending Approval' || clientCheck.approvalStatus === 'PENDING_APPROVAL' || clientCheck.status === 'Rejected' || clientCheck.approvalStatus === 'REJECTED') {
           clientApproved = false;
         }
       }
     }
 
     if (dto.endClientName && dto.endClientName !== dto.client) {
-      const endClientCheck = await this.db.query(
-        `SELECT id, client_name, status, approval_status FROM clients 
-         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
-        [dto.endClientName.trim(), tenantId]
-      );
-      if (endClientCheck.rows.length > 0) {
-        const ecRow = endClientCheck.rows[0];
-        if (ecRow.status === 'Pending Approval' || ecRow.approval_status === 'PENDING_APPROVAL' || ecRow.status === 'Rejected' || ecRow.approval_status === 'REJECTED') {
+      const isEcUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.endClientName.trim());
+      const endClientCheck = await this.prisma.client.findFirst({
+        where: {
+          tenantId,
+          deletedAt: null,
+          OR: [
+            { clientName: { equals: dto.endClientName.trim(), mode: 'insensitive' } },
+            ...(isEcUuid ? [{ id: dto.endClientName.trim() }] : []),
+          ],
+        },
+        select: { id: true, clientName: true, status: true, approvalStatus: true },
+      });
+      if (endClientCheck) {
+        if (endClientCheck.status === 'Pending Approval' || endClientCheck.approvalStatus === 'PENDING_APPROVAL' || endClientCheck.status === 'Rejected' || endClientCheck.approvalStatus === 'REJECTED') {
           clientApproved = false;
         }
       }
@@ -519,19 +563,16 @@ export class JobsService implements OnModuleInit {
     let shiftTiming = (dto as any)?.shiftTiming || (dto as any)?.shift || null;
 
     if (branchId) {
-      const branchTimingRes = await this.db.query(
-        `SELECT timezone, work_start_time, work_end_time, working_days, shift_timing
-         FROM branches
-         WHERE id = $1 LIMIT 1`,
-        [branchId]
-      );
-      if (branchTimingRes.rows.length > 0) {
-        const bRow = branchTimingRes.rows[0];
+      const bRow = await this.prisma.branch.findUnique({
+        where: { id: branchId },
+        select: { timezone: true, workStartTime: true, workEndTime: true, workingDays: true, shiftTiming: true },
+      });
+      if (bRow) {
         jobTimezone = jobTimezone || bRow.timezone || (dto.country === 'United States' || dto.market === 'US' ? 'America/New_York' : 'Asia/Kolkata');
-        workStartTime = workStartTime || bRow.work_start_time || '09:00';
-        workEndTime = workEndTime || bRow.work_end_time || '18:00';
-        workingDays = workingDays || bRow.working_days || '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
-        shiftTiming = shiftTiming || bRow.shift_timing || `General Shift (${workStartTime} - ${workEndTime})`;
+        workStartTime = workStartTime || bRow.workStartTime || '09:00';
+        workEndTime = workEndTime || bRow.workEndTime || '18:00';
+        workingDays = workingDays || (typeof bRow.workingDays === 'string' ? bRow.workingDays : JSON.stringify(bRow.workingDays)) || '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
+        shiftTiming = shiftTiming || bRow.shiftTiming || `General Shift (${workStartTime} - ${workEndTime})`;
       }
     }
     if (!jobTimezone) {
@@ -542,171 +583,131 @@ export class JobsService implements OnModuleInit {
     if (!workingDays) workingDays = '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
     if (!shiftTiming) shiftTiming = `General Shift (${workStartTime} - ${workEndTime})`;
 
-    const sql = `
-      INSERT INTO jobs (
-        tenant_id, job_code, job_title, job_location, job_type, job_description,
-        skills_required, secondary_skills, status,
-        business_unit, state, country, client_job_id,
-        visa_type, client_bill_rate, pay_rate, tax_terms,
-        client_name, end_client_name,
-        no_of_positions, submission_required, submission_done, urgency,
-        remote_job, start_date, end_date, hours_per_week, duration,
-        account_manager_id, recruitment_manager_id, primary_recruiter_id, assigned_to,
-        industry, degree, exp_min, exp_max, created_by,
-        respond_by, notice_period, market, branch_id,
-        approval_status, assigned_approver_id, assigned_approver_role,
-        job_timezone, work_start_time, work_end_time, working_days, shift_timing, timing_snapshot_at,
-        created_at, updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6,
-        $7, $8, $9,
-        $10, $11, $12, $13,
-        $14, $15, $16, $17,
-        $18, $19,
-        $20, $21, 0, $22,
-        $23, $24, $25, $26, $27,
-        $28, $29, $30, $31,
-        $32, $33, $34, $35, $36,
-        $37, $38, $39, $40,
-        $41, $42, $43,
-        $44, $45, $46, $47, $48, NOW(),
-        NOW(), NOW()
-      ) RETURNING *
-    `;
-
     const resolvedPrimaryRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId || dto.assignedTo, tenantId);
     const resolvedRecruitmentManagerId = await this.resolveUserUuid(dto.recruitmentManagerId, tenantId);
     const resolvedAssignedApproverId = await this.resolveUserUuid(assignedApproverId, tenantId);
 
-    const params = [
-      tenantId,                                                     // $1
-      jobCode,                                                       // $2
-      dto.title,                                                     // $3
-      dto.location,                                                  // $4
-      dto.type,                                                      // $5
-      dto.description,                                               // $6
-      dto.skillsRequired || [],                                      // $7
-      dto.secondarySkills || [],                                     // $8
-      initialJobStatus,                                              // $9
-      dto.businessUnit || tenantName,                                // $10
-      dto.state || '',                                               // $11
-      dto.country || 'United States',                                // $12
-      dto.clientJobId || 'N/A',                                      // $13
-      dto.visaType || 'US Citizen / GC',                             // $14
-      dto.clientBillRate || 'N/A',                                   // $15
-      dto.payRate || 'N/A',                                          // $16
-      dto.taxTerms || 'C2C',                                         // $17
-      dto.client || dto.endClientName || 'Direct Client',            // $18
-      dto.endClientName || dto.client || 'Direct Client',            // $19
-      dto.noOfPositions || 1,                                        // $20
-      dto.submissionRequired || 5,                                   // $21
-      dto.priority || 'Medium',                                      // $22
-      dto.remoteJob || 'No',                                         // $23
-      dto.startDate || null,                                         // $24
-      dto.endDate || null,                                           // $25
-      dto.hoursPerWeek || 40,                                        // $26
-      dto.duration || '',                                            // $27
-      dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), // $28
-      resolvedRecruitmentManagerId || null,                          // $29
-      resolvedPrimaryRecruiterId || null,                            // $30
-      dto.assignedTo || 'N/A',                                       // $31
-      dto.industry || '',                                            // $32
-      dto.degree || '',                                              // $33
-      dto.expMin ?? 0,                                               // $34
-      dto.expMax ?? 10,                                              // $35
-      createdByEmail || 'System',                                    // $36
-      dto.respondBy || null,                                         // $37
-      dto.noticePeriod || '',                                        // $38
-      dto.market || 'US',                                            // $39
-      branchId,                                                      // $40
-      initialApprovalStatus,                                         // $41
-      resolvedAssignedApproverId || null,                            // $42
-      assignedApproverRole,                                          // $43
-      jobTimezone,                                                   // $44
-      workStartTime,                                                 // $45
-      workEndTime,                                                   // $46
-      workingDays,                                                   // $47
-      shiftTiming,                                                   // $48
-    ];
-
     try {
-      const result = await this.db.query(sql, params);
-      const job = result.rows[0];
-      const jobId = job.id;
+      const createdJob = await this.prisma.job.create({
+        data: {
+          tenantId,
+          jobCode,
+          jobTitle: dto.title,
+          jobLocation: dto.location,
+          jobType: dto.type,
+          jobDescription: dto.description,
+          skillsRequired: dto.skillsRequired || [],
+          secondarySkills: dto.secondarySkills || [],
+          status: initialJobStatus,
+          businessUnit: dto.businessUnit || tenantName,
+          state: dto.state || '',
+          country: dto.country || 'United States',
+          clientJobId: dto.clientJobId || 'N/A',
+          visaType: dto.visaType || 'US Citizen / GC',
+          clientBillRate: dto.clientBillRate || 'N/A',
+          payRate: dto.payRate || 'N/A',
+          taxTerms: dto.taxTerms || 'C2C',
+          clientName: dto.client || dto.endClientName || 'Direct Client',
+          endClientName: dto.endClientName || dto.client || 'Direct Client',
+          noOfPositions: dto.noOfPositions || 1,
+          submissionRequired: dto.submissionRequired || 5,
+          submissionDone: 0,
+          urgency: dto.priority || 'Medium',
+          remoteJob: dto.remoteJob || 'No',
+          startDate: dto.startDate ? new Date(dto.startDate) : null,
+          endDate: dto.endDate ? new Date(dto.endDate) : null,
+          hoursPerWeek: dto.hoursPerWeek || 40,
+          duration: dto.duration || '',
+          accountManagerId: dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null),
+          recruitmentManagerId: resolvedRecruitmentManagerId || null,
+          primaryRecruiterId: resolvedPrimaryRecruiterId || null,
+          assignedTo: dto.assignedTo || 'N/A',
+          industry: dto.industry || '',
+          degree: dto.degree || '',
+          expMin: dto.expMin ?? 0,
+          expMax: dto.expMax ?? 10,
+          createdBy: createdByEmail || 'System',
+          respondBy: dto.respondBy ? new Date(dto.respondBy) : null,
+          noticePeriod: dto.noticePeriod || '',
+          market: dto.market || 'US',
+          branchId,
+          approvalStatus: initialApprovalStatus,
+          assignedApproverId: resolvedAssignedApproverId || null,
+          assignedApproverRole,
+          jobTimezone,
+          workStartTime,
+          workEndTime,
+          workingDays,
+          shiftTiming,
+          timingSnapshotAt: new Date(),
+        },
+      });
+      const jobId = createdJob.id;
 
       // Fetch branch-level assignment settings if branchId is present
       let branchSettings: any = null;
       if (branchId) {
-        const bRes = await this.db.query(
-          "SELECT allow_none, allow_pods, allow_all, allow_unassigned, pod_distribution_strategy FROM branches WHERE id = $1 AND tenant_id = $2",
-          [branchId, tenantId]
-        );
-        if (bRes.rows.length > 0) {
-          branchSettings = bRes.rows[0];
-        }
+        branchSettings = await this.prisma.branch.findFirst({
+          where: { id: branchId, tenantId },
+          select: { allowNone: true, allowPods: true, allowAll: true, allowUnassigned: true, podDistributionStrategy: true },
+        });
       }
 
-      // Fetch tenant setting to see if pod system is enabled
-      const tenantRes = await this.db.query("SELECT pod_system_enabled FROM tenants WHERE id = $1 LIMIT 1", [tenantId]);
-      const podSystemEnabled = tenantRes.rows[0]?.pod_system_enabled !== false;
-      const allowPods = branchSettings ? branchSettings.allow_pods !== false && !branchSettings.allow_none : podSystemEnabled;
-      const allowAll = branchSettings ? branchSettings.allow_all !== false && !branchSettings.allow_none : true;
+      const podSystemEnabled = tenant?.podSystemEnabled !== false;
+      const allowPods = branchSettings ? branchSettings.allowPods !== false && !branchSettings.allowNone : podSystemEnabled;
+      const allowAll = branchSettings ? branchSettings.allowAll !== false && !branchSettings.allowNone : true;
 
       // Assign Pod (Explicit, Round-Robin, All Recruiters, or None)
       let assignedPodId: string | null = null;
       if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
-        // Broadcast to all recruiters in branch
-        await this.db.query(
-          "UPDATE jobs SET assigned_to = 'ALL' WHERE id = $1",
-          [jobId]
-        );
+        await this.prisma.job.update({
+          where: { id: jobId },
+          data: { assignedTo: 'ALL' },
+        });
       } else if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
         assignedPodId = dto.podId;
-      } else if (dto.podId === 'none' || dto.podId === 'off' || (branchSettings && branchSettings.allow_none)) {
-        // Explicitly keep unassigned or direct assignment
-        await this.db.query("DELETE FROM job_pods WHERE job_id = $1", [jobId]);
+      } else if (dto.podId === 'none' || dto.podId === 'off' || (branchSettings && branchSettings.allowNone)) {
+        await this.prisma.jobPod.deleteMany({ where: { jobId } });
       } else if (allowPods && podSystemEnabled) {
-        // Find next available pod for round-robin
-        let podRes = await this.db.query(
-          `SELECT id FROM pods
-           WHERE tenant_id = $1 AND is_available_for_assignment = TRUE
-           ORDER BY created_at ASC LIMIT 1`,
-          [tenantId]
-        );
-        if (podRes.rows.length === 0) {
-          // Reset cycle
-          await this.db.query(
-            "UPDATE pods SET is_available_for_assignment = TRUE WHERE tenant_id = $1",
-            [tenantId]
-          );
-          podRes = await this.db.query(
-            `SELECT id FROM pods
-             WHERE tenant_id = $1 AND is_available_for_assignment = TRUE
-             ORDER BY created_at ASC LIMIT 1`,
-            [tenantId]
-          );
+        let availablePod = await this.prisma.pod.findFirst({
+          where: { tenantId, isAvailableForAssignment: true },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        });
+        if (!availablePod) {
+          await this.prisma.pod.updateMany({
+            where: { tenantId },
+            data: { isAvailableForAssignment: true },
+          });
+          availablePod = await this.prisma.pod.findFirst({
+            where: { tenantId, isAvailableForAssignment: true },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true },
+          });
         }
-        if (podRes.rows.length > 0) {
-          assignedPodId = podRes.rows[0].id;
-          // Set is_available_for_assignment = FALSE
-          await this.db.query(
-            "UPDATE pods SET is_available_for_assignment = FALSE WHERE id = $1",
-            [assignedPodId]
-          );
+        if (availablePod) {
+          assignedPodId = availablePod.id;
+          await this.prisma.pod.update({
+            where: { id: assignedPodId },
+            data: { isAvailableForAssignment: false },
+          });
         }
       }
 
       if (assignedPodId) {
-        // Link job to pod in junction table
-        await this.db.query(
-          "INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-          [jobId, assignedPodId]
-        );
-        // Log assignment
-        await this.db.query(
-          "INSERT INTO job_assignment_logs (tenant_id, job_id, pod_id, assigned_by) VALUES ($1, $2, $3, $4)",
-          [tenantId, jobId, assignedPodId, createdByEmail || 'System']
-        );
+        await this.prisma.jobPod.upsert({
+          where: { jobId_podId: { jobId, podId: assignedPodId } },
+          create: { jobId, podId: assignedPodId },
+          update: {},
+        });
+        await this.prisma.jobAssignmentLog.create({
+          data: {
+            tenantId,
+            jobId,
+            podId: assignedPodId,
+            assignedBy: createdByEmail || 'System',
+          },
+        });
       }
 
       // ─────────────────────────────────────────────────────────────
@@ -802,23 +803,29 @@ export class JobsService implements OnModuleInit {
           }
 
           if (assignedPodId) {
-            const podUsersRes = await this.db.query(
-              'SELECT id FROM users WHERE pod_id = $1 AND tenant_id = $2 AND is_active = true',
-              [assignedPodId, tenantId]
-            );
-            podUsersRes.rows.forEach((r: any) => {
+            const podUsers = await this.prisma.user.findMany({
+              where: { podId: assignedPodId, tenantId, isActive: true },
+              select: { id: true },
+            });
+            podUsers.forEach((r) => {
               if (r.id !== resolvedPrimaryRecruiterId && r.id !== creatorUserId && !dhTargets.has(r.id)) {
                 teamUserIds.add(r.id);
               }
             });
           } else if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
             if (branchId) {
-              const branchUsersRes = await this.db.query(
-                `SELECT id FROM users WHERE tenant_id = $1 AND is_active = true 
-                 AND (branch_id = $2 OR $2 = ANY(assigned_branch_ids))`,
-                [tenantId, branchId]
-              );
-              branchUsersRes.rows.forEach((r: any) => {
+              const branchUsers = await this.prisma.user.findMany({
+                where: {
+                  tenantId,
+                  isActive: true,
+                  OR: [
+                    { branchId },
+                    { assignedBranchIds: { has: branchId } },
+                  ],
+                },
+                select: { id: true },
+              });
+              branchUsers.forEach((r) => {
                 if (r.id !== resolvedPrimaryRecruiterId && r.id !== creatorUserId && !dhTargets.has(r.id)) {
                   teamUserIds.add(r.id);
                 }
@@ -847,7 +854,7 @@ export class JobsService implements OnModuleInit {
       }
 
       return this.findOneJob(jobId, tenantId);
-    } catch (err) {
+    } catch (err: any) {
       this.logger.error(`Failed to create job: ${err.message}`, err.stack);
       throw err;
     }
@@ -869,18 +876,18 @@ export class JobsService implements OnModuleInit {
              uc.full_name AS creator_name,
              b.name AS branch_name,
              b.code AS branch_code
-      FROM jobs j
-      LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
-      LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
-      LEFT JOIN users app ON app.id = j.assigned_approver_id
-      LEFT JOIN job_pods jp ON jp.job_id = j.id
-      LEFT JOIN pods p ON p.id = jp.pod_id
-      LEFT JOIN users uc ON (
+      FROM ats.jobs j
+      LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
+      LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
+      LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
+      LEFT JOIN ats.job_pods jp ON jp.job_id = j.id
+      LEFT JOIN ats.pods p ON p.id = jp.pod_id
+      LEFT JOIN ats.users uc ON (
         uc.id::text = j.created_by 
         OR LOWER(uc.email) = LOWER(j.created_by) 
         OR LOWER(uc.full_name) = LOWER(j.created_by)
       )
-      LEFT JOIN branches b ON b.id = j.branch_id
+      LEFT JOIN ats.branches b ON b.id = j.branch_id
       WHERE j.tenant_id = $1 AND j.deleted_at IS NULL
     `;
     const params: any[] = [tenantId];
@@ -901,10 +908,6 @@ export class JobsService implements OnModuleInit {
     }
 
     // ── Dynamic Capability-based Approval Visibility Gate ────────────────────
-    // Users with management/approval permissions (job:approve, job:publish_direct, job:view_all, branch_admin:manage, tenant:settings)
-    // have full visibility of all active and pending review jobs.
-    // Users with only scoped recruitment permissions (e.g. standard recruiters) see only approved live jobs
-    // assigned to them/their pod/their branch, unless they are explicitly assigned as reviewer for that job.
     const canApproveOrManage = 
       userPermissions.includes('job:approve') || 
       userPermissions.includes('job:publish_direct') || 
@@ -915,7 +918,6 @@ export class JobsService implements OnModuleInit {
       userPermissions.includes('tenant:settings');
 
     if (!canApproveOrManage && user?.dbId) {
-      // Gate unapproved jobs completely from scoped recruiters (unless assigned directly as reviewer)
       sql += ` AND (
         ((j.approval_status = 'APPROVED' OR j.approval_status IS NULL) AND UPPER(COALESCE(j.status, '')) NOT IN ('PENDING APPROVAL', 'PENDING_APPROVAL', 'DRAFT'))
         OR j.assigned_approver_id = $${paramIndex}::uuid
@@ -925,22 +927,21 @@ export class JobsService implements OnModuleInit {
         j.primary_recruiter_id = $${paramIndex}::uuid
         OR j.recruitment_manager_id = $${paramIndex}::uuid
         OR j.assigned_approver_id = $${paramIndex}::uuid
-        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
-        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM pods WHERE pod_head_id = $${paramIndex}::uuid))
+        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
+        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid))
         OR UPPER(j.assigned_to) = 'ALL'
         OR UPPER(j.assigned_to) LIKE 'ALL%'
       )`;
       params.push(user.dbId);
       paramIndex++;
     }
-    // ────────────────────────────────────────────────────────────────────────
 
     sql += ' ORDER BY j.created_at DESC';
 
     try {
-      const result = await this.db.query(sql, params);
-      return result.rows.map((row) => this.mapRowToProfile(row));
-    } catch (err) {
+      const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
+      return rows.map((row) => this.mapRowToProfile(row));
+    } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
       return [];
     }
@@ -959,13 +960,13 @@ export class JobsService implements OnModuleInit {
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
                 p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
-         FROM jobs j
-         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
-         LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
-         LEFT JOIN users app ON app.id = j.assigned_approver_id
-         LEFT JOIN job_pods jp ON jp.job_id = j.id
-         LEFT JOIN pods p ON p.id = jp.pod_id
-         LEFT JOIN users uc ON (
+         FROM ats.jobs j
+         LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
+         LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
+         LEFT JOIN ats.job_pods jp ON jp.job_id = j.id
+         LEFT JOIN ats.pods p ON p.id = jp.pod_id
+         LEFT JOIN ats.users uc ON (
            uc.id::text = j.created_by 
            OR LOWER(uc.email) = LOWER(j.created_by) 
            OR LOWER(uc.full_name) = LOWER(j.created_by)
@@ -974,13 +975,13 @@ export class JobsService implements OnModuleInit {
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
                 p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
-         FROM jobs j
-         LEFT JOIN users rm ON rm.id = j.recruitment_manager_id
-         LEFT JOIN users pr ON pr.id = j.primary_recruiter_id
-         LEFT JOIN users app ON app.id = j.assigned_approver_id
-         LEFT JOIN job_pods jp ON jp.job_id = j.id
-         LEFT JOIN pods p ON p.id = jp.pod_id
-         LEFT JOIN users uc ON (
+         FROM ats.jobs j
+         LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
+         LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
+         LEFT JOIN ats.job_pods jp ON jp.job_id = j.id
+         LEFT JOIN ats.pods p ON p.id = jp.pod_id
+         LEFT JOIN ats.users uc ON (
            uc.id::text = j.created_by 
            OR LOWER(uc.email) = LOWER(j.created_by) 
            OR LOWER(uc.full_name) = LOWER(j.created_by)
@@ -988,11 +989,11 @@ export class JobsService implements OnModuleInit {
          WHERE j.tenant_id = $1 AND j.job_code = $2 AND j.deleted_at IS NULL LIMIT 1`;
 
     try {
-      const result = await this.db.query(sql, [tenantId, idOrCode]);
-      if (result.rows.length === 0) {
+      const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, tenantId, idOrCode);
+      if (rows.length === 0) {
         throw new NotFoundException(`Job requisition ${idOrCode} not found.`);
       }
-      return this.mapRowToProfile(result.rows[0]);
+      return this.mapRowToProfile(rows[0]);
     } catch (err) {
       if (err instanceof NotFoundException) throw err;
       this.logger.error(`findOneJob failed: ${err.message}`, err.stack);
@@ -1001,102 +1002,112 @@ export class JobsService implements OnModuleInit {
   }
 
   /**
-   * Map a raw Postgres row to the typed JobProfile response
+   * Map a raw Postgres/Prisma row to the typed JobProfile response
    */
   private mapRowToProfile(row: any): JobProfile {
-    const createdAt = row.created_at ? new Date(row.created_at) : new Date();
+    const rawCreatedAt = row.created_at ?? row.createdAt;
+    const createdAt = rawCreatedAt ? new Date(rawCreatedAt) : new Date();
     const agingDays = Math.floor(
       (Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24),
     );
 
+    const rawUpdatedAt = row.updated_at ?? row.updatedAt;
+    const rawStartDate = row.start_date ?? row.startDate;
+    const rawEndDate = row.end_date ?? row.endDate;
+    const rawRespondBy = row.respond_by ?? row.respondBy;
+    const rawApprovedAt = row.approved_at ?? row.approvedAt;
+    const rawTimingSnapshotAt = row.timing_snapshot_at ?? row.timingSnapshotAt;
+
+    const workingDaysRaw = row.working_days ?? row.workingDays;
+
     return {
       id: row.id,
-      jobCode: row.job_code,
-      jobTitle: row.job_title,
-      businessUnit: row.business_unit || 'enfysync Inc',
-      client: row.client_name,
-      clientJobId: row.client_job_id || 'N/A',
-      location: row.job_location,
+      jobCode: row.job_code ?? row.jobCode,
+      jobTitle: row.job_title ?? row.jobTitle,
+      businessUnit: row.business_unit ?? row.businessUnit ?? 'enfysync Inc',
+      client: row.client_name ?? row.clientName,
+      clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
+      location: row.job_location ?? row.jobLocation,
       state: row.state || '',
       country: row.country || 'United States',
-      type: row.job_type,
-      description: row.job_description,
-      skillsRequired: row.skills_required || [],
-      secondarySkills: row.secondary_skills || [],
+      type: row.job_type ?? row.jobType,
+      description: row.job_description ?? row.jobDescription,
+      skillsRequired: row.skills_required ?? row.skillsRequired ?? [],
+      secondarySkills: row.secondary_skills ?? row.secondarySkills ?? [],
       jobStatus: row.status,
       createdOn: createdAt.toISOString().split('T')[0],
-      modifiedOn: row.updated_at
-        ? new Date(row.updated_at).toISOString().split('T')[0]
+      modifiedOn: rawUpdatedAt
+        ? new Date(rawUpdatedAt).toISOString().split('T')[0]
         : createdAt.toISOString().split('T')[0],
 
-      visaType: row.visa_type || '',
-      clientBillRate: row.client_bill_rate || 'N/A',
-      payRate: row.pay_rate || 'N/A',
-      taxTerms: row.tax_terms || 'C2C',
+      visaType: row.visa_type ?? row.visaType ?? '',
+      clientBillRate: row.client_bill_rate ?? row.clientBillRate ?? 'N/A',
+      payRate: row.pay_rate ?? row.payRate ?? 'N/A',
+      taxTerms: row.tax_terms ?? row.taxTerms ?? 'C2C',
 
-      endClientName: row.end_client_name || row.client_name,
+      endClientName: row.end_client_name ?? row.endClientName ?? row.client_name ?? row.clientName,
 
-      noOfPositions: row.no_of_positions || 1,
-      submissionRequired: row.submission_required || 5,
-      submissionDone: row.submission_done || 0,
+      noOfPositions: row.no_of_positions ?? row.noOfPositions ?? 1,
+      submissionRequired: row.submission_required ?? row.submissionRequired ?? 5,
+      submissionDone: row.submission_done ?? row.submissionDone ?? 0,
       priority: row.urgency || 'Medium',
 
-      remoteJob: row.remote_job || 'No',
-      startDate: row.start_date || null,
-      endDate: row.end_date || null,
-      hoursPerWeek: row.hours_per_week || 40,
+      remoteJob: row.remote_job ?? row.remoteJob ?? 'No',
+      startDate: rawStartDate ? new Date(rawStartDate).toISOString().split('T')[0] : null,
+      endDate: rawEndDate ? new Date(rawEndDate).toISOString().split('T')[0] : null,
+      hoursPerWeek: row.hours_per_week ?? row.hoursPerWeek ?? 40,
       duration: row.duration || '',
 
-      accountManagerId: row.account_manager_id || '',
-      recruitmentManagerId: row.recruitment_manager_id || '',
-      recruitmentManager: row.recruitment_manager_name || 'N/A',
-      primaryRecruiterId: row.primary_recruiter_id || '',
-      primaryRecruiter: row.primary_recruiter_name || 'N/A',
-      assignedTo: row.assigned_to || 'N/A',
-      createdBy: row.creator_name || row.created_by || 'System',
+      accountManagerId: row.account_manager_id ?? row.accountManagerId ?? '',
+      recruitmentManagerId: row.recruitment_manager_id ?? row.recruitmentManagerId ?? '',
+      recruitmentManager: row.recruitment_manager_name ?? row.recruitmentManagerName ?? 'N/A',
+      primaryRecruiterId: row.primary_recruiter_id ?? row.primaryRecruiterId ?? '',
+      primaryRecruiter: row.primary_recruiter_name ?? row.primaryRecruiterName ?? 'N/A',
+      assignedTo: row.assigned_to ?? row.assignedTo ?? 'N/A',
+      createdBy: row.creator_name ?? row.creatorName ?? row.created_by ?? row.createdBy ?? 'System',
 
       industry: row.industry || '',
       degree: row.degree || '',
-      expMin: row.exp_min ?? 0,
-      expMax: row.exp_max ?? 10,
+      expMin: row.exp_min ?? row.expMin ?? 0,
+      expMax: row.exp_max ?? row.expMax ?? 10,
 
       // Computed fields
-      submissionsCount: row.submission_done || 0,
+      submissionsCount: row.submission_done ?? row.submissionDone ?? 0,
       agingDays,
-      pipeline: { applied: 0, interviewing: 0, offered: 0 }, // TODO: aggregate from submissions table
-      podId: row.pod_id || '',
-      podName: row.pod_name || '',
-      branchId: row.branch_id || '',
-      branchName: row.branch_name || '',
-      branchCode: row.branch_code || '',
-      respondBy: row.respond_by ? new Date(row.respond_by).toISOString().split('T')[0] : null,
-      noticePeriod: row.notice_period || '',
+      pipeline: { applied: 0, interviewing: 0, offered: 0 },
+      podId: row.pod_id ?? row.podId ?? '',
+      podName: row.pod_name ?? row.podName ?? '',
+      branchId: row.branch_id ?? row.branchId ?? '',
+      branchName: row.branch_name ?? row.branchName ?? '',
+      branchCode: row.branch_code ?? row.branchCode ?? '',
+      respondBy: rawRespondBy ? new Date(rawRespondBy).toISOString().split('T')[0] : null,
+      noticePeriod: row.notice_period ?? row.noticePeriod ?? '',
       market: row.market || 'US',
 
       // Approval Workflow
-      approvalStatus: row.approval_status || (row.status === 'Pending Approval' ? 'PENDING_APPROVAL' : 'APPROVED'),
-      assignedApproverId: row.assigned_approver_id || null,
-      assignedApproverName: row.assigned_approver_name || null,
-      assignedApproverRole: row.assigned_approver_role || null,
-      approvedBy: row.approved_by || null,
-      approvedAt: row.approved_at ? new Date(row.approved_at).toISOString() : null,
-      rejectionReason: row.rejection_reason || null,
+      approvalStatus: row.approval_status ?? row.approvalStatus ?? (row.status === 'Pending Approval' ? 'PENDING_APPROVAL' : 'APPROVED'),
+      assignedApproverId: row.assigned_approver_id ?? row.assignedApproverId ?? null,
+      assignedApproverName: row.assigned_approver_name ?? row.assignedApproverName ?? null,
+      assignedApproverRole: row.assigned_approver_role ?? row.assignedApproverRole ?? null,
+      approvedBy: row.approved_by ?? row.approvedBy ?? null,
+      approvedAt: rawApprovedAt ? new Date(rawApprovedAt).toISOString() : null,
+      rejectionReason: row.rejection_reason ?? row.rejectionReason ?? null,
 
       // Branch Timing Snapshot
-      jobTimezone: row.job_timezone || (row.country === 'United States' || row.market === 'US' ? 'America/New_York' : 'Asia/Kolkata'),
-      workStartTime: row.work_start_time || '09:00',
-      workEndTime: row.work_end_time || '18:00',
+      jobTimezone: row.job_timezone ?? row.jobTimezone ?? (row.country === 'United States' || row.market === 'US' ? 'America/New_York' : 'Asia/Kolkata'),
+      workStartTime: row.work_start_time ?? row.workStartTime ?? '09:00',
+      workEndTime: row.work_end_time ?? row.workEndTime ?? '18:00',
       workingDays: (() => {
         try {
-          return typeof row.working_days === 'string'
-            ? JSON.parse(row.working_days)
-            : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
+          return typeof workingDaysRaw === 'string'
+            ? JSON.parse(workingDaysRaw)
+            : (workingDaysRaw || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
         } catch {
           return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
         }
       })(),
-      shiftTiming: row.shift_timing || 'General Day Shift (09:00 - 18:00)',
-      timingSnapshotAt: row.timing_snapshot_at ? new Date(row.timing_snapshot_at).toISOString() : null,
+      shiftTiming: row.shift_timing ?? row.shiftTiming ?? 'General Day Shift (09:00 - 18:00)',
+      timingSnapshotAt: rawTimingSnapshotAt ? new Date(rawTimingSnapshotAt).toISOString() : null,
     };
   }
 
@@ -1111,131 +1122,152 @@ export class JobsService implements OnModuleInit {
   ): Promise<JobProfile> {
     this.logger.log(`Approving job ${jobId} by ${approver?.email || approver?.dbId}`);
 
-    const jobCheck = await this.db.query('SELECT * FROM jobs WHERE id = $1 AND tenant_id = $2', [jobId, tenantId]);
-    if (jobCheck.rows.length === 0) {
+    const currentJob = await this.prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+    if (!currentJob) {
       throw new NotFoundException(`Job with ID "${jobId}" not found.`);
     }
 
-    const currentJob = jobCheck.rows[0];
-
     // Verify associated client (and end client) is in APPROVED status
-    if (currentJob.client_name) {
-      const clientCheck = await this.db.query(
-        `SELECT id, client_name, status, approval_status FROM clients 
-         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
-        [currentJob.client_name.trim(), tenantId]
-      );
-      if (clientCheck.rows.length > 0) {
-        const cRow = clientCheck.rows[0];
-        if (cRow.status === 'Pending Approval' || cRow.approval_status === 'PENDING_APPROVAL') {
-          throw new BadRequestException(`Cannot activate job requisition: Client "${cRow.client_name}" is pending approval. The client must be approved before jobs can go live.`);
+    if (currentJob.clientName) {
+      const isCUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentJob.clientName.trim());
+      const clientCheck = await this.prisma.client.findFirst({
+        where: {
+          tenantId,
+          deletedAt: null,
+          OR: [
+            { clientName: { equals: currentJob.clientName.trim(), mode: 'insensitive' } },
+            ...(isCUuid ? [{ id: currentJob.clientName.trim() }] : []),
+          ],
+        },
+        select: { clientName: true, status: true, approvalStatus: true },
+      });
+      if (clientCheck) {
+        if (clientCheck.status === 'Pending Approval' || clientCheck.approvalStatus === 'PENDING_APPROVAL') {
+          throw new BadRequestException(`Cannot activate job requisition: Client "${clientCheck.clientName}" is pending approval. The client must be approved before jobs can go live.`);
         }
-        if (cRow.status === 'Rejected' || cRow.approval_status === 'REJECTED') {
-          throw new BadRequestException(`Cannot activate job requisition: Client "${cRow.client_name}" was rejected. Please reactivate or approve the client first.`);
-        }
-      }
-    }
-
-    if (currentJob.end_client_name && currentJob.end_client_name !== currentJob.client_name) {
-      const endClientCheck = await this.db.query(
-        `SELECT id, client_name, status, approval_status FROM clients 
-         WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
-        [currentJob.end_client_name.trim(), tenantId]
-      );
-      if (endClientCheck.rows.length > 0) {
-        const ecRow = endClientCheck.rows[0];
-        if (ecRow.status === 'Pending Approval' || ecRow.approval_status === 'PENDING_APPROVAL') {
-          throw new BadRequestException(`Cannot activate job requisition: End Client "${ecRow.client_name}" is pending approval. The client must be approved first.`);
-        }
-        if (ecRow.status === 'Rejected' || ecRow.approval_status === 'REJECTED') {
-          throw new BadRequestException(`Cannot activate job requisition: End Client "${ecRow.client_name}" was rejected.`);
+        if (clientCheck.status === 'Rejected' || clientCheck.approvalStatus === 'REJECTED') {
+          throw new BadRequestException(`Cannot activate job requisition: Client "${clientCheck.clientName}" was rejected. Please reactivate or approve the client first.`);
         }
       }
     }
 
-    const assignedTo = overrides?.assignedTo || currentJob.assigned_to || 'All Branch Recruiters';
-    const primaryRecruiterId = overrides?.primaryRecruiterId || currentJob.primary_recruiter_id;
+    if (currentJob.endClientName && currentJob.endClientName !== currentJob.clientName) {
+      const isEcUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentJob.endClientName.trim());
+      const endClientCheck = await this.prisma.client.findFirst({
+        where: {
+          tenantId,
+          deletedAt: null,
+          OR: [
+            { clientName: { equals: currentJob.endClientName.trim(), mode: 'insensitive' } },
+            ...(isEcUuid ? [{ id: currentJob.endClientName.trim() }] : []),
+          ],
+        },
+        select: { clientName: true, status: true, approvalStatus: true },
+      });
+      if (endClientCheck) {
+        if (endClientCheck.status === 'Pending Approval' || endClientCheck.approvalStatus === 'PENDING_APPROVAL') {
+          throw new BadRequestException(`Cannot activate job requisition: End Client "${endClientCheck.clientName}" is pending approval. The client must be approved first.`);
+        }
+        if (endClientCheck.status === 'Rejected' || endClientCheck.approvalStatus === 'REJECTED') {
+          throw new BadRequestException(`Cannot activate job requisition: End Client "${endClientCheck.clientName}" was rejected.`);
+        }
+      }
+    }
+
+    const assignedTo = overrides?.assignedTo || currentJob.assignedTo || 'All Branch Recruiters';
+    const primaryRecruiterId = overrides?.primaryRecruiterId || currentJob.primaryRecruiterId;
 
     if (overrides?.podId) {
-      await this.db.query(
-        'INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [jobId, overrides.podId]
-      );
+      await this.prisma.jobPod.upsert({
+        where: { jobId_podId: { jobId, podId: overrides.podId } },
+        create: { jobId, podId: overrides.podId },
+        update: {},
+      });
     }
 
-    await this.db.query(
-      `UPDATE jobs
-       SET status = 'Active',
-           approval_status = 'APPROVED',
-           approved_by = $1,
-           approved_at = NOW(),
-           assigned_to = $2,
-           primary_recruiter_id = $3,
-           updated_at = NOW()
-       WHERE id = $4 AND tenant_id = $5`,
-      [approver?.dbId || null, assignedTo, primaryRecruiterId || null, jobId, tenantId]
-    );
+    await this.prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: 'Active',
+        approvalStatus: 'APPROVED',
+        approvedBy: approver?.dbId || null,
+        approvedAt: new Date(),
+        assignedTo,
+        primaryRecruiterId: primaryRecruiterId || null,
+      },
+    });
 
     // Live Notification on Approval: Notify Creator & Assigned Recruiter/Pod
     try {
-      if (currentJob.account_manager_id || currentJob.created_by) {
-        const creatorTarget = currentJob.account_manager_id || currentJob.created_by;
-        const creatorRes = await this.db.query(
-          'SELECT id FROM users WHERE id::text = $1 OR email = $1 LIMIT 1',
-          [creatorTarget]
-        );
-        if (creatorRes.rows.length > 0) {
-          await this.notifications.create(tenantId, creatorRes.rows[0].id, {
-            type: 'JOB_APPROVED',
-            title: 'Job Requisition Approved',
-            message: `Your job requisition "${currentJob.job_code} - ${currentJob.job_title}" was approved by ${approver?.fullName || approver?.email || 'Approver'}.`,
-            data: {
-              jobId: jobId,
-              jobCode: currentJob.job_code,
-              jobTitle: currentJob.job_title,
+      if (currentJob.accountManagerId || currentJob.createdBy) {
+        const creatorTarget = currentJob.accountManagerId || currentJob.createdBy;
+        if (creatorTarget) {
+          const isTargetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(creatorTarget);
+          const creatorUser = await this.prisma.user.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                ...(isTargetUuid ? [{ id: creatorTarget }] : []),
+                { email: creatorTarget },
+              ],
             },
-            initiatorId: approver?.dbId || 'System',
+            select: { id: true },
           });
+          if (creatorUser) {
+            await this.notifications.create(tenantId, creatorUser.id, {
+              type: 'JOB_APPROVED',
+              title: 'Job Requisition Approved',
+              message: `Your job requisition "${currentJob.jobCode} - ${currentJob.jobTitle}" was approved by ${approver?.fullName || approver?.email || 'Approver'}.`,
+              data: {
+                jobId: jobId,
+                jobCode: currentJob.jobCode,
+                jobTitle: currentJob.jobTitle,
+              },
+              initiatorId: approver?.dbId || 'System',
+            });
+          }
         }
       }
 
       const assignedRecruiters = new Set<string>();
       if (primaryRecruiterId) assignedRecruiters.add(primaryRecruiterId);
-      const effectivePodId = overrides?.podId || currentJob.pod_id;
+      const effectivePodId = overrides?.podId;
       if (effectivePodId) {
-        const podUsers = await this.db.query(
-          'SELECT id FROM users WHERE pod_id = $1 AND tenant_id = $2 AND is_active = true',
-          [effectivePodId, tenantId]
-        );
-        podUsers.rows.forEach((r: any) => assignedRecruiters.add(r.id));
+        const podUsers = await this.prisma.user.findMany({
+          where: { podId: effectivePodId, tenantId, isActive: true },
+          select: { id: true },
+        });
+        podUsers.forEach((r) => assignedRecruiters.add(r.id));
       }
 
       if (assignedRecruiters.size > 0) {
         await this.notifications.createMany(tenantId, Array.from(assignedRecruiters), {
           type: 'JOB_NEW',
           title: 'New Job Active (Approved)',
-          message: `Job "${currentJob.job_code} - ${currentJob.job_title}" has been approved and is now active for recruitment.`,
+          message: `Job "${currentJob.jobCode} - ${currentJob.jobTitle}" has been approved and is now active for recruitment.`,
           data: {
             jobId: jobId,
-            jobCode: currentJob.job_code,
-            jobTitle: currentJob.job_title,
+            jobCode: currentJob.jobCode,
+            jobTitle: currentJob.jobTitle,
           },
           initiatorId: approver?.dbId || 'System',
         });
       }
 
-      const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, currentJob.branch_id);
+      const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, currentJob.branchId);
       const dhTargets = deliveryHeadIds.filter(id => !assignedRecruiters.has(id));
       if (dhTargets.length > 0) {
         await this.notifications.createMany(tenantId, dhTargets, {
           type: 'JOB_NEW',
-          title: `Job Approved: ${currentJob.job_code}`,
-          message: `Job "${currentJob.job_code} - ${currentJob.job_title}" was approved by ${approver?.fullName || 'Approver'} and is now active in your branch.`,
+          title: `Job Approved: ${currentJob.jobCode}`,
+          message: `Job "${currentJob.jobCode} - ${currentJob.jobTitle}" was approved by ${approver?.fullName || 'Approver'} and is now active in your branch.`,
           data: {
             jobId: jobId,
-            jobCode: currentJob.job_code,
-            jobTitle: currentJob.job_title,
-            branchId: currentJob.branch_id,
+            jobCode: currentJob.jobCode,
+            jobTitle: currentJob.jobTitle,
+            branchId: currentJob.branchId,
           },
           initiatorId: approver?.dbId || 'System',
         });
@@ -1253,44 +1285,52 @@ export class JobsService implements OnModuleInit {
   async rejectJob(jobId: string, tenantId: string, approver: any, reason: string): Promise<JobProfile> {
     this.logger.log(`Rejecting job ${jobId} by ${approver?.email}: ${reason}`);
 
-    const jobCheck = await this.db.query('SELECT * FROM jobs WHERE id = $1 AND tenant_id = $2', [jobId, tenantId]);
-    if (jobCheck.rows.length === 0) {
+    const currentJob = await this.prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+    });
+    if (!currentJob) {
       throw new NotFoundException(`Job with ID "${jobId}" not found.`);
     }
 
-    const currentJob = jobCheck.rows[0];
-
-    await this.db.query(
-      `UPDATE jobs
-       SET status = 'Draft',
-           approval_status = 'REJECTED',
-           rejection_reason = $1,
-           updated_at = NOW()
-       WHERE id = $2 AND tenant_id = $3`,
-      [reason || 'Job requirement rejected by reviewer.', jobId, tenantId]
-    );
+    await this.prisma.job.update({
+      where: { id: jobId },
+      data: {
+        status: 'Draft',
+        approvalStatus: 'REJECTED',
+        rejectionReason: reason || 'Job requirement rejected by reviewer.',
+      },
+    });
 
     // Live Notification on Rejection: Notify Creator with Reason
     try {
-      if (currentJob.account_manager_id || currentJob.created_by) {
-        const creatorTarget = currentJob.account_manager_id || currentJob.created_by;
-        const creatorRes = await this.db.query(
-          'SELECT id FROM users WHERE id::text = $1 OR email = $1 LIMIT 1',
-          [creatorTarget]
-        );
-        if (creatorRes.rows.length > 0) {
-          await this.notifications.create(tenantId, creatorRes.rows[0].id, {
-            type: 'JOB_REJECTED',
-            title: 'Job Requisition Rejected',
-            message: `Your job requisition "${currentJob.job_code} - ${currentJob.job_title}" was rejected. Feedback: ${reason || 'No specific feedback provided.'}`,
-            data: {
-              jobId: jobId,
-              jobCode: currentJob.job_code,
-              jobTitle: currentJob.job_title,
-              rejectionReason: reason,
+      if (currentJob.accountManagerId || currentJob.createdBy) {
+        const creatorTarget = currentJob.accountManagerId || currentJob.createdBy;
+        if (creatorTarget) {
+          const isTargetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(creatorTarget);
+          const creatorUser = await this.prisma.user.findFirst({
+            where: {
+              tenantId,
+              OR: [
+                ...(isTargetUuid ? [{ id: creatorTarget }] : []),
+                { email: creatorTarget },
+              ],
             },
-            initiatorId: approver?.dbId || 'System',
+            select: { id: true },
           });
+          if (creatorUser) {
+            await this.notifications.create(tenantId, creatorUser.id, {
+              type: 'JOB_REJECTED',
+              title: 'Job Requisition Rejected',
+              message: `Your job requisition "${currentJob.jobCode} - ${currentJob.jobTitle}" was rejected. Feedback: ${reason || 'No specific feedback provided.'}`,
+              data: {
+                jobId: jobId,
+                jobCode: currentJob.jobCode,
+                jobTitle: currentJob.jobTitle,
+                rejectionReason: reason,
+              },
+              initiatorId: approver?.dbId || 'System',
+            });
+          }
         }
       }
     } catch (notifErr: any) {
@@ -1312,30 +1352,35 @@ export class JobsService implements OnModuleInit {
     this.logger.log(`Updating job: ${id} for tenant: ${tenantId}`);
 
     // Fetch the job first to verify existence
-    const jobRes = await this.db.query(
-      "SELECT * FROM jobs WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-      [id, tenantId]
-    );
-    if (jobRes.rows.length === 0) {
+    const currentJob = await this.prisma.job.findFirst({
+      where: { id, tenantId },
+    });
+    if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
     }
 
     // If attempting to set status to 'Active', ensure client is approved
     if (dto.status === 'Active') {
-      const targetClient = dto.client || jobRes.rows[0].client_name;
+      const targetClient = dto.client || currentJob.clientName;
       if (targetClient) {
-        const clientCheck = await this.db.query(
-          `SELECT id, client_name, status, approval_status FROM clients 
-           WHERE (LOWER(client_name) = LOWER($1) OR id::text = $1) AND tenant_id = $2 AND deleted_at IS NULL LIMIT 1`,
-          [targetClient.trim(), tenantId]
-        );
-        if (clientCheck.rows.length > 0) {
-          const cRow = clientCheck.rows[0];
-          if (cRow.status === 'Pending Approval' || cRow.approval_status === 'PENDING_APPROVAL') {
-            throw new BadRequestException(`Cannot make job Active: Client "${cRow.client_name}" is pending approval. The client must be approved before jobs can go live.`);
+        const isClientUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetClient.trim());
+        const clientCheck = await this.prisma.client.findFirst({
+          where: {
+            tenantId,
+            deletedAt: null,
+            OR: [
+              { clientName: { equals: targetClient.trim(), mode: 'insensitive' } },
+              ...(isClientUuid ? [{ id: targetClient.trim() }] : []),
+            ],
+          },
+          select: { clientName: true, status: true, approvalStatus: true },
+        });
+        if (clientCheck) {
+          if (clientCheck.status === 'Pending Approval' || clientCheck.approvalStatus === 'PENDING_APPROVAL') {
+            throw new BadRequestException(`Cannot make job Active: Client "${clientCheck.clientName}" is pending approval. The client must be approved before jobs can go live.`);
           }
-          if (cRow.status === 'Rejected' || cRow.approval_status === 'REJECTED') {
-            throw new BadRequestException(`Cannot make job Active: Client "${cRow.client_name}" is rejected.`);
+          if (clientCheck.status === 'Rejected' || clientCheck.approvalStatus === 'REJECTED') {
+            throw new BadRequestException(`Cannot make job Active: Client "${clientCheck.clientName}" is rejected.`);
           }
         }
       }
@@ -1346,7 +1391,7 @@ export class JobsService implements OnModuleInit {
     const isTenantAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage');
     const isBranchAdmin = 
       userPermissions.includes('branch_admin:manage') ||
-      (jobRes.rows[0]?.branch_id && user?.branchRoles?.[jobRes.rows[0]?.branch_id]?.some((r: string) => ['ADMIN', 'BRANCH_ADMIN'].includes(r)));
+      (currentJob.branchId && user?.branchRoles?.[currentJob.branchId]?.some((r: string) => ['ADMIN', 'BRANCH_ADMIN'].includes(r)));
 
     const hasDelegatedAssignPermission = 
       userPermissions.includes('job:assign') ||
@@ -1360,8 +1405,8 @@ export class JobsService implements OnModuleInit {
     const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission;
 
     // Fetch the job's current pod mappings
-    const jobPodsRes = await this.db.query("SELECT pod_id FROM job_pods WHERE job_id = $1", [id]);
-    const isUnassignedJob = jobPodsRes.rows.length === 0;
+    const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
+    const isUnassignedJob = jobPods.length === 0;
 
     // If updating primary_recruiter_id, apply validation rules
     if (dto.primaryRecruiterId !== undefined) {
@@ -1372,102 +1417,44 @@ export class JobsService implements OnModuleInit {
       }
 
       if (canAssignAny) {
-        // Tenant Admin, Branch Admin, or Delegated User can assign any recruiter in the workspace
         if (newRecruiterId) {
-          const recruiterRes = await this.db.query(
-            "SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-            [newRecruiterId, tenantId]
-          );
-          if (recruiterRes.rows.length === 0) {
+          const recruiter = await this.prisma.user.findFirst({
+            where: { id: newRecruiterId, tenantId },
+            select: { id: true },
+          });
+          if (!recruiter) {
             throw new NotFoundException("Selected recruiter does not exist in this tenant.");
           }
         }
       } else {
-        // Normal pod mapping validations for standard recruiters / pod leads
-        const userPodRes = await this.db.query(
-          "SELECT pod_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-          [user.dbId, tenantId]
-        );
-        const userPodId = userPodRes.rows[0]?.pod_id;
+        const userWithPod = await this.prisma.user.findFirst({
+          where: { id: user.dbId, tenantId },
+          select: { podId: true },
+        });
+        const userPodId = userWithPod?.podId;
         if (!userPodId) {
           throw new BadRequestException("You are not assigned to any pod.");
         }
 
-        // Verify if this job is assigned to the user's pod
-        const jobPodRes = await this.db.query(
-          "SELECT 1 FROM job_pods WHERE job_id = $1 AND pod_id = $2 LIMIT 1",
-          [id, userPodId]
-        );
-        if (jobPodRes.rows.length === 0) {
+        const jobPodMatch = await this.prisma.jobPod.findUnique({
+          where: { jobId_podId: { jobId: id, podId: userPodId } },
+          select: { jobId: true },
+        });
+        if (!jobPodMatch) {
           throw new BadRequestException("You can only assign recruiters to jobs mapped to your pod.");
         }
 
-        // Verify if the selected recruiter belongs to the user's pod
         if (newRecruiterId) {
-          const recruiterPodRes = await this.db.query(
-            "SELECT pod_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1",
-            [newRecruiterId, tenantId]
-          );
-          if (recruiterPodRes.rows.length === 0 || recruiterPodRes.rows[0].pod_id !== userPodId) {
+          const recruiter = await this.prisma.user.findFirst({
+            where: { id: newRecruiterId, tenantId },
+            select: { podId: true },
+          });
+          if (!recruiter || recruiter.podId !== userPodId) {
             throw new BadRequestException("You can only assign recruiters belonging to your own pod.");
           }
         }
       }
     }
-
-    // Prepare fields to update dynamically
-    const fields: string[] = [];
-    const params: any[] = [id, tenantId];
-    let paramIndex = 3;
-
-    const addField = (dbCol: string, val: any) => {
-      if (val !== undefined) {
-        fields.push(`${dbCol} = $${paramIndex}`);
-        params.push(val);
-        paramIndex++;
-      }
-    };
-
-    addField('job_title', dto.title);
-    addField('job_location', dto.location);
-    addField('job_type', dto.type);
-    addField('job_description', dto.description);
-    addField('skills_required', dto.skillsRequired);
-    addField('secondary_skills', dto.secondarySkills);
-    addField('status', dto.status);
-    addField('business_unit', dto.businessUnit);
-    addField('state', dto.state);
-    addField('country', dto.country);
-    addField('client_job_id', dto.clientJobId);
-    addField('visa_type', dto.visaType);
-    addField('client_bill_rate', dto.clientBillRate);
-    addField('pay_rate', dto.payRate);
-    addField('tax_terms', dto.taxTerms);
-    addField('client_name', dto.client);
-    addField('end_client_name', dto.endClientName);
-    addField('no_of_positions', dto.noOfPositions);
-    addField('submission_required', dto.submissionRequired);
-    addField('urgency', dto.priority);
-    addField('remote_job', dto.remoteJob);
-    addField('start_date', dto.startDate);
-    addField('end_date', dto.endDate);
-    addField('hours_per_week', dto.hoursPerWeek);
-    addField('duration', dto.duration);
-    addField('account_manager_id', dto.accountManagerId);
-    addField('recruitment_manager_id', dto.recruitmentManagerId);
-    addField('primary_recruiter_id', dto.primaryRecruiterId);
-    addField('assigned_to', dto.assignedTo);
-    addField('industry', dto.industry);
-    addField('degree', dto.degree);
-    addField('exp_min', dto.expMin);
-    addField('exp_max', dto.expMax);
-    addField('respond_by', dto.respondBy);
-    addField('notice_period', dto.noticePeriod);
-    if (dto.jobTimezone !== undefined) addField('job_timezone', dto.jobTimezone);
-    if (dto.workStartTime !== undefined) addField('work_start_time', dto.workStartTime);
-    if (dto.workEndTime !== undefined) addField('work_end_time', dto.workEndTime);
-    if (dto.workingDays !== undefined) addField('working_days', typeof dto.workingDays === 'string' ? dto.workingDays : JSON.stringify(dto.workingDays));
-    if (dto.shiftTiming !== undefined) addField('shift_timing', dto.shiftTiming);
 
     // Auto-create client & end client if not present
     const creatorId = user?.dbId || 'System';
@@ -1478,13 +1465,53 @@ export class JobsService implements OnModuleInit {
       await this.ensureClientExists(dto.endClientName, tenantId, creatorId);
     }
 
-    if (fields.length > 0) {
-      const updateSql = `
-        UPDATE jobs
-        SET ${fields.join(', ')}, updated_at = NOW()
-        WHERE id = $1 AND tenant_id = $2
-      `;
-      await this.db.query(updateSql, params);
+    const dataToUpdate: any = {};
+    if (dto.title !== undefined) dataToUpdate.jobTitle = dto.title;
+    if (dto.location !== undefined) dataToUpdate.jobLocation = dto.location;
+    if (dto.type !== undefined) dataToUpdate.jobType = dto.type;
+    if (dto.description !== undefined) dataToUpdate.jobDescription = dto.description;
+    if (dto.skillsRequired !== undefined) dataToUpdate.skillsRequired = dto.skillsRequired;
+    if (dto.secondarySkills !== undefined) dataToUpdate.secondarySkills = dto.secondarySkills;
+    if (dto.status !== undefined) dataToUpdate.status = dto.status;
+    if (dto.businessUnit !== undefined) dataToUpdate.businessUnit = dto.businessUnit;
+    if (dto.state !== undefined) dataToUpdate.state = dto.state;
+    if (dto.country !== undefined) dataToUpdate.country = dto.country;
+    if (dto.clientJobId !== undefined) dataToUpdate.clientJobId = dto.clientJobId;
+    if (dto.visaType !== undefined) dataToUpdate.visaType = dto.visaType;
+    if (dto.clientBillRate !== undefined) dataToUpdate.clientBillRate = dto.clientBillRate;
+    if (dto.payRate !== undefined) dataToUpdate.payRate = dto.payRate;
+    if (dto.taxTerms !== undefined) dataToUpdate.taxTerms = dto.taxTerms;
+    if (dto.client !== undefined) dataToUpdate.clientName = dto.client;
+    if (dto.endClientName !== undefined) dataToUpdate.endClientName = dto.endClientName;
+    if (dto.noOfPositions !== undefined) dataToUpdate.noOfPositions = dto.noOfPositions;
+    if (dto.submissionRequired !== undefined) dataToUpdate.submissionRequired = dto.submissionRequired;
+    if (dto.priority !== undefined) dataToUpdate.urgency = dto.priority;
+    if (dto.remoteJob !== undefined) dataToUpdate.remoteJob = dto.remoteJob;
+    if (dto.startDate !== undefined) dataToUpdate.startDate = dto.startDate ? new Date(dto.startDate) : null;
+    if (dto.endDate !== undefined) dataToUpdate.endDate = dto.endDate ? new Date(dto.endDate) : null;
+    if (dto.hoursPerWeek !== undefined) dataToUpdate.hoursPerWeek = dto.hoursPerWeek;
+    if (dto.duration !== undefined) dataToUpdate.duration = dto.duration;
+    if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = dto.accountManagerId;
+    if (dto.recruitmentManagerId !== undefined) dataToUpdate.recruitmentManagerId = dto.recruitmentManagerId;
+    if (dto.primaryRecruiterId !== undefined) dataToUpdate.primaryRecruiterId = dto.primaryRecruiterId;
+    if (dto.assignedTo !== undefined) dataToUpdate.assignedTo = dto.assignedTo;
+    if (dto.industry !== undefined) dataToUpdate.industry = dto.industry;
+    if (dto.degree !== undefined) dataToUpdate.degree = dto.degree;
+    if (dto.expMin !== undefined) dataToUpdate.expMin = dto.expMin;
+    if (dto.expMax !== undefined) dataToUpdate.expMax = dto.expMax;
+    if (dto.respondBy !== undefined) dataToUpdate.respondBy = dto.respondBy ? new Date(dto.respondBy) : null;
+    if (dto.noticePeriod !== undefined) dataToUpdate.noticePeriod = dto.noticePeriod;
+    if (dto.jobTimezone !== undefined) dataToUpdate.jobTimezone = dto.jobTimezone;
+    if (dto.workStartTime !== undefined) dataToUpdate.workStartTime = dto.workStartTime;
+    if (dto.workEndTime !== undefined) dataToUpdate.workEndTime = dto.workEndTime;
+    if (dto.workingDays !== undefined) dataToUpdate.workingDays = typeof dto.workingDays === 'string' ? dto.workingDays : JSON.stringify(dto.workingDays);
+    if (dto.shiftTiming !== undefined) dataToUpdate.shiftTiming = dto.shiftTiming;
+
+    if (Object.keys(dataToUpdate).length > 0) {
+      await this.prisma.job.update({
+        where: { id },
+        data: dataToUpdate,
+      });
     }
 
     // If updating pod assignment (e.g. for Admins/Branch Admins/Authorized Users re-routing jobs)
@@ -1493,21 +1520,26 @@ export class JobsService implements OnModuleInit {
         throw new ForbiddenException('You do not have permission to modify job pod assignments.');
       }
 
-      await this.db.query("DELETE FROM job_pods WHERE job_id = $1", [id]);
+      await this.prisma.jobPod.deleteMany({ where: { jobId: id } });
       if (dto.podId === 'all') {
-        await this.db.query("UPDATE jobs SET assigned_to = 'ALL' WHERE id = $1", [id]);
+        await this.prisma.job.update({ where: { id }, data: { assignedTo: 'ALL' } });
       } else if (dto.podId === 'none' || dto.podId === 'off') {
-        await this.db.query("UPDATE jobs SET assigned_to = 'N/A' WHERE id = $1", [id]);
+        await this.prisma.job.update({ where: { id }, data: { assignedTo: 'N/A' } });
       } else if (dto.podId) {
-        await this.db.query("UPDATE jobs SET assigned_to = 'N/A' WHERE id = $1", [id]);
-        await this.db.query(
-          "INSERT INTO job_pods (job_id, pod_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-          [id, dto.podId]
-        );
-        await this.db.query(
-          "INSERT INTO job_assignment_logs (tenant_id, job_id, pod_id, assigned_by) VALUES ($1, $2, $3, $4)",
-          [tenantId, id, dto.podId, user?.email || 'System']
-        );
+        await this.prisma.job.update({ where: { id }, data: { assignedTo: 'N/A' } });
+        await this.prisma.jobPod.upsert({
+          where: { jobId_podId: { jobId: id, podId: dto.podId } },
+          create: { jobId: id, podId: dto.podId },
+          update: {},
+        });
+        await this.prisma.jobAssignmentLog.create({
+          data: {
+            tenantId,
+            jobId: id,
+            podId: dto.podId,
+            assignedBy: user?.email || 'System',
+          },
+        });
       }
     }
 
@@ -1515,33 +1547,33 @@ export class JobsService implements OnModuleInit {
     try {
       if (dto.primaryRecruiterId !== undefined && dto.primaryRecruiterId) {
         const resolvedRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId, tenantId);
-        if (resolvedRecruiterId && resolvedRecruiterId !== jobRes.rows[0].primary_recruiter_id) {
+        if (resolvedRecruiterId && resolvedRecruiterId !== currentJob.primaryRecruiterId) {
           await this.notifications.create(tenantId, resolvedRecruiterId, {
             type: 'JOB_NEW',
-            title: `Job Assigned: ${jobRes.rows[0].job_code}`,
-            message: `You have been assigned as primary recruiter for job "${jobRes.rows[0].job_code} - ${jobRes.rows[0].title}".`,
+            title: `Job Assigned: ${currentJob.jobCode}`,
+            message: `You have been assigned as primary recruiter for job "${currentJob.jobCode} - ${currentJob.jobTitle}".`,
             data: {
               jobId: id,
-              jobCode: jobRes.rows[0].job_code,
-              jobTitle: jobRes.rows[0].title,
-              branchId: jobRes.rows[0].branch_id,
+              jobCode: currentJob.jobCode,
+              jobTitle: currentJob.jobTitle,
+              branchId: currentJob.branchId,
             },
             initiatorId: user?.dbId || user?.email || 'System',
           });
 
           // Also notify Delivery Head(s)
-          const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, jobRes.rows[0].branch_id);
+          const deliveryHeadIds = await this.getDeliveryHeadIds(tenantId, currentJob.branchId);
           const dhTargets = deliveryHeadIds.filter(dhId => dhId !== resolvedRecruiterId);
           if (dhTargets.length > 0) {
             await this.notifications.createMany(tenantId, dhTargets, {
               type: 'JOB_NEW',
-              title: `Recruiter Assigned: ${jobRes.rows[0].job_code}`,
-              message: `Recruiter was assigned to job "${jobRes.rows[0].job_code} - ${jobRes.rows[0].title}" in your branch.`,
+              title: `Recruiter Assigned: ${currentJob.jobCode}`,
+              message: `Recruiter was assigned to job "${currentJob.jobCode} - ${currentJob.jobTitle}" in your branch.`,
               data: {
                 jobId: id,
-                jobCode: jobRes.rows[0].job_code,
-                jobTitle: jobRes.rows[0].title,
-                branchId: jobRes.rows[0].branch_id,
+                jobCode: currentJob.jobCode,
+                jobTitle: currentJob.jobTitle,
+                branchId: currentJob.branchId,
               },
               initiatorId: user?.dbId || user?.email || 'System',
             });
@@ -1557,10 +1589,6 @@ export class JobsService implements OnModuleInit {
 
   // ─────────────────────────────────────────────────────────────
   //  AI CANDIDATE MATCHING
-  //  Ranks candidates in the tenant's pool against a job requisition.
-  //  Runs entirely off the shared Supabase DB (skill overlap + experience
-  //  fit + resume-text keyword hits) and, when the Python parser is
-  //  reachable, blends in pgvector semantic similarity.
   // ─────────────────────────────────────────────────────────────
 
   /** Normalize a skill/keyword for comparison: lowercase, collapse punctuation. */
@@ -1602,8 +1630,8 @@ export class JobsService implements OnModuleInit {
 
     // 2. Pull the tenant's candidate pool using indexed pre-filtering to scale to 100,000+ candidates
     let filterSql = `
-      FROM candidates c
-      LEFT JOIN resumes r ON c.resume_record_id = r.id
+      FROM ats.candidates c
+      LEFT JOIN ats.resumes r ON c.resume_record_id = r.id
       WHERE c.tenant_id = $1
     `;
     const queryParams: any[] = [tenantId];
@@ -1638,17 +1666,17 @@ export class JobsService implements OnModuleInit {
       filterSql += ` AND (${orConditions.join(' OR ')})`;
     }
 
-    const candRes = await this.db.query(
+    const candRows = await this.prisma.$queryRawUnsafe<any[]>(
       `SELECT c.id, c.full_name, c.email, c.phone, c.raw_current_location,
               c.raw_current_designation, c.source, c.work_authorization,
               c.total_experience_years, c.current_ctc, c.expected_ctc, 
               c.notice_period_days, c.serving_notice, c.last_working_day, 
               c.pan_card, c.preferred_locations, r.raw_text, r.parsed_json
        ${filterSql}`,
-      queryParams,
+      ...queryParams,
     );
 
-    const matches: CandidateMatch[] = candRes.rows.map((row: any) => {
+    const matches: CandidateMatch[] = candRows.map((row: any) => {
       let candidateSkills: string[] = [];
       if (row.parsed_json) {
         const parsed = typeof row.parsed_json === 'string' ? JSON.parse(row.parsed_json) : row.parsed_json;
@@ -1719,15 +1747,14 @@ export class JobsService implements OnModuleInit {
 
       if (maxBudget && candExpectedCtc) {
         if (candExpectedCtc <= maxBudget) {
-          ctcScore = 1.0; // Candidate expected CTC is within client budget
+          ctcScore = 1.0;
         } else {
           const overRatio = candExpectedCtc / maxBudget;
-          ctcScore = Math.max(0.2, 1.0 - (overRatio - 1.0) * 2); // Scaled fit if slightly above budget
+          ctcScore = Math.max(0.2, 1.0 - (overRatio - 1.0) * 2);
         }
       }
 
-      // 5. Multi-dimensional Profile Match Weighting (Dice Parity + CTC Fit)
-      // Skills: 45%, Experience: 15%, Location: 15%, Visa: 15%, CTC Fit: 10%
+      // 5. Multi-dimensional Profile Match Weighting
       let score01 = 0.45 * skillScore + 0.15 * expScore + 0.15 * locationScore + 0.15 * visaScore + 0.10 * ctcScore;
 
       // Blend semantic similarity (30%) when available.
@@ -1775,7 +1802,7 @@ export class JobsService implements OnModuleInit {
       .slice(0, limit);
 
     this.logger.log(
-      `Matched ${ranked.length}/${candRes.rows.length} candidates for job ${job.jobCode} (parser ${parserOnline ? 'online' : 'offline'}).`,
+      `Matched ${ranked.length}/${candRows.length} candidates for job ${job.jobCode} (parser ${parserOnline ? 'online' : 'offline'}).`,
     );
     return { job, matches: ranked, parserOnline };
   }
@@ -1792,7 +1819,7 @@ export class JobsService implements OnModuleInit {
     for (const host of hosts) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 8000); // Increased timeout to 8 seconds
+        const timer = setTimeout(() => controller.abort(), 8000);
         const url = `${host}/api/v1/search?query=${encodeURIComponent(query)}&top_k=100&threshold=0`;
         const res = await fetch(url, { signal: controller.signal });
         clearTimeout(timer);
@@ -1814,7 +1841,7 @@ export class JobsService implements OnModuleInit {
         this.logger.warn(`Failed to connect to parser semantic search at ${host}: ${err.message}`);
       }
     }
-    return null; // parser offline — matching proceeds without semantic blend
+    return null;
   }
 
   private dbSkillsCache: { name: string; aliases: string[] }[] = [];
@@ -1826,16 +1853,13 @@ export class JobsService implements OnModuleInit {
       return this.dbSkillsCache;
     }
     try {
-      const res = await this.db.query(`
-        SELECT sm.canonical_name, COALESCE(ARRAY_AGG(sa.alias_name) FILTER (WHERE sa.alias_name IS NOT NULL), '{}') AS aliases
-        FROM skills_master sm
-        LEFT JOIN skill_aliases sa ON sm.id = sa.skill_id
-        GROUP BY sm.id, sm.canonical_name
-      `);
-      if (res.rows.length > 0) {
-        this.dbSkillsCache = res.rows.map((r: any) => ({
-          name: r.canonical_name,
-          aliases: Array.isArray(r.aliases) ? r.aliases : [],
+      const skills = await this.prisma.skillMaster.findMany({
+        include: { aliases: true },
+      });
+      if (skills.length > 0) {
+        this.dbSkillsCache = skills.map((sm) => ({
+          name: sm.canonicalName,
+          aliases: sm.aliases.map((a) => a.aliasName),
         }));
         this.lastSkillsCacheTime = NOW;
         this.logger.log(`Loaded ${this.dbSkillsCache.length} canonical skills from PostgreSQL database dictionary.`);
@@ -1852,7 +1876,7 @@ export class JobsService implements OnModuleInit {
     for (const host of hosts) {
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3000); // 3s fast check
+        const timer = setTimeout(() => controller.abort(), 3000);
         const url = `${host}/api/v1/parse-jd`;
         const res = await fetch(url, {
           method: 'POST',
@@ -1865,7 +1889,7 @@ export class JobsService implements OnModuleInit {
           fastApiResult = await res.json();
           break;
         }
-      } catch (err) {
+      } catch (err: any) {
         this.logger.debug(`Parser endpoint note at ${host}: ${err.message}`);
       }
     }
@@ -1927,7 +1951,7 @@ export class JobsService implements OnModuleInit {
       }
     }
 
-    // 2. Extract Experience Min / Max (handles 5–10 years, 5-10 yrs, 5+ years, 5 to 10 years)
+    // 2. Extract Experience Min / Max
     let experienceMin = 0;
     let experienceMax = 0;
     const rangeMatch = rawText.match(/(\d+)\s*[\–\—\-to\s]+\s*(\d+)\s*(?:years?|yrs?)/i) ||
@@ -1952,7 +1976,7 @@ export class JobsService implements OnModuleInit {
     if (/united states|\busa?\b/i.test(rawText)) country = 'United States';
     if (/india/i.test(rawText)) country = 'India';
 
-    // 4. Extract CTC / Pay Rate / Budget Range (e.g. ₹12–18 LPA, 12-18 LPA, 12 to 18 LPA, $60-$80/hr, Budget: 15 LPA)
+    // 4. Extract CTC / Pay Rate / Budget Range
     let payRate = '';
     let payRateMin = '';
     let payRateMax = '';
@@ -1973,9 +1997,8 @@ export class JobsService implements OnModuleInit {
       }
     }
 
-    // 5. Intelligent Tech Stack Skill Extraction Engine (DB-backed + static fallback)
+    // 5. Intelligent Tech Stack Skill Extraction Engine
     const TECH_SKILL_DICTIONARY: { name: string; aliases: string[] }[] = (dbDict && dbDict.length > 0) ? dbDict : [
-      // Languages
       { name: 'Java', aliases: ['Java 8', 'Java 11', 'Java 17', 'Java 21', 'Java 17+'] },
       { name: 'Python', aliases: ['Python 3', 'Python3'] },
       { name: 'TypeScript', aliases: ['TS'] },
@@ -1991,8 +2014,6 @@ export class JobsService implements OnModuleInit {
       { name: 'Kotlin', aliases: [] },
       { name: 'Swift', aliases: [] },
       { name: 'SQL', aliases: ['PL/SQL', 'T-SQL'] },
-
-      // Java Frameworks & Backend
       { name: 'Spring Boot', aliases: ['SpringBoot'] },
       { name: 'Spring MVC', aliases: ['SpringMVC'] },
       { name: 'Spring Security', aliases: [] },
@@ -2007,8 +2028,6 @@ export class JobsService implements OnModuleInit {
       { name: 'Gradle', aliases: [] },
       { name: 'JUnit', aliases: [] },
       { name: 'Mockito', aliases: [] },
-
-      // Frontend
       { name: 'React', aliases: ['React.js', 'ReactJS'] },
       { name: 'Angular', aliases: ['AngularJS', 'Angular 2+'] },
       { name: 'Vue.js', aliases: ['Vue', 'VueJS'] },
@@ -2018,8 +2037,6 @@ export class JobsService implements OnModuleInit {
       { name: 'CSS3', aliases: ['CSS'] },
       { name: 'Tailwind CSS', aliases: ['Tailwind'] },
       { name: 'Bootstrap', aliases: [] },
-
-      // Databases & Caching
       { name: 'PostgreSQL', aliases: ['Postgres'] },
       { name: 'MySQL', aliases: [] },
       { name: 'Oracle', aliases: ['Oracle DB'] },
@@ -2029,8 +2046,6 @@ export class JobsService implements OnModuleInit {
       { name: 'Redis', aliases: [] },
       { name: 'DynamoDB', aliases: [] },
       { name: 'Elasticsearch', aliases: ['Elastic Search'] },
-
-      // Cloud & DevOps
       { name: 'Docker', aliases: [] },
       { name: 'Kubernetes', aliases: ['K8s'] },
       { name: 'AWS', aliases: ['Amazon Web Services'] },
@@ -2043,28 +2058,21 @@ export class JobsService implements OnModuleInit {
       { name: 'Terraform', aliases: [] },
       { name: 'Ansible', aliases: [] },
       { name: 'Git', aliases: ['GitHub', 'GitLab', 'Bitbucket'] },
-
-      // Messaging & Queues
       { name: 'Kafka', aliases: ['Apache Kafka'] },
       { name: 'RabbitMQ', aliases: [] },
       { name: 'ActiveMQ', aliases: [] },
       { name: 'SQS', aliases: ['AWS SQS'] },
-
-      // Architecture & Practices
       { name: 'SOLID', aliases: ['SOLID Principles'] },
       { name: 'Design Patterns', aliases: ['Design Pattern'] },
       { name: 'OOP', aliases: ['Object Oriented Programming'] },
       { name: 'Agile', aliases: ['Scrum', 'Agile/Scrum'] },
       { name: 'System Design', aliases: [] },
-
-      // Salesforce
       { name: 'Apex', aliases: [] },
       { name: 'LWC', aliases: ['Lightning Web Components'] },
       { name: 'SOQL', aliases: [] },
       { name: 'Salesforce', aliases: ['Sales Cloud', 'Service Cloud'] },
     ];
 
-    // Section Splitter logic (Required vs Preferred)
     let requiredSectionText = '';
     let preferredSectionText = '';
     let generalText = rawText;
@@ -2133,20 +2141,23 @@ export class JobsService implements OnModuleInit {
     if (!normalized) return;
 
     try {
-      // Check if client exists (case insensitive) for this tenant
-      const existing = await this.db.query(
-        'SELECT 1 FROM clients WHERE tenant_id = $1 AND LOWER(client_name) = LOWER($2) LIMIT 1',
-        [tenantId, normalized],
-      );
+      const existing = await this.prisma.client.findFirst({
+        where: {
+          tenantId,
+          clientName: { equals: normalized, mode: 'insensitive' },
+        },
+        select: { id: true },
+      });
 
-      if (existing.rows.length === 0) {
+      if (!existing) {
         this.logger.log(`Auto-creating client "${normalized}" for tenant ${tenantId}`);
 
-        // Fetch tenant details first
-        const tenantRes = await this.db.query('SELECT prefix_code, name FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
-        const tenant = tenantRes.rows[0];
+        const tenant = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { prefixCode: true, name: true },
+        });
 
-        let prefix = tenant?.prefix_code;
+        let prefix = tenant?.prefixCode;
         if (!prefix) {
           const rawName = tenant?.name || '';
           const cleanName = rawName.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
@@ -2157,16 +2168,25 @@ export class JobsService implements OnModuleInit {
           }
         }
 
-        // Atomic counter increment
-        const counterRes = await this.db.query(`
-          INSERT INTO tenant_counters (tenant_id, entity_type, current_value)
-          VALUES ($1, 'client', 1)
-          ON CONFLICT (tenant_id, entity_type) 
-          DO UPDATE SET current_value = tenant_counters.current_value + 1
-          RETURNING current_value
-        `, [tenantId]);
-        
-        const seqNumber = counterRes.rows[0].current_value;
+        const counter = await this.prisma.tenantCounters.upsert({
+          where: {
+            tenantId_entityType: {
+              tenantId,
+              entityType: 'client',
+            },
+          },
+          create: {
+            tenantId,
+            entityType: 'client',
+            currentValue: 1,
+          },
+          update: {
+            currentValue: { increment: 1 },
+          },
+          select: { currentValue: true },
+        });
+
+        const seqNumber = counter.currentValue;
         const paddedSeq = String(seqNumber).padStart(3, '0');
         const clientCode = `${prefix}-CL-${paddedSeq}`;
 
@@ -2176,23 +2196,23 @@ export class JobsService implements OnModuleInit {
         let approvedAt: Date | null = new Date();
 
         if (createdBy && createdBy !== 'System') {
-          const creatorRes = await this.db.query(
+          const creatorRows = await this.prisma.$queryRawUnsafe<any[]>(
             `SELECT u.id, u.role_id,
                     COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
-             FROM users u
-             LEFT JOIN custom_roles cr ON (
+             FROM ats.users u
+             LEFT JOIN ats.custom_roles cr ON (
                (u.role_id IS NOT NULL AND cr.id = u.role_id)
                OR (u.assigned_role_ids IS NOT NULL AND cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
              )
-             LEFT JOIN role_permissions rp ON cr.id = rp.role_id
+             LEFT JOIN ats.role_permissions rp ON cr.id = rp.role_id
              WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
              GROUP BY u.id, u.role_id
              LIMIT 1`,
-            [createdBy, tenantId]
-          ).catch(() => ({ rows: [] }));
+            createdBy, tenantId
+          ).catch(() => []);
 
-          if (creatorRes.rows.length > 0) {
-            const cRow = creatorRes.rows[0];
+          if (creatorRows.length > 0) {
+            const cRow = creatorRows[0];
             const perms: string[] = Array.isArray(cRow.permissions) ? cRow.permissions : [];
             const hasDirectAdd = 
               perms.includes('client:direct_add') || 
@@ -2209,26 +2229,23 @@ export class JobsService implements OnModuleInit {
           }
         }
 
-        await this.db.query(
-          `INSERT INTO clients (
-            tenant_id, client_code, client_name, status, approval_status, primary_owner, business_unit, created_by, modified_by, approved_by, approved_at
-          ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $6, $6, $8, $9
-          )`,
-          [
+        await this.prisma.client.create({
+          data: {
             tenantId,
             clientCode,
-            normalized,
-            initialStatus,
+            clientName: normalized,
+            status: initialStatus,
             approvalStatus,
+            primaryOwner: createdBy,
+            businessUnit: tenant?.name || 'Default',
             createdBy,
-            tenant?.name || 'Default',
+            modifiedBy: createdBy,
             approvedBy,
             approvedAt,
-          ]
-        );
+          },
+        });
       }
-    } catch (err) {
+    } catch (err: any) {
       this.logger.error(`Failed to auto-create client/end client "${clientName}": ${err.message}`, err.stack);
     }
   }
@@ -2283,30 +2300,43 @@ export class JobsService implements OnModuleInit {
 
   async deleteJob(id: string, tenantId: string): Promise<boolean> {
     this.logger.log(`Soft deleting job ${id} for tenant ${tenantId}`);
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const isUuid = uuidRegex.test(id);
-    const sql = isUuid
-      ? `UPDATE jobs SET deleted_at = NOW() WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`
-      : `UPDATE jobs SET deleted_at = NOW() WHERE job_code = $1 AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`;
-    const res = await this.db.query(sql, [id, tenantId]);
-    if (res.rows.length === 0) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const existing = await this.prisma.job.findFirst({
+      where: {
+        tenantId,
+        deletedAt: null,
+        ...(isUuid ? { id } : { jobCode: id }),
+      },
+      select: { id: true },
+    });
+    if (!existing) {
       throw new NotFoundException(`Job ${id} not found or already deleted.`);
     }
+    await this.prisma.job.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date() },
+    });
     return true;
   }
 
   async restoreJob(id: string, tenantId: string): Promise<JobProfile> {
     this.logger.log(`Restoring job ${id} for tenant ${tenantId}`);
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    const isUuid = uuidRegex.test(id);
-    const sql = isUuid
-      ? `UPDATE jobs SET deleted_at = NULL WHERE id = $1::uuid AND tenant_id = $2 AND deleted_at IS NOT NULL RETURNING id`
-      : `UPDATE jobs SET deleted_at = NULL WHERE job_code = $1 AND tenant_id = $2 AND deleted_at IS NOT NULL RETURNING id`;
-    const res = await this.db.query(sql, [id, tenantId]);
-    if (res.rows.length === 0) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const existing = await this.prisma.job.findFirst({
+      where: {
+        tenantId,
+        deletedAt: { not: null },
+        ...(isUuid ? { id } : { jobCode: id }),
+      },
+      select: { id: true },
+    });
+    if (!existing) {
       throw new NotFoundException(`Job ${id} not found or not deleted.`);
     }
-    return this.findOneJob(res.rows[0].id, tenantId);
+    await this.prisma.job.update({
+      where: { id: existing.id },
+      data: { deletedAt: null },
+    });
+    return this.findOneJob(existing.id, tenantId);
   }
 }
-
