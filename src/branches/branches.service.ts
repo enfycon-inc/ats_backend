@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreateBranchDto } from './dtos/create-branch.dto';
 import { UpdateBranchDto } from './dtos/update-branch.dto';
 
@@ -53,46 +53,72 @@ export interface BranchResponse {
 export class BranchesService {
   private readonly logger = new Logger(BranchesService.name);
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
-  private async ensureBranchSettingsColumns(): Promise<void> {
-    await this.db.query(`
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_none BOOLEAN DEFAULT FALSE;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_pods BOOLEAN DEFAULT TRUE;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_all BOOLEAN DEFAULT TRUE;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allow_unassigned BOOLEAN DEFAULT TRUE;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS pod_distribution_strategy VARCHAR(50) DEFAULT 'AUTO';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS require_am_job_approval BOOLEAN DEFAULT TRUE;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS require_job_approval BOOLEAN DEFAULT TRUE;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS roles_requiring_approval TEXT DEFAULT '["ACCOUNT_MANAGER", "BD", "RECRUITER"]';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS default_job_approver_role VARCHAR(50) DEFAULT 'POD_LEAD';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS allowed_job_approver_roles TEXT DEFAULT '["POD_LEAD", "DELIVERY_HEAD", "PRIMARY_RECRUITER", "BRANCH_ADMIN"]';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS approval_routing_mode VARCHAR(50) DEFAULT 'FLEXIBLE';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) DEFAULT 'Asia/Kolkata';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS work_start_time VARCHAR(20) DEFAULT '09:00';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS work_end_time VARCHAR(20) DEFAULT '18:00';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS working_days TEXT DEFAULT '["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100) DEFAULT 'General Shift';
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS break_duration_minutes INTEGER DEFAULT 60;
-      ALTER TABLE branches ADD COLUMN IF NOT EXISTS enable_global_remarks BOOLEAN DEFAULT FALSE;
-    `).catch(() => {});
+  private parseJsonArray(value: any, defaultValue: string[]): string[] {
+    if (!value) return defaultValue;
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : defaultValue;
+      } catch {
+        return defaultValue;
+      }
+    }
+    return defaultValue;
+  }
+
+  private formatBranch(b: any, members: BranchMember[] = []): BranchResponse {
+    return {
+      id: b.id,
+      name: b.name,
+      code: b.code,
+      city: b.city,
+      state: b.state,
+      country: b.country,
+      market: b.market || 'INDIA',
+      managerId: b.managerId || null,
+      managerName: b.manager?.fullName || null,
+      managerEmail: b.manager?.email || null,
+      isActive: b.isActive,
+      allowNone: Boolean(b.allowNone),
+      allowPods: b.allowPods !== false,
+      allowAll: b.allowAll !== false,
+      allowUnassigned: b.allowUnassigned !== false,
+      podDistributionStrategy: (b.podDistributionStrategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
+      requireAmJobApproval: b.requireAmJobApproval !== false,
+      requireJobApproval: b.requireJobApproval !== false && b.requireAmJobApproval !== false,
+      rolesRequiringApproval: this.parseJsonArray(b.rolesRequiringApproval, ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']),
+      defaultJobApproverRole: b.defaultJobApproverRole || 'POD_LEAD',
+      allowedJobApproverRoles: this.parseJsonArray(b.allowedJobApproverRoles, ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']),
+      approvalRoutingMode: (b.approvalRoutingMode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
+      timezone: b.timezone || (b.market === 'US' || b.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
+      workStartTime: b.workStartTime || '09:00',
+      workEndTime: b.workEndTime || '18:00',
+      workingDays: this.parseJsonArray(b.workingDays, ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']),
+      shiftTiming: b.shiftTiming || (b.market === 'US' ? 'US Shift' : 'General Shift'),
+      breakDurationMinutes: Number(b.breakDurationMinutes ?? 60),
+      enableGlobalRemarks: Boolean(b.enableGlobalRemarks),
+      usersCount: members.length,
+      jobsCount: b._count?.jobs ?? b.jobsCount ?? 0,
+      members,
+      createdAt: b.createdAt?.toISOString ? b.createdAt.toISOString() : String(b.createdAt),
+    };
   }
 
   async create(dto: CreateBranchDto, tenantId: string): Promise<BranchResponse> {
-    await this.ensureBranchSettingsColumns();
     this.logger.log(`Creating branch "${dto.name}" for tenant ${tenantId}`);
 
-    const tenantRes = await this.db.query(
-      'SELECT max_branches FROM tenants WHERE id = $1 LIMIT 1',
-      [tenantId]
-    );
-    const maxBranches = tenantRes.rows[0]?.max_branches || 5;
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { maxBranches: true },
+    });
+    const maxBranches = tenant?.maxBranches || 5;
 
-    const countRes = await this.db.query(
-      'SELECT COUNT(*)::int as count FROM branches WHERE tenant_id = $1',
-      [tenantId]
-    );
-    const currentBranchesCount = countRes.rows[0]?.count || 0;
+    const currentBranchesCount = await this.prisma.branch.count({
+      where: { tenantId },
+    });
 
     if (currentBranchesCount >= maxBranches) {
       throw new BadRequestException(
@@ -100,11 +126,13 @@ export class BranchesService {
       );
     }
 
-    const nameCheck = await this.db.query(
-      'SELECT 1 FROM branches WHERE tenant_id = $1 AND UPPER(name) = $2',
-      [tenantId, dto.name.trim().toUpperCase()]
-    );
-    if (nameCheck.rows.length > 0) {
+    const existing = await this.prisma.branch.findFirst({
+      where: {
+        tenantId,
+        name: { equals: dto.name.trim(), mode: 'insensitive' },
+      },
+    });
+    if (existing) {
       throw new ConflictException(`A branch with the name "${dto.name}" already exists.`);
     }
 
@@ -116,24 +144,16 @@ export class BranchesService {
     const workingDays = JSON.stringify(dto.workingDays || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
     const shiftTiming = dto.shiftTiming ? dto.shiftTiming.trim() : (market === 'US' ? 'US Shift' : 'General Shift');
     const breakDurationMinutes = dto.breakDurationMinutes ?? 60;
-
     const enableGlobalRemarks = Boolean(dto.enableGlobalRemarks);
 
-    const res = await this.db.query(
-      `INSERT INTO branches (
-        tenant_id, name, code, city, state, country, market,
-        timezone, work_start_time, work_end_time, working_days, shift_timing, break_duration_minutes,
-        enable_global_remarks
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-      RETURNING *`,
-      [
+    const branch = await this.prisma.branch.create({
+      data: {
         tenantId,
-        dto.name.trim(),
+        name: dto.name.trim(),
         code,
-        dto.city || null,
-        dto.state || null,
-        dto.country || 'India',
+        city: dto.city || null,
+        state: dto.state || null,
+        country: dto.country || 'India',
         market,
         timezone,
         workStartTime,
@@ -142,184 +162,87 @@ export class BranchesService {
         shiftTiming,
         breakDurationMinutes,
         enableGlobalRemarks,
-      ]
-    );
-    const branch = res.rows[0];
+      },
+    });
 
     return this.findOne(branch.id, tenantId);
   }
 
   async findAll(tenantId: string): Promise<BranchResponse[]> {
-    await this.ensureBranchSettingsColumns();
-    const res = await this.db.query(
-      `SELECT b.*,
-              u.full_name AS manager_name,
-              u.email AS manager_email,
-              (SELECT COUNT(*)::int FROM jobs WHERE branch_id = b.id) as jobs_count
-       FROM branches b
-       LEFT JOIN users u ON u.id = b.manager_id
-       WHERE b.tenant_id = $1
-       ORDER BY b.name ASC`,
-      [tenantId]
-    );
+    const [branches, allTenantUsers] = await Promise.all([
+      this.prisma.branch.findMany({
+        where: { tenantId },
+        include: {
+          manager: {
+            select: { fullName: true, email: true },
+          },
+          _count: {
+            select: { jobs: true },
+          },
+        },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.user.findMany({
+        where: { tenantId, isActive: true },
+        include: {
+          customRole: {
+            select: { name: true, systemRole: true },
+          },
+        },
+        orderBy: { fullName: 'asc' },
+      }),
+    ]);
 
-    return Promise.all(
-      res.rows.map(async (row) => {
-        const branchMembers = await this.getMembers(row.id, tenantId);
+    return branches.map((b) => {
+      const branchMembers: BranchMember[] = allTenantUsers
+        .filter((u) => u.branchId === b.id || (u.assignedBranchIds && u.assignedBranchIds.includes(b.id)))
+        .map((u) => ({
+          id: u.id,
+          email: u.email,
+          fullName: u.fullName,
+          roles: [u.customRole?.name || u.customRole?.systemRole || 'RECRUITER'],
+          isActive: u.isActive,
+          podId: u.podId,
+          createdAt: u.createdAt.toISOString(),
+        }));
 
-        return {
-          id: row.id,
-          name: row.name,
-          code: row.code,
-          city: row.city,
-          state: row.state,
-          country: row.country,
-          market: row.market || 'INDIA',
-          managerId: row.manager_id || null,
-          managerName: row.manager_name || null,
-          managerEmail: row.manager_email || null,
-          isActive: row.is_active,
-          allowNone: Boolean(row.allow_none),
-          allowPods: row.allow_pods !== false,
-          allowAll: row.allow_all !== false,
-          allowUnassigned: row.allow_unassigned !== false,
-          podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
-          requireAmJobApproval: row.require_am_job_approval !== false,
-          requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
-          rolesRequiringApproval: (() => {
-            try {
-              return typeof row.roles_requiring_approval === 'string'
-                ? JSON.parse(row.roles_requiring_approval)
-                : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
-            } catch {
-              return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
-            }
-          })(),
-          defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
-          allowedJobApproverRoles: (() => {
-            try {
-              return typeof row.allowed_job_approver_roles === 'string'
-                ? JSON.parse(row.allowed_job_approver_roles)
-                : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
-            } catch {
-              return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
-            }
-          })(),
-          approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
-          timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
-          workStartTime: row.work_start_time || '09:00',
-          workEndTime: row.work_end_time || '18:00',
-          workingDays: (() => {
-            try {
-              return typeof row.working_days === 'string'
-                ? JSON.parse(row.working_days)
-                : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-            } catch {
-              return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-            }
-          })(),
-          shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
-          breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
-          enableGlobalRemarks: Boolean(row.enable_global_remarks),
-          usersCount: branchMembers.length,
-          jobsCount: row.jobs_count || 0,
-          members: branchMembers,
-          createdAt: row.created_at,
-        };
-      })
-    );
+      return this.formatBranch(b, branchMembers);
+    });
   }
 
   async findOne(id: string, tenantId: string): Promise<BranchResponse> {
-    await this.ensureBranchSettingsColumns();
-    const res = await this.db.query(
-      `SELECT b.*,
-              u.full_name AS manager_name,
-              u.email AS manager_email,
-              (SELECT COUNT(*)::int FROM jobs WHERE branch_id = b.id) as jobs_count
-       FROM branches b
-       LEFT JOIN users u ON u.id = b.manager_id
-       WHERE b.id = $1 AND b.tenant_id = $2`,
-      [id, tenantId]
-    );
+    const branch = await this.prisma.branch.findFirst({
+      where: { id, tenantId },
+      include: {
+        manager: {
+          select: { fullName: true, email: true },
+        },
+        _count: {
+          select: { jobs: true },
+        },
+      },
+    });
 
-    if (res.rows.length === 0) {
+    if (!branch) {
       throw new NotFoundException(`Branch with ID "${id}" not found.`);
     }
 
     const members = await this.getMembers(id, tenantId);
-    const row = res.rows[0];
-    return {
-      id: row.id,
-      name: row.name,
-      code: row.code,
-      city: row.city,
-      state: row.state,
-      country: row.country,
-      market: row.market || 'INDIA',
-      managerId: row.manager_id || null,
-      managerName: row.manager_name || null,
-      managerEmail: row.manager_email || null,
-      isActive: row.is_active,
-      allowNone: Boolean(row.allow_none),
-      allowPods: row.allow_pods !== false,
-      allowAll: row.allow_all !== false,
-      allowUnassigned: row.allow_unassigned !== false,
-      podDistributionStrategy: (row.pod_distribution_strategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
-      requireAmJobApproval: row.require_am_job_approval !== false,
-      requireJobApproval: row.require_job_approval !== false && row.require_am_job_approval !== false,
-      rolesRequiringApproval: (() => {
-        try {
-          return typeof row.roles_requiring_approval === 'string'
-            ? JSON.parse(row.roles_requiring_approval)
-            : (row.roles_requiring_approval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
-        } catch {
-          return ['ACCOUNT_MANAGER', 'BD', 'RECRUITER'];
-        }
-      })(),
-      defaultJobApproverRole: row.default_job_approver_role || 'POD_LEAD',
-      allowedJobApproverRoles: (() => {
-        try {
-          return typeof row.allowed_job_approver_roles === 'string'
-            ? JSON.parse(row.allowed_job_approver_roles)
-            : (row.allowed_job_approver_roles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
-        } catch {
-          return ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'];
-        }
-      })(),
-      approvalRoutingMode: (row.approval_routing_mode || 'FLEXIBLE') as 'FLEXIBLE' | 'ENFORCE_DEFAULT',
-      timezone: row.timezone || (row.market === 'US' || row.country === 'United States' ? 'America/New_York' : 'Asia/Kolkata'),
-      workStartTime: row.work_start_time || '09:00',
-      workEndTime: row.work_end_time || '18:00',
-      workingDays: (() => {
-        try {
-          return typeof row.working_days === 'string'
-            ? JSON.parse(row.working_days)
-            : (row.working_days || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-        } catch {
-          return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-        }
-      })(),
-      shiftTiming: row.shift_timing || (row.market === 'US' ? 'US Shift' : 'General Shift'),
-      breakDurationMinutes: Number(row.break_duration_minutes ?? 60),
-      enableGlobalRemarks: Boolean(row.enable_global_remarks),
-      usersCount: members.length,
-      jobsCount: row.jobs_count || 0,
-      members,
-      createdAt: row.created_at,
-    };
+    return this.formatBranch(branch, members);
   }
 
   async update(id: string, dto: UpdateBranchDto, tenantId: string): Promise<BranchResponse> {
-    await this.ensureBranchSettingsColumns();
     const existing = await this.findOne(id, tenantId);
 
     if (dto.name && dto.name.trim().toUpperCase() !== existing.name.toUpperCase()) {
-      const nameCheck = await this.db.query(
-        'SELECT 1 FROM branches WHERE tenant_id = $1 AND UPPER(name) = $2 AND id <> $3',
-        [tenantId, dto.name.trim().toUpperCase(), id]
-      );
-      if (nameCheck.rows.length > 0) {
+      const nameCheck = await this.prisma.branch.findFirst({
+        where: {
+          tenantId,
+          name: { equals: dto.name.trim(), mode: 'insensitive' },
+          id: { not: id },
+        },
+      });
+      if (nameCheck) {
         throw new ConflictException(`A branch with the name "${dto.name}" already exists.`);
       }
     }
@@ -328,7 +251,7 @@ export class BranchesService {
     const code = dto.code !== undefined ? dto.code.trim().toUpperCase() : existing.code;
     const city = dto.city !== undefined ? dto.city : existing.city;
     const state = dto.state !== undefined ? dto.state : existing.state;
-    const country = dto.country !== undefined ? dto.country : existing.country;
+    const country = (dto.country !== undefined ? dto.country : existing.country) || 'India';
     const market = dto.market !== undefined ? dto.market.trim().toUpperCase() : existing.market;
     const isActive = dto.isActive !== undefined ? dto.isActive : existing.isActive;
     const allowNone = dto.allowNone !== undefined ? dto.allowNone : existing.allowNone;
@@ -336,17 +259,22 @@ export class BranchesService {
     const allowAll = dto.allowAll !== undefined ? dto.allowAll : existing.allowAll;
     const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : existing.allowUnassigned;
     const podDistributionStrategy = dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy;
-    const requireJobApproval = dto.requireJobApproval !== undefined 
-      ? dto.requireJobApproval 
-      : (dto.requireAmJobApproval !== undefined ? dto.requireAmJobApproval : existing.requireJobApproval);
+    const requireJobApproval =
+      dto.requireJobApproval !== undefined
+        ? dto.requireJobApproval
+        : dto.requireAmJobApproval !== undefined
+        ? dto.requireAmJobApproval
+        : existing.requireJobApproval;
     const requireAmJobApproval = requireJobApproval;
-    const rolesRequiringApproval = dto.rolesRequiringApproval !== undefined
-      ? JSON.stringify(dto.rolesRequiringApproval)
-      : JSON.stringify(existing.rolesRequiringApproval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
+    const rolesRequiringApproval =
+      dto.rolesRequiringApproval !== undefined
+        ? JSON.stringify(dto.rolesRequiringApproval)
+        : JSON.stringify(existing.rolesRequiringApproval || ['ACCOUNT_MANAGER', 'BD', 'RECRUITER']);
     const defaultJobApproverRole = dto.defaultJobApproverRole !== undefined ? dto.defaultJobApproverRole : existing.defaultJobApproverRole;
-    const allowedJobApproverRoles = dto.allowedJobApproverRoles !== undefined
-      ? JSON.stringify(dto.allowedJobApproverRoles)
-      : JSON.stringify(existing.allowedJobApproverRoles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
+    const allowedJobApproverRoles =
+      dto.allowedJobApproverRoles !== undefined
+        ? JSON.stringify(dto.allowedJobApproverRoles)
+        : JSON.stringify(existing.allowedJobApproverRoles || ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN']);
     const approvalRoutingMode = dto.approvalRoutingMode !== undefined ? dto.approvalRoutingMode : existing.approvalRoutingMode;
     const timezone = dto.timezone !== undefined ? dto.timezone : existing.timezone;
     const workStartTime = dto.workStartTime !== undefined ? dto.workStartTime : existing.workStartTime;
@@ -356,194 +284,238 @@ export class BranchesService {
     const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : existing.breakDurationMinutes;
     const enableGlobalRemarks = dto.enableGlobalRemarks !== undefined ? Boolean(dto.enableGlobalRemarks) : existing.enableGlobalRemarks;
 
-    await this.db.query(
-      `UPDATE branches
-       SET name = $1, code = $2, city = $3, state = $4, country = $5, market = $6, is_active = $7,
-           allow_none = $8, allow_pods = $9, allow_all = $10, allow_unassigned = $11, pod_distribution_strategy = $12,
-           require_am_job_approval = $13, default_job_approver_role = $14,
-           allowed_job_approver_roles = $15, approval_routing_mode = $16,
-           require_job_approval = $17, roles_requiring_approval = $18,
-           timezone = $19, work_start_time = $20, work_end_time = $21,
-           working_days = $22, shift_timing = $23, break_duration_minutes = $24,
-           enable_global_remarks = $25,
-           updated_at = NOW()
-       WHERE id = $26 AND tenant_id = $27`,
-      [
-        name, code, city, state, country, market, isActive,
-        allowNone, allowPods, allowAll, allowUnassigned, podDistributionStrategy,
-        requireAmJobApproval, defaultJobApproverRole,
-        allowedJobApproverRoles, approvalRoutingMode,
-        requireJobApproval, rolesRequiringApproval,
-        timezone, workStartTime, workEndTime,
-        workingDays, shiftTiming, breakDurationMinutes,
+    await this.prisma.branch.update({
+      where: { id },
+      data: {
+        name,
+        code,
+        city,
+        state,
+        country,
+        market,
+        isActive,
+        allowNone,
+        allowPods,
+        allowAll,
+        allowUnassigned,
+        podDistributionStrategy,
+        requireAmJobApproval,
+        requireJobApproval,
+        rolesRequiringApproval,
+        defaultJobApproverRole,
+        allowedJobApproverRoles,
+        approvalRoutingMode,
+        timezone,
+        workStartTime,
+        workEndTime,
+        workingDays,
+        shiftTiming,
+        breakDurationMinutes,
         enableGlobalRemarks,
-        id, tenantId
-      ]
-    );
+      },
+    });
 
     return this.findOne(id, tenantId);
   }
 
   async toggleGlobalRemarks(id: string, tenantId: string, enabled?: boolean): Promise<BranchResponse> {
-    await this.ensureBranchSettingsColumns();
     const existing = await this.findOne(id, tenantId);
     const nextState = enabled !== undefined ? Boolean(enabled) : !existing.enableGlobalRemarks;
 
-    await this.db.query(
-      'UPDATE branches SET enable_global_remarks = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3',
-      [nextState, id, tenantId]
-    );
+    await this.prisma.branch.update({
+      where: { id },
+      data: { enableGlobalRemarks: nextState },
+    });
     return this.findOne(id, tenantId);
   }
 
   async remove(id: string, tenantId: string) {
     await this.findOne(id, tenantId);
-    await this.db.query('DELETE FROM branches WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+    await this.prisma.branch.delete({ where: { id } });
     return { message: 'Branch deleted successfully.' };
   }
 
   async getMembers(branchId: string, tenantId: string): Promise<BranchMember[]> {
-    const res = await this.db.query(
-      `SELECT u.id, u.email, u.full_name, u.is_active, u.pod_id, u.branch_id, u.assigned_branch_ids, u.created_at,
-              COALESCE(cr.name, cr.system_role, 'RECRUITER') as role_name
-       FROM users u
-       LEFT JOIN custom_roles cr ON cr.id = u.role_id
-       WHERE u.tenant_id = $1
-         AND u.is_active = true
-         AND (
-           u.branch_id = $2
-           OR (u.assigned_branch_ids IS NOT NULL AND u.assigned_branch_ids::text LIKE '%' || $2 || '%')
-         )
-       ORDER BY u.full_name ASC`,
-      [tenantId, branchId]
-    );
-    return res.rows.map(r => ({
-      id: r.id,
-      email: r.email,
-      fullName: r.full_name,
-      roles: r.role_name ? [r.role_name] : ['RECRUITER'],
-      isActive: r.is_active,
-      podId: r.pod_id,
-      createdAt: r.created_at
+    const users = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+        OR: [
+          { branchId },
+          { assignedBranchIds: { has: branchId } },
+        ],
+      },
+      include: {
+        customRole: {
+          select: { name: true, systemRole: true },
+        },
+      },
+      orderBy: { fullName: 'asc' },
+    });
+
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      fullName: u.fullName,
+      roles: [u.customRole?.name || u.customRole?.systemRole || 'RECRUITER'],
+      isActive: u.isActive,
+      podId: u.podId,
+      createdAt: u.createdAt.toISOString(),
     }));
   }
 
   async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[], assignedBranchIds?: string[]) {
     await this.findOne(branchId, tenantId);
-    const userRes = await this.db.query('SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2', [userId, tenantId]);
-    if (userRes.rows.length === 0) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, tenantId },
+    });
+    if (!user) {
       throw new NotFoundException('User not found in tenant.');
     }
-    const branchIds = (assignedBranchIds && Array.isArray(assignedBranchIds) && assignedBranchIds.length > 0)
-      ? Array.from(new Set([branchId, ...assignedBranchIds]))
-      : [branchId];
+
+    const branchIds =
+      assignedBranchIds && Array.isArray(assignedBranchIds) && assignedBranchIds.length > 0
+        ? Array.from(new Set([branchId, ...assignedBranchIds]))
+        : [branchId];
 
     if (roles && Array.isArray(roles) && roles.length > 0) {
-      const customRoleRes = await this.db.query(
-        `SELECT id, name FROM custom_roles 
-         WHERE tenant_id = $1 AND (name = ANY($2::text[]) OR id::text = ANY($2::text[]) OR system_role = ANY($2::text[]))
-         ORDER BY (is_system = false) DESC, created_at DESC`,
-        [tenantId, roles]
-      );
-      const roleIds: string[] = customRoleRes.rows.map((r: any) => r.id);
+      const customRoles = await this.prisma.customRole.findMany({
+        where: {
+          tenantId,
+          OR: [
+            { name: { in: roles } },
+            { id: { in: roles.filter((r) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(r)) } },
+            { systemRole: { in: roles } },
+          ],
+        },
+        orderBy: [
+          { isSystem: 'asc' },
+          { createdAt: 'desc' },
+        ],
+      });
+
+      const roleIds = customRoles.map((r) => r.id);
       const roleId = roleIds[0] || null;
 
       if (roleId) {
-        await this.db.query(
-          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, role_id = $3, assigned_role_ids = $4::uuid[], updated_at = NOW() WHERE id = $5 AND tenant_id = $6',
-          [branchId, branchIds, roleId, roleIds, userId, tenantId]
-        );
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: {
+            branchId,
+            assignedBranchIds: branchIds,
+            roleId,
+            assignedRoleIds: roleIds,
+          },
+        });
       } else {
-        await this.db.query(
-          'UPDATE users SET branch_id = $1, assigned_branch_ids = $2, assigned_role_ids = $3::uuid[], updated_at = NOW() WHERE id = $4 AND tenant_id = $5',
-          [branchId, branchIds, roleIds, userId, tenantId]
-        );
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: {
+            branchId,
+            assignedBranchIds: branchIds,
+            assignedRoleIds: roleIds,
+          },
+        });
       }
     } else {
-      await this.db.query('UPDATE users SET branch_id = $1, assigned_branch_ids = $2, updated_at = NOW() WHERE id = $3 AND tenant_id = $4', [branchId, branchIds, userId, tenantId]);
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          branchId,
+          assignedBranchIds: branchIds,
+        },
+      });
     }
+
     return { message: 'User assigned to branch and roles updated successfully.' };
   }
 
   async updateManager(branchId: string, managerId: string | null, tenantId: string) {
     await this.findOne(branchId, tenantId);
+
     if (managerId) {
-      const userRes = await this.db.query('SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2', [managerId, tenantId]);
-      if (userRes.rows.length === 0) {
+      const mgr = await this.prisma.user.findFirst({
+        where: { id: managerId, tenantId },
+      });
+      if (!mgr) {
         throw new NotFoundException('Selected manager user not found in tenant.');
       }
-      const rolesRes = await this.db.query('SELECT assigned_branch_ids, assigned_role_ids, role_id FROM users WHERE id = $1', [managerId]);
-      const currentBranchIds: string[] = rolesRes.rows[0]?.assigned_branch_ids || [];
-      const currentRoleIds: string[] = rolesRes.rows[0]?.assigned_role_ids || [];
-      const primaryRoleId = rolesRes.rows[0]?.role_id;
-      const updatedBranchIds = Array.from(new Set([branchId, ...currentBranchIds]));
 
-      // Look up the Custom Role for this branch with archetype 'BRANCH_ADMIN'
-      const branchAdminRoleRes = await this.db.query(
-        `SELECT id FROM custom_roles 
-         WHERE tenant_id = $1 AND (branch_id = $2 OR branch_id IS NULL) 
-           AND (system_role = 'BRANCH_ADMIN' OR UPPER(name) = 'BRANCH_ADMIN' OR UPPER(name) = 'BRANCH ADMIN')
-         ORDER BY (branch_id = $2) DESC, (is_system = false) DESC, created_at ASC 
-         LIMIT 1`,
-        [tenantId, branchId]
-      );
+      const updatedBranchIds = Array.from(new Set([branchId, ...(mgr.assignedBranchIds || [])]));
 
-      const branchAdminRoleId = branchAdminRoleRes.rows[0]?.id;
-      const updatedRoleIds = branchAdminRoleId 
-        ? Array.from(new Set([...currentRoleIds, branchAdminRoleId]))
-        : currentRoleIds;
+      const branchAdminRole = await this.prisma.customRole.findFirst({
+        where: {
+          tenantId,
+          OR: [{ branchId }, { branchId: null }],
+          AND: [
+            {
+              OR: [
+                { systemRole: 'BRANCH_ADMIN' },
+                { name: { in: ['BRANCH_ADMIN', 'Branch Admin', 'BRANCH ADMIN'], mode: 'insensitive' } },
+              ],
+            },
+          ],
+        },
+        orderBy: [
+          { isSystem: 'asc' },
+          { createdAt: 'asc' },
+        ],
+      });
 
-      await this.db.query(
-        `UPDATE users 
-         SET branch_id = $1, 
-             assigned_branch_ids = $2,
-             assigned_role_ids = $3::uuid[],
-             role_id = COALESCE($4, role_id)
-         WHERE id = $5`,
-        [branchId, updatedBranchIds, updatedRoleIds, branchAdminRoleId, managerId]
-      );
+      const updatedRoleIds = branchAdminRole?.id
+        ? Array.from(new Set([...(mgr.assignedRoleIds || []), branchAdminRole.id]))
+        : (mgr.assignedRoleIds || []);
+
+      await this.prisma.user.update({
+        where: { id: managerId },
+        data: {
+          branchId,
+          assignedBranchIds: updatedBranchIds,
+          assignedRoleIds: updatedRoleIds,
+          ...(branchAdminRole?.id ? { roleId: branchAdminRole.id } : {}),
+        },
+      });
     }
-    await this.db.query('UPDATE branches SET manager_id = $1 WHERE id = $2 AND tenant_id = $3', [managerId, branchId, tenantId]);
+
+    await this.prisma.branch.update({
+      where: { id: branchId },
+      data: { managerId },
+    });
+
     return this.findOne(branchId, tenantId);
   }
 
   async getHierarchy(tenantId: string) {
     try {
-      const tenantRes = await this.db.query(
-        `SELECT id, name, domain FROM tenants WHERE id = $1 LIMIT 1`,
-        [tenantId]
-      );
-      const tenant = tenantRes.rows[0];
+      const [tenant, branchesList, pods] = await Promise.all([
+        this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { id: true, name: true, domain: true },
+        }),
+        this.findAll(tenantId),
+        this.prisma.pod.findMany({
+          where: { tenantId },
+          select: { id: true, name: true, branchId: true },
+        }),
+      ]);
 
-      const branchesList = await this.findAll(tenantId);
-      
-      const branchesWithPods = await Promise.all(
-        (branchesList || []).map(async (b) => {
-          try {
-            const podsRes = await this.db.query(
-              'SELECT id, name, code FROM pods WHERE branch_id = $1 AND tenant_id = $2',
-              [b.id, tenantId]
-            );
-            const members = b.members || (await this.getMembers(b.id, tenantId).catch(() => []));
-            
-            return {
-              ...b,
-              pods: podsRes?.rows || [],
-              members: members || [],
-            };
-          } catch (e) {
-            return {
-              ...b,
-              pods: [],
-              members: [],
-            };
-          }
-        })
-      );
+      const podsByBranch = new Map<string, any[]>();
+      pods.forEach((p) => {
+        if (p.branchId) {
+          const list = podsByBranch.get(p.branchId) || [];
+          list.push(p);
+          podsByBranch.set(p.branchId, list);
+        }
+      });
+
+      const branchesWithPods = branchesList.map((b) => ({
+        ...b,
+        pods: podsByBranch.get(b.id) || [],
+      }));
 
       return {
         tenant: tenant || { name: 'Tenant HQ', domain: 'workspace' },
-        branches: branchesWithPods || [],
+        branches: branchesWithPods,
       };
     } catch (err) {
       this.logger.error('Error in getHierarchy:', err);

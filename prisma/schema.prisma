@@ -141,19 +141,38 @@ model TenantDiceIntegration {
 }
 
 model Branch {
-  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String    @map("tenant_id") @db.Uuid
-  name      String    @db.VarChar(255)
-  code      String?   @db.VarChar(50)
-  city      String?   @db.VarChar(100)
-  state     String?   @db.VarChar(100)
-  country   String    @default("India") @db.VarChar(100)
-  isActive  Boolean   @default(true) @map("is_active")
-  managerId String?   @map("manager_id") @db.Uuid
-  market    String    @default("INDIA") @db.VarChar(50)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  name                    String    @db.VarChar(255)
+  code                    String?   @db.VarChar(50)
+  city                    String?   @db.VarChar(100)
+  state                   String?   @db.VarChar(100)
+  country                 String    @default("India") @db.VarChar(100)
+  isActive                Boolean   @default(true) @map("is_active")
+  managerId               String?   @map("manager_id") @db.Uuid
+  market                  String    @default("INDIA") @db.VarChar(50)
+  allowNone               Boolean   @default(false) @map("allow_none")
+  allowPods               Boolean   @default(true) @map("allow_pods")
+  allowAll                Boolean   @default(true) @map("allow_all")
+  allowUnassigned         Boolean   @default(true) @map("allow_unassigned")
+  podDistributionStrategy String    @default("AUTO") @map("pod_distribution_strategy") @db.VarChar(50)
+  requireAmJobApproval    Boolean   @default(true) @map("require_am_job_approval")
+  requireJobApproval      Boolean   @default(true) @map("require_job_approval")
+  rolesRequiringApproval  String?   @map("roles_requiring_approval")
+  defaultJobApproverRole  String?   @default("POD_LEAD") @map("default_job_approver_role") @db.VarChar(50)
+  allowedJobApproverRoles String?   @map("allowed_job_approver_roles")
+  approvalRoutingMode     String?   @default("FLEXIBLE") @map("approval_routing_mode") @db.VarChar(50)
+  timezone                String?   @default("Asia/Kolkata") @db.VarChar(100)
+  workStartTime           String?   @default("09:00") @map("work_start_time") @db.VarChar(20)
+  workEndTime             String?   @default("18:00") @map("work_end_time") @db.VarChar(20)
+  workingDays             String?   @map("working_days")
+  shiftTiming             String?   @default("General Shift") @map("shift_timing") @db.VarChar(100)
+  breakDurationMinutes    Int?      @default(60) @map("break_duration_minutes")
+  enableGlobalRemarks     Boolean   @default(false) @map("enable_global_remarks")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  tenant                  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  manager                 User?     @relation("BranchManager", fields: [managerId], references: [id], onDelete: SetNull)
 
   pods            Pod[]
   candidates      Candidate[]
@@ -275,6 +294,7 @@ model User {
   pod               Pod?          @relation("UserPod", fields: [podId], references: [id], onDelete: SetNull)
 
   podsAsHead           Pod[]                    @relation("PodHead")
+  managedBranches      Branch[]                 @relation("BranchManager")
   notifications        Notification[]
   notificationSettings UserNotificationSettings?
 
@@ -379,32 +399,61 @@ model Client {
   @@schema("ats")
 }
 
-model Candidate {
-  id                  Int       @id @default(autoincrement())
-  tenantId            String?   @map("tenant_id") @db.Uuid
-  branchId            String?   @map("branch_id") @db.Uuid
-  candidateCode       String?   @map("candidate_code") @db.VarChar(100)
-  firstName           String?   @map("first_name") @db.VarChar(255)
-  lastName            String?   @map("last_name") @db.VarChar(255)
-  email               String?   @db.VarChar(255)
-  phone               String?   @db.VarChar(50)
-  market              String    @default("US") @db.VarChar(50)
-  currentCtc          Decimal?  @map("current_ctc") @db.Decimal(10, 2)
-  expectedCtc         Decimal?  @map("expected_ctc") @db.Decimal(10, 2)
-  noticePeriodDays    Int       @default(0) @map("notice_period_days")
-  servingNotice       Boolean   @default(false) @map("serving_notice")
-  lastWorkingDay      DateTime? @map("last_working_day") @db.Date
-  panCard             String?   @map("pan_card") @db.VarChar(10)
-  preferredLocations  String[]  @map("preferred_locations")
-  uploadedByUserId    String?   @map("uploaded_by_user_id") @db.Uuid
-  uploadedByName      String?   @map("uploaded_by_name") @db.VarChar(255)
-  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz
-  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  tenant              Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branch              Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+model Resume {
+  id            Int         @id @default(autoincrement())
+  filename      String?     @db.VarChar(255)
+  candidateName String?     @map("candidate_name") @db.VarChar(255)
+  email         String?     @db.VarChar(255)
+  fileHash      String?     @map("file_hash") @db.VarChar(255)
+  parsedJson    Json?       @map("parsed_json")
+  rawText       String?     @map("raw_text")
+  fileData      Bytes?      @map("file_data")
+  fileMime      String?     @map("file_mime") @db.VarChar(150)
+  fileSize      Int?        @map("file_size")
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
-  submissions    RecruiterSubmission[]
+  candidates    Candidate[]
+
+  @@map("resumes")
+  @@schema("ats")
+}
+
+model Candidate {
+  id                    Int       @id @default(autoincrement())
+  tenantId              String?   @map("tenant_id") @db.Uuid
+  branchId              String?   @map("branch_id") @db.Uuid
+  candidateCode         String?   @map("candidate_code") @db.VarChar(100)
+  firstName             String?   @map("first_name") @db.VarChar(255)
+  lastName              String?   @map("last_name") @db.VarChar(255)
+  fullName              String?   @map("full_name") @db.VarChar(255)
+  email                 String?   @db.VarChar(255)
+  phone                 String?   @db.VarChar(50)
+  market                String    @default("US") @db.VarChar(50)
+  source                String?   @db.VarChar(100)
+  workAuthorization     String?   @map("work_authorization") @db.VarChar(100)
+  rawCurrentLocation    String?   @map("raw_current_location")
+  rawCurrentDesignation String?   @map("raw_current_designation")
+  totalExperienceYears  Decimal?  @map("total_experience_years") @db.Decimal(4, 1)
+  currentCtc            Decimal?  @map("current_ctc") @db.Decimal(10, 2)
+  expectedCtc           Decimal?  @map("expected_ctc") @db.Decimal(10, 2)
+  noticePeriodDays      Int       @default(0) @map("notice_period_days")
+  servingNotice         Boolean   @default(false) @map("serving_notice")
+  lastWorkingDay        DateTime? @map("last_working_day") @db.Date
+  panCard               String?   @map("pan_card") @db.VarChar(10)
+  preferredLocations    String[]  @map("preferred_locations")
+  skills                String[]  @default([])
+  resumeRecordId        Int?      @map("resume_record_id")
+  uploadedByUserId      String?   @map("uploaded_by_user_id") @db.Uuid
+  uploadedByName        String?   @map("uploaded_by_name") @db.VarChar(255)
+  deletedAt             DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch       Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  resumeRecord Resume?   @relation(fields: [resumeRecordId], references: [id], onDelete: SetNull)
+
+  submissions     RecruiterSubmission[]
   bulkUploadItems BulkUploadItem[]
 
   @@map("candidates")
