@@ -32,7 +32,7 @@ COPY --from=build /app/dist ./dist
 
 EXPOSE 5000
 
-# Run migrations then start the app
-CMD ["sh", "-c", "npx prisma migrate deploy && if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
+# Push schema to database then start the app
+CMD ["sh", "-c", "npx prisma db push --skip-generate && if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
 
 
