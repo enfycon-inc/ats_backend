@@ -113,31 +113,49 @@ export class AuthCoreService {
 
     // Self-healing bootstrap if admin / tenant-admin DB record missing
     if (result.rows.length === 0) {
-      if (cleanEmail === 'imsahadeb@gmail.com' || cleanEmail === 'admin@enfycon.com') {
-        const isSuperAdmin = cleanEmail === 'admin@enfycon.com';
-        const tenantId = isSuperAdmin ? DEFAULT_TENANT_ID : '737f666b-916a-4e9c-91bd-b2bd37e475d1';
-        const roleMap = await this.rbacService.seedTenantRoles(tenantId);
-        const roleId = isSuperAdmin ? roleMap['SUPER_ADMIN'] : roleMap['ADMIN'];
-        const userId = isSuperAdmin ? '1d4ac532-4229-4c95-9b11-af573060020b' : 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4';
-        const fullName = isSuperAdmin ? 'Platform Super Admin' : 'Sahadeb Barman';
+      try {
+        if (cleanEmail === 'imsahadeb@gmail.com' || cleanEmail === 'admin@enfycon.com') {
+          const isSuperAdmin = cleanEmail === 'admin@enfycon.com';
+          const tenantId = isSuperAdmin ? DEFAULT_TENANT_ID : '737f666b-916a-4e9c-91bd-b2bd37e475d1';
+          const userId = isSuperAdmin ? '1d4ac532-4229-4c95-9b11-af573060020b' : 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4';
+          const fullName = isSuperAdmin ? 'Platform Super Admin' : 'Sahadeb Barman';
 
-        await this.authQuery.query(
-          `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
-           VALUES ($1, $2, $3, $4, true, true, $5, ARRAY[$5]::uuid[], $1)
-           ON CONFLICT (email) DO UPDATE SET is_active = true, is_approved = true, role_id = $5`,
-          [userId, tenantId, cleanEmail, fullName, roleId]
-        );
+          let roleId: string | null = null;
+          try {
+            const roleMap = await this.rbacService.seedTenantRoles(tenantId);
+            roleId = isSuperAdmin ? roleMap['SUPER_ADMIN'] : roleMap['ADMIN'];
+          } catch (rErr: any) {
+            this.logger.warn(`Could not seed role for ${cleanEmail}: ${rErr.message}`);
+          }
 
-        result = await this.authQuery.query(
-          `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
-           FROM users u
-           LEFT JOIN tenants t ON u.tenant_id = t.id
-           LEFT JOIN custom_roles cr ON u.role_id = cr.id
-           LEFT JOIN branches b ON u.branch_id = b.id
-           LEFT JOIN business_units bu ON u.business_unit_id = bu.id
-           WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
-          [cleanEmail]
-        );
+          const existingUser = await this.authQuery.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [cleanEmail]).catch(() => ({ rows: [] }));
+          if (existingUser.rows.length > 0) {
+            await this.authQuery.query('UPDATE users SET is_active = true, is_approved = true WHERE LOWER(email) = LOWER($1)', [cleanEmail]).catch(() => {});
+          } else {
+            await this.authQuery.query(
+              `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, keycloak_id)
+               VALUES ($1, $2, $3, $4, true, true, $1)`,
+              [userId, tenantId, cleanEmail, fullName]
+            ).catch(() => {});
+          }
+
+          if (roleId) {
+            await this.authQuery.query('UPDATE users SET role_id = $1 WHERE LOWER(email) = LOWER($2)', [roleId, cleanEmail]).catch(() => {});
+          }
+
+          result = await this.authQuery.query(
+            `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+             FROM users u
+             LEFT JOIN tenants t ON u.tenant_id = t.id
+             LEFT JOIN custom_roles cr ON u.role_id = cr.id
+             LEFT JOIN branches b ON u.branch_id = b.id
+             LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+             WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
+            [cleanEmail]
+          ).catch(() => ({ rows: [], rowCount: 0 }));
+        }
+      } catch (bootstrapErr: any) {
+        this.logger.warn(`Self-healing bootstrap note for ${cleanEmail}: ${bootstrapErr.message}`);
       }
     }
 
@@ -278,7 +296,7 @@ export class AuthCoreService {
           password: dto.password,
           fullName: user.full_name,
           tenantId: user.tenant_id,
-        });
+        }).catch((err) => this.logger.warn(`Keycloak provision error: ${err.message}`));
         res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
       }
       if (res.ok) {
