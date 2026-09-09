@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import * as dns from 'dns';
-import * as net from 'net';
 
 // Sub-services
 import { AuthQueryService } from './services/auth-query.service';
@@ -140,13 +138,12 @@ export class AuthService {
 
     // 1. PostgreSQL DB Checks
     try {
-      const usersRes = await this.coreService.authQuery.query('SELECT id, email, full_name, tenant_id, role_id, is_active, is_approved FROM users LIMIT 10');
-      const tenantsRes = await this.coreService.authQuery.query('SELECT id, name, domain FROM tenants LIMIT 5');
+      const usersRes = await this.coreService.authQuery.query('SELECT count(*) as count FROM users');
+      const tenantsRes = await this.coreService.authQuery.query('SELECT count(*) as count FROM tenants');
       report.db = {
         status: 'connected',
-        usersCount: usersRes.rows.length,
-        users: usersRes.rows,
-        tenants: tenantsRes.rows,
+        usersCount: Number((usersRes.rows[0] as any)?.count || 0),
+        tenantsCount: Number((tenantsRes.rows[0] as any)?.count || 0),
       };
     } catch (dbErr: any) {
       report.db = { status: 'error', error: dbErr.message };
@@ -155,34 +152,6 @@ export class AuthService {
     // 2. Keycloak Connectivity & Network Probing
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     report.keycloak = { issuer };
-
-    try {
-      const urlObj = new URL(issuer);
-      const host = urlObj.hostname;
-      const port = Number(urlObj.port) || 8080;
-
-      try {
-        const dnsEntries = await dns.promises.lookup(host, { all: true });
-        report.keycloak.dns = dnsEntries;
-      } catch (dErr: any) {
-        report.keycloak.dnsError = dErr.message;
-      }
-
-      try {
-        const start = Date.now();
-        await new Promise<void>((resolve, reject) => {
-          const sock = net.createConnection({ host, port, timeout: 3000 });
-          sock.on('connect', () => { sock.destroy(); resolve(); });
-          sock.on('timeout', () => { sock.destroy(); reject(new Error(`TCP timeout after 3000ms to ${host}:${port}`)); });
-          sock.on('error', (err) => reject(err));
-        });
-        report.keycloak.tcp = `Connected to ${host}:${port} in ${Date.now() - start}ms`;
-      } catch (tErr: any) {
-        report.keycloak.tcpError = tErr.message;
-      }
-    } catch (parseErr: any) {
-      report.keycloak.parseError = parseErr.message;
-    }
 
     try {
       const realmRes = await fetch(`${issuer}`, { signal: AbortSignal.timeout(8000) });
@@ -202,31 +171,6 @@ export class AuthService {
       report.keycloak.hasAdminToken = !!adminToken;
     } catch (aErr: any) {
       report.keycloak.adminTokenError = aErr.message;
-    }
-
-    // 4. Test Keycloak Direct Grant for imsahadeb@gmail.com
-    try {
-      const tokenUrl = `${issuer}/protocol/openid-connect/token`;
-      const params = new URLSearchParams();
-      params.append('grant_type', 'password');
-      params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-      const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
-      if (clientSecret) params.append('client_secret', clientSecret);
-      params.append('username', 'imsahadeb@gmail.com');
-      params.append('password', 'enfycon123');
-
-      const grantRes = await fetch(tokenUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params.toString(),
-        signal: AbortSignal.timeout(8000),
-      });
-      report.keycloak.testDirectGrantStatus = grantRes.status;
-      const bodyText = await grantRes.text();
-      try { report.keycloak.testDirectGrantBody = JSON.parse(bodyText); }
-      catch { report.keycloak.testDirectGrantBody = bodyText; }
-    } catch (grantErr: any) {
-      report.keycloak.testDirectGrantError = grantErr.message;
     }
 
     return report;
