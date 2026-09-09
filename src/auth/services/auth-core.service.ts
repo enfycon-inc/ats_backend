@@ -134,9 +134,10 @@ export class AuthCoreService {
           } else {
             await this.authQuery.query(
               `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, keycloak_id)
-               VALUES ($1, $2, $3, $4, true, true, $1)`,
+               VALUES ($1, $2, $3, $4, true, true, $1)
+               ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true`,
               [userId, tenantId, cleanEmail, fullName]
-            ).catch(() => {});
+            ).catch((err) => this.logger.warn(`User bootstrap insert note: ${err.message}`));
           }
 
           if (roleId) {

@@ -405,7 +405,7 @@ export class AuthInitService implements OnModuleInit {
         await this.authQuery.query(
           `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
            VALUES ('1d4ac532-4229-4c95-9b11-af573060020b', $1, $2, $3, true, true, $4, $5, '1d4ac532-4229-4c95-9b11-af573060020b')
-           ON CONFLICT (email) DO UPDATE SET is_active = true, is_approved = true, role_id = $4`,
+           ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
           [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId, [superAdminRoleId]]
         );
         this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
@@ -424,7 +424,7 @@ export class AuthInitService implements OnModuleInit {
         await this.authQuery.query(
           `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
            VALUES ('fd276e95-2bc6-4b96-9f61-2e971e9b8aa4', $1, $2, 'Sahadeb Barman', true, true, $3, $4, 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4')
-           ON CONFLICT (email) DO UPDATE SET is_active = true, is_approved = true, role_id = $3`,
+           ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
           [debTenantId, debAdminEmail, debAdminRoleId, [debAdminRoleId]]
         );
         this.logger.log(`🚀 Deb Technology Admin user seeded: ${debAdminEmail}`);
@@ -436,7 +436,7 @@ export class AuthInitService implements OnModuleInit {
         this.logger.log(`✅ Deb Technology Admin user verified: ${debAdminEmail}`);
       }
     } catch (err: any) {
-      this.logger.warn(`Could not seed default users: ${err.message}`);
+      this.logger.error(`Could not seed default users: ${err.message}`, err.stack);
     }
   }
 }

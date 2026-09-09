@@ -154,7 +154,7 @@ export class AuthService {
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     report.keycloak = { issuer };
     try {
-      const realmRes = await fetch(`${issuer}`, { signal: AbortSignal.timeout(4000) });
+      const realmRes = await fetch(`${issuer}`, { signal: AbortSignal.timeout(8000) });
       report.keycloak.realmStatus = realmRes.status;
       report.keycloak.realmOk = realmRes.ok;
       if (realmRes.ok) {
@@ -188,7 +188,7 @@ export class AuthService {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
-        signal: AbortSignal.timeout(4000),
+        signal: AbortSignal.timeout(8000),
       });
       report.keycloak.testDirectGrantStatus = grantRes.status;
       const bodyText = await grantRes.text();
