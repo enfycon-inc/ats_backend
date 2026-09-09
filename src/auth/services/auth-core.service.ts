@@ -226,8 +226,9 @@ export class AuthCoreService {
     const tokenUrl = `${issuer}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
     params.append('grant_type', 'password');
-    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'ats');
-    if (process.env.KEYCLOAK_CLIENT_SECRET) params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
+    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', dto.email);
     params.append('password', dto.password);
 
@@ -294,8 +295,9 @@ export class AuthCoreService {
     const tokenUrl = `${issuer}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
     params.append('grant_type', 'refresh_token');
-    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'ats');
-    if (process.env.KEYCLOAK_CLIENT_SECRET) params.append('client_secret', process.env.KEYCLOAK_CLIENT_SECRET);
+    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    if (clientSecret) params.append('client_secret', clientSecret);
     params.append('refresh_token', refreshToken);
 
     let res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
