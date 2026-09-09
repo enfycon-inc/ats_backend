@@ -25,7 +25,7 @@ export class AuthCoreService {
   private readonly logger = new Logger(AuthCoreService.name);
 
   constructor(
-    private readonly authQuery: AuthQueryService,
+    public readonly authQuery: AuthQueryService,
     private readonly keycloakService: AuthKeycloakService,
     private readonly tenantService: AuthTenantService,
     private readonly rbacService: AuthRbacService,

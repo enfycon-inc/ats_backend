@@ -131,4 +131,74 @@ export class AuthService {
   // ─── Email ───────────────────────────────────────────────────────────────────
   sendWelcomeEmail(options: any) { return this.emailService.sendWelcomeEmail(options); }
   sendMemberCredentialsEmail(options: any) { return this.emailService.sendMemberCredentialsEmail(options); }
+
+  // ─── Diagnostic ──────────────────────────────────────────────────────────────
+  async diagnostic() {
+    const report: any = { timestamp: new Date().toISOString() };
+
+    // 1. PostgreSQL DB Checks
+    try {
+      const usersRes = await this.coreService.authQuery.query('SELECT id, email, full_name, tenant_id, role_id, is_active, is_approved FROM users LIMIT 10');
+      const tenantsRes = await this.coreService.authQuery.query('SELECT id, name, domain FROM tenants LIMIT 5');
+      report.db = {
+        status: 'connected',
+        usersCount: usersRes.rows.length,
+        users: usersRes.rows,
+        tenants: tenantsRes.rows,
+      };
+    } catch (dbErr: any) {
+      report.db = { status: 'error', error: dbErr.message };
+    }
+
+    // 2. Keycloak Connectivity
+    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
+    report.keycloak = { issuer };
+    try {
+      const realmRes = await fetch(`${issuer}`, { signal: AbortSignal.timeout(4000) });
+      report.keycloak.realmStatus = realmRes.status;
+      report.keycloak.realmOk = realmRes.ok;
+      if (realmRes.ok) {
+        const realmData: any = await realmRes.json();
+        report.keycloak.realmName = realmData.realm;
+      }
+    } catch (kcErr: any) {
+      report.keycloak.realmError = kcErr.message;
+    }
+
+    // 3. Keycloak Admin Token
+    try {
+      const adminToken = await this.keycloakService.getKeycloakAdminToken();
+      report.keycloak.hasAdminToken = !!adminToken;
+    } catch (aErr: any) {
+      report.keycloak.adminTokenError = aErr.message;
+    }
+
+    // 4. Test Keycloak Direct Grant for imsahadeb@gmail.com
+    try {
+      const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+      const params = new URLSearchParams();
+      params.append('grant_type', 'password');
+      params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
+      const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+      if (clientSecret) params.append('client_secret', clientSecret);
+      params.append('username', 'imsahadeb@gmail.com');
+      params.append('password', 'enfycon123');
+
+      const grantRes = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+        signal: AbortSignal.timeout(4000),
+      });
+      report.keycloak.testDirectGrantStatus = grantRes.status;
+      const bodyText = await grantRes.text();
+      try { report.keycloak.testDirectGrantBody = JSON.parse(bodyText); }
+      catch { report.keycloak.testDirectGrantBody = bodyText; }
+    } catch (grantErr: any) {
+      report.keycloak.testDirectGrantError = grantErr.message;
+    }
+
+    return report;
+  }
 }
+
