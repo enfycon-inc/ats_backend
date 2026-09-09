@@ -114,11 +114,18 @@ export class AuthCoreService {
     // Self-healing bootstrap if admin / tenant-admin DB record missing
     if (result.rows.length === 0) {
       try {
-        if (cleanEmail === 'imsahadeb@gmail.com' || cleanEmail === 'admin@enfycon.com') {
-          const isSuperAdmin = cleanEmail === 'admin@enfycon.com';
-          const tenantId = isSuperAdmin ? DEFAULT_TENANT_ID : '737f666b-916a-4e9c-91bd-b2bd37e475d1';
+        const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL;
+        const debAdminEmail = process.env.DEB_ADMIN_EMAIL;
+        const isPlatformAdmin = Boolean(platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase());
+        const isDebAdmin = Boolean(debAdminEmail && cleanEmail === debAdminEmail.toLowerCase());
+
+        if (isPlatformAdmin || isDebAdmin) {
+          const isSuperAdmin = isPlatformAdmin;
+          const tenantId = isSuperAdmin ? DEFAULT_TENANT_ID : (process.env.DEB_TENANT_ID || '737f666b-916a-4e9c-91bd-b2bd37e475d1');
           const userId = isSuperAdmin ? '1d4ac532-4229-4c95-9b11-af573060020b' : 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4';
-          const fullName = isSuperAdmin ? 'Platform Super Admin' : 'Sahadeb Barman';
+          const fullName = isSuperAdmin
+            ? (process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin')
+            : (process.env.DEB_ADMIN_NAME || 'Tenant Admin');
 
           let roleId: string | null = null;
           try {
@@ -289,8 +296,16 @@ export class AuthCoreService {
         res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
       }
 
-      // If rejected (401) and it's a known admin user, auto-sync credentials in Keycloak and retry
-      if (!res.ok && res.status === 401 && (cleanEmail === 'imsahadeb@gmail.com' || cleanEmail === 'admin@enfycon.com') && dto.password === 'enfycon123') {
+      // If rejected (401) and it's an admin user configured in env, auto-sync credentials in Keycloak and retry
+      const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL;
+      const debAdminEmail = process.env.DEB_ADMIN_EMAIL;
+      const isAdminEmail = (platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase()) ||
+                           (debAdminEmail && cleanEmail === debAdminEmail.toLowerCase());
+      const adminExpectedPass = (platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase())
+        ? process.env.PLATFORM_ADMIN_PASSWORD
+        : process.env.DEB_ADMIN_PASSWORD;
+
+      if (!res.ok && res.status === 401 && isAdminEmail && adminExpectedPass && dto.password === adminExpectedPass) {
         this.logger.log(`[Auth] Attempting auto-sync of credentials in Keycloak for ${cleanEmail}...`);
         await this.keycloakService.provisionUserInKeycloak({
           email: cleanEmail,

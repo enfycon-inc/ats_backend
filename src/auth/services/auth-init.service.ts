@@ -32,30 +32,37 @@ export class AuthInitService implements OnModuleInit {
       this.logger.warn(`Background tenant role sync note: ${err.message}`);
     });
 
-    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL || 'admin@enfycon.com';
-    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD || 'enfycon123';
+    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
+    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
     const adminName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
-    const debAdminEmail = 'imsahadeb@gmail.com';
-    const debAdminPassword = process.env.DEB_ADMIN_PASSWORD || 'enfycon123';
+    const debAdminEmail = process.env.DEB_ADMIN_EMAIL;
+    const debAdminPassword = process.env.DEB_ADMIN_PASSWORD;
+    const debAdminName = process.env.DEB_ADMIN_NAME || 'Tenant Admin';
+    const debTenantId = process.env.DEB_TENANT_ID || '737f666b-916a-4e9c-91bd-b2bd37e475d1';
 
-    this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) and Deb Admin (${debAdminEmail}) into Keycloak...`);
-    this.keycloakService.provisionUserInKeycloak({
-      email: adminEmail,
-      password: adminPassword,
-      fullName: adminName,
-      tenantId: DEFAULT_TENANT_ID,
-    }).catch((err) => {
-      this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
-    });
+    if (adminEmail && adminPassword) {
+      this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) into Keycloak...`);
+      this.keycloakService.provisionUserInKeycloak({
+        email: adminEmail,
+        password: adminPassword,
+        fullName: adminName,
+        tenantId: DEFAULT_TENANT_ID,
+      }).catch((err) => {
+        this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
+      });
+    }
 
-    this.keycloakService.provisionUserInKeycloak({
-      email: debAdminEmail,
-      password: debAdminPassword,
-      fullName: 'Sahadeb Barman',
-      tenantId: '737f666b-916a-4e9c-91bd-b2bd37e475d1',
-    }).catch((err) => {
-      this.logger.warn(`[BOOT] Async Keycloak deb admin sync note: ${err.message}`);
-    });
+    if (debAdminEmail && debAdminPassword) {
+      this.logger.log(`[BOOT] Syncing Tenant Admin (${debAdminEmail}) into Keycloak...`);
+      this.keycloakService.provisionUserInKeycloak({
+        email: debAdminEmail,
+        password: debAdminPassword,
+        fullName: debAdminName,
+        tenantId: debTenantId,
+      }).catch((err) => {
+        this.logger.warn(`[BOOT] Async Keycloak tenant admin sync note: ${err.message}`);
+      });
+    }
   }
 
   private async syncAllTenantRoles() {
@@ -365,11 +372,11 @@ export class AuthInitService implements OnModuleInit {
   }
 
   private async seedDefaultUsers() {
-    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL || 'admin@enfycon.com';
-    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD || 'enfycon123';
-    const adminName = process.env.PLATFORM_ADMIN_NAME || 'Enfy Super Admin';
-    const debAdminEmail = 'imsahadeb@gmail.com';
-    const debTenantId = '737f666b-916a-4e9c-91bd-b2bd37e475d1';
+    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
+    const adminName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
+    const debAdminEmail = process.env.DEB_ADMIN_EMAIL;
+    const debAdminName = process.env.DEB_ADMIN_NAME || 'Tenant Admin';
+    const debTenantId = process.env.DEB_TENANT_ID || '737f666b-916a-4e9c-91bd-b2bd37e475d1';
 
     try {
       // 1. Ensure tenant_auth_settings exist for both tenants
@@ -383,57 +390,61 @@ export class AuthInitService implements OnModuleInit {
         ON CONFLICT (tenant_id) DO NOTHING;
       `).catch(() => {});
 
-      // 2. Ensure Platform Super Admin exists
-      const roleMap = await this.rbacService.seedTenantRoles(DEFAULT_TENANT_ID);
-      const superAdminRoleId = roleMap['SUPER_ADMIN'];
+      // 2. Ensure Platform Super Admin exists if configured
+      if (adminEmail) {
+        const roleMap = await this.rbacService.seedTenantRoles(DEFAULT_TENANT_ID);
+        const superAdminRoleId = roleMap['SUPER_ADMIN'];
 
-      const exists = await this.authQuery.query(
-        'SELECT id, role_id, assigned_role_ids FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
-        [adminEmail]
-      );
+        const exists = await this.authQuery.query(
+          'SELECT id, role_id, assigned_role_ids FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+          [adminEmail]
+        );
 
-      if (exists.rows.length > 0) {
-        const user: any = exists.rows[0];
-        const assignedRoleIds = Array.isArray(user.assigned_role_ids) ? [...user.assigned_role_ids] : [];
-        if (superAdminRoleId && !assignedRoleIds.includes(superAdminRoleId)) assignedRoleIds.push(superAdminRoleId);
-        await this.authQuery.query(
-          `UPDATE users SET is_approved = true, is_active = true, role_id = $1, assigned_role_ids = $2::uuid[] WHERE id = $3`,
-          [superAdminRoleId, assignedRoleIds, user.id]
-        );
-        this.logger.log(`✅ Platform SUPER_ADMIN already exists in DB (${adminEmail}).`);
-      } else {
-        await this.authQuery.query(
-          `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
-           VALUES ('1d4ac532-4229-4c95-9b11-af573060020b', $1, $2, $3, true, true, $4, $5, '1d4ac532-4229-4c95-9b11-af573060020b')
-           ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
-          [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId, [superAdminRoleId]]
-        );
-        this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
+        if (exists.rows.length > 0) {
+          const user: any = exists.rows[0];
+          const assignedRoleIds = Array.isArray(user.assigned_role_ids) ? [...user.assigned_role_ids] : [];
+          if (superAdminRoleId && !assignedRoleIds.includes(superAdminRoleId)) assignedRoleIds.push(superAdminRoleId);
+          await this.authQuery.query(
+            `UPDATE users SET is_approved = true, is_active = true, role_id = $1, assigned_role_ids = $2::uuid[] WHERE id = $3`,
+            [superAdminRoleId, assignedRoleIds, user.id]
+          );
+          this.logger.log(`✅ Platform SUPER_ADMIN verified in DB (${adminEmail}).`);
+        } else {
+          await this.authQuery.query(
+            `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
+             VALUES ('1d4ac532-4229-4c95-9b11-af573060020b', $1, $2, $3, true, true, $4, $5, '1d4ac532-4229-4c95-9b11-af573060020b')
+             ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
+            [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId, [superAdminRoleId]]
+          );
+          this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
+        }
       }
 
-      // 3. Ensure Deb Technology Tenant Admin (imsahadeb@gmail.com) exists
-      const debRoleMap = await this.rbacService.seedTenantRoles(debTenantId);
-      const debAdminRoleId = debRoleMap['ADMIN'];
+      // 3. Ensure Tenant Admin exists if configured
+      if (debAdminEmail) {
+        const debRoleMap = await this.rbacService.seedTenantRoles(debTenantId);
+        const debAdminRoleId = debRoleMap['ADMIN'];
 
-      const debAdminRes = await this.authQuery.query(
-        'SELECT id, role_id, assigned_role_ids FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
-        [debAdminEmail]
-      );
+        const debAdminRes = await this.authQuery.query(
+          'SELECT id, role_id, assigned_role_ids FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+          [debAdminEmail]
+        );
 
-      if (debAdminRes.rows.length === 0 && debAdminRoleId) {
-        await this.authQuery.query(
-          `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
-           VALUES ('fd276e95-2bc6-4b96-9f61-2e971e9b8aa4', $1, $2, 'Sahadeb Barman', true, true, $3, $4, 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4')
-           ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
-          [debTenantId, debAdminEmail, debAdminRoleId, [debAdminRoleId]]
-        );
-        this.logger.log(`🚀 Deb Technology Admin user seeded: ${debAdminEmail}`);
-      } else if (debAdminRoleId) {
-        await this.authQuery.query(
-          `UPDATE users SET is_approved = true, is_active = true, role_id = COALESCE(role_id, $1), assigned_role_ids = ARRAY[$1]::uuid[] WHERE LOWER(email) = LOWER($2)`,
-          [debAdminRoleId, debAdminEmail]
-        );
-        this.logger.log(`✅ Deb Technology Admin user verified: ${debAdminEmail}`);
+        if (debAdminRes.rows.length === 0 && debAdminRoleId) {
+          await this.authQuery.query(
+            `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
+             VALUES ('fd276e95-2bc6-4b96-9f61-2e971e9b8aa4', $1, $2, $3, true, true, $4, $5, 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4')
+             ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
+            [debTenantId, debAdminEmail, debAdminName, debAdminRoleId, [debAdminRoleId]]
+          );
+          this.logger.log(`🚀 Tenant Admin user seeded: ${debAdminEmail}`);
+        } else if (debAdminRoleId) {
+          await this.authQuery.query(
+            `UPDATE users SET is_approved = true, is_active = true, role_id = COALESCE(role_id, $1), assigned_role_ids = ARRAY[$1]::uuid[] WHERE LOWER(email) = LOWER($2)`,
+            [debAdminRoleId, debAdminEmail]
+          );
+          this.logger.log(`✅ Tenant Admin user verified: ${debAdminEmail}`);
+        }
       }
     } catch (err: any) {
       this.logger.error(`Could not seed default users: ${err.message}`, err.stack);
