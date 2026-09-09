@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import * as dns from 'dns';
+import * as net from 'net';
 
 // Sub-services
 import { AuthQueryService } from './services/auth-query.service';
@@ -150,9 +152,38 @@ export class AuthService {
       report.db = { status: 'error', error: dbErr.message };
     }
 
-    // 2. Keycloak Connectivity
+    // 2. Keycloak Connectivity & Network Probing
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     report.keycloak = { issuer };
+
+    try {
+      const urlObj = new URL(issuer);
+      const host = urlObj.hostname;
+      const port = Number(urlObj.port) || 8080;
+
+      try {
+        const dnsEntries = await dns.promises.lookup(host, { all: true });
+        report.keycloak.dns = dnsEntries;
+      } catch (dErr: any) {
+        report.keycloak.dnsError = dErr.message;
+      }
+
+      try {
+        const start = Date.now();
+        await new Promise<void>((resolve, reject) => {
+          const sock = net.createConnection({ host, port, timeout: 3000 });
+          sock.on('connect', () => { sock.destroy(); resolve(); });
+          sock.on('timeout', () => { sock.destroy(); reject(new Error(`TCP timeout after 3000ms to ${host}:${port}`)); });
+          sock.on('error', (err) => reject(err));
+        });
+        report.keycloak.tcp = `Connected to ${host}:${port} in ${Date.now() - start}ms`;
+      } catch (tErr: any) {
+        report.keycloak.tcpError = tErr.message;
+      }
+    } catch (parseErr: any) {
+      report.keycloak.parseError = parseErr.message;
+    }
+
     try {
       const realmRes = await fetch(`${issuer}`, { signal: AbortSignal.timeout(8000) });
       report.keycloak.realmStatus = realmRes.status;
