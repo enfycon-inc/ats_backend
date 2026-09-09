@@ -68,10 +68,11 @@ export class JobsController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('filter') filter?: string,
   ): Promise<JobProfile[]> {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
-    return this.jobsService.findAllJobs(tid, user, bid);
+    return this.jobsService.findAllJobs(tid, user, bid, filter);
   }
 
   @Get('next-code')

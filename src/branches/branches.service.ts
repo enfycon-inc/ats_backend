@@ -45,6 +45,7 @@ export interface BranchResponse {
   enableGlobalRemarks: boolean;
   usersCount: number;
   jobsCount: number;
+  podsCount: number;
   members?: BranchMember[];
   createdAt: string;
 }
@@ -70,6 +71,9 @@ export class BranchesService {
   }
 
   private formatBranch(b: any, members: BranchMember[] = []): BranchResponse {
+    const podsCount = b._count?.pods ?? (Array.isArray(b.pods) ? b.pods.length : 0);
+    const allowPods = podsCount > 0 ? (b.allowPods !== false) : false;
+
     return {
       id: b.id,
       name: b.name,
@@ -83,7 +87,7 @@ export class BranchesService {
       managerEmail: b.manager?.email || null,
       isActive: b.isActive,
       allowNone: Boolean(b.allowNone),
-      allowPods: b.allowPods !== false,
+      allowPods,
       allowAll: b.allowAll !== false,
       allowUnassigned: b.allowUnassigned !== false,
       podDistributionStrategy: (b.podDistributionStrategy || 'AUTO').toUpperCase() as 'AUTO' | 'MANUAL',
@@ -102,6 +106,7 @@ export class BranchesService {
       enableGlobalRemarks: Boolean(b.enableGlobalRemarks),
       usersCount: members.length,
       jobsCount: b._count?.jobs ?? b.jobsCount ?? 0,
+      podsCount,
       members,
       createdAt: b.createdAt?.toISOString ? b.createdAt.toISOString() : String(b.createdAt),
     };
@@ -177,7 +182,7 @@ export class BranchesService {
             select: { fullName: true, email: true },
           },
           _count: {
-            select: { jobs: true },
+            select: { jobs: true, pods: true },
           },
         },
         orderBy: { name: 'asc' },
@@ -218,7 +223,7 @@ export class BranchesService {
           select: { fullName: true, email: true },
         },
         _count: {
-          select: { jobs: true },
+          select: { jobs: true, pods: true },
         },
       },
     });
@@ -255,7 +260,22 @@ export class BranchesService {
     const market = dto.market !== undefined ? dto.market.trim().toUpperCase() : existing.market;
     const isActive = dto.isActive !== undefined ? dto.isActive : existing.isActive;
     const allowNone = dto.allowNone !== undefined ? dto.allowNone : existing.allowNone;
-    const allowPods = dto.allowPods !== undefined ? dto.allowPods : existing.allowPods;
+    let allowPods = dto.allowPods !== undefined ? dto.allowPods : existing.allowPods;
+    if (allowNone) {
+      allowPods = false;
+    }
+
+    if (allowPods) {
+      const podsCount = await this.prisma.pod.count({
+        where: { branchId: id, tenantId },
+      });
+      if (podsCount === 0) {
+        throw new BadRequestException(
+          'Recruitment Pod System cannot be enabled: No recruitment pods have been created for this branch yet. Please create a pod first.'
+        );
+      }
+    }
+
     const allowAll = dto.allowAll !== undefined ? dto.allowAll : existing.allowAll;
     const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : existing.allowUnassigned;
     const podDistributionStrategy = dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy;

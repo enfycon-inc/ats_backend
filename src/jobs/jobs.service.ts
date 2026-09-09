@@ -863,7 +863,7 @@ export class JobsService implements OnModuleInit {
   /**
    * Get all jobs for a tenant with user name resolution and approval gating
    */
-  async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null): Promise<JobProfile[]> {
+  async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {
     this.logger.log(`Fetching jobs for tenant: ${tenantId}`);
 
     let sql = `
@@ -894,10 +894,13 @@ export class JobsService implements OnModuleInit {
     let paramIndex = 2;
 
     const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+    const userRoles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
+
     const canViewAllBranches = 
       userPermissions.includes('job:view_all_branches') || 
       userPermissions.includes('tenant:settings') || 
-      userPermissions.includes('tenant:manage');
+      userPermissions.includes('tenant:manage') ||
+      userRoles.includes('SUPER_ADMIN');
 
     const targetBranchId = activeBranchId || user?.branchId;
 
@@ -907,17 +910,38 @@ export class JobsService implements OnModuleInit {
       paramIndex++;
     }
 
-    // ── Dynamic Capability-based Approval Visibility Gate ────────────────────
-    const canApproveOrManage = 
-      userPermissions.includes('job:approve') || 
-      userPermissions.includes('job:publish_direct') || 
-      userPermissions.includes('job:view_all') || 
-      userPermissions.includes('job:edit') || 
-      userPermissions.includes('branch_admin:manage') || 
+    // ── Dynamic Role-Based Job Isolation Gates ─────────────────────────────
+    // 1. Administrators and Governance roles oversee all branch requisitions
+    const isGlobalOrBranchAdmin = 
       userPermissions.includes('tenant:manage') || 
-      userPermissions.includes('tenant:settings');
+      userPermissions.includes('tenant:settings') || 
+      userPermissions.includes('branch_admin:manage') ||
+      userPermissions.includes('job:view_all') ||
+      userRoles.includes('SUPER_ADMIN') ||
+      userRoles.includes('ADMIN') ||
+      userRoles.includes('BRANCH_ADMIN') ||
+      userRoles.includes('DELIVERY_HEAD');
 
-    if (!canApproveOrManage && user?.dbId) {
+    // 2. Account Managers: MUST ONLY see jobs created/managed by themselves
+    const isAccountManager = 
+      !isGlobalOrBranchAdmin && (
+        userRoles.includes('ACCOUNT_MANAGER') || 
+        userRoles.includes('AM') ||
+        userPermissions.includes('job:create')
+      );
+
+    if (isAccountManager && user?.dbId) {
+      // Account manager cannot see jobs posted by other team members
+      sql += ` AND (
+        j.created_by = $${paramIndex}::text 
+        OR LOWER(j.created_by) = LOWER($${paramIndex + 1})
+        OR j.recruitment_manager_id = $${paramIndex}::uuid
+      )`;
+      params.push(user.dbId);
+      params.push(user.email || user.dbId);
+      paramIndex += 2;
+    } else if (!isGlobalOrBranchAdmin && user?.dbId) {
+      // 3. Recruiters: Only see approved/active jobs assigned directly or to their Pod (NO open pool / ALL jobs)
       sql += ` AND (
         ((j.approval_status = 'APPROVED' OR j.approval_status IS NULL) AND UPPER(COALESCE(j.status, '')) NOT IN ('PENDING APPROVAL', 'PENDING_APPROVAL', 'DRAFT'))
         OR j.assigned_approver_id = $${paramIndex}::uuid
@@ -925,15 +949,36 @@ export class JobsService implements OnModuleInit {
 
       sql += ` AND (
         j.primary_recruiter_id = $${paramIndex}::uuid
-        OR j.recruitment_manager_id = $${paramIndex}::uuid
-        OR j.assigned_approver_id = $${paramIndex}::uuid
         OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
         OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid))
-        OR UPPER(j.assigned_to) = 'ALL'
-        OR UPPER(j.assigned_to) LIKE 'ALL%'
       )`;
       params.push(user.dbId);
       paramIndex++;
+    }
+
+    // ── Sub-view Filter Parameters (direct, pod, unassigned) ─────────────────
+    if (filter === 'direct' && user?.dbId) {
+      sql += ` AND j.primary_recruiter_id = $${paramIndex}::uuid`;
+      params.push(user.dbId);
+      paramIndex++;
+    } else if (filter === 'pod' && user?.dbId) {
+      sql += ` AND (
+        (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
+        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid))
+      )`;
+      params.push(user.dbId);
+      paramIndex++;
+    } else if (filter === 'unassigned') {
+      sql += ` AND (
+        j.primary_recruiter_id IS NULL 
+        AND jp.pod_id IS NULL 
+        AND NOT EXISTS (SELECT 1 FROM ats.job_pods jp2 WHERE jp2.job_id = j.id)
+        AND (
+          j.assigned_to IS NULL 
+          OR TRIM(j.assigned_to) = '' 
+          OR UPPER(TRIM(j.assigned_to)) IN ('UNASSIGNED', 'NONE', 'N/A')
+        )
+      )`;
     }
 
     sql += ' ORDER BY j.created_at DESC';
@@ -1524,9 +1569,9 @@ export class JobsService implements OnModuleInit {
       if (dto.podId === 'all') {
         await this.prisma.job.update({ where: { id }, data: { assignedTo: 'ALL' } });
       } else if (dto.podId === 'none' || dto.podId === 'off') {
-        await this.prisma.job.update({ where: { id }, data: { assignedTo: 'N/A' } });
+        await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo || 'N/A' } });
       } else if (dto.podId) {
-        await this.prisma.job.update({ where: { id }, data: { assignedTo: 'N/A' } });
+        await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo || 'N/A' } });
         await this.prisma.jobPod.upsert({
           where: { jobId_podId: { jobId: id, podId: dto.podId } },
           create: { jobId: id, podId: dto.podId },

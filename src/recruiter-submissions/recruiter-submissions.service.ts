@@ -6,6 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -65,7 +66,10 @@ export interface SubmissionDetails {
 export class RecruiterSubmissionsService {
   private readonly logger = new Logger(RecruiterSubmissionsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /**
    * Create a new recruiter submission
@@ -165,7 +169,57 @@ export class RecruiterSubmissionsService {
       return sub;
     });
 
-    const candName = candidate.fullName || `${candidate.firstName || ''} ${candidate.lastName || ''}`.trim();
+    const candName = candidate.fullName || `${candidate.firstName || ''} ${candidate.lastName || ''}`.trim() || 'Candidate';
+    const jobInfo = job.jobCode ? `${job.jobCode} - ${job.jobTitle}` : job.jobTitle;
+
+    // If candidate submission requires internal review, notify the pod head and account manager
+    if (finalStatus === 'PENDING_APPROVAL') {
+      try {
+        const reviewTargets = new Set<string>();
+        const recruiterUser = await this.prisma.user.findFirst({
+          where: { id: dto.recruiterId, tenantId },
+          select: { id: true, fullName: true, podId: true },
+        });
+
+        if (recruiterUser?.podId) {
+          const pod = await this.prisma.pod.findUnique({
+            where: { id: recruiterUser.podId },
+            select: { podHeadId: true },
+          });
+          if (pod?.podHeadId) reviewTargets.add(pod.podHeadId);
+        }
+
+        const fullJob = await this.prisma.job.findUnique({
+          where: { id: dto.jobId },
+          select: { accountManagerId: true },
+        });
+        if (fullJob?.accountManagerId) {
+          reviewTargets.add(fullJob.accountManagerId);
+        }
+
+        const targetList = Array.from(reviewTargets).filter((t) => t !== dto.recruiterId);
+        if (targetList.length > 0) {
+          await this.notifications.createMany(tenantId, targetList, {
+            type: 'SUBMISSION_PENDING_APPROVAL',
+            title: 'Candidate Submission Awaiting Review',
+            message: `Recruiter ${user?.fullName || recruiterUser?.fullName || 'Staff'} submitted candidate "${candName}" for job "${jobInfo}". Internal review pending.`,
+            data: {
+              submissionId: submission.id,
+              jobId: job.id,
+              jobCode: job.jobCode,
+              jobTitle: job.jobTitle,
+              candidateId: candidate.id,
+              candidateName: candName,
+              recruiterId: dto.recruiterId,
+              recruiterName: user?.fullName || recruiterUser?.fullName,
+            },
+            initiatorId: user?.dbId || user?.email || dto.recruiterId,
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to dispatch submission pending approval notification: ${err.message}`);
+      }
+    }
 
     return this.mapRowToDetails({
       ...submission,
@@ -463,6 +517,10 @@ export class RecruiterSubmissionsService {
 
     const existing = await this.prisma.recruiterSubmission.findFirst({
       where: { id, tenantId },
+      include: {
+        job: { select: { id: true, jobCode: true, jobTitle: true, clientName: true, accountManagerId: true } },
+        candidate: { select: { id: true, fullName: true, firstName: true, lastName: true, email: true } },
+      },
     });
 
     if (!existing) {
@@ -579,6 +637,162 @@ export class RecruiterSubmissionsService {
       where: { id },
       data,
     });
+
+    // ── Candidate Submission Notification Dispatch ──────────────────────────────
+    const candName =
+      existing.candidate?.fullName ||
+      `${existing.candidate?.firstName || ''} ${existing.candidate?.lastName || ''}`.trim() ||
+      'Candidate';
+    const jobCode = existing.job?.jobCode || '';
+    const jobTitle = existing.job?.jobTitle || '';
+    const jobDisplay = jobCode ? `${jobCode} - ${jobTitle}` : jobTitle;
+    const approverName = user?.fullName || user?.email || 'Approver';
+    const feedbackNote = (
+      data.reviewFeedback ||
+      data.podLeadRemarks ||
+      data.remarks ||
+      dto.reviewFeedback ||
+      dto.podLeadRemarks ||
+      dto.remarks ||
+      ''
+    ).trim();
+
+    const wasPending = existing.finalStatus === 'PENDING_APPROVAL';
+    const isNowApproved = wasPending && (finalStatus === 'SUBMITTED' || finalStatus === 'POD_APPROVED');
+    const isNowRejected = wasPending && finalStatus === 'REJECTED';
+
+    const targetRecruiter = existing.recruiterId;
+
+    if (targetRecruiter) {
+      try {
+        if (isNowApproved) {
+          // 1. Candidate Submission Approved by Pod Lead / Account Manager
+          await this.notifications.create(tenantId, targetRecruiter, {
+            type: 'SUBMISSION_APPROVED',
+            title: 'Candidate Submission Approved',
+            message: `Your submission for candidate "${candName}" on job "${jobDisplay}" has been approved by ${approverName} and submitted to the client.${feedbackNote ? ` Remarks: "${feedbackNote}"` : ''}`,
+            data: {
+              submissionId: id,
+              jobId: existing.jobId,
+              jobCode,
+              jobTitle,
+              clientName: existing.job?.clientName,
+              candidateId: existing.candidateId,
+              candidateName: candName,
+              status: 'SUBMITTED',
+              approverName,
+              reviewFeedback: feedbackNote || undefined,
+            },
+            initiatorId: user.dbId || user.email || 'System',
+          });
+        } else if (isNowRejected) {
+          // 2. Candidate Submission Rejected during Internal Screening
+          await this.notifications.create(tenantId, targetRecruiter, {
+            type: 'SUBMISSION_REJECTED',
+            title: 'Candidate Submission Not Approved',
+            message: `Your submission for candidate "${candName}" on job "${jobDisplay}" was rejected during internal review by ${approverName}.${feedbackNote ? ` Reason: "${feedbackNote}"` : ''}`,
+            data: {
+              submissionId: id,
+              jobId: existing.jobId,
+              jobCode,
+              jobTitle,
+              clientName: existing.job?.clientName,
+              candidateId: existing.candidateId,
+              candidateName: candName,
+              status: 'REJECTED',
+              approverName,
+              reviewFeedback: feedbackNote || undefined,
+            },
+            initiatorId: user.dbId || user.email || 'System',
+          });
+        } else if (existing.finalStatus !== 'OFFER' && finalStatus === 'OFFER') {
+          // 3. Offer stage reached
+          await this.notifications.create(tenantId, targetRecruiter, {
+            type: 'SUBMISSION_OFFER',
+            title: 'Offer Extended to Candidate',
+            message: `Candidate "${candName}" has received an offer for job "${jobDisplay}"!`,
+            data: {
+              submissionId: id,
+              jobId: existing.jobId,
+              jobCode,
+              jobTitle,
+              clientName: existing.job?.clientName,
+              candidateId: existing.candidateId,
+              candidateName: candName,
+              status: 'OFFER',
+              approverName,
+            },
+            initiatorId: user.dbId || user.email || 'System',
+          });
+        } else if (existing.finalStatus !== 'JOIN' && (finalStatus === 'JOIN' || finalStatus === 'PLACED')) {
+          // 4. Joined / Placed
+          await this.notifications.create(tenantId, targetRecruiter, {
+            type: 'SUBMISSION_PLACED',
+            title: 'Candidate Placed / Joined!',
+            message: `Congratulations! Candidate "${candName}" has joined for job "${jobDisplay}"!`,
+            data: {
+              submissionId: id,
+              jobId: existing.jobId,
+              jobCode,
+              jobTitle,
+              clientName: existing.job?.clientName,
+              candidateId: existing.candidateId,
+              candidateName: candName,
+              status: finalStatus,
+              approverName,
+            },
+            initiatorId: user.dbId || user.email || 'System',
+          });
+        } else if (!wasPending && existing.finalStatus !== 'REJECTED' && finalStatus === 'REJECTED') {
+          // 5. Client Rejection
+          await this.notifications.create(tenantId, targetRecruiter, {
+            type: 'SUBMISSION_REJECTED',
+            title: 'Candidate Rejected by Client',
+            message: `Candidate "${candName}" was marked as rejected for job "${jobDisplay}".${feedbackNote ? ` Note: "${feedbackNote}"` : ''}`,
+            data: {
+              submissionId: id,
+              jobId: existing.jobId,
+              jobCode,
+              jobTitle,
+              clientName: existing.job?.clientName,
+              candidateId: existing.candidateId,
+              candidateName: candName,
+              status: 'REJECTED',
+            },
+            initiatorId: user.dbId || user.email || 'System',
+          });
+        } else {
+          // 6. Check interview schedule changes
+          const newlyScheduledRound =
+            (existing.l1Status !== 'SCHEDULED' && l1Status === 'SCHEDULED') ? 'L1' :
+            (existing.l2Status !== 'SCHEDULED' && l2Status === 'SCHEDULED') ? 'L2' :
+            (existing.l3Status !== 'SCHEDULED' && l3Status === 'SCHEDULED') ? 'L3' : null;
+
+          if (newlyScheduledRound) {
+            const roundDate = newlyScheduledRound === 'L1' ? l1Date : newlyScheduledRound === 'L2' ? l2Date : l3Date;
+            const dateStr = roundDate ? ` on ${new Date(roundDate).toLocaleDateString()}` : '';
+            await this.notifications.create(tenantId, targetRecruiter, {
+              type: 'INTERVIEW_SCHEDULED',
+              title: `${newlyScheduledRound} Interview Scheduled`,
+              message: `${newlyScheduledRound} interview scheduled for candidate "${candName}" on job "${jobDisplay}"${dateStr}.`,
+              data: {
+                submissionId: id,
+                jobId: existing.jobId,
+                jobCode,
+                jobTitle,
+                candidateId: existing.candidateId,
+                candidateName: candName,
+                round: newlyScheduledRound,
+                meetingLink: data.meetingLink || existing.meetingLink || undefined,
+              },
+              initiatorId: user.dbId || user.email || 'System',
+            });
+          }
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to dispatch submission notification: ${err.message}`, err.stack);
+      }
+    }
 
     return this.findOne(id, tenantId);
   }

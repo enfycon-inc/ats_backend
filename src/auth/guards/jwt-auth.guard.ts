@@ -161,44 +161,19 @@ export class JwtAuthGuard implements CanActivate {
         businessUnitId: dbUser.business_unit_id || null,
         defaultMarket: dbUser.default_market || 'US',
         tenantDomain: dbUser.tenant_domain || '',
-        systemRole: dbUser.system_role || 'RECRUITER',
-      };
-
-      return true;
-    } else {
-      // ── Internal HS256 Token ──
-      const decoded = this.authService.verifyJwt(token);
-      if (!decoded) {
-        throw new UnauthorizedException('Token signature invalid or expired.');
-      }
-
-      const profile = await this.authService.getProfile(decoded.sub || decoded.id);
-      if (!profile || profile.isActive === false) {
-        throw new UnauthorizedException('User account is deactivated or not found.');
-      }
-
-      const u = profile;
-      request.user = {
-        dbId: u.id,
-        keycloakId: u.id,
-        email: u.email,
-        fullName: u.fullName,
-        roles: (u.roles || []).map((r: string) => r.toUpperCase().replace(/[\s-]/g, '_')),
-        tenantId: u.tenantId || DEFAULT_TENANT_ID,
-        isActive: u.isActive !== undefined ? u.isActive : true,
-        permissions: u.permissions || [],
-        podId: u.podId || null,
-        branchId: u.branchId || null,
-        assignedBranchIds: u.assignedBranchIds || [],
-        branchRoles: u.branchRoles || {},
-        businessUnitId: u.businessUnitId || null,
-        defaultMarket: u.defaultMarket || 'US',
-        tenantDomain: u.tenantDomain || '',
-        systemRole: u.systemRole || 'RECRUITER',
+        // SUPER_ADMIN is authoritative from Keycloak realm_access.roles
+        systemRole: realmRoles.includes('SUPER_ADMIN')
+          ? 'SUPER_ADMIN'
+          : (dbUser.system_role || 'RECRUITER'),
       };
 
       return true;
     }
+
+    // No kid header — reject. All tokens must be Keycloak RS256.
+    throw new UnauthorizedException(
+      'Token is not a valid Keycloak RS256 token. Internal tokens are no longer supported.',
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -314,8 +289,8 @@ export class JwtAuthGuard implements CanActivate {
   }
 
   private checkExpiry(exp: number | undefined, label: string): void {
-    // 300-second (5 minute) grace period for clock skew across edge proxies
-    if (exp && Math.floor(Date.now() / 1000) > (exp + 300)) {
+    // 30-second grace period for clock skew only
+    if (exp && Math.floor(Date.now() / 1000) > (exp + 30)) {
       throw new UnauthorizedException(`${label} has expired. Please log in again.`);
     }
   }

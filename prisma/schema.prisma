@@ -32,6 +32,8 @@ model Tenant {
   emailDispatchMode       String    @default("DEFAULT_SUBDOMAIN") @map("email_dispatch_mode") @db.VarChar(50)
   customEmailDomain       String?   @map("custom_email_domain") @db.VarChar(255)
   customEmailDomainVerified Boolean @default(false) @map("custom_email_domain_verified")
+  jobAssignmentMode         String?   @default("AUTO") @map("job_assignment_mode") @db.VarChar(50)
+  jobAssignmentOptions      Json?     @default("{}") @map("job_assignment_options")
   createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -214,6 +216,7 @@ model CustomRole {
   isSystem    Boolean  @default(false) @map("is_system")
   systemRole  String?  @default("RECRUITER") @map("system_role") @db.VarChar(50)
   baseRoleId  String?  @map("base_role_id") @db.Uuid
+  createdBy   String?  @map("created_by") @db.Uuid
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
