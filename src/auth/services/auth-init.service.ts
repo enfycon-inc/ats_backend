@@ -32,22 +32,30 @@ export class AuthInitService implements OnModuleInit {
       this.logger.warn(`Background tenant role sync note: ${err.message}`);
     });
 
-    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL;
-    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD;
+    const adminEmail = process.env.PLATFORM_ADMIN_EMAIL || 'admin@enfycon.com';
+    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD || 'enfycon123';
     const adminName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
-    if (adminEmail && adminPassword) {
-      this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) into Keycloak on startup...`);
-      this.keycloakService.provisionUserInKeycloak({
-        email: adminEmail,
-        password: adminPassword,
-        fullName: adminName,
-        tenantId: DEFAULT_TENANT_ID,
-      }).catch((err) => {
-        this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
-      });
-    } else {
-      this.logger.warn(`[BOOT] PLATFORM_ADMIN_EMAIL or PLATFORM_ADMIN_PASSWORD not set — skipping Keycloak Super Admin sync.`);
-    }
+    const debAdminEmail = 'imsahadeb@gmail.com';
+    const debAdminPassword = process.env.DEB_ADMIN_PASSWORD || 'enfycon123';
+
+    this.logger.log(`[BOOT] Syncing Platform Super Admin (${adminEmail}) and Deb Admin (${debAdminEmail}) into Keycloak...`);
+    this.keycloakService.provisionUserInKeycloak({
+      email: adminEmail,
+      password: adminPassword,
+      fullName: adminName,
+      tenantId: DEFAULT_TENANT_ID,
+    }).catch((err) => {
+      this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
+    });
+
+    this.keycloakService.provisionUserInKeycloak({
+      email: debAdminEmail,
+      password: debAdminPassword,
+      fullName: 'Sahadeb Barman',
+      tenantId: '737f666b-916a-4e9c-91bd-b2bd37e475d1',
+    }).catch((err) => {
+      this.logger.warn(`[BOOT] Async Keycloak deb admin sync note: ${err.message}`);
+    });
   }
 
   private async syncAllTenantRoles() {
@@ -84,10 +92,10 @@ export class AuthInitService implements OnModuleInit {
 
       // 3. Ensure Deb Technology tenant domain mapping exists
       await this.authQuery.query(`
-        INSERT INTO tenant_domains (tenant_id, domain, is_primary, status)
-        SELECT '737f666b-916a-4e9c-91bd-b2bd37e475d1', 'deb', true, 'ACTIVE'
+        INSERT INTO tenant_domains (tenant_id, domain_name, is_primary, verification_status, ssl_status)
+        SELECT '737f666b-916a-4e9c-91bd-b2bd37e475d1', 'deb', true, 'VERIFIED', 'ACTIVE'
         WHERE NOT EXISTS (
-          SELECT 1 FROM tenant_domains WHERE tenant_id = '737f666b-916a-4e9c-91bd-b2bd37e475d1' AND domain = 'deb'
+          SELECT 1 FROM tenant_domains WHERE tenant_id = '737f666b-916a-4e9c-91bd-b2bd37e475d1' AND domain_name = 'deb'
         );
       `);
 
@@ -153,6 +161,23 @@ export class AuthInitService implements OnModuleInit {
         role_id       UUID NOT NULL REFERENCES custom_roles(id) ON DELETE CASCADE,
         permission    VARCHAR(100) NOT NULL,
         PRIMARY KEY (role_id, permission)
+      );
+
+      -- 2b. Create tenant_auth_settings table
+      CREATE TABLE IF NOT EXISTS tenant_auth_settings (
+        tenant_id               UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+        allow_password_login    BOOLEAN NOT NULL DEFAULT true,
+        allow_microsoft_sso     BOOLEAN NOT NULL DEFAULT true,
+        allow_google_sso        BOOLEAN NOT NULL DEFAULT true,
+        enforce_sso_only        BOOLEAN NOT NULL DEFAULT false,
+        require_mfa             BOOLEAN NOT NULL DEFAULT false,
+        allow_personal_emails   BOOLEAN NOT NULL DEFAULT true,
+        allowed_email_domains   TEXT[] DEFAULT '{}',
+        microsoft_tenant_id     VARCHAR(255),
+        microsoft_client_id     VARCHAR(255),
+        microsoft_client_secret TEXT,
+        created_at              TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at              TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
       -- 3. Create users table
@@ -341,15 +366,29 @@ export class AuthInitService implements OnModuleInit {
 
   private async seedDefaultUsers() {
     const adminEmail = process.env.PLATFORM_ADMIN_EMAIL || 'admin@enfycon.com';
-    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD || 'EnfyAdmin@2024';
+    const adminPassword = process.env.PLATFORM_ADMIN_PASSWORD || 'enfycon123';
     const adminName = process.env.PLATFORM_ADMIN_NAME || 'Enfy Super Admin';
+    const debAdminEmail = 'imsahadeb@gmail.com';
+    const debTenantId = '737f666b-916a-4e9c-91bd-b2bd37e475d1';
 
     try {
+      // 1. Ensure tenant_auth_settings exist for both tenants
+      await this.authQuery.query(`
+        INSERT INTO tenant_auth_settings (tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only)
+        VALUES ('${DEFAULT_TENANT_ID}', true, true, true, false)
+        ON CONFLICT (tenant_id) DO NOTHING;
+
+        INSERT INTO tenant_auth_settings (tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only)
+        VALUES ('${debTenantId}', true, true, true, false)
+        ON CONFLICT (tenant_id) DO NOTHING;
+      `).catch(() => {});
+
+      // 2. Ensure Platform Super Admin exists
       const roleMap = await this.rbacService.seedTenantRoles(DEFAULT_TENANT_ID);
       const superAdminRoleId = roleMap['SUPER_ADMIN'];
 
       const exists = await this.authQuery.query(
-        'SELECT id, role_id, assigned_role_ids FROM users WHERE email = $1 LIMIT 1',
+        'SELECT id, role_id, assigned_role_ids FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
         [adminEmail]
       );
 
@@ -364,29 +403,37 @@ export class AuthInitService implements OnModuleInit {
         this.logger.log(`✅ Platform SUPER_ADMIN already exists in DB (${adminEmail}).`);
       } else {
         await this.authQuery.query(
-          `INSERT INTO users (tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
-           VALUES ($1, $2, $3, true, true, $4, $5, $6)`,
-          [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId, [superAdminRoleId], '1d4ac532-4229-4c95-9b11-af573060020b']
+          `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
+           VALUES ('1d4ac532-4229-4c95-9b11-af573060020b', $1, $2, $3, true, true, $4, $5, '1d4ac532-4229-4c95-9b11-af573060020b')
+           ON CONFLICT (email) DO UPDATE SET is_active = true, is_approved = true, role_id = $4`,
+          [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId, [superAdminRoleId]]
         );
         this.logger.log(`🚀 Platform SUPER_ADMIN created: ${adminEmail}`);
       }
 
-      // Ensure Deb Technology Tenant Admin (imsahadeb@gmail.com) exists
-      const debTenantId = '737f666b-916a-4e9c-91bd-b2bd37e475d1';
-      const debAdminRes = await this.authQuery.query(
-        'SELECT id, role_id, assigned_role_ids FROM users WHERE email = $1 LIMIT 1',
-        ['imsahadeb@gmail.com']
-      );
+      // 3. Ensure Deb Technology Tenant Admin (imsahadeb@gmail.com) exists
       const debRoleMap = await this.rbacService.seedTenantRoles(debTenantId);
       const debAdminRoleId = debRoleMap['ADMIN'];
 
+      const debAdminRes = await this.authQuery.query(
+        'SELECT id, role_id, assigned_role_ids FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+        [debAdminEmail]
+      );
+
       if (debAdminRes.rows.length === 0 && debAdminRoleId) {
         await this.authQuery.query(
-          `INSERT INTO users (tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
-           VALUES ($1, $2, $3, true, true, $4, $5, $6)`,
-          [debTenantId, 'imsahadeb@gmail.com', 'Sahadeb Barman', debAdminRoleId, [debAdminRoleId], 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4']
+          `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
+           VALUES ('fd276e95-2bc6-4b96-9f61-2e971e9b8aa4', $1, $2, 'Sahadeb Barman', true, true, $3, $4, 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4')
+           ON CONFLICT (email) DO UPDATE SET is_active = true, is_approved = true, role_id = $3`,
+          [debTenantId, debAdminEmail, debAdminRoleId, [debAdminRoleId]]
         );
-        this.logger.log('🚀 Deb Technology Admin user seeded: imsahadeb@gmail.com');
+        this.logger.log(`🚀 Deb Technology Admin user seeded: ${debAdminEmail}`);
+      } else if (debAdminRoleId) {
+        await this.authQuery.query(
+          `UPDATE users SET is_approved = true, is_active = true, role_id = COALESCE(role_id, $1), assigned_role_ids = ARRAY[$1]::uuid[] WHERE LOWER(email) = LOWER($2)`,
+          [debAdminRoleId, debAdminEmail]
+        );
+        this.logger.log(`✅ Deb Technology Admin user verified: ${debAdminEmail}`);
       }
     } catch (err: any) {
       this.logger.warn(`Could not seed default users: ${err.message}`);

@@ -440,11 +440,11 @@ export class AuthTenantService {
         `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
          UNION SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1 LIMIT 1`,
         [tenantIdOrSubdomain.toLowerCase()]
-      );
+      ).catch(() => ({ rows: [] }));
       tenantId = res.rows.length > 0 ? (res.rows[0] as any).tenant_id : DEFAULT_TENANT_ID;
     }
 
-    const result = await this.authQuery.query('SELECT * FROM tenant_auth_settings WHERE tenant_id = $1 LIMIT 1', [tenantId]);
+    const result = await this.authQuery.query('SELECT * FROM tenant_auth_settings WHERE tenant_id = $1 LIMIT 1', [tenantId]).catch(() => ({ rows: [] }));
     if (result.rows.length === 0) {
       return {
         tenantId, allowPasswordLogin: true, allowMicrosoftSso: true, allowGoogleSso: true,

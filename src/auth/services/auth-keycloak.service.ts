@@ -108,25 +108,31 @@ export class AuthKeycloakService {
           if (res.status === 409) {
             // User already exists — sync password if provided
             if (data.password) {
-              const searchUrl = url.replace('/users', `/users?email=${encodeURIComponent(data.email)}`);
-              const searchRes = await fetch(searchUrl, {
+              let searchUrl = url.replace('/users', `/users?username=${encodeURIComponent(data.email)}&exact=true`);
+              let searchRes = await fetch(searchUrl, {
                 headers: { 'Authorization': `Bearer ${adminToken}` },
               });
-              if (searchRes.ok) {
-                const usersList = await searchRes.json();
-                if (Array.isArray(usersList) && usersList.length > 0) {
-                  const kcUserId = usersList[0].id;
-                  const resetUrl = url.replace('/users', `/users/${kcUserId}/reset-password`);
-                  await fetch(resetUrl, {
-                    method: 'PUT',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${adminToken}`,
-                    },
-                    body: JSON.stringify({ type: 'password', value: data.password, temporary: false }),
-                  });
-                  this.logger.log(`Keycloak user ${data.email} password synced in realm ${realm}`);
-                }
+              let usersList = searchRes.ok ? await searchRes.json() : [];
+              if (!Array.isArray(usersList) || usersList.length === 0) {
+                searchUrl = url.replace('/users', `/users?email=${encodeURIComponent(data.email)}&exact=true`);
+                searchRes = await fetch(searchUrl, {
+                  headers: { 'Authorization': `Bearer ${adminToken}` },
+                });
+                usersList = searchRes.ok ? await searchRes.json() : [];
+              }
+
+              if (Array.isArray(usersList) && usersList.length > 0) {
+                const kcUserId = usersList[0].id;
+                const resetUrl = url.replace('/users', `/users/${kcUserId}/reset-password`);
+                await fetch(resetUrl, {
+                  method: 'PUT',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${adminToken}`,
+                  },
+                  body: JSON.stringify({ type: 'password', value: data.password, temporary: false }),
+                });
+                this.logger.log(`Keycloak user ${data.email} password synced in realm ${realm}`);
               }
             }
             return true;

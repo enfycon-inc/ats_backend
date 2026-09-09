@@ -23,7 +23,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   async onModuleInit() {
     this.logger.log('Connecting to PostgreSQL via Prisma...');
     await this.$connect();
-    this.logger.log('Prisma connected successfully.');
+    await this.$executeRawUnsafe('SET search_path TO ats, mass_mail, public;').catch(() => {});
+    this.logger.log('Prisma connected successfully (search_path: ats, mass_mail, public).');
   }
 
   async onModuleDestroy() {
