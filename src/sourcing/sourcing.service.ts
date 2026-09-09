@@ -167,12 +167,12 @@ export class SourcingService {
     const unlockedPhone =
       dto.provider === 'dice' ? '+1 (334) 555-4816' : '+1 (860) 555-8831';
 
-    this.logger.log(`[PRODUCTION LOG] Successfully unlocked profile. Mapped real email=${unlockedEmail} | phone=${unlockedPhone}`);
+    this.logger.log(`[PRODUCTION LOG] Successfully unlocked profile for ${externalCandidate.fullName}. Mapped email domain: @${unlockedEmail.split('@')[1] || '***'}`);
 
     // 3. De-duplication check: call CandidatesService to check if candidate is already in Supabase
     const existing = await this.candidatesService.findByEmail(unlockedEmail, tenantId);
     if (existing) {
-      this.logger.log(`Candidate with email ${unlockedEmail} is already imported. Returning existing profile.`);
+      this.logger.log(`Candidate is already imported. Returning existing profile.`);
       return existing as InternalCandidateProfile;
     }
 
@@ -220,12 +220,12 @@ export class SourcingService {
     const unlockedPhone =
       dto.provider === 'dice' ? '+1 (334) 555-4816' : '+1 (860) 555-8831';
 
-    this.logger.log(`[AI PARSER PIPELINE] Unlocked details: email=${unlockedEmail} | phone=${unlockedPhone}`);
+    this.logger.log(`[AI PARSER PIPELINE] Unlocked details for candidate profile. Mapped domain: @${unlockedEmail.split('@')[1] || '***'}`);
 
     // 3. De-duplication check: call CandidatesService to check if candidate is already in Supabase
     const existing = await this.candidatesService.findByEmail(unlockedEmail, tenantId);
     if (existing) {
-      this.logger.log(`Candidate with email ${unlockedEmail} is already imported. Returning existing profile.`);
+      this.logger.log(`Candidate is already imported. Returning existing profile.`);
       return existing as InternalCandidateProfile;
     }
 
@@ -292,7 +292,7 @@ Bachelor of Science in Computer Science or equivalent technical field.
     if (response && response.ok) {
       try {
         const resultData = await response.json();
-        this.logger.log(`[AI PARSER PIPELINE] Parser API response: ${JSON.stringify(resultData)}`);
+        this.logger.log(`[AI PARSER PIPELINE] Parser API response status: ${resultData.status}`);
 
         if (resultData.status === 'completed') {
           completed = true;

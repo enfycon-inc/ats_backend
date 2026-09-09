@@ -627,7 +627,7 @@ export class EmailService {
         pass: account.password || '',
       },
       tls: {
-        rejectUnauthorized: false,
+        rejectUnauthorized: process.env.SMTP_IGNORE_TLS === 'true' ? false : true,
       },
     });
 

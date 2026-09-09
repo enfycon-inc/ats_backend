@@ -35,7 +35,7 @@ export class AuthEmailService {
         port: smtpPort,
         secure: smtpPort === 465,
         auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
-        tls: { rejectUnauthorized: false },
+        tls: { rejectUnauthorized: process.env.SMTP_IGNORE_TLS === 'true' ? false : true },
       });
 
       const appBaseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -173,7 +173,7 @@ export class AuthEmailService {
                 port: acc.smtp_port || 587,
                 secure: acc.require_ssl || acc.smtp_port === 465,
                 auth: { user: acc.email_address, pass: acc.password },
-                tls: { rejectUnauthorized: false },
+                tls: { rejectUnauthorized: process.env.SMTP_IGNORE_TLS === 'true' ? false : true },
               });
               await customTransporter.sendMail({
                 from: `"${options.tenantName}" <${acc.email_address}>`,
@@ -201,7 +201,7 @@ export class AuthEmailService {
         port: smtpPort,
         secure: smtpPort === 465,
         auth: (smtpUser && smtpPass) ? { user: smtpUser, pass: smtpPass } : undefined,
-        tls: { rejectUnauthorized: false },
+        tls: { rejectUnauthorized: process.env.SMTP_IGNORE_TLS === 'true' ? false : true },
       });
 
       if (process.env.SMTP_HOST) {

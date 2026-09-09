@@ -60,3 +60,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Prisma — keep schema.prisma and migrations/, but ignore generated client
 node_modules/.prisma
 prisma/generated
+
+# Scratch & temporary migration scripts
+scratch/

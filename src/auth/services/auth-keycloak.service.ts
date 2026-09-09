@@ -18,8 +18,12 @@ export class AuthKeycloakService {
   async getKeycloakAdminToken(): Promise<string | null> {
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
     const baseUrl = issuer.split('/realms/')[0];
-    const adminUser = process.env.KEYCLOAK_ADMIN || 'admin';
-    const adminPass = process.env.KEYCLOAK_ADMIN_PASSWORD || 'admin';
+    const adminUser = process.env.KEYCLOAK_ADMIN;
+    const adminPass = process.env.KEYCLOAK_ADMIN_PASSWORD;
+    if (!adminUser || !adminPass) {
+      this.logger.warn('KEYCLOAK_ADMIN or KEYCLOAK_ADMIN_PASSWORD is not configured in environment');
+      return null;
+    }
 
     const tokenEndpoints = [
       `${baseUrl}/realms/master/protocol/openid-connect/token`,

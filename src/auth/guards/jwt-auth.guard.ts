@@ -11,7 +11,7 @@ import * as http from 'http';
 import { AuthService } from '../auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
-const DEFAULT_TENANT_ID = 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────

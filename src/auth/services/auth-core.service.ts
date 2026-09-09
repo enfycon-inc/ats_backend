@@ -115,22 +115,17 @@ export class AuthCoreService {
     if (result.rows.length === 0) {
       try {
         const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL;
-        const debAdminEmail = process.env.DEB_ADMIN_EMAIL;
         const isPlatformAdmin = Boolean(platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase());
-        const isDebAdmin = Boolean(debAdminEmail && cleanEmail === debAdminEmail.toLowerCase());
 
-        if (isPlatformAdmin || isDebAdmin) {
-          const isSuperAdmin = isPlatformAdmin;
-          const tenantId = isSuperAdmin ? DEFAULT_TENANT_ID : (process.env.DEB_TENANT_ID || '737f666b-916a-4e9c-91bd-b2bd37e475d1');
-          const userId = isSuperAdmin ? '1d4ac532-4229-4c95-9b11-af573060020b' : 'fd276e95-2bc6-4b96-9f61-2e971e9b8aa4';
-          const fullName = isSuperAdmin
-            ? (process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin')
-            : (process.env.DEB_ADMIN_NAME || 'Tenant Admin');
+        if (isPlatformAdmin) {
+          const tenantId = DEFAULT_TENANT_ID;
+          const userId = '1d4ac532-4229-4c95-9b11-af573060020b';
+          const fullName = process.env.PLATFORM_ADMIN_NAME || 'Platform Super Admin';
 
           let roleId: string | null = null;
           try {
             const roleMap = await this.rbacService.seedTenantRoles(tenantId);
-            roleId = isSuperAdmin ? roleMap['SUPER_ADMIN'] : roleMap['ADMIN'];
+            roleId = roleMap['SUPER_ADMIN'];
           } catch (rErr: any) {
             this.logger.warn(`Could not seed role for ${cleanEmail}: ${rErr.message}`);
           }
@@ -284,7 +279,7 @@ export class AuthCoreService {
     const params = new URLSearchParams();
     params.append('grant_type', 'password');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', dto.password);
@@ -296,16 +291,12 @@ export class AuthCoreService {
         res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
       }
 
-      // If rejected (401) and it's an admin user configured in env, auto-sync credentials in Keycloak and retry
+      // If rejected (401) and it's the platform super admin configured in env, auto-sync credentials in Keycloak and retry
       const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL;
-      const debAdminEmail = process.env.DEB_ADMIN_EMAIL;
-      const isAdminEmail = (platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase()) ||
-                           (debAdminEmail && cleanEmail === debAdminEmail.toLowerCase());
-      const adminExpectedPass = (platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase())
-        ? process.env.PLATFORM_ADMIN_PASSWORD
-        : process.env.DEB_ADMIN_PASSWORD;
+      const isPlatformAdmin = Boolean(platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase());
+      const adminExpectedPass = process.env.PLATFORM_ADMIN_PASSWORD;
 
-      if (!res.ok && res.status === 401 && isAdminEmail && adminExpectedPass && dto.password === adminExpectedPass) {
+      if (!res.ok && res.status === 401 && isPlatformAdmin && adminExpectedPass && dto.password === adminExpectedPass) {
         this.logger.log(`[Auth] Attempting auto-sync of credentials in Keycloak for ${cleanEmail}...`);
         await this.keycloakService.provisionUserInKeycloak({
           email: cleanEmail,
@@ -373,7 +364,7 @@ export class AuthCoreService {
     const params = new URLSearchParams();
     params.append('grant_type', 'refresh_token');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('refresh_token', refreshToken);
 
