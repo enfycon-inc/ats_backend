@@ -80,7 +80,7 @@ export class BranchesController {
   @Patch(':id/toggle-global-remarks')
   async toggleGlobalRemarks(
     @Param('id') id: string,
-    @Body() body: { enableGlobalRemarks?: boolean },
+    @Body() body: { enableGlobalRemarks?: boolean; selectedGlobalRemarkIds?: string },
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
@@ -88,7 +88,7 @@ export class BranchesController {
       throw new ForbiddenException('Access denied. You do not have granular permission (branch:edit or branch_admin:manage) to modify branch stage remarks.');
     }
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.branchesService.toggleGlobalRemarks(id, tenantId, body?.enableGlobalRemarks);
+    return this.branchesService.toggleGlobalRemarks(id, tenantId, body?.enableGlobalRemarks, body?.selectedGlobalRemarkIds);
   }
 
   @Delete(':id')

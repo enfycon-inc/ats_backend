@@ -171,6 +171,7 @@ model Branch {
   shiftTiming             String?   @default("General Shift") @map("shift_timing") @db.VarChar(100)
   breakDurationMinutes    Int?      @default(60) @map("break_duration_minutes")
   enableGlobalRemarks     Boolean   @default(false) @map("enable_global_remarks")
+  selectedGlobalRemarkIds String?   @default("ALL") @map("selected_global_remark_ids")
   createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   tenant                  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)

@@ -43,6 +43,7 @@ export interface BranchResponse {
   shiftTiming: string;
   breakDurationMinutes: number;
   enableGlobalRemarks: boolean;
+  selectedGlobalRemarkIds?: string | null;
   usersCount: number;
   jobsCount: number;
   podsCount: number;
@@ -104,6 +105,7 @@ export class BranchesService {
       shiftTiming: b.shiftTiming || (b.market === 'US' ? 'US Shift' : 'General Shift'),
       breakDurationMinutes: Number(b.breakDurationMinutes ?? 60),
       enableGlobalRemarks: Boolean(b.enableGlobalRemarks),
+      selectedGlobalRemarkIds: b.selectedGlobalRemarkIds ?? 'ALL',
       usersCount: members.length,
       jobsCount: b._count?.jobs ?? b.jobsCount ?? 0,
       podsCount,
@@ -338,13 +340,18 @@ export class BranchesService {
     return this.findOne(id, tenantId);
   }
 
-  async toggleGlobalRemarks(id: string, tenantId: string, enabled?: boolean): Promise<BranchResponse> {
+  async toggleGlobalRemarks(id: string, tenantId: string, enabled?: boolean, selectedGlobalRemarkIds?: string): Promise<BranchResponse> {
     const existing = await this.findOne(id, tenantId);
     const nextState = enabled !== undefined ? Boolean(enabled) : !existing.enableGlobalRemarks;
 
+    const data: any = { enableGlobalRemarks: nextState };
+    if (selectedGlobalRemarkIds !== undefined) {
+      data.selectedGlobalRemarkIds = selectedGlobalRemarkIds;
+    }
+
     await this.prisma.branch.update({
       where: { id },
-      data: { enableGlobalRemarks: nextState },
+      data,
     });
     return this.findOne(id, tenantId);
   }

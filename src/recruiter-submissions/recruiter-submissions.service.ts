@@ -969,10 +969,11 @@ export class RecruiterSubmissionsService {
   async getCustomRemarks(tenantId: string, branchId?: string, includeGlobal?: boolean) {
     let shouldIncludeGlobal = includeGlobal;
     let resolvedBranchId = branchId?.trim();
+    let selectedGlobalRemarkIds: number[] | 'ALL' | null = null;
 
     if (resolvedBranchId && resolvedBranchId !== 'null' && resolvedBranchId !== 'undefined') {
       try {
-        const branch = await this.prisma.branch.findFirst({
+        const branch: any = await this.prisma.branch.findFirst({
           where: {
             OR: [
               { id: resolvedBranchId },
@@ -980,12 +981,26 @@ export class RecruiterSubmissionsService {
               { code: { equals: resolvedBranchId, mode: 'insensitive' } },
             ],
           },
-          select: { id: true, enableGlobalRemarks: true },
+          select: { id: true, enableGlobalRemarks: true, selectedGlobalRemarkIds: true },
         });
         if (branch) {
           resolvedBranchId = branch.id;
           if (shouldIncludeGlobal === undefined) {
             shouldIncludeGlobal = Boolean(branch.enableGlobalRemarks);
+          }
+          if (branch.selectedGlobalRemarkIds) {
+            if (branch.selectedGlobalRemarkIds === 'ALL') {
+              selectedGlobalRemarkIds = 'ALL';
+            } else {
+              try {
+                const parsed = JSON.parse(branch.selectedGlobalRemarkIds);
+                if (Array.isArray(parsed)) {
+                  selectedGlobalRemarkIds = parsed.map((n: any) => parseInt(n, 10)).filter((n: number) => !isNaN(n));
+                }
+              } catch {
+                selectedGlobalRemarkIds = 'ALL';
+              }
+            }
           }
         }
       } catch {
@@ -1013,9 +1028,17 @@ export class RecruiterSubmissionsService {
       if (resolvedBranchId) {
         params.push(resolvedBranchId);
         if (shouldIncludeGlobal) {
-          query += ` AND (branch_id = $2 OR branch_id IS NULL OR is_global = TRUE)`;
+          if (selectedGlobalRemarkIds && Array.isArray(selectedGlobalRemarkIds) && selectedGlobalRemarkIds.length > 0) {
+            const idList = selectedGlobalRemarkIds.join(',');
+            query += ` AND (branch_id = $2 OR ( (branch_id IS NULL OR is_global = TRUE) AND id IN (${idList}) ))`;
+          } else if (selectedGlobalRemarkIds && Array.isArray(selectedGlobalRemarkIds) && selectedGlobalRemarkIds.length === 0) {
+            query += ` AND branch_id = $2`;
+          } else {
+            query += ` AND (branch_id = $2 OR branch_id IS NULL OR is_global = TRUE)`;
+          }
         } else {
-          query += ` AND (branch_id = $2 OR (branch_id IS NULL AND is_global = TRUE AND NOT EXISTS (SELECT 1 FROM ats.tenant_stage_remarks tsr2 WHERE tsr2.tenant_id = $1 AND tsr2.branch_id = $2 AND tsr2.stage = ats.tenant_stage_remarks.stage)))`;
+          // Strictly branch-specific remarks only! Zero global remarks!
+          query += ` AND branch_id = $2`;
         }
       } else if (includeGlobal === true) {
         query += ` AND (branch_id IS NULL OR is_global = TRUE)`;
