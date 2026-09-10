@@ -1021,27 +1021,30 @@ export class RecruiterSubmissionsService {
                COALESCE(is_global, branch_id IS NULL) as "isGlobal",
                created_by as "createdBy", created_at as "createdAt"
         FROM ats.tenant_stage_remarks
-        WHERE tenant_id = $1
       `;
-      const params: any[] = [tenantId];
+      const params: any[] = [];
 
       if (resolvedBranchId) {
-        params.push(resolvedBranchId);
+        params.push(tenantId, resolvedBranchId);
         if (shouldIncludeGlobal) {
           if (selectedGlobalRemarkIds && Array.isArray(selectedGlobalRemarkIds) && selectedGlobalRemarkIds.length > 0) {
             const idList = selectedGlobalRemarkIds.join(',');
-            query += ` AND (branch_id = $2 OR ( (branch_id IS NULL OR is_global = TRUE) AND id IN (${idList}) ))`;
+            query += ` WHERE (tenant_id = $1 AND branch_id = $2) OR ((branch_id IS NULL OR is_global = TRUE) AND id IN (${idList}))`;
           } else if (selectedGlobalRemarkIds && Array.isArray(selectedGlobalRemarkIds) && selectedGlobalRemarkIds.length === 0) {
-            query += ` AND branch_id = $2`;
+            query += ` WHERE tenant_id = $1 AND branch_id = $2`;
           } else {
-            query += ` AND (branch_id = $2 OR branch_id IS NULL OR is_global = TRUE)`;
+            query += ` WHERE (tenant_id = $1 AND branch_id = $2) OR (branch_id IS NULL OR is_global = TRUE)`;
           }
         } else {
           // Strictly branch-specific remarks only! Zero global remarks!
-          query += ` AND branch_id = $2`;
+          query += ` WHERE tenant_id = $1 AND branch_id = $2`;
         }
       } else if (includeGlobal === true) {
-        query += ` AND (branch_id IS NULL OR is_global = TRUE)`;
+        // Universal global templates query across all tenants (used by /utility/global-remarks and branch global picker)
+        query += ` WHERE (branch_id IS NULL OR is_global = TRUE)`;
+      } else {
+        params.push(tenantId);
+        query += ` WHERE tenant_id = $1 OR (branch_id IS NULL OR is_global = TRUE)`;
       }
       query += ` ORDER BY id ASC`;
 
@@ -1107,9 +1110,8 @@ export class RecruiterSubmissionsService {
 
   async deleteCustomRemark(tenantId: string, id: number, user?: AuthUser) {
     const existing: any[] = await this.prisma.$queryRawUnsafe(
-      `SELECT id, tenant_id, is_global, branch_id FROM ats.tenant_stage_remarks WHERE id = $1 AND tenant_id = $2`,
+      `SELECT id, tenant_id, is_global, branch_id FROM ats.tenant_stage_remarks WHERE id = $1`,
       id,
-      tenantId,
     );
     if (!existing || existing.length === 0) {
       throw new NotFoundException(`Custom remark template #${id} not found.`);
@@ -1128,12 +1130,15 @@ export class RecruiterSubmissionsService {
           'Access denied. Global remarks templates can only be deleted by a Global Administrator (SUPER_ADMIN). Tenant administrators cannot delete global remarks.',
         );
       }
+    } else {
+      if (remark.tenant_id && remark.tenant_id !== tenantId) {
+        throw new ForbiddenException('Access denied. You cannot delete remarks belonging to another tenant.');
+      }
     }
 
     await this.prisma.$queryRawUnsafe(
-      `DELETE FROM ats.tenant_stage_remarks WHERE id = $1 AND tenant_id = $2`,
+      `DELETE FROM ats.tenant_stage_remarks WHERE id = $1`,
       id,
-      tenantId,
     );
     return { message: `Custom remark #${id} deleted successfully.`, id };
   }
