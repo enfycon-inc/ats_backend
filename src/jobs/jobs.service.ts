@@ -20,6 +20,9 @@ export interface JobProfile {
   jobStatus: string;
   createdOn: string;
   modifiedOn: string;
+  createdAt?: string;
+  updatedAt?: string;
+  creatorEmail?: string | null;
 
   // Rates & terms
   visaType: string;
@@ -874,6 +877,7 @@ export class JobsService implements OnModuleInit {
              p.id AS pod_id,
              p.name AS pod_name,
              uc.full_name AS creator_name,
+             uc.email AS creator_email,
              b.name AS branch_name,
              b.code AS branch_code
       FROM ats.jobs j
@@ -1004,7 +1008,7 @@ export class JobsService implements OnModuleInit {
     const sql = isUuid
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
-                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
+                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name, uc.email AS creator_email
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
@@ -1019,7 +1023,7 @@ export class JobsService implements OnModuleInit {
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
-                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name
+                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name, uc.email AS creator_email
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
@@ -1080,10 +1084,12 @@ export class JobsService implements OnModuleInit {
       skillsRequired: row.skills_required ?? row.skillsRequired ?? [],
       secondarySkills: row.secondary_skills ?? row.secondarySkills ?? [],
       jobStatus: row.status,
-      createdOn: createdAt.toISOString().split('T')[0],
+      createdOn: createdAt.toISOString(),
       modifiedOn: rawUpdatedAt
-        ? new Date(rawUpdatedAt).toISOString().split('T')[0]
-        : createdAt.toISOString().split('T')[0],
+        ? new Date(rawUpdatedAt).toISOString()
+        : createdAt.toISOString(),
+      createdAt: createdAt.toISOString(),
+      updatedAt: rawUpdatedAt ? new Date(rawUpdatedAt).toISOString() : createdAt.toISOString(),
 
       visaType: row.visa_type ?? row.visaType ?? '',
       clientBillRate: row.client_bill_rate ?? row.clientBillRate ?? 'N/A',
@@ -1110,6 +1116,7 @@ export class JobsService implements OnModuleInit {
       primaryRecruiter: row.primary_recruiter_name ?? row.primaryRecruiterName ?? 'N/A',
       assignedTo: row.assigned_to ?? row.assignedTo ?? 'N/A',
       createdBy: row.creator_name ?? row.creatorName ?? row.created_by ?? row.createdBy ?? 'System',
+      creatorEmail: row.creator_email ?? row.creatorEmail ?? null,
 
       industry: row.industry || '',
       degree: row.degree || '',
