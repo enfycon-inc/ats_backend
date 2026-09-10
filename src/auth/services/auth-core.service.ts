@@ -279,7 +279,7 @@ export class AuthCoreService {
     const params = new URLSearchParams();
     params.append('grant_type', 'password');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', dto.password);
@@ -364,7 +364,7 @@ export class AuthCoreService {
     const params = new URLSearchParams();
     params.append('grant_type', 'refresh_token');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('refresh_token', refreshToken);
 
