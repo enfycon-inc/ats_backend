@@ -606,10 +606,14 @@ model TenantStageRemark {
   tenantId   String   @map("tenant_id") @db.VarChar(100)
   stage      String   @db.VarChar(50)
   remarkText String   @map("remark_text")
+  remarkType String?  @default("GENERAL") @map("remark_type") @db.VarChar(50)
+  branchId   String?  @map("branch_id") @db.VarChar(255)
+  isGlobal   Boolean? @default(true) @map("is_global")
   createdBy  String?  @map("created_by") @db.VarChar(100)
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
+  @@index([tenantId, branchId, stage], map: "idx_tenant_stage_remarks_tenant_branch")
   @@map("tenant_stage_remarks")
   @@schema("ats")
 }
