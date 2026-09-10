@@ -1017,6 +1017,8 @@ export class RecruiterSubmissionsService {
         } else {
           query += ` AND (branch_id = $2 OR (branch_id IS NULL AND is_global = TRUE AND NOT EXISTS (SELECT 1 FROM ats.tenant_stage_remarks tsr2 WHERE tsr2.tenant_id = $1 AND tsr2.branch_id = $2 AND tsr2.stage = ats.tenant_stage_remarks.stage)))`;
         }
+      } else if (includeGlobal === true) {
+        query += ` AND (branch_id IS NULL OR is_global = TRUE)`;
       }
       query += ` ORDER BY id ASC`;
 
