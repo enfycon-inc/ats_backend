@@ -1060,6 +1060,7 @@ export class RecruiterSubmissionsService {
     branchId?: string,
     createdBy?: string,
     isGlobal?: boolean,
+    user?: AuthUser,
   ) {
     if (!stage || !remarkText?.trim()) {
       throw new BadRequestException('Stage and remarkText are required.');
@@ -1068,6 +1069,17 @@ export class RecruiterSubmissionsService {
     const cleanType = (remarkType || 'GENERAL').toUpperCase().trim();
     const cleanBranchId = branchId?.trim() || null;
     const cleanIsGlobal = Boolean(isGlobal || !cleanBranchId);
+
+    if (cleanIsGlobal && user) {
+      const isGlobalAdmin =
+        user.roles?.some((r: string) => String(r).toUpperCase() === 'SUPER_ADMIN') ||
+        user.permissions?.includes('system:admin');
+      if (!isGlobalAdmin) {
+        throw new ForbiddenException(
+          'Access denied. Universal global remark templates can only be created by a Global Administrator (SUPER_ADMIN).',
+        );
+      }
+    }
 
     const rawRemarks = remarkText.split(/[\n,]+/).map((r) => r.trim()).filter(Boolean);
     const results: any[] = [];
@@ -1093,15 +1105,36 @@ export class RecruiterSubmissionsService {
     return results.length === 1 ? results[0] : results;
   }
 
-  async deleteCustomRemark(tenantId: string, id: number) {
-    const rows: any = await this.prisma.$queryRawUnsafe(
-      `DELETE FROM ats.tenant_stage_remarks WHERE id = $1 AND tenant_id = $2 RETURNING id`,
+  async deleteCustomRemark(tenantId: string, id: number, user?: AuthUser) {
+    const existing: any[] = await this.prisma.$queryRawUnsafe(
+      `SELECT id, tenant_id, is_global, branch_id FROM ats.tenant_stage_remarks WHERE id = $1 AND tenant_id = $2`,
       id,
       tenantId,
     );
-    if (!rows || rows.length === 0) {
+    if (!existing || existing.length === 0) {
       throw new NotFoundException(`Custom remark template #${id} not found.`);
     }
+
+    const remark = existing[0];
+    const isGlobal = Boolean(remark.is_global) || remark.branch_id === null;
+
+    if (isGlobal) {
+      const isGlobalAdmin =
+        user?.roles?.some((r: string) => String(r).toUpperCase() === 'SUPER_ADMIN') ||
+        user?.permissions?.includes('system:admin');
+
+      if (!isGlobalAdmin) {
+        throw new ForbiddenException(
+          'Access denied. Global remarks templates can only be deleted by a Global Administrator (SUPER_ADMIN). Tenant administrators cannot delete global remarks.',
+        );
+      }
+    }
+
+    await this.prisma.$queryRawUnsafe(
+      `DELETE FROM ats.tenant_stage_remarks WHERE id = $1 AND tenant_id = $2`,
+      id,
+      tenantId,
+    );
     return { message: `Custom remark #${id} deleted successfully.`, id };
   }
 }

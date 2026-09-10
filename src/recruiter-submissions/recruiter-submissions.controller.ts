@@ -137,14 +137,15 @@ export class RecruiterSubmissionsController {
       body.remarkType || 'GENERAL',
       body.branchId,
       user.email || user.fullName || user.dbId,
-      body.isGlobal
+      body.isGlobal,
+      user,
     );
   }
 
   @Delete('custom-remarks/:id')
   @ApiOperation({
     summary: 'Delete a Tenant Custom Stage Remark Template',
-    description: 'Removes a custom remark template by ID.',
+    description: 'Removes a custom remark template by ID. Global templates can only be deleted by Global Administrators.',
   })
   async deleteCustomRemark(
     @Param('id', ParseIntPipe) id: number,
@@ -152,7 +153,7 @@ export class RecruiterSubmissionsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.deleteCustomRemark(tid, id);
+    return this.service.deleteCustomRemark(tid, id, user);
   }
 
   @Get(':id')
