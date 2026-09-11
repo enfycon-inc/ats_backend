@@ -513,15 +513,49 @@ export class CandidatesService {
       const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
       const cachedResume = await this.prisma.resume.findFirst({
         where: { fileHash },
-        select: { parsedJson: true, candidateName: true, email: true },
+        select: {
+          parsedJson: true,
+          candidateName: true,
+          email: true,
+          candidates: {
+            select: { firstName: true, lastName: true, fullName: true, email: true, phone: true },
+            take: 1,
+            orderBy: { id: 'desc' },
+          },
+        },
         orderBy: { id: 'desc' },
       });
       if (cachedResume?.parsedJson) {
-        const cached =
+        let cached =
           typeof cachedResume.parsedJson === 'string'
             ? JSON.parse(cachedResume.parsedJson)
-            : cachedResume.parsedJson;
-        this.logger.log(`[FILE PARSER] Fast cache hit for hash ${fileHash.slice(0, 10)}`);
+            : { ...(cachedResume.parsedJson as any) };
+
+        const linkedCandidate = cachedResume.candidates?.[0];
+        const contact = cached.contact || {};
+        const emails = contact.emails || (cached.email ? [cached.email] : []);
+        const phones = contact.phones || (cached.phone ? [cached.phone] : []);
+
+        const finalEmail = emails[0] || cachedResume.email || linkedCandidate?.email || '';
+        const finalPhone = phones[0] || linkedCandidate?.phone || '';
+        const rawName = (cached.candidate_name && cached.candidate_name !== 'Unknown' && !cached.candidate_name.toLowerCase().includes('final_cv') && !cached.candidate_name.toLowerCase().includes('final cv'))
+          ? cached.candidate_name
+          : (cachedResume.candidateName || linkedCandidate?.fullName || (linkedCandidate?.firstName ? `${linkedCandidate.firstName} ${linkedCandidate.lastName || ''}`.trim() : ''));
+
+        if (rawName && (!cached.candidate_name || cached.candidate_name === 'Unknown' || cached.candidate_name.toLowerCase().includes('cv'))) {
+          cached.candidate_name = rawName;
+        }
+        if (!cached.contact) cached.contact = {};
+        if (finalEmail && (!cached.contact.emails || cached.contact.emails.length === 0)) {
+          cached.contact.emails = [finalEmail];
+        }
+        if (finalPhone && (!cached.contact.phones || cached.contact.phones.length === 0)) {
+          cached.contact.phones = [finalPhone];
+        }
+        if (finalEmail && !cached.email) cached.email = finalEmail;
+        if (finalPhone && !cached.phone) cached.phone = finalPhone;
+
+        this.logger.log(`[FILE PARSER] Fast cache hit for hash ${fileHash.slice(0, 10)}: ${cached.candidate_name} (${finalEmail})`);
         return cached;
       }
     }

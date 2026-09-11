@@ -179,13 +179,29 @@ export class CandidatesController {
 
     // Normalize response for frontend auto-fill
     const contact = parsed?.contact || {};
-    const fallbackName = file.originalname?.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || '';
-    const rawName = (parsed?.candidate_name && parsed.candidate_name !== 'Unknown')
+    let fallbackName = file.originalname?.replace(/\.[^.]+$/, '') || '';
+    fallbackName = fallbackName
+      .replace(/\(\d+\)/g, '')
+      .replace(/\[\d+\]/g, '')
+      .replace(/\b(resume|cv|curriculum\s+vitae|vitae|profile|biodata|final|latest)\b/gi, '')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    let rawName = (parsed?.candidate_name && parsed.candidate_name !== 'Unknown')
       ? parsed.candidate_name
       : fallbackName;
 
-    const cleanName = rawName.replace(/\s+/g, ' ').trim();
-    const nameParts = cleanName ? cleanName.split(' ') : [];
+    rawName = rawName
+      .replace(/\(\d+\)/g, '')
+      .replace(/\[\d+\]/g, '')
+      .replace(/\b(resume|cv|curriculum\s+vitae|vitae|profile|biodata)\b/gi, '')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const cleanName = rawName || 'Candidate';
+    const nameParts = cleanName.split(' ');
     const firstName = nameParts.length > 0 ? nameParts[0] : '';
     const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
 
