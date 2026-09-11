@@ -13,6 +13,20 @@ export interface StoredResumeFile {
   filename: string;
 }
 
+/** Selection fields for resume metadata (excluding fileData bytea for performance and memory) */
+export const RESUME_METADATA_SELECT = {
+  id: true,
+  filename: true,
+  candidateName: true,
+  email: true,
+  fileHash: true,
+  parsedJson: true,
+  rawText: true,
+  fileMime: true,
+  fileSize: true,
+  createdAt: true,
+};
+
 @Injectable()
 export class CandidatesService {
   private readonly logger = new Logger(CandidatesService.name);
@@ -36,42 +50,49 @@ export class CandidatesService {
       experience_years: dto.experienceYears,
     };
 
-    const candidate = await this.prisma.$transaction(async (tx) => {
-      const resume = await tx.resume.create({
-        data: {
-          filename: `${dto.source.toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}.html`,
-          candidateName: dto.fullName,
-          email: dto.email,
-          fileHash: `external-${dto.source.toLowerCase()}-${Math.floor(100000 + Math.random() * 900000)}`,
-          parsedJson: resumeJson,
-          rawText: dto.rawText,
-        },
-      });
+    const candidate = await this.prisma.$transaction(
+      async (tx) => {
+        const resume = await tx.resume.create({
+          data: {
+            filename: `${dto.source.toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}.html`,
+            candidateName: dto.fullName,
+            email: dto.email,
+            fileHash: `external-${dto.source.toLowerCase()}-${Math.floor(100000 + Math.random() * 900000)}`,
+            parsedJson: resumeJson,
+            rawText: dto.rawText,
+          },
+        });
 
-      const cand = await tx.candidate.create({
-        data: {
-          fullName: dto.fullName,
-          email: dto.email,
-          phone: dto.phone,
-          rawCurrentLocation: dto.location,
-          totalExperienceYears: dto.experienceYears ? Number(dto.experienceYears) : 0,
-          rawCurrentDesignation: dto.jobTitle,
-          source: dto.source,
-          workAuthorization: dto.workAuthorization,
-          resumeRecordId: resume.id,
-          tenantId,
-          uploadedByUserId: user?.dbId || null,
-          uploadedByName: user?.fullName || user?.email || 'System Upload',
-        },
-      });
+        const cand = await tx.candidate.create({
+          data: {
+            fullName: dto.fullName,
+            email: dto.email,
+            phone: dto.phone,
+            rawCurrentLocation: dto.location,
+            totalExperienceYears: dto.experienceYears ? Number(dto.experienceYears) : 0,
+            rawCurrentDesignation: dto.jobTitle,
+            source: dto.source,
+            workAuthorization: dto.workAuthorization,
+            resumeRecordId: resume.id,
+            tenantId,
+            uploadedByUserId: user?.dbId || null,
+            uploadedByName: user?.fullName || user?.email || 'System Upload',
+          },
+        });
 
-      const candidateCode = `CAN-${String(cand.id).padStart(6, '0')}`;
-      return tx.candidate.update({
-        where: { id: cand.id },
-        data: { candidateCode },
-        include: { resumeRecord: true },
-      });
-    });
+        const candidateCode = `CAN-${String(cand.id).padStart(6, '0')}`;
+        return tx.candidate.update({
+          where: { id: cand.id },
+          data: { candidateCode },
+          include: {
+            resumeRecord: {
+              select: RESUME_METADATA_SELECT,
+            },
+          },
+        });
+      },
+      { maxWait: 15000, timeout: 30000 },
+    );
 
     return this.mapCandidateToProfile(candidate);
   }
@@ -157,7 +178,9 @@ export class CandidatesService {
       const candidates = await this.prisma.candidate.findMany({
         where,
         include: {
-          resumeRecord: true,
+          resumeRecord: {
+            select: RESUME_METADATA_SELECT,
+          },
         },
         orderBy: { createdAt: 'desc' },
         take: Number(limit) || 5000,
@@ -184,7 +207,9 @@ export class CandidatesService {
         deletedAt: null,
       },
       include: {
-        resumeRecord: true,
+        resumeRecord: {
+          select: RESUME_METADATA_SELECT,
+        },
       },
     });
 
@@ -206,7 +231,9 @@ export class CandidatesService {
         deletedAt: null,
       },
       include: {
-        resumeRecord: true,
+        resumeRecord: {
+          select: RESUME_METADATA_SELECT,
+        },
       },
     });
 
@@ -311,12 +338,15 @@ export class CandidatesService {
     const candidate = await this.prisma.candidate.findFirst({
       where: {
         tenantId,
+        deletedAt: null,
         resumeRecord: {
           fileHash,
         },
       },
       include: {
-        resumeRecord: true,
+        resumeRecord: {
+          select: RESUME_METADATA_SELECT,
+        },
       },
     });
 
@@ -404,87 +434,105 @@ export class CandidatesService {
       if (existingCand) {
         this.logger.log(`Candidate with email ${email} already exists (ID=${existingCand.id}). Updating profile with new CV.`);
 
-        const updated = await this.prisma.$transaction(async (tx) => {
-          const resume = await tx.resume.create({
-            data: {
-              filename: file.originalname,
-              candidateName: fullName,
-              email,
-              fileHash,
-              parsedJson: parsed || { candidate_name: fullName, skills },
-              rawText,
-              fileData: new Uint8Array(file.buffer),
-              fileMime: file.mimetype || 'application/octet-stream',
-              fileSize: file.size ?? file.buffer.length,
-            },
-          });
+        // Standalone resume insert avoids interactive transaction timeout on large bytea buffers
+        const resume = await this.prisma.resume.create({
+          data: {
+            filename: file.originalname,
+            candidateName: fullName,
+            email,
+            fileHash,
+            parsedJson: parsed || { candidate_name: fullName, skills },
+            rawText,
+            fileData: new Uint8Array(file.buffer),
+            fileMime: file.mimetype || 'application/octet-stream',
+            fileSize: file.size ?? file.buffer.length,
+          },
+        });
 
-          return tx.candidate.update({
-            where: { id: existingCand.id },
-            data: {
-              fullName,
-              phone,
-              rawCurrentLocation: location,
-              totalExperienceYears: expYears ? Number(expYears) : 0,
-              rawCurrentDesignation: designation,
-              workAuthorization: workAuth,
-              resumeRecordId: resume.id,
-              uploadedByUserId: existingCand.uploadedByUserId || uploaderId,
-              uploadedByName: existingCand.uploadedByName || uploaderName,
+        const updated = await this.prisma.candidate.update({
+          where: { id: existingCand.id },
+          data: {
+            fullName,
+            phone,
+            rawCurrentLocation: location,
+            totalExperienceYears: expYears ? Number(expYears) : 0,
+            rawCurrentDesignation: designation,
+            workAuthorization: workAuth,
+            resumeRecordId: resume.id,
+            uploadedByUserId: existingCand.uploadedByUserId || uploaderId,
+            uploadedByName: existingCand.uploadedByName || uploaderName,
+          },
+          include: {
+            resumeRecord: {
+              select: RESUME_METADATA_SELECT,
             },
-            include: { resumeRecord: true },
-          });
+          },
         });
 
         return { candidate: this.mapCandidateToProfile(updated), duplicate: true, updated: true, parsed: true };
       }
     }
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      const resume = await tx.resume.create({
-        data: {
-          filename: file.originalname,
-          candidateName: fullName,
-          email,
-          fileHash,
-          parsedJson: parsed || { candidate_name: fullName, skills },
-          rawText,
-          fileData: new Uint8Array(file.buffer),
-          fileMime: file.mimetype || 'application/octet-stream',
-          fileSize: file.size ?? file.buffer.length,
-        },
-      });
-
-      const cand = await tx.candidate.create({
-        data: {
-          fullName,
-          email,
-          phone,
-          rawCurrentLocation: location,
-          totalExperienceYears: expYears ? Number(expYears) : 0,
-          rawCurrentDesignation: designation,
-          source: meta.source || 'CV Upload',
-          workAuthorization: workAuth,
-          resumeRecordId: resume.id,
-          tenantId,
-          branchId: meta.branchId || null,
-          market: meta.market || 'US',
-          uploadedByUserId: uploaderId,
-          uploadedByName: uploaderName,
-        },
-      });
-
-      const candidateCode = `CAN-${String(cand.id).padStart(6, '0')}`;
-      return tx.candidate.update({
-        where: { id: cand.id },
-        data: { candidateCode },
-        include: { resumeRecord: true },
-      });
+    // 4. Create new candidate
+    // Save resume first outside interactive transaction to prevent transaction timeout (P2028) on large file writes
+    const resume = await this.prisma.resume.create({
+      data: {
+        filename: file.originalname,
+        candidateName: fullName,
+        email,
+        fileHash,
+        parsedJson: parsed || { candidate_name: fullName, skills },
+        rawText,
+        fileData: new Uint8Array(file.buffer),
+        fileMime: file.mimetype || 'application/octet-stream',
+        fileSize: file.size ?? file.buffer.length,
+      },
     });
 
-    const candidateProfile = this.mapCandidateToProfile(created);
-    this.logger.log(`Saved CV for "${fullName}" (${created.candidateCode}, ID=${created.id}, uploadedBy=${uploaderName}, parsed=${!!parsed}).`);
-    return { candidate: candidateProfile, duplicate: false, parsed: !!parsed };
+    try {
+      const created = await this.prisma.$transaction(
+        async (tx) => {
+          const cand = await tx.candidate.create({
+            data: {
+              fullName,
+              email,
+              phone,
+              rawCurrentLocation: location,
+              totalExperienceYears: expYears ? Number(expYears) : 0,
+              rawCurrentDesignation: designation,
+              source: meta.source || 'CV Upload',
+              workAuthorization: workAuth,
+              resumeRecordId: resume.id,
+              tenantId,
+              branchId: meta.branchId || null,
+              market: meta.market || 'US',
+              uploadedByUserId: uploaderId,
+              uploadedByName: uploaderName,
+            },
+          });
+
+          const candidateCode = `CAN-${String(cand.id).padStart(6, '0')}`;
+          return tx.candidate.update({
+            where: { id: cand.id },
+            data: { candidateCode },
+            include: {
+              resumeRecord: {
+                select: RESUME_METADATA_SELECT,
+              },
+            },
+          });
+        },
+        { maxWait: 15000, timeout: 30000 },
+      );
+
+      const candidateProfile = this.mapCandidateToProfile(created);
+      this.logger.log(`Saved CV for "${fullName}" (${created.candidateCode}, ID=${created.id}, uploadedBy=${uploaderName}, parsed=${!!parsed}).`);
+      return { candidate: candidateProfile, duplicate: false, parsed: !!parsed };
+    } catch (err: any) {
+      // Clean up orphaned resume record if candidate creation fails
+      await this.prisma.resume.delete({ where: { id: resume.id } }).catch(() => {});
+      throw err;
+    }
   }
 
   /**
@@ -820,7 +868,7 @@ export class CandidatesService {
         category,
         rawValue,
       );
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     return { success: true, masterId };
   }
@@ -940,7 +988,7 @@ export class CandidatesService {
         }
 
         return { id: newId, type: 'canonical', name };
-      });
+      }, { maxWait: 15000, timeout: 30000 });
     } else if (type === 'alias') {
       if (!alias || !masterId) throw new Error('alias and masterId are required for alias terms');
 
@@ -1010,7 +1058,7 @@ export class CandidatesService {
         } else {
           throw new NotFoundException(`Unsupported category: ${category}`);
         }
-      });
+      }, { maxWait: 15000, timeout: 30000 });
       return { success: true };
     } else {
       throw new Error(`Invalid delete type: ${type}`);

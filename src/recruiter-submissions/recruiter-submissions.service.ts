@@ -167,7 +167,7 @@ export class RecruiterSubmissionsService {
       });
 
       return sub;
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     const candName = candidate.fullName || `${candidate.firstName || ''} ${candidate.lastName || ''}`.trim() || 'Candidate';
     const jobInfo = job.jobCode ? `${job.jobCode} - ${job.jobTitle}` : job.jobTitle;
@@ -825,7 +825,7 @@ export class RecruiterSubmissionsService {
           },
         },
       });
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     return { message: `Recruiter submission with ID ${id} was deleted successfully.` };
   }

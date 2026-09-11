@@ -244,7 +244,7 @@ export class DiceService {
       });
 
       return cand.id;
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     const createdCandidate = candidateId ? await this.candidatesService.findOne(candidateId, tenantId) : null;
     return { candidate: createdCandidate, duplicate: false, message: 'Candidate imported from Dice successfully.' };
