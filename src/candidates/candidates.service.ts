@@ -100,7 +100,10 @@ export class CandidatesService {
       deletedAt: null,
     };
 
-    if (query.market && !query.allMarkets) {
+    const isAllMarkets = query.allMarkets === true || String(query.allMarkets).toLowerCase() === 'true';
+    const isAllBranches = query.allBranches === true || String(query.allBranches).toLowerCase() === 'true';
+
+    if (query.market && !isAllMarkets) {
       const effectiveMarket = query.market.toUpperCase();
       where.OR = [
         { market: { equals: effectiveMarket, mode: 'insensitive' } },
@@ -113,14 +116,14 @@ export class CandidatesService {
       user?.roles?.includes('ADMIN') ||
       user?.roles?.includes('SUPER_ADMIN');
 
-    if (query.branchId && !query.allBranches) {
+    if (query.branchId && !isAllBranches) {
       where.AND = [
         ...(where.AND || []),
         {
           OR: [{ branchId: query.branchId }, { branchId: null }],
         },
       ];
-    } else if (poolMode === 'STRICT_BRANCH' && user?.branchId && !canSearchAllBranches && !query.allBranches) {
+    } else if (poolMode === 'STRICT_BRANCH' && user?.branchId && !canSearchAllBranches && !isAllBranches) {
       where.AND = [
         ...(where.AND || []),
         {
@@ -147,8 +150,8 @@ export class CandidatesService {
       ];
     }
 
-    const limit = query.limit || 5000;
-    const skip = query.offset || 0;
+    const limit = query.limit ? Number(query.limit) : 5000;
+    const skip = query.offset ? Number(query.offset) : 0;
 
     try {
       const candidates = await this.prisma.candidate.findMany({
@@ -157,8 +160,8 @@ export class CandidatesService {
           resumeRecord: true,
         },
         orderBy: { createdAt: 'desc' },
-        take: limit,
-        skip,
+        take: Number(limit) || 5000,
+        skip: Number(skip) || 0,
       });
 
       return candidates.map((row) => this.mapCandidateToProfile(row));

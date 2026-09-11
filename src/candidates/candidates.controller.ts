@@ -69,7 +69,8 @@ export class CandidatesController {
   ): Promise<CandidateProfile[]> {
     const activeTenantId = resolveTenantId(user, tenantId);
     const activeBranchId = resolveBranchId(user, branchHeaderId);
-    if (activeBranchId && !query.branchId && !query.allBranches) {
+    const isAllBranches = query.allBranches === true || String(query.allBranches).toLowerCase() === 'true';
+    if (activeBranchId && !query.branchId && !isAllBranches) {
       query.branchId = activeBranchId;
     }
     return this.candidatesService.findAll(query, activeTenantId, user);

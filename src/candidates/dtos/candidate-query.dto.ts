@@ -14,14 +14,14 @@ export class CandidateQueryDto {
   branchId?: string;
 
   @ApiPropertyOptional({ example: false, description: 'Override market filtering if user has CANDIDATES_SEARCH_ALL_MARKETS permission' })
-  allMarkets?: boolean;
+  allMarkets?: boolean | string;
 
   @ApiPropertyOptional({ example: false, description: 'Override branch filtering to query candidates tenant-wide' })
-  allBranches?: boolean;
+  allBranches?: boolean | string;
 
   @ApiPropertyOptional({ example: 10, description: 'The number of records to return' })
-  limit?: number;
+  limit?: number | string;
 
   @ApiPropertyOptional({ example: 0, description: 'The offset index to start retrieving records' })
-  offset?: number;
+  offset?: number | string;
 }
