@@ -337,19 +337,46 @@ export class CandidatesService {
 
     const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
 
+    let parsed: any = null;
+
     // 1. De-duplicate on exact file hash.
     const existing = await this.findByHash(fileHash, tenantId);
     if (existing) {
-      this.logger.log(`CV already imported (hash ${fileHash.slice(0, 12)}…) → returning existing candidate.`);
-      return { candidate: existing, duplicate: true, parsed: false };
+      const hasOverrideEmail = !!meta.email && !meta.email.includes('@import.local');
+      const hasOverrideName = !!meta.fullName && meta.fullName.trim() !== '' && meta.fullName.trim() !== 'Unnamed Candidate';
+
+      const existingEmail = existing.email?.toLowerCase().trim();
+      const overrideEmail = meta.email?.toLowerCase().trim();
+      const existingName = existing.fullName?.toLowerCase().trim();
+      const overrideName = meta.fullName?.toLowerCase().trim();
+
+      const emailMatches = hasOverrideEmail && existingEmail && overrideEmail === existingEmail;
+      const emailDiffers = hasOverrideEmail && existingEmail && overrideEmail !== existingEmail;
+      const nameDiffers = hasOverrideName && existingName && overrideName !== existingName;
+
+      // Smart De-duplication:
+      // If caller explicitly provided an email or name that differs from the existing candidate,
+      // do NOT hijack the submission to the old candidate.
+      if (emailDiffers || (hasOverrideName && nameDiffers && !emailMatches)) {
+        this.logger.log(
+          `CV file hash matched existing candidate ${existing.fullName} (${existing.email}), but caller provided different identity (${meta.fullName || 'no-name'} / ${meta.email || 'no-email'}). Bypassing hash de-duplication to honor caller's candidate.`
+        );
+        if (existing.parsedJson) {
+          parsed = existing.parsedJson;
+        }
+      } else {
+        this.logger.log(`CV already imported (hash ${fileHash.slice(0, 12)}…) → returning existing candidate.`);
+        return { candidate: existing, duplicate: true, parsed: false };
+      }
     }
 
-    // 2. Best-effort parse via the Python service.
-    let parsed: any = null;
-    try {
-      parsed = await this.parseResumeFile(file);
-    } catch (err: any) {
-      this.logger.warn(`Parser unavailable, saving CV with basic metadata only: ${err.message}`);
+    // 2. Best-effort parse via the Python service (skip if cached parsedJson already available).
+    if (!parsed) {
+      try {
+        parsed = await this.parseResumeFile(file);
+      } catch (err: any) {
+        this.logger.warn(`Parser unavailable, saving CV with basic metadata only: ${err.message}`);
+      }
     }
 
     const contact = parsed?.contact || {};
@@ -362,7 +389,7 @@ export class CandidatesService {
     const location = parsed?.ats_normalized?.location?.[0]?.raw || parsed?.location || '';
     const designation = parsed?.experience?.detected_roles?.[0] || parsed?.ats_normalized?.designations?.[0]?.raw || '';
     const expYears = parsed?.experience_years ?? parsed?.experience_detailed?.length ?? 0;
-    const rawText = parsed?.raw_text || parsed?.word_count ? parsed?.raw_text || '' : '';
+    const rawText = parsed?.raw_text || (parsed?.word_count ? parsed?.raw_text || '' : '') || (existing?.rawText || '');
 
     // 3. De-duplicate on Email (Option A - Update profile if email exists)
     const isRealEmail = email && !email.includes('@import.local');
