@@ -509,6 +509,23 @@ export class CandidatesService {
    * Uploads a manual CV file to FastAPI and polls the task status
    */
   async parseResumeFile(file: any): Promise<any> {
+    if (file?.buffer) {
+      const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+      const cachedResume = await this.prisma.resume.findFirst({
+        where: { fileHash },
+        select: { parsedJson: true, candidateName: true, email: true },
+        orderBy: { id: 'desc' },
+      });
+      if (cachedResume?.parsedJson) {
+        const cached =
+          typeof cachedResume.parsedJson === 'string'
+            ? JSON.parse(cachedResume.parsedJson)
+            : cachedResume.parsedJson;
+        this.logger.log(`[FILE PARSER] Fast cache hit for hash ${fileHash.slice(0, 10)}`);
+        return cached;
+      }
+    }
+
     this.logger.log(`[FILE PARSER] Forwarding file ${file.originalname} to FastAPI extractor`);
 
     const formData = new FormData();

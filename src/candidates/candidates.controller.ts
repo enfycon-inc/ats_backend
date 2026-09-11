@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Patch, Body, Query, Param, Headers, ParseIntPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, UseGuards, Res } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Patch, Body, Query, Param, Headers, ParseIntPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, UseGuards, Res, BadRequestException } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
@@ -169,12 +169,37 @@ export class CandidatesController {
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({
     summary: 'Parse Resume File',
-    description: 'Intercepts a resume upload, forwards it to Python FastAPI parser, and returns the structured JSON output.',
+    description: 'Intercepts a resume upload, forwards it to Python FastAPI parser, and returns structured candidate details for auto-filling.',
   })
   async parseResume(
     @UploadedFile() file: any,
   ): Promise<any> {
-    return this.candidatesService.parseResumeFile(file);
+    if (!file) throw new BadRequestException('No file uploaded.');
+    const parsed = await this.candidatesService.parseResumeFile(file);
+
+    // Normalize response for frontend auto-fill
+    const contact = parsed?.contact || {};
+    const fallbackName = file.originalname?.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || '';
+    const rawName = (parsed?.candidate_name && parsed.candidate_name !== 'Unknown')
+      ? parsed.candidate_name
+      : fallbackName;
+
+    const cleanName = rawName.replace(/\s+/g, ' ').trim();
+    const nameParts = cleanName ? cleanName.split(' ') : [];
+    const firstName = nameParts.length > 0 ? nameParts[0] : '';
+    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
+
+    const email = (contact.emails && contact.emails[0]) || parsed?.email || '';
+    const phone = (contact.phones && contact.phones[0]) || parsed?.phone || '';
+
+    return {
+      ...parsed,
+      candidateName: cleanName,
+      firstName,
+      lastName,
+      email,
+      phone,
+    };
   }
 
   @Post('upload')
