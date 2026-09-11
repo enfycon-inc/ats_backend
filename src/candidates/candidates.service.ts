@@ -284,21 +284,34 @@ export class CandidatesService {
    * Utility method to map Prisma candidate models to typed candidate profile payloads
    */
   private mapCandidateToProfile(row: any): CandidateProfile {
-    const locationParts = (row.rawCurrentLocation || '').split(/,\s*/);
-    const city = locationParts[0] || 'Unknown';
-    const state = locationParts[1] || 'Unknown';
-
-    let skills: string[] = [];
     let parsedJsonObj: any = null;
+    let skills: string[] = [];
     const resume = row.resumeRecord;
     if (resume?.parsedJson) {
       parsedJsonObj = typeof resume.parsedJson === 'string' ? JSON.parse(resume.parsedJson) : resume.parsedJson;
       skills = parsedJsonObj.skills || [];
     }
 
+    let locationStr = row.rawCurrentLocation || '';
+    if (!locationStr && parsedJsonObj) {
+      locationStr = parsedJsonObj.location || parsedJsonObj.ats_normalized?.location?.raw || parsedJsonObj.ats_normalized?.location?.canonical || '';
+    }
+
+    const locationParts = (locationStr || '').split(/,\s*/);
+    const city = locationParts[0] || 'Unknown';
+    const state = locationParts[1] || 'Unknown';
+
     const candidateCode = row.candidateCode || `CAN-${String(row.id).padStart(6, '0')}`;
     const uploadedByName =
       row.uploadedByName || (row.source === 'Bulk Upload Benchmark' ? 'System Benchmark' : 'System');
+
+    const expYears = row.totalExperienceYears !== null && row.totalExperienceYears !== undefined && Number(row.totalExperienceYears) > 0
+      ? Number(row.totalExperienceYears)
+      : (parsedJsonObj?.experience_years ? Number(parsedJsonObj.experience_years) : (parsedJsonObj?.experience_detailed?.length ? Number(parsedJsonObj.experience_detailed.length) : 0));
+
+    const jobTitle = row.rawCurrentDesignation && row.rawCurrentDesignation !== 'Unknown'
+      ? row.rawCurrentDesignation
+      : (parsedJsonObj?.experience_detailed?.[0]?.role || parsedJsonObj?.experience?.detected_roles?.[0] || 'Unknown');
 
     return {
       id: `INT-${row.source ? row.source.toUpperCase() : 'DB'}-${row.id}`,
@@ -314,10 +327,10 @@ export class CandidatesService {
       state,
       source: row.source || 'Direct Upload',
       status: 'New lead',
-      jobTitle: row.rawCurrentDesignation || 'Unknown',
+      jobTitle,
       skills,
       workAuthorization: row.workAuthorization || 'US Authorized',
-      experienceYears: row.totalExperienceYears ? Number(row.totalExperienceYears) : 0,
+      experienceYears: expYears,
       rawText: resume?.rawText || '',
       createdOn: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
       currentCTC: row.currentCtc ? Number(row.currentCtc) : null,
@@ -326,7 +339,7 @@ export class CandidatesService {
       servingNotice: !!row.servingNotice,
       lastWorkingDay: row.lastWorkingDay || null,
       panCard: row.panCard || null,
-      preferredLocations: row.preferredLocations || [],
+      preferredLocations: row.preferredLocations || parsedJsonObj?.preferred_locations || [],
       parsedJson: parsedJsonObj,
     };
   }
@@ -419,9 +432,19 @@ export class CandidatesService {
     const phone = meta.phone || (contact.phones && contact.phones[0]) || '';
     const skills: string[] = parsed?.skills || [];
     const workAuth = parsed?.work_authorization || 'Unknown';
-    const location = parsed?.ats_normalized?.location?.[0]?.raw || parsed?.location || '';
-    const designation = parsed?.experience?.detected_roles?.[0] || parsed?.ats_normalized?.designations?.[0]?.raw || '';
-    const expYears = parsed?.experience_years ?? parsed?.experience_detailed?.length ?? 0;
+    const locObj = parsed?.ats_normalized?.location;
+    const normalizedLoc = typeof locObj === 'object' && locObj !== null && !Array.isArray(locObj)
+      ? (locObj.raw || locObj.canonical)
+      : (Array.isArray(locObj) && locObj.length > 0 ? (locObj[0]?.raw || locObj[0]?.canonical) : '');
+    const location = parsed?.location || normalizedLoc || '';
+    const designation =
+      parsed?.experience_detailed?.[0]?.role && parsed.experience_detailed[0].role !== 'Role'
+        ? parsed.experience_detailed[0].role
+        : (parsed?.experience?.detected_roles?.[0] || parsed?.ats_normalized?.designations?.[0]?.raw || '');
+    const expYears = typeof parsed?.experience_years === 'number'
+      ? parsed.experience_years
+      : (parsed?.experience_detailed?.length ? Number(parsed.experience_detailed.length) : 0);
+    const preferredLocations: string[] = Array.isArray(parsed?.preferred_locations) ? parsed.preferred_locations : [];
     const rawText = parsed?.raw_text || (parsed?.word_count ? parsed?.raw_text || '' : '') || (existing?.rawText || '');
 
     // 3. De-duplicate on Email (Option A - Update profile if email exists)
@@ -461,6 +484,7 @@ export class CandidatesService {
             resumeRecordId: resume.id,
             uploadedByUserId: existingCand.uploadedByUserId || uploaderId,
             uploadedByName: existingCand.uploadedByName || uploaderName,
+            preferredLocations: preferredLocations.length > 0 ? preferredLocations : undefined,
           },
           include: {
             resumeRecord: {
@@ -508,6 +532,7 @@ export class CandidatesService {
               market: meta.market || 'US',
               uploadedByUserId: uploaderId,
               uploadedByName: uploaderName,
+              preferredLocations: preferredLocations.length > 0 ? preferredLocations : undefined,
             },
           });
 
