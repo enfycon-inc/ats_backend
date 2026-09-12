@@ -27,9 +27,17 @@ export const RESUME_METADATA_SELECT = {
   createdAt: true,
 };
 
+/** Lean selection fields for candidate list queries (excludes rawText and large parsedJson blobs for fast WAN transfer) */
+export const RESUME_LIST_SELECT = {
+  id: true,
+  filename: true,
+  createdAt: true,
+};
+
 @Injectable()
 export class CandidatesService {
   private readonly logger = new Logger(CandidatesService.name);
+  private readonly tenantPoolModeCache = new Map<string, { mode: string; expiresAt: number }>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -71,6 +79,7 @@ export class CandidatesService {
             rawCurrentLocation: dto.location,
             totalExperienceYears: dto.experienceYears ? Number(dto.experienceYears) : 0,
             rawCurrentDesignation: dto.jobTitle,
+            skills: dto.skills || [],
             source: dto.source,
             workAuthorization: dto.workAuthorization,
             resumeRecordId: resume.id,
@@ -104,16 +113,25 @@ export class CandidatesService {
     this.logger.log(`Fetching candidates for tenant: ${tenantId}. Filters q="${query.q || 'None'}", market="${query.market || 'Auto'}"`);
 
     let poolMode = 'COMBINED_MARKET';
-    try {
-      const tenant = await this.prisma.tenant.findUnique({
-        where: { id: tenantId },
-        select: { candidatePoolMode: true },
-      });
-      if (tenant?.candidatePoolMode) {
-        poolMode = tenant.candidatePoolMode;
+    const cachedPool = this.tenantPoolModeCache.get(tenantId);
+    if (cachedPool && cachedPool.expiresAt > Date.now()) {
+      poolMode = cachedPool.mode;
+    } else {
+      try {
+        const tenant = await this.prisma.tenant.findUnique({
+          where: { id: tenantId },
+          select: { candidatePoolMode: true },
+        });
+        if (tenant?.candidatePoolMode) {
+          poolMode = tenant.candidatePoolMode;
+        }
+        this.tenantPoolModeCache.set(tenantId, {
+          mode: poolMode,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+      } catch (err: any) {
+        this.logger.debug(`Could not read tenant candidate_pool_mode: ${err.message}`);
       }
-    } catch (err: any) {
-      this.logger.debug(`Could not read tenant candidate_pool_mode: ${err.message}`);
     }
 
     const where: any = {
@@ -179,7 +197,7 @@ export class CandidatesService {
         where,
         include: {
           resumeRecord: {
-            select: RESUME_METADATA_SELECT,
+            select: RESUME_LIST_SELECT,
           },
         },
         orderBy: { createdAt: 'desc' },
@@ -187,7 +205,7 @@ export class CandidatesService {
         skip: Number(skip) || 0,
       });
 
-      return candidates.map((row) => this.mapCandidateToProfile(row));
+      return candidates.map((row) => this.mapCandidateToProfile(row, true));
     } catch (err: any) {
       this.logger.error(`Failed to fetch candidates: ${err.message}`, err.stack);
       return [];
@@ -283,13 +301,20 @@ export class CandidatesService {
   /**
    * Utility method to map Prisma candidate models to typed candidate profile payloads
    */
-  private mapCandidateToProfile(row: any): CandidateProfile {
+  private mapCandidateToProfile(row: any, isList = false): CandidateProfile {
     let parsedJsonObj: any = null;
-    let skills: string[] = [];
+    let skills: string[] = Array.isArray(row.skills) && row.skills.length > 0 ? row.skills : [];
     const resume = row.resumeRecord;
-    if (resume?.parsedJson) {
-      parsedJsonObj = typeof resume.parsedJson === 'string' ? JSON.parse(resume.parsedJson) : resume.parsedJson;
-      skills = parsedJsonObj.skills || [];
+
+    if (skills.length === 0 && resume?.parsedJson) {
+      try {
+        parsedJsonObj = typeof resume.parsedJson === 'string' ? JSON.parse(resume.parsedJson) : resume.parsedJson;
+        skills = parsedJsonObj.skills || [];
+      } catch {}
+    } else if (!isList && resume?.parsedJson) {
+      try {
+        parsedJsonObj = typeof resume.parsedJson === 'string' ? JSON.parse(resume.parsedJson) : resume.parsedJson;
+      } catch {}
     }
 
     let locationStr = row.rawCurrentLocation || '';
@@ -331,7 +356,7 @@ export class CandidatesService {
       skills,
       workAuthorization: row.workAuthorization || 'US Authorized',
       experienceYears: expYears,
-      rawText: resume?.rawText || '',
+      rawText: isList ? '' : (resume?.rawText || ''),
       createdOn: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
       currentCTC: row.currentCtc ? Number(row.currentCtc) : null,
       expectedCTC: row.expectedCtc ? Number(row.expectedCtc) : null,
@@ -340,7 +365,7 @@ export class CandidatesService {
       lastWorkingDay: row.lastWorkingDay || null,
       panCard: row.panCard || null,
       preferredLocations: row.preferredLocations || parsedJsonObj?.preferred_locations || [],
-      parsedJson: parsedJsonObj,
+      parsedJson: isList ? null : parsedJsonObj,
     };
   }
 
@@ -481,6 +506,7 @@ export class CandidatesService {
             totalExperienceYears: expYears ? Number(expYears) : 0,
             rawCurrentDesignation: designation,
             workAuthorization: workAuth,
+            skills: skills.length > 0 ? skills : undefined,
             resumeRecordId: resume.id,
             uploadedByUserId: existingCand.uploadedByUserId || uploaderId,
             uploadedByName: existingCand.uploadedByName || uploaderName,
@@ -524,6 +550,7 @@ export class CandidatesService {
               rawCurrentLocation: location,
               totalExperienceYears: expYears ? Number(expYears) : 0,
               rawCurrentDesignation: designation,
+              skills,
               source: meta.source || 'CV Upload',
               workAuthorization: workAuth,
               resumeRecordId: resume.id,

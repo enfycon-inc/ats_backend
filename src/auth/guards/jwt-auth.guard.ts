@@ -32,6 +32,9 @@ export class JwtAuthGuard implements CanActivate {
   // In-process JWKS public key cache  { kid → PEM string }
   private readonly jwksCache = new Map<string, string>();
 
+  // In-process user cache { keycloakId → { user: any, expiresAt: number } } to eliminate repetitive DB sync calls
+  private readonly userCache = new Map<string, { user: any; expiresAt: number }>();
+
   constructor(
     private readonly authService: AuthService,
     private readonly prisma: PrismaService,
@@ -126,12 +129,22 @@ export class JwtAuthGuard implements CanActivate {
       const groupRoles: string[] = (decoded.groups || []).filter((r: string) => !isTechnicalKeycloakRole(r));
       const allJwtRoles = [...realmRoles, ...clientRoles, ...groupRoles];
 
-      const dbUser = await this.authService.syncKeycloakUser({
-        keycloakId: decoded.sub,
-        email: decoded.email,
-        fullName: decoded.name || decoded.preferred_username || decoded.email,
-        roles: allJwtRoles,
-      });
+      let dbUser: any;
+      const cached = this.userCache.get(decoded.sub);
+      if (cached && cached.expiresAt > Date.now()) {
+        dbUser = cached.user;
+      } else {
+        dbUser = await this.authService.syncKeycloakUser({
+          keycloakId: decoded.sub,
+          email: decoded.email,
+          fullName: decoded.name || decoded.preferred_username || decoded.email,
+          roles: allJwtRoles,
+        });
+        this.userCache.set(decoded.sub, {
+          user: dbUser,
+          expiresAt: Date.now() + 60_000,
+        });
+      }
 
       if (!dbUser.is_active) {
         throw new UnauthorizedException(
