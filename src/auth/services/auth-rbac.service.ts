@@ -7,6 +7,8 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { AuthQueryService } from './auth-query.service';
+import type { AuthUser } from '../interfaces/auth-user.interface';
+import { isTenantAdmin, getUserAssignedBranchIds, validateBranchAccess } from '../utils/branch-scoping';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -150,7 +152,7 @@ export class AuthRbacService {
     }
   }
 
-  async listRoles(tenantId: string, branchId?: string, includeSystem = false) {
+  async listRoles(tenantId: string, branchId?: string | string[], includeSystem = false) {
     await this.ensureRolesTableBranchColumn();
     let sql = `
       SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName",
@@ -173,8 +175,17 @@ export class AuthRbacService {
     }
 
     if (branchId) {
-      params.push(branchId);
-      sql += ` AND (cr.branch_id = $${params.length}::uuid OR (cr.is_system = true AND cr.branch_id IS NULL))`;
+      if (Array.isArray(branchId)) {
+        if (branchId.length > 0) {
+          params.push(branchId);
+          sql += ` AND (cr.branch_id = ANY($${params.length}::uuid[]) OR (cr.is_system = true AND cr.branch_id IS NULL))`;
+        } else {
+          sql += ` AND (cr.is_system = true AND cr.branch_id IS NULL)`;
+        }
+      } else {
+        params.push(branchId);
+        sql += ` AND (cr.branch_id = $${params.length}::uuid OR (cr.is_system = true AND cr.branch_id IS NULL))`;
+      }
     }
 
     sql += ' ORDER BY (cr.is_system = false) DESC, cr.name ASC';
@@ -251,6 +262,7 @@ export class AuthRbacService {
     branchId?: string,
     createdById?: string,
     baseRoleId?: string,
+    requester?: AuthUser,
   ) {
     await this.ensureRolesTableBranchColumn();
     const nameUpper = name.toUpperCase().trim();
@@ -288,6 +300,11 @@ export class AuthRbacService {
         [tenantId]
       );
       effectiveBranchId = (defaultBranchRes.rows[0] as any)?.id || null;
+    }
+
+    // Branch isolation: branch admins can only create roles in their assigned branches
+    if (requester && effectiveBranchId) {
+      validateBranchAccess(requester, effectiveBranchId, 'create roles');
     }
 
     const DEFAULT_PERMS = AuthRbacService.DEFAULT_PERMISSIONS;
@@ -333,6 +350,7 @@ export class AuthRbacService {
     roleId: string,
     body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; permissions?: string[] },
     userId?: string,
+    requester?: AuthUser,
   ) {
     await this.ensureRolesTableBranchColumn();
     const roleResult = await this.authQuery.query(
@@ -342,6 +360,11 @@ export class AuthRbacService {
     if (roleResult.rows.length === 0) throw new NotFoundException('Role not found.');
     const existingRole: any = roleResult.rows[0];
     if (existingRole.is_system) throw new BadRequestException('Default system archetype templates cannot be modified directly.');
+
+    // Branch isolation: branch admins can only update roles in their assigned branches
+    if (requester && existingRole.branch_id) {
+      validateBranchAccess(requester, existingRole.branch_id, 'update roles');
+    }
 
     const updates: string[] = ['updated_at = NOW()'];
     const params: any[] = [roleId, tenantId];
@@ -402,13 +425,18 @@ export class AuthRbacService {
     return { message: 'Custom role updated successfully.', roleId };
   }
 
-  async updateRolePermissions(tenantId: string, roleId: string, permissions: string[]) {
+  async updateRolePermissions(tenantId: string, roleId: string, permissions: string[], requester?: AuthUser) {
     const roleResult = await this.authQuery.query(
-      'SELECT id, is_system, system_role, base_role_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, is_system, system_role, base_role_id, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
     if (roleResult.rows.length === 0) throw new NotFoundException('Role not found.');
     const role: any = roleResult.rows[0];
+
+    // Branch isolation: branch admins can only update permissions for roles in their assigned branches
+    if (requester && role.branch_id) {
+      validateBranchAccess(requester, role.branch_id, 'update role permissions');
+    }
 
     const DEFAULT_PERMS = AuthRbacService.DEFAULT_PERMISSIONS;
     const sysKey = (role.system_role || 'RECRUITER').toUpperCase();
@@ -423,14 +451,19 @@ export class AuthRbacService {
     return { message: 'Permissions updated successfully.', permissions: filteredPermissions };
   }
 
-  async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string) {
+  async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string, requester?: AuthUser) {
     const roleResult = await this.authQuery.query(
-      'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, name, is_system, system_role, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
     if (roleResult.rows.length === 0) throw new NotFoundException('Role not found.');
     const roleToDel: any = roleResult.rows[0];
     if (roleToDel.is_system) throw new BadRequestException('You cannot delete default system roles.');
+
+    // Branch isolation: branch admins can only delete roles in their assigned branches
+    if (requester && roleToDel.branch_id) {
+      validateBranchAccess(requester, roleToDel.branch_id, 'delete roles');
+    }
 
     const staffCountRes = await this.authQuery.query(
       `SELECT COUNT(*)::int as count FROM users 
@@ -520,7 +553,7 @@ export class AuthRbacService {
     };
   }
 
-  async assignUserRoles(tenantId: string, userId: string, roleIds: string[], requesterRoles: string[], append: boolean = false) {
+  async assignUserRoles(tenantId: string, userId: string, roleIds: string[], requesterRoles: string[], append: boolean = false, requester?: AuthUser) {
     if (!roleIds || roleIds.length === 0) throw new BadRequestException('Please specify at least one role.');
 
     const rolesResult = await this.authQuery.query(
@@ -537,11 +570,26 @@ export class AuthRbacService {
     }
 
     const userRes = await this.authQuery.query(
-      'SELECT tenant_id, role_id, assigned_role_ids, branch_roles FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT tenant_id, role_id, assigned_role_ids, branch_roles, branch_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const targetUser: any = userRes.rows[0];
+
+    // Branch isolation: branch admins can only assign roles to users in their assigned branches
+    if (requester && targetUser.branch_id) {
+      validateBranchAccess(requester, targetUser.branch_id, 'assign roles to users');
+    }
+    // Also validate that the roles being assigned belong to the requester's branches
+    if (requester && !isTenantAdmin(requester)) {
+      const requesterBranches = new Set(getUserAssignedBranchIds(requester));
+      for (const r of newRolesData) {
+        if (r.branch_id && !requesterBranches.has(r.branch_id)) {
+          throw new ForbiddenException(`You cannot assign role "${r.name}" as it belongs to a branch outside your access.`);
+        }
+      }
+    }
+
     const targetAssignedRoleIds: string[] = Array.isArray(targetUser.assigned_role_ids) ? targetUser.assigned_role_ids : [];
     const targetBranchRoles = targetUser.branch_roles || {};
 
@@ -582,24 +630,35 @@ export class AuthRbacService {
     return { message: 'User roles assigned successfully.', roles: newRoleNames };
   }
 
-  async batchAssignUsersToRole(tenantId: string, roleId: string, userIds: string[], requesterRoles: string[]) {
+  async batchAssignUsersToRole(tenantId: string, roleId: string, userIds: string[], requesterRoles: string[], requester?: AuthUser) {
     if (!userIds || userIds.length === 0) throw new BadRequestException('Please provide at least one user ID.');
 
     const roleRes = await this.authQuery.query(
-      'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, name, is_system, system_role, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
     if (roleRes.rows.length === 0) throw new NotFoundException('Target custom role not found.');
     const targetRole: any = roleRes.rows[0];
 
+    // Branch isolation: branch admins can only batch-assign to roles in their branches
+    if (requester && targetRole.branch_id) {
+      validateBranchAccess(requester, targetRole.branch_id, 'batch assign users to role');
+    }
+
     let assignedCount = 0;
     for (const userId of userIds) {
       const uRes = await this.authQuery.query(
-        'SELECT id, role_id, assigned_role_ids FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        'SELECT id, role_id, assigned_role_ids, branch_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [userId, tenantId]
       );
       if (uRes.rows.length === 0) continue;
       const user: any = uRes.rows[0];
+
+      // Branch isolation: skip users not in requester's branch
+      if (requester && user.branch_id && !isTenantAdmin(requester)) {
+        try { validateBranchAccess(requester, user.branch_id, 'batch assign'); } catch { continue; }
+      }
+
       const currentAssigned: string[] = Array.isArray(user.assigned_role_ids) ? user.assigned_role_ids : [];
       const updatedAssigned = currentAssigned.includes(targetRole.id) ? currentAssigned : [...currentAssigned, targetRole.id];
 
@@ -613,20 +672,26 @@ export class AuthRbacService {
     return { message: `Successfully assigned ${assignedCount} user(s) to role "${targetRole.name}".`, count: assignedCount };
   }
 
-  async unassignUserFromRole(tenantId: string, roleId: string, userId: string) {
+  async unassignUserFromRole(tenantId: string, roleId: string, userId: string, requester?: AuthUser) {
     const roleRes = await this.authQuery.query(
-      'SELECT id, name, is_system, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, name, is_system, system_role, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]
     );
     if (roleRes.rows.length === 0) throw new NotFoundException('Role not found.');
     const role: any = roleRes.rows[0];
 
     const uRes = await this.authQuery.query(
-      'SELECT id, role_id, assigned_role_ids FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, role_id, assigned_role_ids, branch_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (uRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = uRes.rows[0];
+
+    // Branch isolation: branch admins can only unassign roles from users in their assigned branches
+    if (requester && user.branch_id) {
+      validateBranchAccess(requester, user.branch_id, 'unassign roles from users');
+    }
+
     const currentAssigned: string[] = Array.isArray(user.assigned_role_ids) ? user.assigned_role_ids : [];
     const remainingAssigned = currentAssigned.filter(rId => rId !== roleId);
 

@@ -24,6 +24,12 @@ export interface AuthUser {
   podId?: string;
   /** Assigned branch ID */
   branchId?: string;
+  /** Multi-branch assigned branch IDs */
+  assignedBranchIds?: string[];
+  /** Branch-specific roles map { branchId: [roleNames] } */
+  branchRoles?: Record<string, string[]>;
+  /** User's base system role e.g. 'BRANCH_ADMIN', 'RECRUITER' */
+  systemRole?: string;
   /** Assigned business unit ID */
   businessUnitId?: string;
   /** Default market segment ('US' vs 'INDIA') */

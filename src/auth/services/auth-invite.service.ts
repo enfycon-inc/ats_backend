@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { AuthQueryService } from './auth-query.service';
@@ -10,6 +11,9 @@ import { AuthKeycloakService } from './auth-keycloak.service';
 import { AuthEmailService } from './auth-email.service';
 import { AuthTenantService } from './auth-tenant.service';
 import { AuthRbacService } from './auth-rbac.service';
+import type { AuthUser } from '../interfaces/auth-user.interface';
+import { validateBranchAccess } from '../utils/branch-scoping';
+
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -38,7 +42,7 @@ export class AuthInviteService {
     branchId?: string;
     podId?: string;
     sendEmailInvite?: boolean;
-  }, requester: { isAdmin: boolean; roles: string[]; tenantId: string | null }) {
+  }, requester: { isAdmin: boolean; roles: string[]; tenantId: string | null } & Omit<Partial<AuthUser>, 'tenantId'>) {
     if (!requester.isAdmin && !requester.roles.includes('BRANCH_ADMIN')) {
       throw new BadRequestException('Only Administrators can invite new users.');
     }
@@ -62,7 +66,16 @@ export class AuthInviteService {
 
     await this.rbacService.checkSeatLimit(tenantId);
 
+    // Branch isolation: branch admins can only invite users into their assigned branches
+    if (dto.branchId && requester.permissions) {
+      const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+      if (perms.includes('branch_admin:manage') && !perms.includes('tenant:settings')) {
+        validateBranchAccess(requester as AuthUser, dto.branchId, 'invite users to branch');
+      }
+    }
+
     const policy = await this.tenantService.getTenantAuthPolicy(tenantId);
+
     const emailDomain = emailParts[1].toLowerCase();
     const isPersonalDomain = ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com'].includes(emailDomain);
     if (policy.allowPersonalEmails === false && isPersonalDomain) {

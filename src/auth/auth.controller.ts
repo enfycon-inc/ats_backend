@@ -180,12 +180,17 @@ Validates email + password and returns a signed JWT access token.
     @Headers('x-tenant-id') tenantHeader?: string,
   ) {
     const tenantId = resolveTenantId(user, tenantHeader);
-    // Branch Admins can only see their own branch's users
+    // Branch Admins can only see their own branch(es)' users
     const isBranchAdmin =
       Array.isArray((user as any).permissions) &&
       (user as any).permissions.includes('branch_admin:manage') &&
       !(user as any).permissions.includes('tenant:settings');
-    const scopedBranchId = isBranchAdmin ? ((user as any).branchId || null) : null;
+    // Use all assigned branches (not just primary branchId) for multi-branch admins
+    const scopedBranchId = isBranchAdmin
+      ? (Array.isArray((user as any).assignedBranchIds) && (user as any).assignedBranchIds.length > 0
+          ? (user as any).assignedBranchIds
+          : (user as any).branchId || null)
+      : null;
     return this.authService.listUsers(tenantId, scopedBranchId);
   }
 
@@ -236,7 +241,7 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { isActive: boolean },
     @CurrentUser() currentUser: AuthUser,
   ) {
-    return this.authService.setUserActive(userId, body.isActive, currentUser.dbId);
+    return this.authService.setUserActive(userId, body.isActive, currentUser.dbId, currentUser);
   }
 
   // ─── DELETE /api/auth/users/:id ─────────────────────────────
@@ -491,14 +496,21 @@ Validates email + password and returns a signed JWT access token.
       Array.isArray((user as any).permissions) &&
       (user as any).permissions.includes('branch_admin:manage') &&
       !(user as any).permissions.includes('tenant:settings');
-    const bid =
-      branchId && branchId !== 'ALL'
+
+    let bid: string | string[] | undefined;
+    if (isBranchAdmin) {
+      // Scope to all assigned branches for branch admins
+      const assignedBranchIds: string[] = Array.isArray((user as any).assignedBranchIds) && (user as any).assignedBranchIds.length > 0
+        ? (user as any).assignedBranchIds
+        : ((user as any).branchId ? [(user as any).branchId] : []);
+      bid = assignedBranchIds.length > 0 ? assignedBranchIds : undefined;
+    } else {
+      bid = branchId && branchId !== 'ALL'
         ? branchId
-        : isBranchAdmin
-        ? (user as any).branchId || headerBranchId
         : headerBranchId && headerBranchId !== 'ALL'
         ? headerBranchId
         : undefined;
+    }
     return this.authService.listRoles(user.tenantId, bid, includeSystem === 'true');
   }
 
@@ -532,7 +544,7 @@ Validates email + password and returns a signed JWT access token.
     @Query('branchId') queryBranchId?: string,
   ) {
     const bid = body.branchId || queryBranchId || headerBranchId;
-    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, user.dbId, body.baseRoleId);
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, user.dbId, body.baseRoleId, user);
   }
 
   // ─── PUT /api/auth/rbac/roles/:id ───────────────────────────
@@ -548,7 +560,7 @@ Validates email + password and returns a signed JWT access token.
     @Param('id') roleId: string,
     @Body() body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; permissions?: string[] },
   ) {
-    return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId);
+    return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId, user);
   }
 
   // ─── PATCH /api/auth/rbac/roles/:id ─────────────────────────
@@ -564,7 +576,7 @@ Validates email + password and returns a signed JWT access token.
     @Param('id') roleId: string,
     @Body() body: { name?: string; description?: string; systemRole?: string; branchId?: string; permissions?: string[] },
   ) {
-    return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId);
+    return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId, user);
   }
 
   // ─── PATCH /api/auth/rbac/roles/:id/permissions ──────────────
@@ -580,7 +592,7 @@ Validates email + password and returns a signed JWT access token.
     @Param('id') roleId: string,
     @Body() body: { permissions: string[] },
   ) {
-    return this.authService.updateRolePermissions(user.tenantId, roleId, body.permissions);
+    return this.authService.updateRolePermissions(user.tenantId, roleId, body.permissions, user);
   }
 
   // ─── DELETE /api/auth/rbac/roles/:id ──────────────────────────
@@ -598,7 +610,7 @@ Validates email + password and returns a signed JWT access token.
     @Body('targetRoleId') targetRoleIdBody?: string,
   ) {
     const finalTargetRoleId = targetRoleId || targetRoleIdBody;
-    return this.authService.deleteCustomRole(user.tenantId, roleId, finalTargetRoleId);
+    return this.authService.deleteCustomRole(user.tenantId, roleId, finalTargetRoleId, user);
   }
 
 
@@ -615,7 +627,7 @@ Validates email + password and returns a signed JWT access token.
     @Param('id') targetUserId: string,
     @Body() body: { roleIds: string[]; append?: boolean },
   ) {
-    return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles, body.append);
+    return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles, body.append, user);
   }
 
   // ─── POST /api/auth/rbac/roles/:id/assign-users ───────────────
@@ -629,7 +641,7 @@ Validates email + password and returns a signed JWT access token.
     @Param('id') roleId: string,
     @Body() body: { userIds: string[] },
   ) {
-    return this.authService.batchAssignUsersToRole(user.tenantId, roleId, body.userIds, user.roles);
+    return this.authService.batchAssignUsersToRole(user.tenantId, roleId, body.userIds, user.roles, user);
   }
 
   // ─── POST /api/auth/rbac/roles/:id/unassign-user ─────────────
@@ -643,7 +655,7 @@ Validates email + password and returns a signed JWT access token.
     @Param('id') roleId: string,
     @Body() body: { userId: string },
   ) {
-    return this.authService.unassignUserFromRole(user.tenantId, roleId, body.userId);
+    return this.authService.unassignUserFromRole(user.tenantId, roleId, body.userId, user);
   }
 
   // ─── GET /api/auth/check-ssl-domain ─────────────────────────

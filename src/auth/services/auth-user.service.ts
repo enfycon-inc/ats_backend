@@ -10,6 +10,8 @@ import {
 import { AuthQueryService } from './auth-query.service';
 import { AuthRbacService } from './auth-rbac.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
+import type { AuthUser } from '../interfaces/auth-user.interface';
+import { validateBranchAccess } from '../utils/branch-scoping';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -122,11 +124,20 @@ export class AuthUserService {
     };
   }
 
-  async listUsers(tenantId: string, scopedBranchId?: string | null) {
-    const branchFilter = scopedBranchId
-      ? `AND (u.branch_id = $2 OR $2 = ANY(COALESCE(u.assigned_branch_ids, '{}')::uuid[]))`
-      : '';
-    const queryParams: any[] = scopedBranchId ? [tenantId, scopedBranchId] : [tenantId];
+  async listUsers(tenantId: string, scopedBranchId?: string | string[] | null) {
+    let branchFilter = '';
+    let queryParams: any[] = [tenantId];
+
+    if (scopedBranchId) {
+      if (Array.isArray(scopedBranchId) && scopedBranchId.length > 0) {
+        // Multiple branches: match if user's branch_id is in the list or assigned_branch_ids overlaps
+        queryParams.push(scopedBranchId);
+        branchFilter = `AND (u.branch_id = ANY($2::uuid[]) OR u.assigned_branch_ids && $2::uuid[])`;
+      } else if (typeof scopedBranchId === 'string') {
+        queryParams.push(scopedBranchId);
+        branchFilter = `AND (u.branch_id = $2 OR $2 = ANY(COALESCE(u.assigned_branch_ids, '{}')::uuid[]))`;
+      }
+    }
 
     const result = await this.authQuery.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at,
@@ -214,11 +225,18 @@ export class AuthUserService {
     });
   }
 
-  async setUserActive(userId: string, isActive: boolean, requesterId: string) {
-    if (userId === requesterId && !isActive) throw new BadRequestException('You cannot deactivate your own account.');
-    const userRes = await this.authQuery.query('SELECT tenant_id, is_active, is_approved FROM users WHERE id = $1 LIMIT 1', [userId]);
+  async setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: AuthUser) {
+    if (userId === requesterId) {
+      if (!isActive) throw new BadRequestException('You cannot deactivate your own account.');
+    }
+    const userRes = await this.authQuery.query('SELECT tenant_id, is_active, is_approved, branch_id FROM users WHERE id = $1 LIMIT 1', [userId]);
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = userRes.rows[0];
+
+    // Branch isolation: branch admins can only change status of users in their assigned branches
+    if (requester && user.branch_id) {
+      validateBranchAccess(requester, user.branch_id, 'change user status');
+    }
 
     if (isActive) {
       if (!user.is_active || !user.is_approved) await this.rbacService.checkSeatLimit(user.tenant_id);
@@ -233,13 +251,22 @@ export class AuthUserService {
   async deleteUser(userId: string, requester: any) {
     if (userId === requester.dbId || userId === requester.keycloakId) throw new BadRequestException('You cannot delete your own account.');
 
-    const userRes = await this.authQuery.query('SELECT id, email, tenant_id, full_name, is_active FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const userRes = await this.authQuery.query('SELECT id, email, tenant_id, full_name, is_active, branch_id FROM users WHERE id = $1 LIMIT 1', [userId]);
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const targetUser: any = userRes.rows[0];
 
     const requesterRoles = requester.roles || [];
     if (!requesterRoles.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
       throw new ForbiddenException('You are not authorized to delete users in another company tenant.');
+    }
+
+    // Branch isolation: branch admins can only delete users in their assigned branches
+    if (requester.dbId && targetUser.branch_id) {
+      // requester may be a full AuthUser if passed properly; do branch check if permissions indicate branch admin
+      const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+      if (perms.includes('branch_admin:manage') && !perms.includes('tenant:settings')) {
+        validateBranchAccess(requester as AuthUser, targetUser.branch_id, 'delete users');
+      }
     }
 
     await this.rbacService.verifyLastAdminProtection(targetUser.tenant_id, userId, 'delete');
@@ -310,6 +337,18 @@ export class AuthUserService {
 
     if (!requester.roles?.includes('SUPER_ADMIN') && user.tenant_id !== requester.tenantId) {
       throw new ForbiddenException('You are not authorized to update users in another company tenant.');
+    }
+
+    // Branch isolation: branch admins can only update users in their assigned branches
+    if (user.branch_id) {
+      const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+      if (perms.includes('branch_admin:manage') && !perms.includes('tenant:settings')) {
+        validateBranchAccess(requester as AuthUser, user.branch_id, 'update users');
+        // Also prevent reassigning user to a branch the requester doesn't own
+        if (dto.branchId && dto.branchId !== user.branch_id) {
+          validateBranchAccess(requester as AuthUser, dto.branchId, 'move users to branch');
+        }
+      }
     }
 
     let firstName = dto.firstName !== undefined ? dto.firstName.trim() : (user.first_name || '');
