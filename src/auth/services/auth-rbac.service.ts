@@ -137,23 +137,10 @@ export class AuthRbacService {
   }
 
   private async ensureRolesTableBranchColumn(): Promise<void> {
-    try {
-      await this.authQuery.query(`ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE`);
-      await this.authQuery.query(`ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL`);
-      await this.authQuery.query(`
-        UPDATE custom_roles cr
-        SET branch_id = (
-          SELECT id FROM branches b WHERE b.tenant_id = cr.tenant_id ORDER BY b.created_at ASC LIMIT 1
-        )
-        WHERE cr.branch_id IS NULL AND cr.is_system = false
-      `);
-    } catch {
-      // ignore
-    }
+    // Schema migrations are handled in AuthInitService on startup to avoid runtime DDL locks.
   }
 
   async listRoles(tenantId: string, branchId?: string | string[], includeSystem = false) {
-    await this.ensureRolesTableBranchColumn();
     let sql = `
       SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName",
              cr.name, cr.description, cr.is_system as "isSystem", cr.system_role as "systemRole",
@@ -203,16 +190,26 @@ export class AuthRbacService {
       }
     }
 
+    const roleIds = (roles as any[]).map((r) => r.id);
+    const rolePermMap: Record<string, string[]> = {};
+    if (roleIds.length > 0) {
+      const permsRes = await this.authQuery.query(
+        'SELECT role_id, permission FROM role_permissions WHERE role_id = ANY($1::uuid[])',
+        [roleIds]
+      );
+      for (const row of permsRes.rows as any[]) {
+        if (!rolePermMap[row.role_id]) {
+          rolePermMap[row.role_id] = [];
+        }
+        rolePermMap[row.role_id].push(row.permission);
+      }
+    }
+
     const result: any[] = [];
     for (const role of roles as any[]) {
       const baseSysRole = (role.systemRole || role.name || '').toUpperCase();
       const defaultPerms = DEFAULT_PERMS[baseSysRole] || [];
-
-      const permsRes = await this.authQuery.query(
-        'SELECT permission FROM role_permissions WHERE role_id = $1',
-        [role.id]
-      );
-      const rolePerms = permsRes.rows.map((row: any) => row.permission);
+      const rolePerms = rolePermMap[role.id] || [];
 
       let displayName = role.name;
       if (role.isSystem && (role.name === 'ADMIN' || role.name === 'TENANT_ADMIN')) {
@@ -264,7 +261,6 @@ export class AuthRbacService {
     baseRoleId?: string,
     requester?: AuthUser,
   ) {
-    await this.ensureRolesTableBranchColumn();
     const nameUpper = name.toUpperCase().trim();
     if (nameUpper === 'SUPER_ADMIN') {
       throw new BadRequestException('Role name SUPER_ADMIN is reserved for the root system administrator.');
@@ -352,7 +348,6 @@ export class AuthRbacService {
     userId?: string,
     requester?: AuthUser,
   ) {
-    await this.ensureRolesTableBranchColumn();
     const roleResult = await this.authQuery.query(
       'SELECT id, name, is_system, branch_id, base_role_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [roleId, tenantId]

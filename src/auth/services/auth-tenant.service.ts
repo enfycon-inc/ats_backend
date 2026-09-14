@@ -392,10 +392,6 @@ export class AuthTenantService {
     jobAssignmentOptions?: any;
   }) {
     this.logger.log(`Updating tenant settings for ${tenantId}: ${JSON.stringify(settings)}`);
-    await this.authQuery.query(`
-      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';
-      ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_options JSONB DEFAULT '{"allowAuto":true,"allowAll":true,"allowUnassigned":true,"allowedPodIds":[]}';
-    `).catch(() => {});
 
     const fields: string[] = [];
     const params: any[] = [tenantId];
