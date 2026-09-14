@@ -874,8 +874,8 @@ export class JobsService implements OnModuleInit {
              rm.full_name AS recruitment_manager_name,
              pr.full_name AS primary_recruiter_name,
              app.full_name AS assigned_approver_name,
-             p.id AS pod_id,
-             p.name AS pod_name,
+             COALESCE(pod_info.pod_id, '') AS pod_id,
+             COALESCE(pod_info.pod_name, '') AS pod_name,
              uc.full_name AS creator_name,
              uc.email AS creator_email,
              b.name AS branch_name,
@@ -884,8 +884,15 @@ export class JobsService implements OnModuleInit {
       LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
       LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
-      LEFT JOIN ats.job_pods jp ON jp.job_id = j.id
-      LEFT JOIN ats.pods p ON p.id = jp.pod_id
+      LEFT JOIN (
+        SELECT 
+          jp.job_id,
+          STRING_AGG(p.id::text, ',') AS pod_id,
+          STRING_AGG(p.name, ', ') AS pod_name
+        FROM ats.job_pods jp
+        JOIN ats.pods p ON p.id = jp.pod_id
+        GROUP BY jp.job_id
+      ) pod_info ON pod_info.job_id = j.id
       LEFT JOIN ats.users uc ON (
         uc.id::text = j.created_by 
         OR LOWER(uc.email) = LOWER(j.created_by) 
@@ -953,8 +960,13 @@ export class JobsService implements OnModuleInit {
 
       sql += ` AND (
         j.primary_recruiter_id = $${paramIndex}::uuid
-        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
-        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid))
+        OR EXISTS (
+          SELECT 1 FROM ats.job_pods jp WHERE jp.job_id = j.id 
+          AND (
+            jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL)
+            OR jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid)
+          )
+        )
       )`;
       params.push(user.dbId);
       paramIndex++;
@@ -966,16 +978,18 @@ export class JobsService implements OnModuleInit {
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'pod' && user?.dbId) {
-      sql += ` AND (
-        (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL))
-        OR (jp.pod_id IS NOT NULL AND jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid))
+      sql += ` AND EXISTS (
+        SELECT 1 FROM ats.job_pods jp WHERE jp.job_id = j.id
+        AND (
+          jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL)
+          OR jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid)
+        )
       )`;
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'unassigned') {
       sql += ` AND (
         j.primary_recruiter_id IS NULL 
-        AND jp.pod_id IS NULL 
         AND NOT EXISTS (SELECT 1 FROM ats.job_pods jp2 WHERE jp2.job_id = j.id)
         AND (
           j.assigned_to IS NULL 
@@ -1008,13 +1022,21 @@ export class JobsService implements OnModuleInit {
     const sql = isUuid
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
-                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name, uc.email AS creator_email
+                COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
+                uc.full_name AS creator_name, uc.email AS creator_email
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
-         LEFT JOIN ats.job_pods jp ON jp.job_id = j.id
-         LEFT JOIN ats.pods p ON p.id = jp.pod_id
+         LEFT JOIN (
+           SELECT 
+             jp.job_id,
+             STRING_AGG(p.id::text, ',') AS pod_id,
+             STRING_AGG(p.name, ', ') AS pod_name
+           FROM ats.job_pods jp
+           JOIN ats.pods p ON p.id = jp.pod_id
+           GROUP BY jp.job_id
+         ) pod_info ON pod_info.job_id = j.id
          LEFT JOIN ats.users uc ON (
            uc.id::text = j.created_by 
            OR LOWER(uc.email) = LOWER(j.created_by) 
@@ -1023,13 +1045,21 @@ export class JobsService implements OnModuleInit {
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
-                p.id AS pod_id, p.name AS pod_name, uc.full_name AS creator_name, uc.email AS creator_email
+                COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
+                uc.full_name AS creator_name, uc.email AS creator_email
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
-         LEFT JOIN ats.job_pods jp ON jp.job_id = j.id
-         LEFT JOIN ats.pods p ON p.id = jp.pod_id
+         LEFT JOIN (
+           SELECT 
+             jp.job_id,
+             STRING_AGG(p.id::text, ',') AS pod_id,
+             STRING_AGG(p.name, ', ') AS pod_name
+           FROM ats.job_pods jp
+           JOIN ats.pods p ON p.id = jp.pod_id
+           GROUP BY jp.job_id
+         ) pod_info ON pod_info.job_id = j.id
          LEFT JOIN ats.users uc ON (
            uc.id::text = j.created_by 
            OR LOWER(uc.email) = LOWER(j.created_by) 
@@ -1567,7 +1597,7 @@ export class JobsService implements OnModuleInit {
     }
 
     // If updating pod assignment (e.g. for Admins/Branch Admins/Authorized Users re-routing jobs)
-    if (dto.podId !== undefined) {
+    if (dto.podId !== undefined || dto.podIds !== undefined) {
       if (!canAssignAny) {
         throw new ForbiddenException('You do not have permission to modify job pod assignments.');
       }
@@ -1576,22 +1606,37 @@ export class JobsService implements OnModuleInit {
       if (dto.podId === 'all') {
         await this.prisma.job.update({ where: { id }, data: { assignedTo: 'ALL' } });
       } else if (dto.podId === 'none' || dto.podId === 'off') {
-        await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo || 'N/A' } });
-      } else if (dto.podId) {
-        await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo || 'N/A' } });
-        await this.prisma.jobPod.upsert({
-          where: { jobId_podId: { jobId: id, podId: dto.podId } },
-          create: { jobId: id, podId: dto.podId },
-          update: {},
-        });
-        await this.prisma.jobAssignmentLog.create({
-          data: {
-            tenantId,
-            jobId: id,
-            podId: dto.podId,
-            assignedBy: user?.email || 'System',
-          },
-        });
+        if (dto.assignedTo !== undefined) {
+          await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo } });
+        }
+      } else {
+        const podIdsToAssign: string[] = [];
+        if (Array.isArray(dto.podIds) && dto.podIds.length > 0) {
+          podIdsToAssign.push(...dto.podIds.filter((p: string) => p && p !== 'none' && p !== 'off'));
+        } else if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
+          podIdsToAssign.push(dto.podId);
+        }
+
+        if (podIdsToAssign.length > 0) {
+          if (dto.assignedTo !== undefined) {
+            await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo } });
+          }
+          for (const pId of podIdsToAssign) {
+            await this.prisma.jobPod.upsert({
+              where: { jobId_podId: { jobId: id, podId: pId } },
+              create: { jobId: id, podId: pId },
+              update: {},
+            });
+            await this.prisma.jobAssignmentLog.create({
+              data: {
+                tenantId,
+                jobId: id,
+                podId: pId,
+                assignedBy: user?.email || 'System',
+              },
+            });
+          }
+        }
       }
     }
 
