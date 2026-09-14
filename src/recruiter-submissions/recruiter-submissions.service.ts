@@ -420,14 +420,12 @@ export class RecruiterSubmissionsService {
       }
     }
 
-    baseSql += ' ORDER BY s.created_at DESC';
-
     const page = Math.max(1, filters.page || 1);
     const limit = Math.min(Math.max(1, filters.limit || 20), 100);
     const offset = (page - 1) * limit;
 
     const countSql = `SELECT COUNT(*) as count FROM (${baseSql}) AS counted`;
-    const retrieveSql = `${baseSql} LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    const retrieveSql = `${baseSql} ORDER BY s.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
 
     try {
@@ -883,24 +881,24 @@ export class RecruiterSubmissionsService {
       }
     }
 
-    const totalSql = `SELECT COUNT(*) as count FROM ats.recruiter_submissions ${baseFilter}`;
-    const l1Sql = `SELECT COUNT(*) as count FROM ats.recruiter_submissions ${baseFilter} AND l1_status = 'PENDING'`;
-    const l2Sql = `SELECT COUNT(*) as count FROM ats.recruiter_submissions ${baseFilter} AND l2_status = 'PENDING'`;
-    const l3Sql = `SELECT COUNT(*) as count FROM ats.recruiter_submissions ${baseFilter} AND l3_status = 'PENDING'`;
+    const statsSql = `
+      SELECT 
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
+        COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
+        COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
+      FROM ats.recruiter_submissions
+      ${baseFilter}
+    `;
 
     try {
-      const [totalRes, l1Res, l2Res, l3Res]: [any, any, any, any] = await Promise.all([
-        this.prisma.$queryRawUnsafe(totalSql, ...params),
-        this.prisma.$queryRawUnsafe(l1Sql, ...params),
-        this.prisma.$queryRawUnsafe(l2Sql, ...params),
-        this.prisma.$queryRawUnsafe(l3Sql, ...params),
-      ]);
-
+      const statsRes: any = await this.prisma.$queryRawUnsafe(statsSql, ...params);
+      const row = statsRes[0] || {};
       return {
-        total: Number(totalRes[0]?.count || 0),
-        l1Pending: Number(l1Res[0]?.count || 0),
-        l2Pending: Number(l2Res[0]?.count || 0),
-        l3Pending: Number(l3Res[0]?.count || 0),
+        total: Number(row.total || 0),
+        l1Pending: Number(row.l1_pending || 0),
+        l2Pending: Number(row.l2_pending || 0),
+        l3Pending: Number(row.l3_pending || 0),
       };
     } catch (err: any) {
       this.logger.error(`Failed to calculate tracker statistics: ${err.message}`, err.stack);
