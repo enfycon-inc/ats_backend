@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Query, Headers,
-  HttpStatus, HttpCode, UseGuards,
+  HttpStatus, HttpCode, UseGuards, ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiBearerAuth,
@@ -14,6 +14,25 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { resolveTenantId } from '../auth/utils/tenant-resolver';
+
+function isTenantAdminUser(user: AuthUser): boolean {
+  const roles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
+  const perms: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+  const sysRole = (user?.systemRole || '').toUpperCase();
+  return (
+    roles.includes('SUPER_ADMIN') ||
+    roles.includes('ADMIN') ||
+    sysRole === 'SUPER_ADMIN' ||
+    sysRole === 'ADMIN' ||
+    perms.includes('tenant:settings') ||
+    perms.includes('tenant:manage')
+  );
+}
+
+function getUserAllowedBranchIds(user: AuthUser): string[] {
+  const list = [user?.branchId, ...(Array.isArray(user?.assignedBranchIds) ? user.assignedBranchIds : [])].filter(Boolean) as string[];
+  return Array.from(new Set(list));
+}
 
 @ApiTags('ATS Recruitment Pods')
 @Controller('api/pods')
@@ -35,8 +54,23 @@ export class PodsController {
     @Query('branchId') queryBranchId?: string,
   ): Promise<PodResponse> {
     const tid = resolveTenantId(user, tenantId);
-    const bid = dto.branchId || queryBranchId || headerBranchId;
-    return this.podsService.create(dto, tid, bid);
+    const isTenantAdmin = isTenantAdminUser(user);
+
+    let effectiveBranchId = dto.branchId || queryBranchId || headerBranchId || user.branchId;
+
+    if (!isTenantAdmin) {
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      if (dto.branchId && !allowedBranchIds.includes(dto.branchId)) {
+        throw new ForbiddenException('Access denied. You can only create recruitment pods within your assigned branch office.');
+      }
+      effectiveBranchId = user.branchId || allowedBranchIds[0];
+      if (!effectiveBranchId) {
+        throw new ForbiddenException('You must be assigned to a branch office to create recruitment pods.');
+      }
+      dto.branchId = effectiveBranchId;
+    }
+
+    return this.podsService.create(dto, tid, effectiveBranchId);
   }
 
   @Get()
@@ -51,8 +85,28 @@ export class PodsController {
     @Query('branchId') queryBranchId?: string,
   ): Promise<PodResponse[]> {
     const tid = resolveTenantId(user, tenantId);
-    const bid = queryBranchId || headerBranchId;
-    return this.podsService.findAll(tid, bid);
+    const isTenantAdmin = isTenantAdminUser(user);
+
+    let effectiveBranchId: string | undefined;
+    if (isTenantAdmin) {
+      effectiveBranchId = (queryBranchId && queryBranchId !== 'all') ? queryBranchId : headerBranchId;
+    } else {
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      if (queryBranchId && queryBranchId !== 'all') {
+        if (!allowedBranchIds.includes(queryBranchId)) {
+          throw new ForbiddenException('Access denied. You can only view recruitment pods in your assigned branch office.');
+        }
+        effectiveBranchId = queryBranchId;
+      } else {
+        effectiveBranchId = user.branchId || allowedBranchIds[0];
+      }
+
+      if (!effectiveBranchId) {
+        return [];
+      }
+    }
+
+    return this.podsService.findAll(tid, effectiveBranchId);
   }
 
   @Get('available-recruiters')
@@ -66,8 +120,17 @@ export class PodsController {
     @Query('branchId') queryBranchId?: string,
   ): Promise<any[]> {
     const tid = resolveTenantId(user, tenantId);
-    const bid = queryBranchId || headerBranchId;
-    return this.podsService.getAvailableRecruiters(tid, bid);
+    const isTenantAdmin = isTenantAdminUser(user);
+
+    let effectiveBranchId: string | undefined;
+    if (isTenantAdmin) {
+      effectiveBranchId = (queryBranchId && queryBranchId !== 'all') ? queryBranchId : headerBranchId;
+    } else {
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      effectiveBranchId = (queryBranchId && allowedBranchIds.includes(queryBranchId)) ? queryBranchId : (user.branchId || allowedBranchIds[0]);
+    }
+
+    return this.podsService.getAvailableRecruiters(tid, effectiveBranchId);
   }
 
   @Get('my-team')
@@ -91,7 +154,15 @@ export class PodsController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse> {
     const tid = resolveTenantId(user, tenantId);
-    return this.podsService.findOne(id, tid);
+    const pod = await this.podsService.findOne(id, tid);
+    const isTenantAdmin = isTenantAdminUser(user);
+    if (!isTenantAdmin && pod.branchId) {
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      if (!allowedBranchIds.includes(pod.branchId)) {
+        throw new ForbiddenException('Access denied. This recruitment pod belongs to another branch office.');
+      }
+    }
+    return pod;
   }
 
   @Patch(':id')
@@ -105,6 +176,17 @@ export class PodsController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<PodResponse> {
     const tid = resolveTenantId(user, tenantId);
+    const isTenantAdmin = isTenantAdminUser(user);
+    if (!isTenantAdmin) {
+      const existingPod = await this.podsService.findOne(id, tid);
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      if (existingPod.branchId && !allowedBranchIds.includes(existingPod.branchId)) {
+        throw new ForbiddenException('Access denied. You cannot modify recruitment pods of another branch office.');
+      }
+      if (dto.branchId && !allowedBranchIds.includes(dto.branchId)) {
+        throw new ForbiddenException('Access denied. You cannot reassign recruitment pods to another branch office.');
+      }
+    }
     return this.podsService.update(id, dto, tid);
   }
 
@@ -118,6 +200,14 @@ export class PodsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
+    const isTenantAdmin = isTenantAdminUser(user);
+    if (!isTenantAdmin) {
+      const existingPod = await this.podsService.findOne(id, tid);
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      if (existingPod.branchId && !allowedBranchIds.includes(existingPod.branchId)) {
+        throw new ForbiddenException('Access denied. You cannot delete recruitment pods of another branch office.');
+      }
+    }
     return this.podsService.remove(id, tid);
   }
 
@@ -125,11 +215,29 @@ export class PodsController {
   @HttpCode(HttpStatus.OK)
   @RequirePermissions('pod:reset_cycle')
   @ApiOperation({ summary: 'Reset round-robin assignment cycle availability' })
+  @ApiQuery({ name: 'branchId', required: false, description: 'Filter reset by branch UUID' })
   async resetCycle(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') headerBranchId?: string,
+    @Query('branchId') queryBranchId?: string,
+    @Body('branchId') bodyBranchId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.podsService.resetCycle(tid);
+    const isTenantAdmin = isTenantAdminUser(user);
+
+    let effectiveBranchId: string | undefined;
+    if (isTenantAdmin) {
+      effectiveBranchId = bodyBranchId || ((queryBranchId && queryBranchId !== 'all') ? queryBranchId : headerBranchId);
+    } else {
+      const allowedBranchIds = getUserAllowedBranchIds(user);
+      const requested = bodyBranchId || queryBranchId;
+      if (requested && requested !== 'all' && !allowedBranchIds.includes(requested)) {
+        throw new ForbiddenException('Access denied. You can only reset round-robin cycle for your assigned branch office.');
+      }
+      effectiveBranchId = (requested && allowedBranchIds.includes(requested)) ? requested : (user.branchId || allowedBranchIds[0]);
+    }
+
+    return this.podsService.resetCycle(tid, effectiveBranchId);
   }
 }
