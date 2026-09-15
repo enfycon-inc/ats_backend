@@ -31,22 +31,44 @@ export class PodsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Helper: Promotes a user to POD_LEAD role
+   * Helper: Promotes a user to the POD_LEAD-archetype role for their branch.
+   * Finds any custom role whose systemRole = 'POD_LEAD' — regardless of display name
+   * (e.g. "Team Lead", "Pod Head", "Senior Recruiter" etc.).
+   * Prefers the branch-specific role if one exists.
    */
-  private async promoteToPodHead(userId: string, tenantId: string) {
-    const role = await this.prisma.customRole.findFirst({
-      where: {
-        tenantId,
-        OR: [
-          { systemRole: 'POD_LEAD' },
-          { name: { in: ['POD_LEAD', 'Pod Lead', 'POD LEAD'], mode: 'insensitive' } },
-        ],
-      },
-      select: { id: true },
-    });
+  private async promoteToPodHead(userId: string, tenantId: string, branchId?: string | null) {
+    // Get the user's current branch if branchId not explicitly provided
+    let effectiveBranchId = branchId;
+    if (!effectiveBranchId) {
+      const user = await this.prisma.user.findFirst({
+        where: { id: userId },
+        select: { branchId: true },
+      });
+      effectiveBranchId = user?.branchId || null;
+    }
+
+    // Find the POD_LEAD-archetype custom role — branch-specific first, then tenant-wide
+    let role: { id: string } | null = null;
+
+    if (effectiveBranchId) {
+      role = await this.prisma.customRole.findFirst({
+        where: { tenantId, branchId: effectiveBranchId, systemRole: 'POD_LEAD' },
+        select: { id: true },
+      });
+    }
 
     if (!role) {
-      this.logger.warn(`POD_LEAD role not found for tenant ${tenantId}. Skipping automatic role promotion.`);
+      role = await this.prisma.customRole.findFirst({
+        where: { tenantId, systemRole: 'POD_LEAD' },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+    }
+
+    if (!role) {
+      this.logger.warn(
+        `No custom role with systemRole=POD_LEAD found for tenant ${tenantId} (branch: ${effectiveBranchId}). Skipping auto-promotion.`,
+      );
       return;
     }
 
@@ -57,12 +79,17 @@ export class PodsService {
         assignedRoleIds: [role.id],
       },
     });
+
+    this.logger.log(`Promoted user ${userId} to POD_LEAD role (id: ${role.id}).`);
   }
 
   /**
-   * Helper: Demotes a user back to RECRUITER role
+   * Helper: Demotes a user back to RECRUITER-archetype role when they are no longer a pod head.
+   * Finds any custom role whose systemRole = 'RECRUITER' — regardless of display name.
+   * Prefers the branch-specific role if one exists.
    */
   private async demoteFromPodHead(userId: string, tenantId: string) {
+    // Only demote if they are not head of any other pod
     const otherPods = await this.prisma.pod.findFirst({
       where: { podHeadId: userId, tenantId },
       select: { id: true },
@@ -72,19 +99,35 @@ export class PodsService {
       return;
     }
 
-    const role = await this.prisma.customRole.findFirst({
-      where: {
-        tenantId,
-        OR: [
-          { systemRole: 'RECRUITER' },
-          { name: { in: ['RECRUITER', 'Recruiter'], mode: 'insensitive' } },
-        ],
-      },
-      select: { id: true },
+    // Get the user's branch
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId },
+      select: { branchId: true },
     });
+    const branchId = user?.branchId || null;
+
+    // Find RECRUITER-archetype custom role — branch-specific first, then tenant-wide
+    let role: { id: string } | null = null;
+
+    if (branchId) {
+      role = await this.prisma.customRole.findFirst({
+        where: { tenantId, branchId, systemRole: 'RECRUITER' },
+        select: { id: true },
+      });
+    }
 
     if (!role) {
-      this.logger.warn(`RECRUITER role not found for tenant ${tenantId}. Skipping automatic role demotion.`);
+      role = await this.prisma.customRole.findFirst({
+        where: { tenantId, systemRole: 'RECRUITER' },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+      });
+    }
+
+    if (!role) {
+      this.logger.warn(
+        `No custom role with systemRole=RECRUITER found for tenant ${tenantId}. Skipping auto-demotion.`,
+      );
       return;
     }
 
@@ -95,6 +138,8 @@ export class PodsService {
         assignedRoleIds: [role.id],
       },
     });
+
+    this.logger.log(`Demoted user ${userId} back to RECRUITER role (id: ${role.id}).`);
   }
 
   /**
@@ -146,7 +191,7 @@ export class PodsService {
     });
 
     if (dto.podHeadId) {
-      await this.promoteToPodHead(dto.podHeadId, tenantId);
+      await this.promoteToPodHead(dto.podHeadId, tenantId, effectiveBranchId);
       await this.prisma.user.update({
         where: { id: dto.podHeadId },
         data: { podId: pod.id },
@@ -365,7 +410,7 @@ export class PodsService {
         await this.demoteFromPodHead(existingPod.podHeadId, tenantId);
       }
       if (podHeadId) {
-        await this.promoteToPodHead(podHeadId, tenantId);
+        await this.promoteToPodHead(podHeadId, tenantId, branchId);
         await this.prisma.user.update({
           where: { id: podHeadId },
           data: { podId: id },
