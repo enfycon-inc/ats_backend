@@ -165,7 +165,7 @@ export class AuthKeycloakService {
       .filter((r) => r.length > 0);
 
     const existing = await this.authQuery.query(
-      'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, branch_roles, first_name, last_name, full_name FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
+      'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, branch_roles, first_name, last_name, full_name, branch_id, assigned_branch_ids, pod_id, business_unit_id FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
       [data.keycloakId, data.email],
     );
 
@@ -227,7 +227,7 @@ export class AuthKeycloakService {
              assigned_role_ids = CASE WHEN cardinality(assigned_role_ids) = 0 THEN $6::uuid[] ELSE assigned_role_ids END,
              updated_at  = NOW()
          WHERE id = $7
-         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids`,
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles, pod_id, business_unit_id`,
         [data.keycloakId, firstName, lastName, fullName, roleId, assignedRoleIds, existingUser.id],
       );
       dbUser = updateRes.rows[0];
@@ -235,7 +235,7 @@ export class AuthKeycloakService {
       const insertRes = await this.authQuery.query(
         `INSERT INTO users (keycloak_id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
          VALUES ($1, $2, $3, $4, $5, $6, true, true, $7::uuid, $8::uuid[])
-         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids`,
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles, pod_id, business_unit_id`,
         [data.keycloakId, tenantId, data.email, firstName, lastName, fullName, roleId, assignedRoleIds],
       );
       dbUser = insertRes.rows[0];
@@ -253,8 +253,12 @@ export class AuthKeycloakService {
     );
     permissions = permsRes.rows.map((row: any) => row.permission);
 
+    const primarySystemRole = (allRoleIds.length > 0 && typeof (this as any).prisma !== 'undefined')
+      ? undefined
+      : (dynamicRoles.find((r) => ['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'POD_LEAD', 'RECRUITER', 'DELIVERY_HEAD', 'ACCOUNT_MANAGER'].includes(r)) || 'RECRUITER');
+
     const uniqueRoles = Array.from(new Set(dynamicRoles));
-    return { ...dbUser, roles: uniqueRoles, permissions };
+    return { ...dbUser, roles: uniqueRoles, permissions, system_role: primarySystemRole };
   }
 
   async deleteKeycloakUser(email: string): Promise<boolean> {

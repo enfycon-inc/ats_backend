@@ -60,10 +60,10 @@ export class PodsController {
 
     if (!isTenantAdmin) {
       const allowedBranchIds = getUserAllowedBranchIds(user);
-      if (dto.branchId && !allowedBranchIds.includes(dto.branchId)) {
+      if (dto.branchId && allowedBranchIds.length > 0 && !allowedBranchIds.includes(dto.branchId)) {
         throw new ForbiddenException('Access denied. You can only create recruitment pods within your assigned branch office.');
       }
-      effectiveBranchId = user.branchId || allowedBranchIds[0];
+      effectiveBranchId = dto.branchId || user.branchId || allowedBranchIds[0] || headerBranchId;
       if (!effectiveBranchId) {
         throw new ForbiddenException('You must be assigned to a branch office to create recruitment pods.');
       }
@@ -93,12 +93,14 @@ export class PodsController {
     } else {
       const allowedBranchIds = getUserAllowedBranchIds(user);
       if (queryBranchId && queryBranchId !== 'all') {
-        if (!allowedBranchIds.includes(queryBranchId)) {
+        if (allowedBranchIds.length > 0 && !allowedBranchIds.includes(queryBranchId)) {
           throw new ForbiddenException('Access denied. You can only view recruitment pods in your assigned branch office.');
         }
         effectiveBranchId = queryBranchId;
       } else {
-        effectiveBranchId = user.branchId || allowedBranchIds[0];
+        effectiveBranchId = (headerBranchId && (allowedBranchIds.length === 0 || allowedBranchIds.includes(headerBranchId)))
+          ? headerBranchId
+          : (user.branchId || allowedBranchIds[0]);
       }
 
       if (!effectiveBranchId) {
@@ -127,7 +129,9 @@ export class PodsController {
       effectiveBranchId = (queryBranchId && queryBranchId !== 'all') ? queryBranchId : headerBranchId;
     } else {
       const allowedBranchIds = getUserAllowedBranchIds(user);
-      effectiveBranchId = (queryBranchId && allowedBranchIds.includes(queryBranchId)) ? queryBranchId : (user.branchId || allowedBranchIds[0]);
+      effectiveBranchId = (queryBranchId && (allowedBranchIds.length === 0 || allowedBranchIds.includes(queryBranchId)))
+        ? queryBranchId
+        : (user.branchId || allowedBranchIds[0] || headerBranchId);
     }
 
     return this.podsService.getAvailableRecruiters(tid, effectiveBranchId);
@@ -232,10 +236,12 @@ export class PodsController {
     } else {
       const allowedBranchIds = getUserAllowedBranchIds(user);
       const requested = bodyBranchId || queryBranchId;
-      if (requested && requested !== 'all' && !allowedBranchIds.includes(requested)) {
+      if (requested && requested !== 'all' && allowedBranchIds.length > 0 && !allowedBranchIds.includes(requested)) {
         throw new ForbiddenException('Access denied. You can only reset round-robin cycle for your assigned branch office.');
       }
-      effectiveBranchId = (requested && allowedBranchIds.includes(requested)) ? requested : (user.branchId || allowedBranchIds[0]);
+      effectiveBranchId = (requested && (allowedBranchIds.length === 0 || allowedBranchIds.includes(requested)))
+        ? requested
+        : (user.branchId || allowedBranchIds[0] || headerBranchId);
     }
 
     return this.podsService.resetCycle(tid, effectiveBranchId);
