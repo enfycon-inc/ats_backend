@@ -7,6 +7,7 @@ import {
 } from '@nestjs/swagger';
 import { JobsService, JobProfile, CandidateMatch } from './jobs.service';
 import { CreateJobDto } from './dtos/create-job.dto';
+import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -238,6 +239,75 @@ export class JobsController {
   ): Promise<void> {
     const tid = resolveTenantId(user, tenantId);
     await this.jobsService.deleteJob(id, tid);
+  }
+
+  // --- Cross-Branch Delegation Endpoints ---
+
+  @Post(':id/delegate')
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:delegate')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delegate a job to another branch' })
+  async delegateJob(
+    @Param('id') jobId: string,
+    @Body() dto: DelegateJobDto,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId) as string;
+    const sourceBranchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.delegateJob(jobId, dto, tid, sourceBranchId);
+  }
+
+  @Get('delegations')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List incoming and outgoing delegation requests' })
+  async getDelegations(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('type') type: 'incoming' | 'outgoing' | 'all' = 'all'
+  ) {
+    const tid = resolveTenantId(user, tenantId) as string;
+    const branchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.getDelegationRequests(tid, branchId, type);
+  }
+
+  @Patch('delegations/:requestId/accept')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:accept_delegation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Accept an incoming delegation request' })
+  async acceptDelegation(
+    @Param('requestId') requestId: string,
+    @Body() dto: AcceptDelegationDto,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId) as string;
+    const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.acceptDelegation(requestId, dto, tid, targetBranchId);
+  }
+
+  @Patch('delegations/:requestId/reject')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:accept_delegation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reject an incoming delegation request' })
+  async rejectDelegation(
+    @Param('requestId') requestId: string,
+    @Body() dto: RejectDelegationDto,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId) as string;
+    const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.rejectDelegation(requestId, dto, tid, targetBranchId);
   }
 }
 

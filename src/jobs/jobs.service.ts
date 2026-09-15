@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateJobDto } from './dtos/create-job.dto';
+import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 
 export interface JobProfile {
@@ -23,6 +24,12 @@ export interface JobProfile {
   createdAt?: string;
   updatedAt?: string;
   creatorEmail?: string | null;
+
+  // Co-Sourcing fields
+  isCoSourced?: boolean;
+  sharedBranchIds?: string[];
+  marginSplitAmPct?: number | null;
+  marginSplitRecPct?: number | null;
 
   // Rates & terms
   visaType: string;
@@ -916,7 +923,7 @@ export class JobsService implements OnModuleInit {
     const targetBranchId = activeBranchId || user?.branchId;
 
     if (targetBranchId && !canViewAllBranches) {
-      sql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL)`;
+      sql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL OR $${paramIndex} = ANY(j.shared_branch_ids))`;
       params.push(targetBranchId);
       paramIndex++;
     }
@@ -1120,6 +1127,12 @@ export class JobsService implements OnModuleInit {
         : createdAt.toISOString(),
       createdAt: createdAt.toISOString(),
       updatedAt: rawUpdatedAt ? new Date(rawUpdatedAt).toISOString() : createdAt.toISOString(),
+
+      // Co-Sourcing mappings
+      isCoSourced: row.is_co_sourced ?? false,
+      sharedBranchIds: row.shared_branch_ids ?? [],
+      marginSplitAmPct: row.margin_split_am_pct ?? null,
+      marginSplitRecPct: row.margin_split_rec_pct ?? null,
 
       visaType: row.visa_type ?? row.visaType ?? '',
       clientBillRate: row.client_bill_rate ?? row.clientBillRate ?? 'N/A',
@@ -2435,5 +2448,147 @@ export class JobsService implements OnModuleInit {
       data: { deletedAt: null },
     });
     return this.findOneJob(existing.id, tenantId);
+  }
+
+  // --- Cross-Branch Delegation Logic ---
+
+  async delegateJob(jobId: string, dto: DelegateJobDto, tenantId: string, sourceBranchId: string) {
+    if (!sourceBranchId) throw new BadRequestException('User must belong to a branch to delegate jobs');
+    if (sourceBranchId === dto.targetBranchId) throw new BadRequestException('Cannot delegate to the same branch');
+
+    const job = await this.prisma.job.findFirst({
+      where: { id: jobId, tenantId, branchId: sourceBranchId },
+    });
+
+    if (!job) throw new NotFoundException('Job not found or does not belong to your branch');
+
+    // Check if pending request already exists
+    const existingReq = await this.prisma.jobDelegationRequest.findFirst({
+      where: { jobId, targetBranchId: dto.targetBranchId, status: 'PENDING' },
+    });
+    if (existingReq) throw new BadRequestException('A pending delegation request already exists for this branch');
+
+    const req = await this.prisma.jobDelegationRequest.create({
+      data: {
+        tenantId,
+        jobId,
+        sourceBranchId,
+        targetBranchId: dto.targetBranchId,
+        slaDaysTarget: dto.slaDaysTarget,
+        notes: dto.notes,
+        status: 'PENDING',
+      },
+    });
+
+    // Notify target branch
+    await this.notifications.broadcastAnnouncement(tenantId, 'System', {
+      title: 'New Job Delegation Request',
+      message: `Branch requested delegation for job ${job.jobCode} - ${job.jobTitle}.`,
+      target: 'BRANCH',
+      targetId: dto.targetBranchId,
+    });
+
+    return req;
+  }
+
+  async getDelegationRequests(tenantId: string, branchId: string, type: 'incoming' | 'outgoing' | 'all') {
+    if (!branchId) throw new BadRequestException('User must belong to a branch');
+    
+    const whereClause: any = { tenantId };
+    if (type === 'incoming') {
+      whereClause.targetBranchId = branchId;
+    } else if (type === 'outgoing') {
+      whereClause.sourceBranchId = branchId;
+    } else {
+      whereClause.OR = [
+        { targetBranchId: branchId },
+        { sourceBranchId: branchId },
+      ];
+    }
+
+    return this.prisma.jobDelegationRequest.findMany({
+      where: whereClause,
+      include: {
+        job: { select: { id: true, jobCode: true, jobTitle: true, isCoSourced: true } },
+        sourceBranch: { select: { id: true, name: true } },
+        targetBranch: { select: { id: true, name: true } },
+        assignedPod: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async acceptDelegation(requestId: string, dto: AcceptDelegationDto, tenantId: string, targetBranchId: string) {
+    if (!targetBranchId) throw new BadRequestException('User must belong to a branch');
+
+    const req = await this.prisma.jobDelegationRequest.findFirst({
+      where: { id: requestId, tenantId, targetBranchId, status: 'PENDING' },
+      include: { job: true },
+    });
+    if (!req) throw new NotFoundException('Delegation request not found or not pending');
+
+    await this.prisma.$transaction(async (tx) => {
+      // 1. Update request status
+      await tx.jobDelegationRequest.update({
+        where: { id: requestId },
+        data: { status: 'ACCEPTED', assignedPodId: dto.assignedPodId },
+      });
+
+      // 2. Update job
+      const sharedIds = new Set(req.job.sharedBranchIds || []);
+      sharedIds.add(targetBranchId);
+
+      await tx.job.update({
+        where: { id: req.jobId },
+        data: {
+          isCoSourced: true,
+          sharedBranchIds: Array.from(sharedIds),
+        },
+      });
+
+      // 3. Assign to Pod if selected
+      if (dto.assignedPodId) {
+        await tx.jobPod.upsert({
+          where: { jobId_podId: { jobId: req.jobId, podId: dto.assignedPodId } },
+          create: { jobId: req.jobId, podId: dto.assignedPodId },
+          update: {},
+        });
+      }
+    });
+
+    // Notify source branch
+    await this.notifications.broadcastAnnouncement(tenantId, 'System', {
+      title: 'Job Delegation Accepted',
+      message: `Your delegation request for job ${req.job.jobCode} was accepted.`,
+      target: 'BRANCH',
+      targetId: req.sourceBranchId,
+    });
+
+    return { success: true };
+  }
+
+  async rejectDelegation(requestId: string, dto: RejectDelegationDto, tenantId: string, targetBranchId: string) {
+    if (!targetBranchId) throw new BadRequestException('User must belong to a branch');
+
+    const req = await this.prisma.jobDelegationRequest.findFirst({
+      where: { id: requestId, tenantId, targetBranchId, status: 'PENDING' },
+      include: { job: true },
+    });
+    if (!req) throw new NotFoundException('Delegation request not found or not pending');
+
+    await this.prisma.jobDelegationRequest.update({
+      where: { id: requestId },
+      data: { status: 'REJECTED', notes: dto.notes },
+    });
+
+    // Notify source branch
+    await this.notifications.broadcastAnnouncement(tenantId, 'System', {
+      title: 'Job Delegation Rejected',
+      message: `Your delegation request for job ${req.job.jobCode} was rejected.`,
+      target: 'BRANCH',
+      targetId: req.sourceBranchId,
+    });
+
+    return { success: true };
   }
 }

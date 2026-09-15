@@ -57,6 +57,7 @@ model Tenant {
   userInvitations    UserInvitation[]
   jobAssignmentLogs  JobAssignmentLog[]
   customRoles        CustomRole[]
+  delegationRequests JobDelegationRequest[]
 
   @@map("tenants")
   @@schema("ats")
@@ -184,6 +185,8 @@ model Branch {
   users           User[]
   customRoles     CustomRole[]
   jobs            Job[]
+  outgoingDelegationRequests JobDelegationRequest[] @relation("DelegationSourceBranch")
+  incomingDelegationRequests JobDelegationRequest[] @relation("DelegationTargetBranch")
 
   @@unique([tenantId, name])
   @@map("branches")
@@ -261,6 +264,7 @@ model Pod {
   users           User[]   @relation("UserPod")
   userInvitations UserInvitation[]
   jobAssignmentLogs JobAssignmentLog[]
+  assignedDelegationRequests JobDelegationRequest[]
 
   @@map("pods")
   @@schema("ats")
@@ -526,17 +530,47 @@ model Job {
   createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
+  // Co-sourcing / Delegation fields
+  sharedBranchIds      String[]  @default([]) @map("shared_branch_ids")
+  isCoSourced          Boolean   @default(false) @map("is_co_sourced")
+  marginSplitAmPct     Int?      @map("margin_split_am_pct")
+  marginSplitRecPct    Int?      @map("margin_split_rec_pct")
+
   tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branch       Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
   businessUnitRef BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
   clientRef    Client?       @relation("JobClient", fields: [clientId], references: [id], onDelete: SetNull)
   endClientRef Client?       @relation("JobEndClient", fields: [endClientId], references: [id], onDelete: SetNull)
 
-  jobPods           JobPod[]
-  submissions       RecruiterSubmission[]
-  jobAssignmentLogs JobAssignmentLog[]
+  jobPods            JobPod[]
+  submissions        RecruiterSubmission[]
+  jobAssignmentLogs  JobAssignmentLog[]
+  delegationRequests JobDelegationRequest[]
 
   @@map("jobs")
+  @@schema("ats")
+}
+
+model JobDelegationRequest {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  jobId           String    @map("job_id") @db.Uuid
+  sourceBranchId  String    @map("source_branch_id") @db.Uuid
+  targetBranchId  String    @map("target_branch_id") @db.Uuid
+  status          String    @default("PENDING") @db.VarChar(50) // PENDING, ACCEPTED, REJECTED
+  slaDaysTarget   Int?      @map("sla_days_target")
+  notes           String?
+  assignedPodId   String?   @map("assigned_pod_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  job             Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sourceBranch    Branch    @relation("DelegationSourceBranch", fields: [sourceBranchId], references: [id], onDelete: Cascade)
+  targetBranch    Branch    @relation("DelegationTargetBranch", fields: [targetBranchId], references: [id], onDelete: Cascade)
+  assignedPod     Pod?      @relation(fields: [assignedPodId], references: [id], onDelete: SetNull)
+
+  @@map("job_delegation_requests")
   @@schema("ats")
 }
 
