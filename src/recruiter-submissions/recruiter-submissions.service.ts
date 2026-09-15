@@ -248,9 +248,10 @@ export class RecruiterSubmissionsService {
       jobId?: string;
       candidateId?: number;
       branchId?: string;
+      view?: string;
     },
   ) {
-    this.logger.log(`Listing submissions for tenant: ${tenantId} under user role visibility`);
+    this.logger.log(`Listing submissions for tenant: ${tenantId} under user role visibility, view=${filters.view || 'all'}`);
 
     let baseSql = `
       SELECT 
@@ -316,7 +317,17 @@ export class RecruiterSubmissionsService {
       userPerms.includes('submission:audit_l3') ||
       userPerms.includes('submission:approve_client');
 
-    if (!canViewAll) {
+    const view = filters.view || 'all';
+
+    if (view === 'my') {
+      baseSql += ` AND s.recruiter_id = $${paramIndex}`;
+      params.push(user.dbId);
+      paramIndex++;
+    } else if (view === 'pod') {
+      baseSql += ` AND s.recruiter_id IN (SELECT id::text FROM ats.users WHERE pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid))`;
+      params.push(user.dbId);
+      paramIndex++;
+    } else if (!canViewAll) {
       const roleConditions: string[] = [];
 
       if (isRecruiter) {
@@ -341,6 +352,7 @@ export class RecruiterSubmissionsService {
             OR LOWER(j.created_by) = LOWER($${paramIndex + 2})
             OR s.recruiter_id = $${paramIndex}
             OR LOWER(s.recruiter_id) = LOWER($${paramIndex + 1})
+            OR LOWER(s.recruiter_id) = LOWER($${paramIndex + 2})
           )`,
         );
         params.push(user.dbId, user.email || '', user.fullName || '');

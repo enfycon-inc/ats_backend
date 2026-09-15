@@ -71,6 +71,7 @@ export class RecruiterSubmissionsController {
     @Query('finalStatus') finalStatus?: string,
     @Query('jobId') jobId?: string,
     @Query('candidateId') candidateId?: string,
+    @Query('view') view?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
@@ -86,6 +87,7 @@ export class RecruiterSubmissionsController {
       jobId,
       candidateId: candidateId ? parseInt(candidateId, 10) : undefined,
       branchId: bid || undefined,
+      view,
     });
   }
 
