@@ -75,7 +75,7 @@ export class AuthRbacService {
       'placement:view', 'report:view',
     ],
     POD_LEAD: [
-      'job:view', 'job:edit', 'job:approve', 'job:reject',
+      'job:view',
       'candidate:view', 'candidate:create',
       'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
       'client:view',
