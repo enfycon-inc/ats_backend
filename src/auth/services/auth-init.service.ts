@@ -136,6 +136,23 @@ export class AuthInitService implements OnModuleInit {
         PRIMARY KEY (role_id, permission)
       );
 
+      -- Grant full pod management permissions to all BRANCH_ADMIN roles
+      INSERT INTO role_permissions (role_id, permission)
+      SELECT cr.id, p.perm
+      FROM custom_roles cr
+      CROSS JOIN (
+        VALUES 
+          ('pod:create'),
+          ('pod:edit'),
+          ('pod:delete'),
+          ('pod:view'),
+          ('pod:reset_cycle'),
+          ('pod:overlap')
+      ) AS p(perm)
+      WHERE UPPER(COALESCE(cr.system_role, '')) = 'BRANCH_ADMIN' 
+         OR UPPER(cr.name) IN ('BRANCH_ADMIN', 'BRANCH ADMIN')
+      ON CONFLICT (role_id, permission) DO NOTHING;
+
       -- 2b. Create tenant_auth_settings table
       CREATE TABLE IF NOT EXISTS tenant_auth_settings (
         tenant_id               UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
