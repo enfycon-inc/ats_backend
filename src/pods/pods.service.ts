@@ -124,6 +124,16 @@ export class PodsService {
       throw new ConflictException(`A pod with the name "${dto.name}" already exists in this branch.`);
     }
 
+    if (dto.podHeadId) {
+      const existingHeadOfPod = await this.prisma.pod.findFirst({
+        where: { podHeadId: dto.podHeadId, tenantId },
+        select: { id: true, name: true },
+      });
+      if (existingHeadOfPod) {
+        throw new ConflictException(`This staff member is already the Pod Lead of "${existingHeadOfPod.name}". A user can only lead one pod at a time.`);
+      }
+    }
+
     const pod = await this.prisma.pod.create({
       data: {
         tenantId,
@@ -329,6 +339,16 @@ export class PodsService {
     const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branchId;
     const podHeadId = dto.podHeadId !== undefined ? dto.podHeadId : existingPod.podHeadId;
     const description = dto.description !== undefined ? dto.description : existingPod.description;
+
+    if (dto.podHeadId && dto.podHeadId !== existingPod.podHeadId) {
+      const existingHeadOfPod = await this.prisma.pod.findFirst({
+        where: { podHeadId: dto.podHeadId, tenantId, id: { not: id } },
+        select: { id: true, name: true },
+      });
+      if (existingHeadOfPod) {
+        throw new ConflictException(`This staff member is already the Pod Lead of "${existingHeadOfPod.name}". A user can only lead one pod at a time.`);
+      }
+    }
 
     await this.prisma.pod.update({
       where: { id },
