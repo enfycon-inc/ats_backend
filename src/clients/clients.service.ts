@@ -172,11 +172,28 @@ export class ClientsService {
 
           let perms: string[] = [];
           if (roleIds.length > 0) {
-            const rolePerms = await this.prisma.rolePermission.findMany({
-              where: { roleId: { in: roleIds } },
-              select: { permission: true },
+            const customRoles = await this.prisma.customRole.findMany({
+              where: { id: { in: roleIds } },
+              select: { permissions: true },
             });
-            perms = rolePerms.map((rp) => rp.permission);
+            const systemRoles = await this.prisma.systemRole.findMany({
+              where: { id: { in: roleIds } },
+              select: { permissions: true },
+            });
+            const allPerms = [...customRoles, ...systemRoles].flatMap((r) => {
+              const p = r.permissions;
+              if (Array.isArray(p)) return p as string[];
+              if (typeof p === 'string') {
+                try {
+                  const parsed = JSON.parse(p);
+                  return Array.isArray(parsed) ? parsed : [];
+                } catch {
+                  return [];
+                }
+              }
+              return [];
+            });
+            perms = [...new Set(allPerms)];
           }
 
           const hasDirectAddPerm =
