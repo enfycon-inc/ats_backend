@@ -511,6 +511,7 @@ export class CandidatesService {
             uploadedByUserId: existingCand.uploadedByUserId || uploaderId,
             uploadedByName: existingCand.uploadedByName || uploaderName,
             preferredLocations: preferredLocations.length > 0 ? preferredLocations : undefined,
+            deletedAt: null,
           },
           include: {
             resumeRecord: {
