@@ -73,6 +73,11 @@ export class BranchesController {
     if (!hasGranularPermission(req.user, ['branch:edit', 'branch_admin:manage', 'tenant:settings'])) {
       throw new ForbiddenException('Access denied. You do not have granular permission (branch:edit or branch_admin:manage) to modify this branch location.');
     }
+    if (!hasGranularPermission(req.user, ['tenant:settings', 'tenant:manage'])) {
+      if (req.user.branchId !== id) {
+        throw new ForbiddenException('Access denied. You can only modify your assigned branch location.');
+      }
+    }
     const tenantId = resolveTenantId(req.user, headerTenantId);
     return this.branchesService.update(id, dto, tenantId);
   }
@@ -86,6 +91,11 @@ export class BranchesController {
   ) {
     if (!hasGranularPermission(req.user, ['branch:edit', 'branch_admin:manage', 'tenant:settings'])) {
       throw new ForbiddenException('Access denied. You do not have granular permission (branch:edit or branch_admin:manage) to modify branch stage remarks.');
+    }
+    if (!hasGranularPermission(req.user, ['tenant:settings', 'tenant:manage'])) {
+      if (req.user.branchId !== id) {
+        throw new ForbiddenException('Access denied. You can only modify your assigned branch location.');
+      }
     }
     const tenantId = resolveTenantId(req.user, headerTenantId);
     return this.branchesService.toggleGlobalRemarks(id, tenantId, body?.enableGlobalRemarks, body?.selectedGlobalRemarkIds);
@@ -125,6 +135,11 @@ export class BranchesController {
     if (!hasGranularPermission(req.user, ['branch:assign_user', 'branch_admin:manage', 'user:manage', 'tenant:settings'])) {
       throw new ForbiddenException('Access denied. You do not have granular permission (branch_admin:manage or user:manage) to assign users to this branch.');
     }
+    if (!hasGranularPermission(req.user, ['tenant:settings', 'tenant:manage'])) {
+      if (req.user.branchId !== id) {
+        throw new ForbiddenException('Access denied. You can only assign users to your assigned branch location.');
+      }
+    }
     const tenantId = resolveTenantId(req.user, headerTenantId);
     return this.branchesService.assignUser(id, userId, tenantId, roles);
   }
@@ -138,6 +153,11 @@ export class BranchesController {
   ) {
     if (!hasGranularPermission(req.user, ['branch:assign_manager', 'branch_admin:manage', 'user:manage', 'tenant:settings'])) {
       throw new ForbiddenException('Access denied. You do not have granular permission (branch_admin:manage or user:manage) to assign or change Branch Heads.');
+    }
+    if (!hasGranularPermission(req.user, ['tenant:settings', 'tenant:manage'])) {
+      if (req.user.branchId !== id) {
+        throw new ForbiddenException('Access denied. You can only assign managers to your assigned branch location.');
+      }
     }
     const tenantId = resolveTenantId(req.user, headerTenantId);
     return this.branchesService.updateManager(id, managerId, tenantId);
