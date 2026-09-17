@@ -140,9 +140,12 @@ export class AuthKeycloakService {
               }
             }
             return true;
+          } else {
+            const errBody = await res.text().catch(() => '');
+            this.logger.warn(`Keycloak provision returned ${res.status} for ${url}: ${errBody}`);
           }
-        } catch (err) {
-          // Continue to next endpoint
+        } catch (err: any) {
+          this.logger.warn(`Keycloak provision request failed for ${url}: ${err.message}`);
         }
       }
       return false;
@@ -165,7 +168,7 @@ export class AuthKeycloakService {
       .filter((r) => r.length > 0);
 
     const existing = await this.authQuery.query(
-      'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, branch_roles, first_name, last_name, full_name, branch_id, assigned_branch_ids, pod_id, business_unit_id FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
+      'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, first_name, last_name, full_name, branch_id, pod_id, business_unit_id FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
       [data.keycloakId, data.email],
     );
 
@@ -179,9 +182,10 @@ export class AuthKeycloakService {
       : (roleId ? [roleId] : []);
 
     let dynamicRoles: string[] = [];
-    if (normalizedRoles.length > 0) {
+    // Token role names may bootstrap a new identity, but cannot restore revoked local assignments.
+    if (existing.rows.length === 0 && normalizedRoles.length > 0) {
       const roleResult = await this.authQuery.query(
-        'SELECT id, name, system_role FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
+        'SELECT cr.id, cr.name, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1 AND (UPPER(cr.name) = ANY($2) OR UPPER(sr.system_key) = ANY($2))',
         [tenantId, normalizedRoles]
       );
       if (roleResult.rows.length > 0) {
@@ -196,8 +200,8 @@ export class AuthKeycloakService {
     const allRoleIds = Array.from(new Set([roleId, ...existingAssigned])).filter(Boolean);
     if (allRoleIds.length > 0) {
       const dbRolesRes = await this.authQuery.query(
-        'SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])',
-        [allRoleIds]
+        'SELECT cr.id, cr.name, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[]) AND cr.tenant_id = $2',
+        [allRoleIds, tenantId]
       );
       dbRolesRes.rows.forEach((r: any) => {
         if (r.name) dynamicRoles.push(r.name);
@@ -205,7 +209,7 @@ export class AuthKeycloakService {
       });
     }
 
-    if (dynamicRoles.length === 0 && normalizedRoles.length > 0) {
+    if (existing.rows.length === 0 && dynamicRoles.length === 0 && normalizedRoles.length > 0) {
       dynamicRoles = normalizedRoles;
     }
 
@@ -227,7 +231,7 @@ export class AuthKeycloakService {
              assigned_role_ids = CASE WHEN cardinality(assigned_role_ids) = 0 THEN $6::uuid[] ELSE assigned_role_ids END,
              updated_at  = NOW()
          WHERE id = $7
-         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles, pod_id, business_unit_id`,
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
         [data.keycloakId, firstName, lastName, fullName, roleId, assignedRoleIds, existingUser.id],
       );
       dbUser = updateRes.rows[0];
@@ -235,7 +239,7 @@ export class AuthKeycloakService {
       const insertRes = await this.authQuery.query(
         `INSERT INTO users (keycloak_id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
          VALUES ($1, $2, $3, $4, $5, $6, true, true, $7::uuid, $8::uuid[])
-         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles, pod_id, business_unit_id`,
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
         [data.keycloakId, tenantId, data.email, firstName, lastName, fullName, roleId, assignedRoleIds],
       );
       dbUser = insertRes.rows[0];
@@ -243,15 +247,19 @@ export class AuthKeycloakService {
 
     let permissions: string[] = [];
     const effectiveRoleIds = Array.from(new Set([dbUser.role_id, ...(dbUser.assigned_role_ids || [])])).filter(Boolean);
-    const permsRes = await this.authQuery.query(
-      `SELECT DISTINCT rp.permission 
-       FROM custom_roles cr
-       JOIN role_permissions rp ON rp.role_id = cr.id
-       WHERE (cr.tenant_id = $1 OR cr.tenant_id IS NULL) 
-         AND (cr.id = ANY($2::uuid[]) OR UPPER(cr.name) = ANY($3) OR UPPER(cr.system_role) = ANY($3))`,
-      [dbUser.tenant_id || DEFAULT_TENANT_ID, effectiveRoleIds.length > 0 ? effectiveRoleIds : ['00000000-0000-0000-0000-000000000000'], normalizedRoles]
-    );
-    permissions = permsRes.rows.map((row: any) => row.permission);
+      const permsRes = await this.authQuery.query(
+        `SELECT cr.permissions 
+         FROM custom_roles cr
+         WHERE cr.tenant_id = $1 AND cr.id = ANY($2::uuid[])`,
+        [dbUser.tenant_id || DEFAULT_TENANT_ID, effectiveRoleIds]
+      );
+      
+      const permSet = new Set<string>();
+      for (const row of permsRes.rows as any[]) {
+        const pList = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
+        pList.forEach((p: string) => permSet.add(p));
+      }
+      permissions = Array.from(permSet);
 
     const primarySystemRole = (allRoleIds.length > 0 && typeof (this as any).prisma !== 'undefined')
       ? undefined

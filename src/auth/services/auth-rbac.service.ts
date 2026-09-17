@@ -23,115 +23,67 @@ export class AuthRbacService {
 
   constructor(private readonly authQuery: AuthQueryService) {}
 
-  // Default permissions matrix shared across seedTenantRoles, createCustomRole, updateRolePermissions, listRoles
-  static readonly DEFAULT_PERMISSIONS: Record<string, string[]> = {
-    ADMIN: [
-      'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
-      'job:assign', 'job:assign_recruiter', 'job:assign_pod',
-      'candidate:create', 'candidate:view',
-      'submission:create', 'submission:view', 'submission:edit', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate',
-      'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject', 'client:delete',
-      'placement:view', 'placement:create', 'report:view',
-      'tenant:settings', 'user:manage',
-      'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
-      'branch:create', 'branch:edit', 'branch:delete',
-      'branch_admin:manage', 'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-    ],
-    BRANCH_ADMIN: [
-      'job:create', 'job:view', 'job:edit', 'job:publish_direct', 'job:approve', 'job:reject',
-      'job:assign', 'job:assign_recruiter', 'job:assign_pod', 'job:delegate', 'job:accept_delegation',
-      'candidate:create', 'candidate:view',
-      'submission:create', 'submission:view', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
-      'client:view', 'client:create', 'client:direct_add', 'client:edit', 'client:approve', 'client:reject',
-      'placement:view', 'placement:create', 'report:view',
-      'branch:edit', 'branch_admin:manage', 'branch:assign_user', 'branch:assign_manager', 'user:manage',
-      'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
-    ],
-    RECRUITER: [
-      'candidate:create', 'candidate:view',
-      'submission:create', 'submission:view', 'submission:edit',
-      'job:view',
-      'client:view',
-      'pod:view',
-    ],
-    ACCOUNT_MANAGER: [
-      'job:create', 'job:edit', 'job:view', 'job:publish_direct', 'job:approve', 'job:reject',
-      'job:assign_recruiter',
-      'candidate:view', 'candidate:create',
-      'submission:view', 'submission:create', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
-      'pod:view',
-      'client:view', 'client:create', 'client:direct_add', 'client:edit',
-      'placement:view', 'placement:create',
-      'report:view',
-    ],
-    DELIVERY_HEAD: [
-      'job:view', 'job:edit', 'job:approve', 'job:reject',
-      'job:assign', 'job:assign_recruiter', 'job:assign_pod',
-      'candidate:view', 'candidate:create',
-      'submission:view', 'submission:create', 'submission:internal_screening', 'submission:audit_rounds', 'submission:audit_l1', 'submission:audit_l2', 'submission:audit_l3', 'submission:final_status', 'submission:approve_client', 'submission:schedule_interview', 'submission:edit_rate', 'submission:edit',
-      'client:view', 'client:create', 'client:edit', 'client:approve', 'client:reject',
-      'pod:create', 'pod:edit', 'pod:delete', 'pod:view', 'pod:reset_cycle', 'pod:overlap',
-      'candidate:search_all_branches', 'job:view_all_branches', 'candidate:search_all_markets',
-      'placement:view', 'report:view',
-    ],
-    POD_LEAD: [
-      'job:view',
-      'candidate:view', 'candidate:create',
-      'submission:view', 'submission:create', 'submission:internal_screening', 'submission:schedule_interview', 'submission:edit',
-      'client:view',
-      'pod:view', 'pod:edit', 'report:view',
-    ],
-  };
+
 
   async seedTenantRoles(tenantId: string): Promise<Record<string, string>> {
-    const permissions = { ...AuthRbacService.DEFAULT_PERMISSIONS };
-
-    if (tenantId === DEFAULT_TENANT_ID) {
-      permissions['SUPER_ADMIN'] = [
-        'job:create', 'job:edit', 'job:view',
-        'candidate:create', 'candidate:view',
-        'submission:create', 'submission:edit',
-        'tenant:settings', 'user:manage', 'platform:manage',
-      ];
-    }
-
     const roleMap: Record<string, string> = {};
 
-    for (const [roleName, perms] of Object.entries(permissions)) {
+    // Fetch base permissions and system keys from the new system_roles table
+    const sysRolesRes = await this.authQuery.query('SELECT id, name, system_key, permissions FROM system_roles');
+    
+    for (const sysRole of sysRolesRes.rows as any[]) {
+      const systemKey = sysRole.system_key;
+      const roleName = sysRole.name;
+      const systemRoleId = sysRole.id;
+      let perms: string[] = typeof sysRole.permissions === 'string' ? JSON.parse(sysRole.permissions) : sysRole.permissions;
+
+      // As per business requirements, only seed SUPER_ADMIN and TENANT_ADMIN by default.
+      // Branches are forced to manually create their own custom roles for everything else (RECRUITER, etc.).
+      if (systemKey !== 'SUPER_ADMIN' && systemKey !== 'TENANT_ADMIN') {
+        continue; 
+      }
+
+      if (systemKey === 'SUPER_ADMIN' && tenantId !== DEFAULT_TENANT_ID) {
+        continue; // Only seed SUPER_ADMIN for the default master tenant
+      }
+
       let roleRes = await this.authQuery.query(
         'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = UPPER($2) AND is_system = true LIMIT 1',
-        [tenantId, roleName]
+        [tenantId, systemKey] // Wait, historically the name might be 'Admin' or 'ADMIN'
       );
+      
       let roleId: string;
       if (roleRes.rows.length === 0) {
+        // Try looking up by name just in case
+        roleRes = await this.authQuery.query(
+          'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = UPPER($2) AND is_system = true LIMIT 1',
+          [tenantId, roleName]
+        );
+      }
+
+      if (roleRes.rows.length === 0) {
         const ins = await this.authQuery.query(`
-          INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role)
+          INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role_id)
           VALUES ($1, NULL, $2, $3, true, $4)
           RETURNING id
         `, [
           tenantId,
           roleName,
-          `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`,
-          roleName,
+          `Default system role for ${roleName.toLowerCase()}.`,
+          systemRoleId,
         ]);
         roleId = (ins.rows[0] as any).id;
       } else {
         roleId = (roleRes.rows[0] as any).id;
         await this.authQuery.query(
-          'UPDATE custom_roles SET system_role = $1, description = $2 WHERE id = $3',
-          [roleName, `Default system role for ${roleName.toLowerCase().replace('_', ' ')}s.`, roleId]
+          'UPDATE custom_roles SET system_role_id = $1, description = $2 WHERE id = $3',
+          [systemRoleId, `Default system role for ${roleName.toLowerCase()}.`, roleId]
         );
       }
 
-      roleMap[roleName] = roleId;
+      roleMap[systemKey] = roleId;
 
-      await this.authQuery.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
-      for (const perm of perms) {
-        await this.authQuery.query(
-          'INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)',
-          [roleId, perm]
-        );
-      }
+      await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2', [JSON.stringify(perms), roleId]);
     }
 
     return roleMap;
@@ -144,11 +96,13 @@ export class AuthRbacService {
   async listRoles(tenantId: string, branchId?: string | string[], includeSystem = false) {
     let sql = `
       SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName",
-             cr.name, cr.description, cr.is_system as "isSystem", cr.system_role as "systemRole",
+             cr.name, cr.description, cr.is_system as "isSystem", sys_role.system_key as "systemRole", cr.system_role_id as "systemRoleId",
              cr.base_role_id as "baseRoleId", sr.name as "baseRoleName",
+             cr.permissions,
              cr.created_at as "createdAt", cr.updated_at as "updatedAt",
              cr.created_by as "createdById", u.full_name as "createdByName", u.email as "createdByEmail"
       FROM custom_roles cr
+      LEFT JOIN system_roles sys_role ON sys_role.id = cr.system_role_id
       LEFT JOIN branches b ON b.id = cr.branch_id
       LEFT JOIN users u ON u.id = cr.created_by
       LEFT JOIN custom_roles sr ON cr.base_role_id = sr.id
@@ -180,7 +134,11 @@ export class AuthRbacService {
     const rolesRes = await this.authQuery.query(sql, params);
     const roles = rolesRes.rows;
 
-    const DEFAULT_PERMS = AuthRbacService.DEFAULT_PERMISSIONS;
+    const sysRolesRes = await this.authQuery.query('SELECT system_key, permissions FROM system_roles');
+    const DEFAULT_PERMS: Record<string, string[]> = {};
+    for (const row of sysRolesRes.rows as any[]) {
+      DEFAULT_PERMS[row.system_key] = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.permissions;
+    }
 
     const coveredArchetypes = new Set<string>();
     for (const r of roles as any[]) {
@@ -191,26 +149,11 @@ export class AuthRbacService {
       }
     }
 
-    const roleIds = (roles as any[]).map((r) => r.id);
-    const rolePermMap: Record<string, string[]> = {};
-    if (roleIds.length > 0) {
-      const permsRes = await this.authQuery.query(
-        'SELECT role_id, permission FROM role_permissions WHERE role_id = ANY($1::uuid[])',
-        [roleIds]
-      );
-      for (const row of permsRes.rows as any[]) {
-        if (!rolePermMap[row.role_id]) {
-          rolePermMap[row.role_id] = [];
-        }
-        rolePermMap[row.role_id].push(row.permission);
-      }
-    }
-
     const result: any[] = [];
     for (const role of roles as any[]) {
       const baseSysRole = (role.systemRole || role.name || '').toUpperCase();
       const defaultPerms = DEFAULT_PERMS[baseSysRole] || [];
-      const rolePerms = rolePermMap[role.id] || [];
+      const rolePerms = typeof role.permissions === 'string' ? JSON.parse(role.permissions) : (role.permissions || []);
 
       let displayName = role.name;
       if (role.isSystem && (role.name === 'ADMIN' || role.name === 'TENANT_ADMIN')) {
@@ -269,21 +212,30 @@ export class AuthRbacService {
 
     let resolvedBaseRoleId = baseRoleId || null;
     let resolvedSystemRole = systemRole?.toUpperCase().trim() || 'RECRUITER';
+    let resolvedSystemRoleId: string | null = null;
 
     if (resolvedBaseRoleId) {
       const baseRoleRes = await this.authQuery.query(
-        'SELECT id, name, system_role FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        `SELECT cr.id, cr.name, sr.system_key, sr.id as system_role_id
+         FROM custom_roles cr 
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id 
+         WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
         [resolvedBaseRoleId, tenantId]
       );
       if (baseRoleRes.rows.length > 0) {
-        resolvedSystemRole = (baseRoleRes.rows[0] as any).system_role || (baseRoleRes.rows[0] as any).name;
+        resolvedSystemRole = (baseRoleRes.rows[0] as any).system_key || (baseRoleRes.rows[0] as any).name;
+        resolvedSystemRoleId = (baseRoleRes.rows[0] as any).system_role_id;
       }
     } else {
       const baseRoleRes = await this.authQuery.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND is_system = true AND (UPPER(name) = $2 OR UPPER(system_role) = $2) LIMIT 1',
+        `SELECT cr.id, sr.id as system_role_id 
+         FROM custom_roles cr
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = $1 AND cr.is_system = true AND (UPPER(cr.name) = $2 OR UPPER(sr.system_key) = $2) LIMIT 1`,
         [tenantId, resolvedSystemRole]
       );
       resolvedBaseRoleId = (baseRoleRes.rows[0] as any)?.id || null;
+      resolvedSystemRoleId = (baseRoleRes.rows[0] as any)?.system_role_id || null;
     }
 
     if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
@@ -304,7 +256,11 @@ export class AuthRbacService {
       validateBranchAccess(requester, effectiveBranchId, 'create roles');
     }
 
-    const DEFAULT_PERMS = AuthRbacService.DEFAULT_PERMISSIONS;
+    const sysRolesRes = await this.authQuery.query('SELECT system_key, permissions FROM system_roles');
+    const DEFAULT_PERMS: Record<string, string[]> = {};
+    for (const row of sysRolesRes.rows as any[]) {
+      DEFAULT_PERMS[row.system_key] = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.permissions;
+    }
     const allowedBaseCeiling = new Set(DEFAULT_PERMS[resolvedSystemRole] || DEFAULT_PERMS.RECRUITER);
     let resolvedPermissions = permissions || [];
     if (resolvedPermissions.length === 0 ||
@@ -322,16 +278,12 @@ export class AuthRbacService {
     }
 
     const roleRes = await this.authQuery.query(
-      `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role, base_role_id, created_by)
-       VALUES ($1, $2, $3, $4, false, $5, $6, $7)
-       RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role as "systemRole", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById"`,
-      [tenantId, effectiveBranchId, name, description, resolvedSystemRole, resolvedBaseRoleId, createdById || null]
+      `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
+       VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8::jsonb)
+       RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
+      [tenantId, effectiveBranchId, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
     );
     const role: any = roleRes.rows[0];
-
-    for (const perm of resolvedPermissions) {
-      await this.authQuery.query('INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)', [role.id, perm]);
-    }
 
     let branchName = null;
     if (effectiveBranchId) {
@@ -386,8 +338,11 @@ export class AuthRbacService {
       if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
         throw new BadRequestException('Invalid base system role selected.');
       }
-      params.push(resolvedSystemRole);
-      updates.push(`system_role = $${params.length}`);
+      const sysRoleRes = await this.authQuery.query('SELECT id FROM system_roles WHERE system_key = $1 LIMIT 1', [resolvedSystemRole]);
+      if (sysRoleRes.rows.length > 0) {
+        params.push(sysRoleRes.rows[0].id);
+        updates.push(`system_role_id = $${params.length}`);
+      }
     }
 
     if (body.branchId !== undefined) { params.push(body.branchId); updates.push(`branch_id = $${params.length}::uuid`); }
@@ -423,7 +378,10 @@ export class AuthRbacService {
 
   async updateRolePermissions(tenantId: string, roleId: string, permissions: string[], requester?: AuthUser) {
     const roleResult = await this.authQuery.query(
-      'SELECT id, is_system, system_role, base_role_id, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      `SELECT cr.id, cr.is_system, sr.system_key as system_role, cr.base_role_id, cr.branch_id 
+       FROM custom_roles cr 
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id 
+       WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
       [roleId, tenantId]
     );
     if (roleResult.rows.length === 0) throw new NotFoundException('Role not found.');
@@ -434,26 +392,30 @@ export class AuthRbacService {
       validateBranchAccess(requester, role.branch_id, 'update role permissions');
     }
 
-    const DEFAULT_PERMS = AuthRbacService.DEFAULT_PERMISSIONS;
+    const sysRolesRes = await this.authQuery.query('SELECT system_key, permissions FROM system_roles');
+    const DEFAULT_PERMS: Record<string, string[]> = {};
+    for (const row of sysRolesRes.rows as any[]) {
+      DEFAULT_PERMS[row.system_key] = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.permissions;
+    }
     const sysKey = (role.system_role || 'RECRUITER').toUpperCase();
     const allowedCeiling = new Set(DEFAULT_PERMS[sysKey] || DEFAULT_PERMS.RECRUITER);
     const filteredPermissions = role.is_system ? permissions : permissions.filter(p => allowedCeiling.has(p));
 
-    await this.authQuery.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]);
-    for (const perm of filteredPermissions) {
-      await this.authQuery.query('INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)', [roleId, perm]);
-    }
+    await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2', [JSON.stringify(filteredPermissions), roleId]);
 
     return { message: 'Permissions updated successfully.', permissions: filteredPermissions };
   }
 
   async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string, requester?: AuthUser) {
-    const roleResult = await this.authQuery.query(
-      'SELECT id, name, is_system, system_role, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+    const roleRes = await this.authQuery.query(
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id 
+       FROM custom_roles cr
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+       WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
       [roleId, tenantId]
     );
-    if (roleResult.rows.length === 0) throw new NotFoundException('Role not found.');
-    const roleToDel: any = roleResult.rows[0];
+    if (roleRes.rows.length === 0) throw new NotFoundException('Role not found.');
+    const roleToDel: any = roleRes.rows[0];
     if (roleToDel.is_system) throw new BadRequestException('You cannot delete default system roles.');
 
     // Branch isolation: branch admins can only delete roles in their assigned branches
@@ -485,7 +447,10 @@ export class AuthRbacService {
     } else {
       const baseSysRole = roleToDel.system_role || 'RECRUITER';
       const fallbackRes = await this.authQuery.query(
-        'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (name = $2 OR system_role = $2) AND is_system = true LIMIT 1',
+        `SELECT cr.id, cr.name 
+         FROM custom_roles cr
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = $1 AND (cr.name = $2 OR sr.system_key = $2) AND cr.is_system = true LIMIT 1`,
         [tenantId, baseSysRole]
       );
       targetRole = fallbackRes.rows[0];
@@ -513,32 +478,10 @@ export class AuthRbacService {
       ).catch(() => {});
     }
 
-    // Clean up any branch_roles JSON references
-    const usersWithBranchRoles = await this.authQuery.query(
-      `SELECT id, branch_roles FROM users WHERE tenant_id = $1 AND branch_roles::text LIKE '%' || $2 || '%'`,
-      [tenantId, roleId]
-    ).catch(() => ({ rows: [] }));
-    for (const u of usersWithBranchRoles.rows as any[]) {
-      let branchRoles = u.branch_roles || {};
-      let changed = false;
-      for (const [bId, rList] of Object.entries(branchRoles)) {
-        if (Array.isArray(rList) && rList.includes(roleId)) {
-          branchRoles[bId] = targetRole ? rList.map((r: string) => r === roleId ? targetRole.id : r) : rList.filter((r: string) => r !== roleId);
-          changed = true;
-        }
-      }
-      if (changed) {
-        await this.authQuery.query(
-          'UPDATE users SET branch_roles = $1::jsonb WHERE id = $2 AND tenant_id = $3',
-          [JSON.stringify(branchRoles), u.id, tenantId]
-        ).catch(() => {});
-      }
-    }
 
     // Nullify role in pending invitations if any
     await this.authQuery.query('UPDATE user_invitations SET role_id = NULL WHERE role_id = $1', [roleId]).catch(() => {});
 
-    await this.authQuery.query('DELETE FROM role_permissions WHERE role_id = $1', [roleId]).catch(() => {});
     await this.authQuery.query('DELETE FROM user_roles WHERE role_id = $1', [roleId]).catch(() => {});
     await this.authQuery.query('DELETE FROM custom_roles WHERE id = $1 AND tenant_id = $2', [roleId, tenantId]);
 
@@ -630,7 +573,10 @@ export class AuthRbacService {
     if (!userIds || userIds.length === 0) throw new BadRequestException('Please provide at least one user ID.');
 
     const roleRes = await this.authQuery.query(
-      'SELECT id, name, is_system, system_role, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id 
+       FROM custom_roles cr
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+       WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
       [roleId, tenantId]
     );
     if (roleRes.rows.length === 0) throw new NotFoundException('Target custom role not found.');
@@ -670,7 +616,10 @@ export class AuthRbacService {
 
   async unassignUserFromRole(tenantId: string, roleId: string, userId: string, requester?: AuthUser) {
     const roleRes = await this.authQuery.query(
-      'SELECT id, name, is_system, system_role, branch_id FROM custom_roles WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id 
+       FROM custom_roles cr
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+       WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
       [roleId, tenantId]
     );
     if (roleRes.rows.length === 0) throw new NotFoundException('Role not found.');
@@ -694,7 +643,9 @@ export class AuthRbacService {
     let nextRoleId = user.role_id === role.id ? (remainingAssigned[0] || null) : user.role_id;
     if (!nextRoleId) {
       const defaultRoleRes = await this.authQuery.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND system_role = $2 LIMIT 1',
+        `SELECT cr.id FROM custom_roles cr
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = $1 AND sr.system_key = $2 LIMIT 1`,
         [tenantId, 'RECRUITER']
       );
       nextRoleId = (defaultRoleRes.rows[0] as any)?.id || null;
@@ -785,9 +736,10 @@ export class AuthRbacService {
 
   async verifyLastAdminProtection(tenantId: string, targetUserId: string, action: 'demote' | 'deactivate' | 'delete') {
     const userRes = await this.authQuery.query(
-      `SELECT u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role, u.is_active, u.is_approved 
+      `SELECT u.role_id, u.assigned_role_ids, cr.name as role_name, sr.system_key as system_role, u.is_active, u.is_approved 
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.role_id
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
        WHERE u.id = $1 AND u.tenant_id = $2 LIMIT 1`,
       [targetUserId, tenantId]
     );
@@ -800,8 +752,9 @@ export class AuthRbacService {
         `SELECT COUNT(*) as count 
          FROM users u
          LEFT JOIN custom_roles cr ON cr.id = u.role_id
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
          WHERE u.tenant_id = $1 AND u.is_active = true AND u.is_approved = true 
-           AND (cr.system_role = 'ADMIN' OR cr.name = 'ADMIN')`,
+           AND (sr.system_key = 'ADMIN' OR cr.name = 'ADMIN')`,
         [tenantId]
       );
       const adminCount = parseInt((adminsRes.rows[0] as any).count, 10);

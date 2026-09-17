@@ -180,17 +180,12 @@ Validates email + password and returns a signed JWT access token.
     @Headers('x-tenant-id') tenantHeader?: string,
   ) {
     const tenantId = resolveTenantId(user, tenantHeader);
-    // Branch Admins can only see their own branch(es)' users
+    // Branch Admins can only see their own branch users
     const isBranchAdmin =
       Array.isArray((user as any).permissions) &&
       (user as any).permissions.includes('branch_admin:manage') &&
       !(user as any).permissions.includes('tenant:settings');
-    // Use all assigned branches (not just primary branchId) for multi-branch admins
-    const scopedBranchId = isBranchAdmin
-      ? (Array.isArray((user as any).assignedBranchIds) && (user as any).assignedBranchIds.length > 0
-          ? (user as any).assignedBranchIds
-          : (user as any).branchId || null)
-      : null;
+    const scopedBranchId = isBranchAdmin ? ((user as any).branchId || null) : null;
     return this.authService.listUsers(tenantId, scopedBranchId);
   }
 
@@ -271,7 +266,7 @@ Validates email + password and returns a signed JWT access token.
   })
   async updateUserDetails(
     @Param('id') userId: string,
-    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
+    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roleId?: string; assignedRoleIds?: string[]; roles?: string[]; jobReviewerId?: string | null },
     @CurrentUser() currentUser: AuthUser,
   ) {
     return this.authService.updateUserDetails(userId, body, currentUser);
@@ -499,11 +494,7 @@ Validates email + password and returns a signed JWT access token.
 
     let bid: string | string[] | undefined;
     if (isBranchAdmin) {
-      // Scope to all assigned branches for branch admins
-      const assignedBranchIds: string[] = Array.isArray((user as any).assignedBranchIds) && (user as any).assignedBranchIds.length > 0
-        ? (user as any).assignedBranchIds
-        : ((user as any).branchId ? [(user as any).branchId] : []);
-      bid = assignedBranchIds.length > 0 ? assignedBranchIds : undefined;
+      bid = (user as any).branchId || undefined;
     } else {
       bid = branchId && branchId !== 'ALL'
         ? branchId

@@ -1,4 +1,4 @@
-﻿import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 
 /**
@@ -20,22 +20,8 @@ export function isTenantAdmin(user: AuthUser): boolean {
   return false;
 }
 
-/**
- * Extracts all branch IDs assigned to the user.
- * Merges primary `branchId` with any multi-branch assignments in `assignedBranchIds`.
- */
 export function getUserAssignedBranchIds(user: AuthUser): string[] {
-  const branchIds = new Set<string>();
-  if (user.branchId) branchIds.add(user.branchId);
-
-  const assignedList = (user as any).assignedBranchIds;
-  if (Array.isArray(assignedList)) {
-    assignedList.forEach((id: string) => {
-      if (id && typeof id === 'string') branchIds.add(id);
-    });
-  }
-
-  return Array.from(branchIds);
+  return user.branchId ? [user.branchId] : [];
 }
 
 /**

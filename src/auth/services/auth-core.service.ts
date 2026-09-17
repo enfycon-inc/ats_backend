@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { AuthQueryService } from './auth-query.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
@@ -59,9 +60,10 @@ export class AuthCoreService {
     let dbTenantId: string | null = null;
     if (email || sub) {
       const userRes = await this.authQuery.query(
-        `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role
+        `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, sr.system_key as system_role
          FROM users u
          LEFT JOIN custom_roles cr ON cr.id = u.role_id
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
          WHERE u.email = $1 OR u.keycloak_id = $2 OR u.id::text = $3 LIMIT 1`,
         [email, sub, sub]
       );
@@ -73,7 +75,7 @@ export class AuthCoreService {
 
         if (Array.isArray(uRow.assigned_role_ids) && uRow.assigned_role_ids.length > 0) {
           const extraRolesRes = await this.authQuery.query(
-            `SELECT name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])`,
+            `SELECT cr.name, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[])`,
             [uRow.assigned_role_ids]
           );
           (extraRolesRes.rows as any[]).forEach((r) => {
@@ -94,29 +96,34 @@ export class AuthCoreService {
     return { roles: allRoles, tenantId, isAdmin };
   }
 
-  // ─── Login ───────────────────────────────────────────────────────────────────
+  // --- Login -------------------------------------------------------------------
 
   async login(dto: { email: string; password: string; subdomain?: string }) {
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
     const cleanEmail = dto.email.trim().toLowerCase();
-    let result = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
-       FROM users u
-       LEFT JOIN tenants t ON u.tenant_id = t.id
-       LEFT JOIN custom_roles cr ON u.role_id = cr.id
-       LEFT JOIN branches b ON u.branch_id = b.id
-       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
-       WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
-      [cleanEmail]
-    );
+    let result;
+    try {
+      result = await this.authQuery.query(
+        `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, sr.system_key as system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+         FROM users u
+         LEFT JOIN tenants t ON u.tenant_id = t.id
+         LEFT JOIN custom_roles cr ON u.role_id = cr.id
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         LEFT JOIN branches b ON u.branch_id = b.id
+         LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+         WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
+        [cleanEmail]
+      );
+    } catch (err) {
+      this.logger.error(`Login query failed: ${err.message}`, err.stack);
+      throw err;
+    }
 
-    // Self-healing bootstrap if admin / tenant-admin DB record missing
     if (result.rows.length === 0) {
       try {
         const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL;
         const isPlatformAdmin = Boolean(platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase());
-
         if (isPlatformAdmin) {
           const tenantId = DEFAULT_TENANT_ID;
           const userId = '1d4ac532-4229-4c95-9b11-af573060020b';
@@ -147,10 +154,11 @@ export class AuthCoreService {
           }
 
           result = await this.authQuery.query(
-            `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, cr.system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+            `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, sr.system_key as system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
              FROM users u
              LEFT JOIN tenants t ON u.tenant_id = t.id
              LEFT JOIN custom_roles cr ON u.role_id = cr.id
+             LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
              LEFT JOIN branches b ON u.branch_id = b.id
              LEFT JOIN business_units bu ON u.business_unit_id = bu.id
              WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
@@ -202,33 +210,32 @@ export class AuthCoreService {
         if (rid) { if (uuidRegex.test(rid)) userRoleIds.add(rid); else legacyRoleNames.add(rid); }
       });
     }
-    if (user.branch_roles && typeof user.branch_roles === 'object') {
-      Object.values(user.branch_roles).forEach((bRoleList: any) => {
-        if (Array.isArray(bRoleList)) bRoleList.forEach((rid: string) => {
-          if (rid) { if (uuidRegex.test(rid)) userRoleIds.add(rid); else legacyRoleNames.add(rid); }
-        });
-      });
-    }
 
     let permissions: string[] = [];
     let dynamicRoles: string[] = [];
 
-    if (legacyRoleNames.size > 0) {
-      const legacyRes = await this.authQuery.query(
-        'SELECT id, name FROM custom_roles WHERE tenant_id = $1 AND (UPPER(name) = ANY($2) OR system_role = ANY($2))',
-        [user.tenant_id, Array.from(legacyRoleNames).map(r => r.toUpperCase())]
-      ).catch(() => ({ rows: [] }));
-      (legacyRes.rows as any[]).forEach((r) => userRoleIds.add(r.id));
-    }
+      if (legacyRoleNames.size > 0) {
+        const legacyRes = await this.authQuery.query(
+          'SELECT cr.id, cr.name FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1 AND (UPPER(cr.name) = ANY($2) OR sr.system_key = ANY($2))',
+          [user.tenant_id, Array.from(legacyRoleNames).map(r => r.toUpperCase())]
+        ).catch(() => ({ rows: [] }));
+        (legacyRes.rows as any[]).forEach((r) => userRoleIds.add(r.id));
+      }
 
     if (userRoleIds.size > 0) {
       const validUuids = Array.from(userRoleIds).filter(id => uuidRegex.test(id));
       if (validUuids.length > 0) {
-        const [permsResult, rolesResult] = await Promise.all([
-          this.authQuery.query('SELECT DISTINCT permission FROM role_permissions WHERE role_id = ANY($1::uuid[])', [validUuids]).catch(() => ({ rows: [] })),
-          this.authQuery.query('SELECT id, name, system_role FROM custom_roles WHERE id = ANY($1::uuid[])', [validUuids]).catch(() => ({ rows: [] }))
-        ]);
-        permissions = (permsResult.rows as any[]).map((row) => row.permission);
+        const rolesResult = await this.authQuery.query(
+          'SELECT cr.id, cr.name, cr.permissions, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[])',
+          [validUuids]
+        ).catch(() => ({ rows: [] }));
+
+        const permSet = new Set<string>();
+        for (const row of rolesResult.rows as any[]) {
+          const pList = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
+          pList.forEach((p: string) => permSet.add(p));
+        }
+        permissions = Array.from(permSet);
         dynamicRoles = Array.from(new Set((rolesResult.rows as any[]).map((row) => row.name)));
       }
     }
@@ -346,8 +353,7 @@ export class AuthCoreService {
         roles: dynamicRoles, tenantId: user.tenant_id || DEFAULT_TENANT_ID, defaultMarket: user.default_market || 'US',
         tenantDomain: user.tenant_domain || '', permissions, systemRole,
         podId: user.pod_id || null, branchId: user.branch_id || null,
-        assignedBranchIds: user.assigned_branch_ids && user.assigned_branch_ids.length > 0 ? user.assigned_branch_ids : (user.branch_id ? [user.branch_id] : []),
-        branchRoles: user.branch_roles || {}, branchName: user.branch_name || null,
+        branchName: user.branch_name || null,
         businessUnitId: user.business_unit_id || null, businessUnitName: user.business_unit_name || null,
         podSystemEnabled: user.pod_system_enabled ?? true,
       },
@@ -402,8 +408,6 @@ export class AuthCoreService {
     roles?: string[];
     tenantId?: string;
     branchId?: string;
-    assignedBranchIds?: string[];
-    branchRoles?: Record<string, string[]>;
     isApproved?: boolean;
     sendEmailInvite?: boolean;
   }, authHeader?: string) {
@@ -453,7 +457,7 @@ export class AuthCoreService {
     let primaryRoleName = rawRolesList[0];
 
     const rolesRes = await this.authQuery.query(
-      `SELECT id, name, system_role FROM custom_roles WHERE tenant_id = $1 AND (id::text = ANY($2) OR UPPER(name) = ANY($3) OR system_role = ANY($3))`,
+      `SELECT cr.id, cr.name, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1 AND (cr.id::text = ANY($2) OR UPPER(cr.name) = ANY($3) OR sr.system_key = ANY($3))`,
       [tenantId, rawRolesList, rawRolesList.map(r => r.toUpperCase())]
     );
     (rolesRes.rows as any[]).forEach((r) => {
@@ -464,21 +468,19 @@ export class AuthCoreService {
     const assignedRoleIds: string[] = Array.from(resolvedRoleIds);
     const roleId: string | null = assignedRoleIds[0] || null;
     const branchId: string | null = dto.branchId && uuidRegex.test(dto.branchId) ? dto.branchId : null;
-    let assignedBranchIds: string[] = Array.isArray(dto.assignedBranchIds)
-      ? dto.assignedBranchIds.filter(b => b && uuidRegex.test(b))
-      : (branchId ? [branchId] : []);
-    if (branchId && !assignedBranchIds.includes(branchId)) assignedBranchIds.push(branchId);
-    const branchRoles = dto.branchRoles || (branchId && assignedRoleIds.length > 0 ? { [branchId]: assignedRoleIds } : {});
-
     const result = await this.authQuery.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids, branch_id, assigned_branch_ids, branch_roles)
-       VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[], $9, $10::uuid[], $11::jsonb)
-       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids, branch_id, assigned_branch_ids`,
-      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds, branchId, assignedBranchIds, JSON.stringify(branchRoles)]
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids, branch_id)
+       VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[], $9)
+       RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids, branch_id`,
+      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds, branchId]
     );
     const user: any = result.rows[0];
 
-    await this.keycloakService.provisionUserInKeycloak({ email: user.email, password, fullName: user.full_name, tenantId: user.tenant_id });
+    const provisionSuccess = await this.keycloakService.provisionUserInKeycloak({ email: user.email, password, fullName: user.full_name, tenantId: user.tenant_id });
+    if (!provisionSuccess) {
+      await this.authQuery.query('DELETE FROM users WHERE id = $1', [user.id]);
+      throw new InternalServerErrorException('Failed to provision user in authentication server. Registration aborted.');
+    }
 
     if (dto.sendEmailInvite !== false) {
       this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId])

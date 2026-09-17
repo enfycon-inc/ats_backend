@@ -121,6 +121,56 @@ export class JobsController {
     });
   }
 
+  @Get('delegations')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List incoming and outgoing delegation requests' })
+  async getDelegations(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('type') type: 'incoming' | 'outgoing' | 'all' = 'all'
+  ) {
+    const tid = resolveTenantId(user, tenantId) as string;
+    const branchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.getDelegationRequests(tid, branchId, type);
+  }
+
+  @Patch('delegations/:requestId/accept')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:accept_delegation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Accept an incoming delegation request' })
+  async acceptDelegation(
+    @Param('requestId') requestId: string,
+    @Body() dto: AcceptDelegationDto,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    console.log(`[JobsController] acceptDelegation called for requestId=${requestId}`);
+    const tid = resolveTenantId(user, tenantId) as string;
+    const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.acceptDelegation(requestId, dto, tid, targetBranchId);
+  }
+
+  @Patch('delegations/:requestId/reject')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:accept_delegation')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reject an incoming delegation request' })
+  async rejectDelegation(
+    @Param('requestId') requestId: string,
+    @Body() dto: RejectDelegationDto,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId) as string;
+    const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
+    return this.jobsService.rejectDelegation(requestId, dto, tid, targetBranchId);
+  }
+
   @Get(':id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('job:view')
@@ -261,53 +311,5 @@ export class JobsController {
     return this.jobsService.delegateJob(jobId, dto, tid, sourceBranchId);
   }
 
-  @Get('delegations')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'List incoming and outgoing delegation requests' })
-  async getDelegations(
-    @CurrentUser() user: AuthUser,
-    @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-branch-id') branchHeaderId?: string,
-    @Query('type') type: 'incoming' | 'outgoing' | 'all' = 'all'
-  ) {
-    const tid = resolveTenantId(user, tenantId) as string;
-    const branchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.getDelegationRequests(tid, branchId, type);
-  }
-
-  @Patch('delegations/:requestId/accept')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:accept_delegation')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Accept an incoming delegation request' })
-  async acceptDelegation(
-    @Param('requestId') requestId: string,
-    @Body() dto: AcceptDelegationDto,
-    @CurrentUser() user: AuthUser,
-    @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-branch-id') branchHeaderId?: string,
-  ) {
-    const tid = resolveTenantId(user, tenantId) as string;
-    const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.acceptDelegation(requestId, dto, tid, targetBranchId);
-  }
-
-  @Patch('delegations/:requestId/reject')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:accept_delegation')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Reject an incoming delegation request' })
-  async rejectDelegation(
-    @Param('requestId') requestId: string,
-    @Body() dto: RejectDelegationDto,
-    @CurrentUser() user: AuthUser,
-    @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-branch-id') branchHeaderId?: string,
-  ) {
-    const tid = resolveTenantId(user, tenantId) as string;
-    const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.rejectDelegation(requestId, dto, tid, targetBranchId);
-  }
 }
 

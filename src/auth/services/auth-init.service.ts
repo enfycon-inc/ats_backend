@@ -79,6 +79,17 @@ export class AuthInitService implements OnModuleInit {
 
   private async ensureUsersTable() {
     const ddl = `
+      -- 0. Create system_roles table
+      CREATE TABLE IF NOT EXISTS system_roles (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name          VARCHAR(100) UNIQUE NOT NULL,
+        system_key    VARCHAR(50) UNIQUE NOT NULL,
+        description   TEXT,
+        permissions   JSONB NOT NULL DEFAULT '[]',
+        created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
       -- 1. Create custom_roles table
       CREATE TABLE IF NOT EXISTS custom_roles (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -91,9 +102,9 @@ export class AuthInitService implements OnModuleInit {
         updated_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
 
-      -- Ensure branch_id, system_role, and base_role_id columns exist on custom_roles
+      -- Ensure branch_id, system_role_id, and base_role_id columns exist on custom_roles
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
-      ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS system_role VARCHAR(50) DEFAULT 'RECRUITER';
+      ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS system_role_id UUID REFERENCES system_roles(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS base_role_id UUID REFERENCES custom_roles(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles DROP CONSTRAINT IF EXISTS custom_roles_tenant_id_name_key;
@@ -104,13 +115,22 @@ export class AuthInitService implements OnModuleInit {
         ON custom_roles (tenant_id, UPPER(name)) 
         WHERE is_system = true;
 
-      -- Update system_role mappings for default system roles
-      UPDATE custom_roles SET system_role = 'ADMIN' WHERE name = 'ADMIN';
-      UPDATE custom_roles SET system_role = 'SUPER_ADMIN' WHERE name = 'SUPER_ADMIN';
-      UPDATE custom_roles SET system_role = 'BRANCH_ADMIN' WHERE name = 'BRANCH_ADMIN';
-      UPDATE custom_roles SET system_role = 'ACCOUNT_MANAGER' WHERE name = 'ACCOUNT_MANAGER';
-      UPDATE custom_roles SET system_role = 'DELIVERY_HEAD' WHERE name = 'DELIVERY_HEAD';
-      UPDATE custom_roles SET system_role = 'POD_LEAD' WHERE name = 'POD_LEAD';
+      -- Populate standard system roles if they don't exist
+      INSERT INTO system_roles (name, system_key, permissions) VALUES
+      ('Super Admin', 'SUPER_ADMIN', '["tenant:manage", "user:manage"]'),
+      ('Admin', 'ADMIN', '["job:create", "job:edit", "job:view", "job:publish_direct", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "candidate:create", "candidate:view", "submission:create", "submission:view", "submission:edit", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "client:view", "client:create", "client:direct_add", "client:edit", "client:approve", "client:reject", "client:delete", "placement:view", "placement:create", "report:view", "tenant:settings", "user:manage", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap", "branch:create", "branch:edit", "branch:delete", "branch_admin:manage", "candidate:search_all_branches", "job:view_all_branches", "candidate:search_all_markets"]'),
+      ('Branch Admin', 'BRANCH_ADMIN', '["job:create", "job:view", "job:edit", "job:publish_direct", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "job:delegate", "job:accept_delegation", "candidate:create", "candidate:view", "submission:create", "submission:view", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "submission:edit", "client:view", "client:create", "client:direct_add", "client:edit", "client:approve", "client:reject", "placement:view", "placement:create", "report:view", "branch:edit", "branch_admin:manage", "branch:assign_user", "branch:assign_manager", "user:manage", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap"]'),
+      ('Recruiter', 'RECRUITER', '["candidate:create", "candidate:view", "submission:create", "submission:view", "submission:edit", "job:view", "client:view", "pod:view"]'),
+      ('Account Manager', 'ACCOUNT_MANAGER', '["job:create", "job:edit", "job:view", "job:publish_direct", "job:approve", "job:reject", "job:assign_recruiter", "candidate:view", "candidate:create", "submission:view", "submission:create", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:schedule_interview", "submission:edit_rate", "submission:edit", "pod:view", "client:view", "client:create", "client:direct_add", "client:edit", "placement:view", "placement:create", "report:view"]'),
+      ('Delivery Head', 'DELIVERY_HEAD', '["job:view", "job:edit", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "candidate:view", "candidate:create", "submission:view", "submission:create", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "submission:edit", "client:view", "client:create", "client:edit", "client:approve", "client:reject", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap", "candidate:search_all_branches", "job:view_all_branches", "candidate:search_all_markets", "placement:view", "report:view"]'),
+      ('Pod Lead', 'POD_LEAD', '["job:view", "candidate:view", "candidate:create", "submission:view", "submission:create", "submission:internal_screening", "submission:schedule_interview", "submission:edit", "client:view", "pod:view", "pod:edit", "report:view"]')
+      ON CONFLICT (system_key) DO UPDATE SET permissions = EXCLUDED.permissions;
+
+      -- Update system_role_id mappings for default system roles based on name
+      UPDATE custom_roles cr
+      SET system_role_id = sr.id
+      FROM system_roles sr
+      WHERE cr.is_system = true AND UPPER(cr.name) = sr.system_key;
 
       -- Link custom roles to their corresponding base system role ID
       UPDATE custom_roles cr
@@ -118,40 +138,14 @@ export class AuthInitService implements OnModuleInit {
         SELECT sr.id FROM custom_roles sr
         WHERE sr.tenant_id = cr.tenant_id
           AND sr.is_system = true
-          AND (
-            UPPER(sr.name) = UPPER(cr.system_role)
-            OR UPPER(REPLACE(sr.name, '_', '')) = UPPER(REPLACE(cr.system_role, '_', ''))
-          )
+          AND sr.system_role_id = cr.system_role_id
         LIMIT 1
       )
-      WHERE cr.is_system = false AND cr.base_role_id IS NULL;
+      WHERE cr.is_system = false AND cr.base_role_id IS NULL AND cr.system_role_id IS NOT NULL;
 
-      -- Remove obsolete TRACKER system role if present
-      DELETE FROM custom_roles WHERE UPPER(name) = 'TRACKER' OR UPPER(system_role) = 'TRACKER';
 
-      -- 2. Create role_permissions table
-      CREATE TABLE IF NOT EXISTS role_permissions (
-        role_id       UUID NOT NULL REFERENCES custom_roles(id) ON DELETE CASCADE,
-        permission    VARCHAR(100) NOT NULL,
-        PRIMARY KEY (role_id, permission)
-      );
 
-      -- Grant full pod management permissions to all BRANCH_ADMIN roles
-      INSERT INTO role_permissions (role_id, permission)
-      SELECT cr.id, p.perm
-      FROM custom_roles cr
-      CROSS JOIN (
-        VALUES 
-          ('pod:create'),
-          ('pod:edit'),
-          ('pod:delete'),
-          ('pod:view'),
-          ('pod:reset_cycle'),
-          ('pod:overlap')
-      ) AS p(perm)
-      WHERE UPPER(COALESCE(cr.system_role, '')) = 'BRANCH_ADMIN' 
-         OR UPPER(cr.name) IN ('BRANCH_ADMIN', 'BRANCH ADMIN')
-      ON CONFLICT (role_id, permission) DO NOTHING;
+      -- We no longer manually INSERT INTO role_permissions here since seedTenantRoles will do it from system_roles JSON.
 
       -- 2b. Create tenant_auth_settings table
       CREATE TABLE IF NOT EXISTS tenant_auth_settings (
@@ -204,10 +198,8 @@ export class AuthInitService implements OnModuleInit {
       -- Ensure is_approved column exists on older tables
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT true;
 
-      -- Add branch_id, assigned_branch_ids, branch_roles, business_unit_id, and job_reviewer_id to users
+      -- Add branch_id, business_unit_id, and job_reviewer_id to users
       ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_branch_ids UUID[] DEFAULT '{}';
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_roles JSONB DEFAULT '{}';
       ALTER TABLE users ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS job_reviewer_id UUID REFERENCES users(id) ON DELETE SET NULL;
 
@@ -248,9 +240,6 @@ export class AuthInitService implements OnModuleInit {
         LIMIT 1
       )
       WHERE u.branch_id IS NULL;
-
-      -- Auto-backfill assigned_branch_ids array with branch_id if empty
-      UPDATE users SET assigned_branch_ids = ARRAY[branch_id] WHERE branch_id IS NOT NULL AND (assigned_branch_ids IS NULL OR cardinality(assigned_branch_ids) = 0);
     `;
     try {
       const statements = ddl

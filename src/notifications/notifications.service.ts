@@ -122,12 +122,9 @@ export class NotificationsService {
    */
   async createMany(tenantId: string, userIds: string[], payload: NotificationPayload) {
     const validIds = Array.from(new Set(userIds.filter(Boolean)));
-    const results: any[] = [];
-    for (const uId of validIds) {
-      const n = await this.create(tenantId, uId, payload);
-      if (n) results.push(n);
-    }
-    return results;
+    const promises = validIds.map(uId => this.create(tenantId, uId, payload));
+    const results = await Promise.all(promises);
+    return results.filter(Boolean);
   }
 
   /**
@@ -306,10 +303,7 @@ export class NotificationsService {
 
     if (filters?.branchId && filters.branchId !== 'ALL') {
       where.user = {
-        OR: [
-          { branchId: filters.branchId },
-          { assignedBranchIds: { has: filters.branchId } },
-        ],
+        branchId: filters.branchId,
       };
     }
 
@@ -422,10 +416,7 @@ export class NotificationsService {
         where: {
           tenantId,
           isActive: true,
-          OR: [
-            { branchId: payload.targetId },
-            { assignedBranchIds: { has: payload.targetId } },
-          ],
+          branchId: payload.targetId,
         },
         select: { id: true },
       });
@@ -435,12 +426,12 @@ export class NotificationsService {
       const targetRoleNorm = targetRoleId.toUpperCase().replace(/[\s-_]/g, '');
       const users = await this.prisma.user.findMany({
         where: { tenantId, isActive: true },
-        include: { customRole: true },
+        include: { customRole: { include: { systemRole: true } } },
       });
       targetUserIds = users
         .filter((u) => {
           const customNorm = (u.customRole?.name || '').toUpperCase().replace(/[\s-_]/g, '');
-          const sysNorm = (u.customRole?.systemRole || '').toUpperCase().replace(/[\s-_]/g, '');
+          const sysNorm = (u.customRole?.systemRole?.systemKey || '').toUpperCase().replace(/[\s-_]/g, '');
           return (
             customNorm === targetRoleNorm ||
             sysNorm === targetRoleNorm ||

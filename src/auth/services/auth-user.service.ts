@@ -31,7 +31,7 @@ export class AuthUserService {
   async getProfile(userId: string) {
     const result = await this.authQuery.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.created_at, u.updated_at,
-              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles,
+              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
@@ -48,7 +48,7 @@ export class AuthUserService {
     const u: any = result.rows[0];
 
     const rolesRes = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, cr.system_role, cr.base_role_id FROM custom_roles cr WHERE cr.tenant_id = $1`,
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.base_role_id FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1`,
       [u.tenant_id]
     );
 
@@ -61,29 +61,22 @@ export class AuthUserService {
     }
 
     const rolePermsRes = await this.authQuery.query(
-      `SELECT rp.role_id, rp.permission FROM role_permissions rp JOIN custom_roles cr ON cr.id = rp.role_id WHERE cr.tenant_id = $1`,
+      `SELECT cr.id as role_id, cr.permissions FROM custom_roles cr WHERE cr.tenant_id = $1`,
       [u.tenant_id]
     ).catch(() => ({ rows: [] }));
 
     const rolePermMap: Record<string, Set<string>> = {};
     for (const row of rolePermsRes.rows as any[]) {
       if (!rolePermMap[row.role_id]) rolePermMap[row.role_id] = new Set();
-      rolePermMap[row.role_id].add(row.permission);
+      const pList = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
+      for (const p of pList) {
+        rolePermMap[row.role_id].add(p);
+      }
     }
 
     const userRoleIds = new Set<string>();
     if (u.role_id) userRoleIds.add(u.role_id);
     if (Array.isArray(u.assigned_role_ids)) u.assigned_role_ids.forEach((rid: string) => userRoleIds.add(rid));
-    if (u.branch_roles && typeof u.branch_roles === 'object') {
-      Object.values(u.branch_roles).forEach((bRoleList: any) => {
-        if (Array.isArray(bRoleList)) {
-          bRoleList.forEach((item: string) => {
-            if (roleById[item]) userRoleIds.add(item);
-            else if (roleByName[String(item).toUpperCase()]) userRoleIds.add(roleByName[String(item).toUpperCase()].id);
-          });
-        }
-      });
-    }
 
     const userPerms = new Set<string>();
     userRoleIds.forEach((rId) => { if (rolePermMap[rId]) rolePermMap[rId].forEach((p) => userPerms.add(p)); });
@@ -107,8 +100,7 @@ export class AuthUserService {
       tenantId: u.tenant_id, isActive: u.is_active, createdAt: u.created_at,
       defaultMarket: u.default_market || 'US', tenantDomain: u.tenant_domain || '',
       userLimit: u.user_limit || 5, podId: u.pod_id, branchId: u.branch_id,
-      assignedBranchIds: u.assigned_branch_ids && u.assigned_branch_ids.length > 0 ? u.assigned_branch_ids : (u.branch_id ? [u.branch_id] : []),
-      branchRoles: u.branch_roles || {}, branchName: u.branch_name || null,
+      branchName: u.branch_name || null,
       businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
       jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
       podSystemEnabled: u.pod_system_enabled !== false,
@@ -127,22 +119,23 @@ export class AuthUserService {
       if (Array.isArray(scopedBranchId) && scopedBranchId.length > 0) {
         // Multiple branches: match if user's branch_id is in the list or assigned_branch_ids overlaps
         queryParams.push(scopedBranchId);
-        branchFilter = `AND (u.branch_id = ANY($2::uuid[]) OR u.assigned_branch_ids && $2::uuid[])`;
+        branchFilter = `AND u.branch_id = ANY($2::uuid[])`;
       } else if (typeof scopedBranchId === 'string') {
         queryParams.push(scopedBranchId);
-        branchFilter = `AND (u.branch_id = $2 OR $2 = ANY(COALESCE(u.assigned_branch_ids, '{}')::uuid[]))`;
+        branchFilter = `AND u.branch_id = $2`;
       }
     }
 
     const result = await this.authQuery.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at,
-              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.assigned_branch_ids, u.branch_roles,
+              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
               u.business_unit_id, u.job_reviewer_id,
               rev.full_name as job_reviewer_name,
-              r.name as role_name, r.system_role as system_role, r.base_role_id as base_role_id,
-              b.name as branch_name, bu.name as business_unit_name
-       FROM users u 
-       LEFT JOIN custom_roles r ON u.role_id = r.id
+                r.name as role_name, sr.system_key as system_role, r.base_role_id as base_role_id,
+                b.name as branch_name, bu.name as business_unit_name
+         FROM users u 
+         LEFT JOIN custom_roles r ON u.role_id = r.id
+         LEFT JOIN system_roles sr ON r.system_role_id = sr.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
        LEFT JOIN users rev ON u.job_reviewer_id = rev.id
@@ -151,7 +144,7 @@ export class AuthUserService {
     );
 
     const rolesRes = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, cr.system_role, cr.base_role_id FROM custom_roles cr WHERE cr.tenant_id = $1`,
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.base_role_id FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1`,
       [tenantId]
     );
     const roleById: Record<string, any> = {};
@@ -163,34 +156,22 @@ export class AuthUserService {
     }
 
     const rolePermsRes = await this.authQuery.query(
-      `SELECT rp.role_id, rp.permission FROM role_permissions rp JOIN custom_roles cr ON cr.id = rp.role_id WHERE cr.tenant_id = $1`,
+      `SELECT cr.id as role_id, cr.permissions FROM custom_roles cr WHERE cr.tenant_id = $1`,
       [tenantId]
     ).catch(() => ({ rows: [] }));
     const rolePermMap: Record<string, Set<string>> = {};
     for (const row of rolePermsRes.rows as any[]) {
       if (!rolePermMap[row.role_id]) rolePermMap[row.role_id] = new Set();
-      rolePermMap[row.role_id].add(row.permission);
+      const pList = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
+      for (const p of pList) {
+        rolePermMap[row.role_id].add(p);
+      }
     }
 
     return (result.rows as any[]).map((u) => {
       const userRoleIds = new Set<string>();
       if (u.role_id) userRoleIds.add(u.role_id);
       if (Array.isArray(u.assigned_role_ids)) u.assigned_role_ids.forEach((rid: string) => userRoleIds.add(rid));
-
-      const resolvedBranchRoles: Record<string, string[]> = {};
-      if (u.branch_roles && typeof u.branch_roles === 'object') {
-        Object.entries(u.branch_roles).forEach(([bId, bRoleList]: [string, any]) => {
-          if (Array.isArray(bRoleList)) {
-            const bNames: string[] = [];
-            bRoleList.forEach((item: string) => {
-              if (roleById[item]) { userRoleIds.add(item); bNames.push(roleById[item].name); }
-              else if (roleByName[String(item).toUpperCase()]) { userRoleIds.add(roleByName[String(item).toUpperCase()].id); bNames.push(roleByName[String(item).toUpperCase()].name); }
-              else { bNames.push(item); }
-            });
-            if (bNames.length > 0) resolvedBranchRoles[bId] = bNames;
-          }
-        });
-      }
 
       const userPerms = new Set<string>();
       userRoleIds.forEach((rId) => { if (rolePermMap[rId]) rolePermMap[rId].forEach((p) => userPerms.add(p)); });
@@ -211,8 +192,6 @@ export class AuthUserService {
         roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds),
         roleName: primaryRole, systemRole, baseRoleId, isActive: u.is_active, isApproved: u.is_approved, createdAt: u.created_at,
         podId: u.pod_id, branchId: u.branch_id,
-        assignedBranchIds: u.assigned_branch_ids && u.assigned_branch_ids.length > 0 ? u.assigned_branch_ids : (u.branch_id ? [u.branch_id] : []),
-        branchRoles: Object.keys(resolvedBranchRoles).length > 0 ? resolvedBranchRoles : (u.branch_roles || {}),
         branchName: u.branch_name || null, businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
         jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
         permissions: Array.from(userPerms), canReview,
@@ -283,9 +262,10 @@ export class AuthUserService {
     const normalized = roles.map((r) => r.toUpperCase());
 
     const userRes = await this.authQuery.query(
-      `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, cr.system_role
+      `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, sr.system_key as system_role
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.role_id
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
        WHERE u.id = $1 LIMIT 1`,
       [userId]
     );
@@ -305,9 +285,10 @@ export class AuthUserService {
     if (!isNewAdmin) await this.rbacService.verifyLastAdminProtection(tenantId, userId, 'demote');
 
     const customRolesRes = await this.authQuery.query(
-      `SELECT id, name FROM custom_roles 
-       WHERE tenant_id = $1 AND (UPPER(name) = ANY($2::text[]) OR system_role = ANY($2::text[]) OR id::text = ANY($2::text[]))
-       ORDER BY (is_system = false) DESC, created_at DESC`,
+      `SELECT cr.id, cr.name FROM custom_roles cr
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+       WHERE cr.tenant_id = $1 AND (UPPER(cr.name) = ANY($2::text[]) OR UPPER(sr.system_key) = ANY($2::text[]) OR cr.id::text = ANY($2::text[]))
+       ORDER BY (cr.is_system = false) DESC, cr.created_at DESC`,
       [tenantId, normalized]
     );
     const roleIds: string[] = (customRolesRes.rows as any[]).map((r) => r.id);
@@ -323,7 +304,7 @@ export class AuthUserService {
 
   async updateUserDetails(
     userId: string,
-    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; assignedBranchIds?: string[]; branchRoles?: Record<string, string[]>; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
+    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     requester: any
   ) {
     const userRes = await this.authQuery.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
@@ -370,54 +351,85 @@ export class AuthUserService {
       email = cleanEmail;
     }
 
-    let assignedBranchIds = user.assigned_branch_ids || [];
-    let branchRoles = user.branch_roles || {};
-
     if (dto.branchId !== undefined) branchId = dto.branchId || null;
-    if (dto.assignedBranchIds !== undefined) assignedBranchIds = Array.isArray(dto.assignedBranchIds) ? dto.assignedBranchIds : [];
-    if (dto.branchRoles !== undefined) branchRoles = dto.branchRoles || {};
-    if (branchId && !assignedBranchIds.includes(branchId)) assignedBranchIds = Array.from(new Set([branchId, ...assignedBranchIds]));
     if (dto.businessUnitId !== undefined) businessUnitId = dto.businessUnitId || null;
     if (dto.jobReviewerId !== undefined) jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const rawRoleIdentifiers = new Set<string>();
-    if (dto.branchRoles !== undefined) {
-      Object.values(branchRoles).forEach((rList: any) => {
-        if (Array.isArray(rList)) rList.forEach((r: string) => { if (r && typeof r === 'string') rawRoleIdentifiers.add(r.trim()); });
-      });
+
+    // Did the request provide explicit role-related fields?
+    const hasRoleUpdates = dto.roleId !== undefined || dto.roles !== undefined || dto.assignedRoleIds !== undefined;
+
+    if (hasRoleUpdates) {
+      // A submitted selection replaces the old assignment. Legacy hints must not append removed roles.
+      const selection = dto.assignedRoleIds ?? dto.roles ?? (dto.roleId ? [dto.roleId] : []);
+      if (!Array.isArray(selection) || selection.some(r => typeof r !== 'string' || !r.trim())) {
+        throw new BadRequestException('Roles must be a list of role IDs.');
+      }
+      selection.forEach(r => rawRoleIdentifiers.add(r.trim()));
     }
-    if (dto.roleId && typeof dto.roleId === 'string') rawRoleIdentifiers.add(dto.roleId.trim());
-    if (Array.isArray(dto.roles)) dto.roles.forEach((r: string) => { if (r && typeof r === 'string') rawRoleIdentifiers.add(r.trim()); });
 
     const combinedRoleIds = new Set<string>();
-    if (rawRoleIdentifiers.size > 0) {
-      const rawList = Array.from(rawRoleIdentifiers);
-      const matchedRolesRes = await this.authQuery.query(
-        `SELECT id, name, system_role FROM custom_roles WHERE tenant_id = $1 AND (id::text = ANY($2) OR UPPER(name) = ANY($3) OR system_role = ANY($3))`,
-        [user.tenant_id, rawList, rawList.map(r => r.toUpperCase())]
-      );
-      (matchedRolesRes.rows as any[]).forEach((r) => combinedRoleIds.add(r.id));
-    }
-
-    if (user.role_id && uuidRegex.test(user.role_id)) combinedRoleIds.add(user.role_id);
-    if (Array.isArray(user.assigned_role_ids)) {
-      user.assigned_role_ids.forEach((rid: string) => { if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid); });
+    let retainsTenantAdministration = false;
+    
+    if (hasRoleUpdates) {
+      // Resolve all provided role identifiers to exact DB UUIDs
+      if (rawRoleIdentifiers.size > 0) {
+        const rawList = Array.from(rawRoleIdentifiers);
+        const matchedRolesRes = await this.authQuery.query(
+          `SELECT cr.id, cr.name, cr.branch_id, cr.permissions, sr.system_key as system_role
+           FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+           WHERE cr.tenant_id = $1 AND (cr.branch_id IS NULL OR cr.branch_id = $4::uuid)
+             AND (LOWER(cr.id::text) = ANY($2::text[]) OR UPPER(cr.name) = ANY($3::text[]) OR UPPER(sr.system_key) = ANY($3::text[]))`,
+          [user.tenant_id, rawList.map(r => r.toLowerCase()), rawList.map(r => r.toUpperCase()), branchId]
+        );
+        const available = matchedRolesRes.rows as any[];
+        for (const identifier of rawList) {
+          const key = identifier.toUpperCase();
+          const exact = available.filter(r => r.id.toUpperCase() === key);
+          const named = available.filter(r => r.name.toUpperCase() === key);
+          const matches = exact.length ? exact : named.length ? named : available.filter(r => r.system_role?.toUpperCase() === key);
+          if (matches.length !== 1) {
+            throw new BadRequestException('Select an exact role from this member\'s branch. A selected role is missing or ambiguous.');
+          }
+          const selected = matches[0];
+          const requesterPermissions: string[] = requester.permissions || [];
+          const selectedPermissions: string[] = typeof selected.permissions === 'string' ? JSON.parse(selected.permissions) : selected.permissions || [];
+          if (selectedPermissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p))) {
+            retainsTenantAdministration = true;
+          }
+          if (selectedPermissions.includes('platform:manage') && !requesterPermissions.includes('platform:manage')) {
+            throw new ForbiddenException('You cannot assign platform administration permissions.');
+          }
+          if (selectedPermissions.some(p => p === 'tenant:settings' || p === 'tenant:manage') &&
+              !requesterPermissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p))) {
+            throw new ForbiddenException('You cannot assign tenant administration permissions.');
+          }
+          combinedRoleIds.add(selected.id);
+        }
+      }
+      if (dto.roleId && !Array.from(combinedRoleIds).some(id => id.toLowerCase() === dto.roleId!.toLowerCase())) {
+        throw new BadRequestException('The primary role must be one of the selected roles.');
+      }
+      if (!retainsTenantAdministration) await this.rbacService.verifyLastAdminProtection(user.tenant_id, userId, 'demote');
+    } else {
+      // No role updates requested, carry over existing roles
+      if (user.role_id && uuidRegex.test(user.role_id)) combinedRoleIds.add(user.role_id);
+      if (Array.isArray(user.assigned_role_ids)) {
+        user.assigned_role_ids.forEach((rid: string) => { if (rid && uuidRegex.test(rid)) combinedRoleIds.add(rid); });
+      }
     }
 
     let primaryRoleId: string | null = null;
-    if (dto.roleId && uuidRegex.test(dto.roleId)) primaryRoleId = dto.roleId;
+    if (hasRoleUpdates && dto.roleId) primaryRoleId = Array.from(combinedRoleIds).find(id => id.toLowerCase() === dto.roleId!.toLowerCase())!;
     else if (combinedRoleIds.size > 0) primaryRoleId = Array.from(combinedRoleIds)[0];
-    else if (user.role_id && uuidRegex.test(user.role_id)) primaryRoleId = user.role_id;
+    else if (!hasRoleUpdates && user.role_id && uuidRegex.test(user.role_id)) primaryRoleId = user.role_id;
 
     await this.authQuery.query(
-      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, assigned_branch_ids = $6::uuid[], branch_roles = $7::jsonb, business_unit_id = $8, job_reviewer_id = $9, role_id = $10, assigned_role_ids = $11::uuid[], updated_at = NOW() WHERE id = $12`,
-      [firstName, lastName, fullName, email, branchId, assignedBranchIds, JSON.stringify(branchRoles), businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds), userId]
+      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, business_unit_id = $6, job_reviewer_id = $7, role_id = $8, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10 AND tenant_id = $11`,
+      [firstName, lastName, fullName, email, branchId, businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds), userId, user.tenant_id]
     );
-
-    if (dto.roles && Array.isArray(dto.roles) && dto.roles.length > 0) {
-      await this.updateUserRoles(userId, dto.roles, requester.roles || []);
-    }
 
     if (dto.password && dto.password.length >= 8) {
       this.keycloakService.provisionUserInKeycloak({ email, password: dto.password, fullName, tenantId: user.tenant_id }).catch((err: any) => {

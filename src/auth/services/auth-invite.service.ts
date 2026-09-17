@@ -88,10 +88,15 @@ export class AuthInviteService {
     }
 
     const systemRole = (dto.systemRole || 'RECRUITER').toUpperCase();
+    const sysRoleRes = await this.authQuery.query('SELECT id FROM system_roles WHERE system_key = $1 LIMIT 1', [systemRole]);
+    const systemRoleId = sysRoleRes.rows.length > 0 ? (sysRoleRes.rows[0] as any).id : null;
+
     let roleId = dto.roleId || null;
     if (!roleId) {
       const defaultRoleRes = await this.authQuery.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND (system_role = $2 OR name = $2) LIMIT 1',
+        `SELECT cr.id FROM custom_roles cr
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = $1 AND (sr.system_key = $2 OR cr.name = $2) LIMIT 1`,
         [tenantId, systemRole]
       );
       if (defaultRoleRes.rows.length > 0) roleId = (defaultRoleRes.rows[0] as any).id;
@@ -112,13 +117,13 @@ export class AuthInviteService {
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     await this.authQuery.query(
-      `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role, branch_id, pod_id, invitation_token, token_expires_at, created_by)
+      `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role_id, branch_id, pod_id, invitation_token, token_expires_at, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (tenant_id, email) DO UPDATE SET
          invitation_token = EXCLUDED.invitation_token,
          token_expires_at = EXCLUDED.token_expires_at,
          is_accepted = FALSE`,
-      [tenantId, cleanEmail, fullName, roleId, systemRole, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.isAdmin ? 'Admin' : 'BranchAdmin']
+      [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.isAdmin ? 'Admin' : 'BranchAdmin']
     );
 
     const tenantRes = await this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
@@ -144,10 +149,11 @@ export class AuthInviteService {
   async getInvitationDetails(token: string) {
     if (!token) throw new BadRequestException('Token is required.');
     const res = await this.authQuery.query(
-      `SELECT ui.id, ui.email, ui.full_name, ui.system_role, ui.token_expires_at, ui.is_accepted,
+      `SELECT ui.id, ui.email, ui.full_name, sr.system_key as system_role, ui.token_expires_at, ui.is_accepted,
               t.name as tenant_name, t.domain as tenant_domain
        FROM user_invitations ui
        JOIN tenants t ON ui.tenant_id = t.id
+       LEFT JOIN system_roles sr ON ui.system_role_id = sr.id
        WHERE ui.invitation_token = $1 LIMIT 1`,
       [token]
     );

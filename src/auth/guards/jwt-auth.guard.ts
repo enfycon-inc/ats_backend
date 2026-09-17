@@ -131,7 +131,13 @@ export class JwtAuthGuard implements CanActivate {
 
       let dbUser: any;
       const cached = this.userCache.get(decoded.sub);
-      if (cached && cached.expiresAt > Date.now()) {
+      const currentState = cached ? await this.prisma.user.findUnique({
+        where: { id: cached.user.id },
+        select: { updatedAt: true, isActive: true },
+      }) : null;
+      const unchanged = currentState?.isActive && cached?.user.updated_at &&
+        currentState.updatedAt.getTime() === new Date(cached.user.updated_at).getTime();
+      if (cached && cached.expiresAt > Date.now() && unchanged) {
         dbUser = cached.user;
       } else {
         dbUser = await this.authService.syncKeycloakUser({
@@ -153,7 +159,8 @@ export class JwtAuthGuard implements CanActivate {
       }
 
       const mergedRoles = Array.from(
-        new Set([...allJwtRoles, ...(dbUser.roles || [])]),
+        // Tenant roles come from current DB assignments. Only the platform realm role is authoritative in the token.
+        new Set([...(realmRoles.includes('SUPER_ADMIN') ? ['SUPER_ADMIN'] : []), ...(dbUser.roles || [])]),
       )
         .map((r) => (r as string).toUpperCase().replace(/[\s-]/g, '_'))
         .filter((r) => !isTechnicalKeycloakRole(r));
@@ -169,8 +176,6 @@ export class JwtAuthGuard implements CanActivate {
         permissions: dbUser.permissions || [],
         podId: dbUser.pod_id || null,
         branchId: dbUser.branch_id || null,
-        assignedBranchIds: dbUser.assigned_branch_ids || [],
-        branchRoles: dbUser.branch_roles || {},
         businessUnitId: dbUser.business_unit_id || null,
         defaultMarket: dbUser.default_market || 'US',
         tenantDomain: dbUser.tenant_domain || '',

@@ -30,8 +30,7 @@ function isTenantAdminUser(user: AuthUser): boolean {
 }
 
 function getUserAllowedBranchIds(user: AuthUser): string[] {
-  const list = [user?.branchId, ...(Array.isArray(user?.assignedBranchIds) ? user.assignedBranchIds : [])].filter(Boolean) as string[];
-  return Array.from(new Set(list));
+  return user?.branchId ? [user.branchId] : [];
 }
 
 @ApiTags('ATS Recruitment Pods')

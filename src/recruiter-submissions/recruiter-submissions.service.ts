@@ -133,10 +133,10 @@ export class RecruiterSubmissionsService {
       // Check recruiter role and pod for PENDING_APPROVAL workflow
       const recruiter = await this.prisma.user.findFirst({
         where: { id: dto.recruiterId, tenantId },
-        include: { customRole: { select: { systemRole: true } } },
+        include: { customRole: { select: { systemRole: { select: { systemKey: true } } } } },
       });
 
-      if (recruiter && recruiter.customRole?.systemRole === 'RECRUITER' && recruiter.podId) {
+      if (recruiter && recruiter.customRole?.systemRole?.systemKey === 'RECRUITER' && recruiter.podId) {
         finalStatus = 'PENDING_APPROVAL';
       }
     }

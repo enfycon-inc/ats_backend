@@ -193,7 +193,7 @@ export class BranchesService {
         where: { tenantId, isActive: true },
         include: {
           customRole: {
-            select: { name: true, systemRole: true },
+            select: { name: true, systemRole: { select: { systemKey: true } } },
           },
         },
         orderBy: { fullName: 'asc' },
@@ -202,12 +202,12 @@ export class BranchesService {
 
     return branches.map((b) => {
       const branchMembers: BranchMember[] = allTenantUsers
-        .filter((u) => u.branchId === b.id || (u.assignedBranchIds && u.assignedBranchIds.includes(b.id)))
+        .filter((u) => u.branchId === b.id)
         .map((u) => ({
           id: u.id,
           email: u.email,
           fullName: u.fullName,
-          roles: [u.customRole?.name || u.customRole?.systemRole || 'RECRUITER'],
+          roles: [u.customRole?.name || u.customRole?.systemRole?.systemKey || 'RECRUITER'],
           isActive: u.isActive,
           podId: u.podId,
           createdAt: u.createdAt.toISOString(),
@@ -367,14 +367,11 @@ export class BranchesService {
       where: {
         tenantId,
         isActive: true,
-        OR: [
-          { branchId },
-          { assignedBranchIds: { has: branchId } },
-        ],
+        branchId,
       },
       include: {
         customRole: {
-          select: { name: true, systemRole: true },
+          select: { name: true, systemRole: { select: { systemKey: true } } },
         },
       },
       orderBy: { fullName: 'asc' },
@@ -384,14 +381,14 @@ export class BranchesService {
       id: u.id,
       email: u.email,
       fullName: u.fullName,
-      roles: [u.customRole?.name || u.customRole?.systemRole || 'RECRUITER'],
+      roles: [u.customRole?.name || u.customRole?.systemRole?.systemKey || 'RECRUITER'],
       isActive: u.isActive,
       podId: u.podId,
       createdAt: u.createdAt.toISOString(),
     }));
   }
 
-  async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[], assignedBranchIds?: string[]) {
+  async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[]) {
     await this.findOne(branchId, tenantId);
     const user = await this.prisma.user.findFirst({
       where: { id: userId, tenantId },
@@ -400,10 +397,8 @@ export class BranchesService {
       throw new NotFoundException('User not found in tenant.');
     }
 
-    const branchIds =
-      assignedBranchIds && Array.isArray(assignedBranchIds) && assignedBranchIds.length > 0
-        ? Array.from(new Set([branchId, ...assignedBranchIds]))
-        : [branchId];
+    // Single branch only — user belongs to exactly one branch
+    const singleBranch = [branchId];
 
     if (roles && Array.isArray(roles) && roles.length > 0) {
       const customRoles = await this.prisma.customRole.findMany({
@@ -412,7 +407,7 @@ export class BranchesService {
           OR: [
             { name: { in: roles } },
             { id: { in: roles.filter((r) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(r)) } },
-            { systemRole: { in: roles } },
+            { systemRole: { systemKey: { in: roles } } },
           ],
         },
         orderBy: [
@@ -429,7 +424,6 @@ export class BranchesService {
           where: { id: userId },
           data: {
             branchId,
-            assignedBranchIds: branchIds,
             roleId,
             assignedRoleIds: roleIds,
           },
@@ -439,8 +433,6 @@ export class BranchesService {
           where: { id: userId },
           data: {
             branchId,
-            assignedBranchIds: branchIds,
-            assignedRoleIds: roleIds,
           },
         });
       }
@@ -449,7 +441,6 @@ export class BranchesService {
         where: { id: userId },
         data: {
           branchId,
-          assignedBranchIds: branchIds,
         },
       });
     }
@@ -468,7 +459,6 @@ export class BranchesService {
         throw new NotFoundException('Selected manager user not found in tenant.');
       }
 
-      const updatedBranchIds = Array.from(new Set([branchId, ...(mgr.assignedBranchIds || [])]));
 
       const branchAdminRole = await this.prisma.customRole.findFirst({
         where: {
@@ -477,7 +467,7 @@ export class BranchesService {
           AND: [
             {
               OR: [
-                { systemRole: 'BRANCH_ADMIN' },
+                { systemRole: { systemKey: 'BRANCH_ADMIN' } },
                 { name: { in: ['BRANCH_ADMIN', 'Branch Admin', 'BRANCH ADMIN'], mode: 'insensitive' } },
               ],
             },
@@ -497,7 +487,6 @@ export class BranchesService {
         where: { id: managerId },
         data: {
           branchId,
-          assignedBranchIds: updatedBranchIds,
           assignedRoleIds: updatedRoleIds,
           ...(branchAdminRole?.id ? { roleId: branchAdminRole.id } : {}),
         },

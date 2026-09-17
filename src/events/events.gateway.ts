@@ -166,10 +166,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         where: {
           tenantId,
           isActive: true,
-          OR: [
-            { branchId },
-            { assignedBranchIds: { has: branchId } },
-          ],
+          branchId,
         },
         select: { id: true, email: true },
       });
@@ -189,19 +186,21 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         `SELECT u.id, u.email 
          FROM ats.users u
          LEFT JOIN ats.custom_roles cr ON cr.id = u.role_id
+         LEFT JOIN ats.system_roles sr ON cr.system_role_id = sr.id
          WHERE u.tenant_id = $1 AND u.is_active = true
            AND (
-             cr.system_role IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR
+             sr.system_key IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR
              UPPER(cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN') OR
              EXISTS (
                SELECT 1 FROM ats.custom_roles sub_cr
+               LEFT JOIN ats.system_roles sub_sr ON sub_cr.system_role_id = sub_sr.id
                WHERE (sub_cr.id = u.role_id OR sub_cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-                 AND (sub_cr.system_role IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR UPPER(sub_cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN'))
+                 AND (sub_sr.system_key IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR UPPER(sub_cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN'))
              ) OR
              EXISTS (
-               SELECT 1 FROM ats.role_permissions rp 
-               WHERE (rp.role_id = u.role_id OR rp.role_id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-                 AND rp.permission IN ('tenant:settings', 'branch_admin:manage', 'user:manage')
+               SELECT 1 FROM ats.custom_roles cr2 
+               WHERE (cr2.id = u.role_id OR cr2.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
+                 AND cr2.permissions ?| array['tenant:settings', 'branch_admin:manage', 'user:manage']
              )
            )`,
         tenantId

@@ -255,13 +255,13 @@ export class JobsService implements OnModuleInit {
           cr.id = u.role_id 
           OR cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
         )
-        LEFT JOIN ats.role_permissions rp ON rp.role_id = cr.id
+        LEFT JOIN ats.system_roles sr ON sr.id = cr.system_role_id
         LEFT JOIN ats.branches b ON b.id = u.branch_id
         WHERE u.tenant_id = $1 AND u.is_active = true
           AND (
-            rp.permission IN ('job:approve', 'branch_admin:manage', 'submission:internal_screening')
+            cr.permissions ?| array['job:approve', 'branch_admin:manage', 'submission:internal_screening']
             OR (b.manager_id = u.id)
-            OR UPPER(COALESCE(cr.system_role, '')) IN ('DELIVERY_HEAD', 'DELIVERYHEAD', 'BRANCH_ADMIN')
+            OR UPPER(COALESCE(sr.system_key, '')) IN ('DELIVERY_HEAD', 'DELIVERYHEAD', 'BRANCH_ADMIN')
             OR u.id IN (SELECT DISTINCT job_reviewer_id FROM ats.users WHERE tenant_id = $1 AND job_reviewer_id IS NOT NULL)
           )
       `;
@@ -271,8 +271,8 @@ export class JobsService implements OnModuleInit {
         sql += ` AND (
           u.branch_id = $2 
           OR $2 = ANY(COALESCE(u.assigned_branch_ids, '{}'))
-          OR rp.permission IN ('job:view_all_branches', 'tenant:settings', 'tenant:manage')
-          OR UPPER(COALESCE(cr.system_role, '')) = 'DELIVERY_HEAD'
+          OR cr.permissions ?| array['job:view_all_branches', 'tenant:settings', 'tenant:manage']
+          OR UPPER(COALESCE(sr.system_key, '')) = 'DELIVERY_HEAD'
         )`;
       }
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
@@ -468,20 +468,18 @@ export class JobsService implements OnModuleInit {
     if (createdByEmail && createdByEmail !== 'System') {
       // Cascading reviewer resolution: 1. User's designated reviewer -> 2. Pod Head -> 3. Branch Manager
       const creatorRows = await this.prisma.$queryRawUnsafe<any[]>(
-        `SELECT u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
-                u.role_id,
-                COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
-         FROM ats.users u
-         LEFT JOIN ats.pods p ON p.id = u.pod_id
-         LEFT JOIN ats.branches b ON b.id = u.branch_id
-         LEFT JOIN ats.custom_roles cr ON (
-           cr.id = u.role_id
-           OR cr.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
-         )
-         LEFT JOIN ats.role_permissions rp ON cr.id = rp.role_id
-         WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
-         GROUP BY u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id, u.role_id
-         LIMIT 1`,
+        `          SELECT u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
+                  u.role_id,
+                  (
+                    SELECT COALESCE(jsonb_agg(DISTINCT p), '[]'::jsonb)
+                    FROM ats.custom_roles cr2, jsonb_array_elements_text(cr2.permissions) p
+                    WHERE cr2.id = u.role_id OR cr2.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
+                  ) as permissions
+           FROM ats.users u
+           LEFT JOIN ats.pods p ON p.id = u.pod_id
+           LEFT JOIN ats.branches b ON b.id = u.branch_id
+           WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
+           LIMIT 1`,
         createdByEmail, tenantId
       ).catch(() => []);
 
@@ -828,10 +826,7 @@ export class JobsService implements OnModuleInit {
                 where: {
                   tenantId,
                   isActive: true,
-                  OR: [
-                    { branchId },
-                    { assignedBranchIds: { has: branchId } },
-                  ],
+                  branchId,
                 },
                 select: { id: true },
               });
@@ -2307,17 +2302,15 @@ export class JobsService implements OnModuleInit {
 
         if (createdBy && createdBy !== 'System') {
           const creatorRows = await this.prisma.$queryRawUnsafe<any[]>(
-            `SELECT u.id, u.role_id,
-                    COALESCE(ARRAY_AGG(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), '{}') as permissions
-             FROM ats.users u
-             LEFT JOIN ats.custom_roles cr ON (
-               (u.role_id IS NOT NULL AND cr.id = u.role_id)
-               OR (u.assigned_role_ids IS NOT NULL AND cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-             )
-             LEFT JOIN ats.role_permissions rp ON cr.id = rp.role_id
-             WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
-             GROUP BY u.id, u.role_id
-             LIMIT 1`,
+              `SELECT u.id, u.role_id,
+                      (
+                        SELECT COALESCE(jsonb_agg(DISTINCT p), '[]'::jsonb)
+                        FROM ats.custom_roles cr2, jsonb_array_elements_text(cr2.permissions) p
+                        WHERE cr2.id = u.role_id OR cr2.id = ANY(COALESCE(u.assigned_role_ids, '{}'))
+                      ) as permissions
+               FROM ats.users u
+               WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
+               LIMIT 1`,
             createdBy, tenantId
           ).catch(() => []);
 

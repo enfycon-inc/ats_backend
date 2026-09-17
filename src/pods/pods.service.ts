@@ -52,14 +52,14 @@ export class PodsService {
 
     if (effectiveBranchId) {
       role = await this.prisma.customRole.findFirst({
-        where: { tenantId, branchId: effectiveBranchId, systemRole: 'POD_LEAD' },
+        where: { tenantId, branchId: effectiveBranchId, systemRole: { systemKey: 'POD_LEAD' } },
         select: { id: true },
       });
     }
 
     if (!role) {
       role = await this.prisma.customRole.findFirst({
-        where: { tenantId, systemRole: 'POD_LEAD' },
+        where: { tenantId, systemRole: { systemKey: 'POD_LEAD' } },
         select: { id: true },
         orderBy: { createdAt: 'asc' },
       });
@@ -111,14 +111,14 @@ export class PodsService {
 
     if (branchId) {
       role = await this.prisma.customRole.findFirst({
-        where: { tenantId, branchId, systemRole: 'RECRUITER' },
+        where: { tenantId, branchId, systemRole: { systemKey: 'RECRUITER' } },
         select: { id: true },
       });
     }
 
     if (!role) {
       role = await this.prisma.customRole.findFirst({
-        where: { tenantId, systemRole: 'RECRUITER' },
+        where: { tenantId, systemRole: { systemKey: 'RECRUITER' } },
         select: { id: true },
         orderBy: { createdAt: 'asc' },
       });
@@ -225,7 +225,7 @@ export class PodsService {
         _count: { select: { jobPods: true } },
         users: {
           include: {
-            customRole: { select: { systemRole: true } },
+            customRole: { select: { systemRole: { select: { systemKey: true } } } },
           },
           orderBy: { fullName: 'asc' },
         },
@@ -246,7 +246,7 @@ export class PodsService {
         id: u.id,
         fullName: u.fullName,
         email: u.email,
-        systemRole: u.customRole?.systemRole || 'RECRUITER',
+        systemRole: u.customRole?.systemRole?.systemKey || 'RECRUITER',
       })),
       jobsCount: p._count.jobPods,
       createdAt: p.createdAt.toISOString(),
@@ -265,7 +265,7 @@ export class PodsService {
         _count: { select: { jobPods: true } },
         users: {
           include: {
-            customRole: { select: { systemRole: true } },
+            customRole: { select: { systemRole: { select: { systemKey: true } } } },
           },
           orderBy: { fullName: 'asc' },
         },
@@ -289,7 +289,7 @@ export class PodsService {
         id: u.id,
         fullName: u.fullName,
         email: u.email,
-        systemRole: u.customRole?.systemRole || 'RECRUITER',
+        systemRole: u.customRole?.systemRole?.systemKey || 'RECRUITER',
       })),
       jobsCount: pod._count.jobPods,
       createdAt: pod.createdAt.toISOString(),
@@ -323,23 +323,20 @@ export class PodsService {
       isApproved: true,
       customRole: {
         OR: [
-          { systemRole: { in: ['RECRUITER', 'POD_LEAD'] } },
+          { systemRole: { systemKey: { in: ['RECRUITER', 'POD_LEAD'] } } },
           { name: { in: ['RECRUITER', 'POD_LEAD', 'POD LEAD', 'Recruiter', 'Pod Lead'], mode: 'insensitive' } },
         ],
       },
     };
 
     if (branchId) {
-      where.OR = [
-        { branchId },
-        { assignedBranchIds: { has: branchId } },
-      ];
+      where.branchId = branchId;
     }
 
     const users = await this.prisma.user.findMany({
       where,
       include: {
-        customRole: { select: { name: true, systemRole: true } },
+        customRole: { select: { name: true, systemRole: { select: { systemKey: true } } } },
       },
       orderBy: { fullName: 'asc' },
     });
@@ -349,7 +346,7 @@ export class PodsService {
       fullName: u.fullName,
       email: u.email,
       roleName: u.customRole?.name || 'Staff',
-      systemRole: u.customRole?.systemRole || 'RECRUITER',
+      systemRole: u.customRole?.systemRole?.systemKey || 'RECRUITER',
     }));
   }
 

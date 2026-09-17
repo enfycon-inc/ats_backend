@@ -260,10 +260,11 @@ export class AuthTenantService {
     const tenant = tenantRes.rows[0];
 
     const usersRes = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name as "firstName", u.last_name as "lastName", u.full_name as "fullName", u.is_active as "isActive", u.is_approved as "isApproved", u.created_at as "createdAt", cr.name as "roleName", cr.system_role as "systemRole"
-       FROM users u
-       LEFT JOIN custom_roles cr ON u.role_id = cr.id
-       WHERE u.tenant_id = $1
+      `SELECT u.id, u.email, u.first_name as "firstName", u.last_name as "lastName", u.full_name as "fullName", u.is_active as "isActive", u.is_approved as "isApproved", u.created_at as "createdAt", cr.name as "roleName", sr.system_key as "systemRole"
+         FROM users u
+         LEFT JOIN custom_roles cr ON u.role_id = cr.id
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE u.tenant_id = $1
        ORDER BY u.created_at DESC`,
       [tenantId]
     );
