@@ -85,7 +85,7 @@ export class AuthUserService {
     const assignedRoleObjs: any[] = [];
     userRoleIds.forEach((rId) => { if (roleById[rId]) assignedRoleObjs.push(roleById[rId]); });
 
-    const { bestRoleObj } = this.computeBestRole(assignedRoleObjs);
+    const bestRoleObj = assignedRoleObjs.find(role => role.id === u.role_id) || assignedRoleObjs[0];
     const roleName = bestRoleObj?.name || (u.role_id ? roleById[u.role_id]?.name : null) || 'RECRUITER';
     const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || 'RECRUITER';
     const baseRoleId = bestRoleObj?.base_role_id || (u.role_id ? roleById[u.role_id]?.base_role_id : null) || null;
@@ -180,7 +180,7 @@ export class AuthUserService {
       const assignedRoleObjs: any[] = [];
       userRoleIds.forEach((rId) => { if (roleById[rId]) assignedRoleObjs.push(roleById[rId]); });
 
-      const { bestRoleObj } = this.computeBestRole(assignedRoleObjs);
+      const bestRoleObj = assignedRoleObjs.find(role => role.id === u.role_id) || assignedRoleObjs[0];
       const primaryRole = bestRoleObj?.name || u.role_name || 'RECRUITER';
       const systemRole = bestRoleObj?.system_role || u.system_role || 'RECRUITER';
       const baseRoleId = bestRoleObj?.base_role_id || u.base_role_id || null;
@@ -423,6 +423,7 @@ export class AuthUserService {
 
     let primaryRoleId: string | null = null;
     if (hasRoleUpdates && dto.roleId) primaryRoleId = Array.from(combinedRoleIds).find(id => id.toLowerCase() === dto.roleId!.toLowerCase())!;
+    else if (user.role_id && combinedRoleIds.has(user.role_id)) primaryRoleId = user.role_id;
     else if (combinedRoleIds.size > 0) primaryRoleId = Array.from(combinedRoleIds)[0];
     else if (!hasRoleUpdates && user.role_id && uuidRegex.test(user.role_id)) primaryRoleId = user.role_id;
 
@@ -451,23 +452,6 @@ export class AuthUserService {
   }
 
   // ─── Shared helpers ───────────────────────────────────────────
-
-  private readonly ROLE_RANK: Record<string, number> = {
-    SUPER_ADMIN: 100, ADMIN: 90, BRANCH_ADMIN: 80, DELIVERY_HEAD: 70,
-    ACCOUNT_MANAGER: 60, POD_LEAD: 50, RECRUITER: 40,
-  };
-
-  private computeBestRole(assignedRoleObjs: any[]): { bestRoleObj: any; highestRank: number } {
-    let bestRoleObj: any = null;
-    let highestRank = -1;
-    for (const r of assignedRoleObjs) {
-      const sysKey = (r.system_role || r.name || '').toUpperCase().replace(/[\s-_]+/g, '');
-      const matchedKey = Object.keys(this.ROLE_RANK).find(k => k.replace(/_/g, '') === sysKey) || '';
-      const rank = this.ROLE_RANK[matchedKey] || 30;
-      if (rank > highestRank) { highestRank = rank; bestRoleObj = r; }
-    }
-    return { bestRoleObj, highestRank };
-  }
 
   private deduplicateRoles(assignedRoleObjs: any[]): string[] {
     const seen = new Set<string>();
