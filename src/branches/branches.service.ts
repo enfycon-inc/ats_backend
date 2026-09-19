@@ -217,6 +217,14 @@ export class BranchesService {
     });
   }
 
+  async getDelegationTargets(tenantId: string, sourceBranchId?: string) {
+    return this.prisma.branch.findMany({
+      where: { tenantId, ...(sourceBranchId ? { id: { not: sourceBranchId } } : {}) },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   async findOne(id: string, tenantId: string): Promise<BranchResponse> {
     const branch = await this.prisma.branch.findFirst({
       where: { id, tenantId },

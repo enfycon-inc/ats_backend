@@ -985,6 +985,7 @@ export class RecruiterSubmissionsService {
       try {
         const branch: any = await this.prisma.branch.findFirst({
           where: {
+            tenantId,
             OR: [
               { id: resolvedBranchId },
               { name: { equals: resolvedBranchId, mode: 'insensitive' } },
@@ -1083,10 +1084,19 @@ export class RecruiterSubmissionsService {
     const cleanBranchId = branchId?.trim() || null;
     const cleanIsGlobal = Boolean(isGlobal || !cleanBranchId);
 
-    if (cleanIsGlobal && user) {
+    if (!cleanIsGlobal) {
+      const permissions = user?.permissions || [];
+      const tenantManager = permissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
+      if (!tenantManager && (!permissions.some(p => ['branch:edit', 'branch_admin:manage'].includes(p)) || user?.branchId !== cleanBranchId)) {
+        throw new ForbiddenException('You can only manage remarks for your assigned branch.');
+      }
+      const branch = await this.prisma.branch.findFirst({ where: { id: cleanBranchId!, tenantId }, select: { id: true } });
+      if (!branch) throw new NotFoundException('Branch not found.');
+    }
+
+    if (cleanIsGlobal) {
       const isGlobalAdmin =
-        user.roles?.some((r: string) => String(r).toUpperCase() === 'SUPER_ADMIN') ||
-        user.permissions?.includes('system:admin');
+        user?.permissions?.some(p => ['system:admin', 'platform:manage'].includes(p));
       if (!isGlobalAdmin) {
         throw new ForbiddenException(
           'Access denied. Universal global remark templates can only be created by a Global Administrator (SUPER_ADMIN).',
@@ -1132,8 +1142,7 @@ export class RecruiterSubmissionsService {
 
     if (isGlobal) {
       const isGlobalAdmin =
-        user?.roles?.some((r: string) => String(r).toUpperCase() === 'SUPER_ADMIN') ||
-        user?.permissions?.includes('system:admin');
+        user?.permissions?.some(p => ['system:admin', 'platform:manage'].includes(p));
 
       if (!isGlobalAdmin) {
         throw new ForbiddenException(
@@ -1141,6 +1150,11 @@ export class RecruiterSubmissionsService {
         );
       }
     } else {
+      const permissions = user?.permissions || [];
+      const tenantManager = permissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
+      if (!tenantManager && (!permissions.some(p => ['branch:edit', 'branch_admin:manage'].includes(p)) || user?.branchId !== remark.branch_id)) {
+        throw new ForbiddenException('You can only manage remarks for your assigned branch.');
+      }
       if (remark.tenant_id && remark.tenant_id !== tenantId) {
         throw new ForbiddenException('Access denied. You cannot delete remarks belonging to another tenant.');
       }

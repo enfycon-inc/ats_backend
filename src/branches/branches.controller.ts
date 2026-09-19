@@ -28,6 +28,16 @@ function hasGranularPermission(user: any, requiredPermissions: string[]): boolea
 export class BranchesController {
   constructor(private readonly branchesService: BranchesService) {}
 
+  private canManageTenant(user: any) {
+    return hasGranularPermission(user, ['tenant:settings', 'tenant:manage', 'platform:manage']);
+  }
+
+  private assertBranchAccess(user: any, id: string) {
+    if (!this.canManageTenant(user) && (!user.branchId || user.branchId !== id)) {
+      throw new ForbiddenException('You can only access your assigned branch.');
+    }
+  }
+
   @Post()
   async create(
     @Body() dto: CreateBranchDto,
@@ -44,12 +54,24 @@ export class BranchesController {
   @Get()
   async findAll(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    if (!this.canManageTenant(req.user)) {
+      return req.user.branchId ? [await this.branchesService.findOne(req.user.branchId, tenantId)] : [];
+    }
     return this.branchesService.findAll(tenantId);
+  }
+
+  @Get('delegation-targets')
+  async delegationTargets(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
+    if (!hasGranularPermission(req.user, ['job:delegate'])) throw new ForbiddenException('Missing job:delegate permission.');
+    return this.branchesService.getDelegationTargets(resolveTenantId(req.user, headerTenantId), req.user.branchId);
   }
 
   @Get('hierarchy')
   async getHierarchy(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    if (!this.canManageTenant(req.user)) {
+      throw new ForbiddenException('Branch directory access requires tenant administration permissions.');
+    }
     return this.branchesService.getHierarchy(tenantId);
   }
 
@@ -59,6 +81,7 @@ export class BranchesController {
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
+    this.assertBranchAccess(req.user, id);
     const tenantId = resolveTenantId(req.user, headerTenantId);
     return this.branchesService.findOne(id, tenantId);
   }
@@ -107,6 +130,7 @@ export class BranchesController {
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
+    this.assertBranchAccess(req.user, id);
     if (!hasGranularPermission(req.user, ['branch:delete', 'tenant:settings'])) {
       throw new ForbiddenException('Access denied. You do not have granular permission (branch:delete or tenant:settings) to delete branch locations.');
     }
@@ -120,6 +144,7 @@ export class BranchesController {
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
+    this.assertBranchAccess(req.user, id);
     const tenantId = resolveTenantId(req.user, headerTenantId);
     return this.branchesService.getMembers(id, tenantId);
   }

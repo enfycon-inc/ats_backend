@@ -12,6 +12,7 @@ import {
   HttpStatus,
   HttpCode,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth } from '@nestjs/swagger';
 import { RecruiterSubmissionsService, SubmissionDetails } from './recruiter-submissions.service';
@@ -118,6 +119,14 @@ export class RecruiterSubmissionsController {
   ) {
     const tid = resolveTenantId(user, tenantId);
     const parsedIncludeGlobal = includeGlobal !== undefined ? includeGlobal === 'true' || includeGlobal === '1' : undefined;
+    const tenantManager = user.permissions?.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
+    if (!tenantManager) {
+      if (branchId && branchId !== user.branchId) throw new ForbiddenException('You can only view remarks for your assigned branch.');
+      if (!branchId && parsedIncludeGlobal !== true) {
+        if (!user.branchId) throw new ForbiddenException('No branch is assigned to your account.');
+        branchId = user.branchId;
+      }
+    }
     return this.service.getCustomRemarks(tid, branchId, parsedIncludeGlobal);
   }
 
