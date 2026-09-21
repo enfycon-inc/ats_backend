@@ -116,7 +116,7 @@ export class AuthRbacService {
       sql += " AND cr.name <> 'SUPER_ADMIN'";
     }
 
-    if (branchId) {
+    if (branchId && branchId !== "all" && branchId !== "undefined" && branchId !== "null") {
       if (Array.isArray(branchId)) {
         if (branchId.length > 0) {
           params.push(branchId);
