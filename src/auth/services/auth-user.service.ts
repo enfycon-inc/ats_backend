@@ -48,7 +48,7 @@ export class AuthUserService {
     const u: any = result.rows[0];
 
     const rolesRes = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.base_role_id FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1`,
+      `SELECT cr.id, cr.name, cr.is_system, cr.branch_id, sr.system_key as system_role, cr.base_role_id FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1`,
       [u.tenant_id]
     );
 
@@ -63,7 +63,7 @@ export class AuthUserService {
     const rolePermsRes = await this.authQuery.query(
       `SELECT cr.id as role_id, cr.permissions FROM custom_roles cr WHERE cr.tenant_id = $1`,
       [u.tenant_id]
-    ).catch(() => ({ rows: [] }));
+    );
 
     const rolePermMap: Record<string, Set<string>> = {};
     for (const row of rolePermsRes.rows as any[]) {
@@ -91,11 +91,22 @@ export class AuthUserService {
     const baseRoleId = bestRoleObj?.base_role_id || (u.role_id ? roleById[u.role_id]?.base_role_id : null) || null;
 
     const cleanRoles = this.deduplicateRoles(assignedRoleObjs);
+    // Assigned dashboard perspectives must not depend on the branch-filtered role-management catalog.
+    // Keep exact IDs even when multiple branches use the same role display name.
+    const assignedRoles = assignedRoleObjs.map(role => ({
+      id: role.id,
+      name: role.name,
+      systemRole: role.system_role,
+      isSystem: role.is_system === true,
+      branchId: role.branch_id || null,
+      baseRoleId: role.base_role_id || null,
+      permissions: Array.from(rolePermMap[role.id] || []),
+    }));
 
     return {
       id: u.id, email: u.email, firstName: u.first_name || '', lastName: u.last_name || '', fullName: u.full_name,
       roles: cleanRoles.length > 0 ? cleanRoles : [roleName],
-      roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds),
+      roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds), assignedRoles,
       roleName, systemRole, baseRoleId, permissions: Array.from(userPerms), canReview,
       tenantId: u.tenant_id, isActive: u.is_active, createdAt: u.created_at,
       defaultMarket: u.default_market || 'US', tenantDomain: u.tenant_domain || '',
