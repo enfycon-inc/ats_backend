@@ -537,7 +537,7 @@ Validates email + password and returns a signed JWT access token.
     @Query('branchId') queryBranchId?: string,
   ) {
     const bid = body.branchId || queryBranchId || headerBranchId;
-    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, user.dbId, body.baseRoleId, user);
+    return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, body.businessUnitId, user.dbId, body.baseRoleId, user);
   }
 
   // ─── PUT /api/auth/rbac/roles/:id ───────────────────────────

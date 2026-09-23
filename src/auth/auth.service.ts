@@ -100,8 +100,8 @@ export class AuthService {
   seedTenantRoles(tenantId: string) { return this.rbacService.seedTenantRoles(tenantId); }
   listRoles(tenantId: string, branchId?: string | string[], includeSystem?: boolean) { return this.rbacService.listRoles(tenantId, branchId, includeSystem); }
   getAssignableRolePool(tenantId: string, branchId?: string) { return this.rbacService.getAssignableRolePool(tenantId, branchId); }
-  createCustomRole(tenantId: string, name: string, description: string, permissions: string[], systemRole?: string, branchId?: string, createdById?: string, baseRoleId?: string, requester?: any) {
-    return this.rbacService.createCustomRole(tenantId, name, description, permissions, systemRole, branchId, createdById, baseRoleId, requester);
+  createCustomRole(tenantId: string, name: string, description: string, permissions: string[], systemRole?: string, branchId?: string, businessUnitId?: string, createdById?: string, baseRoleId?: string, requester?: any) {
+    return this.rbacService.createCustomRole(tenantId, name, description, permissions, systemRole, branchId, businessUnitId, createdById, baseRoleId, requester);
   }
   updateCustomRole(tenantId: string, roleId: string, body: any, userId?: string, requester?: any) { return this.rbacService.updateCustomRole(tenantId, roleId, body, userId, requester); }
   updateRolePermissions(tenantId: string, roleId: string, permissions: string[], requester?: any) { return this.rbacService.updateRolePermissions(tenantId, roleId, permissions, requester); }
