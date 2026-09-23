@@ -204,6 +204,10 @@ model BusinessUnit {
   podDistributionStrategy    String                 @default("AUTO") @map("pod_distribution_strategy") @db.VarChar(50)
   marketSegmentId            String?                @map("market_segment_id") @db.Uuid
   jobCodePattern             String?                @map("job_code_pattern") @db.VarChar(200)
+    address                    String?                @db.VarChar(500)
+    city                       String?                @db.VarChar(100)
+    state                      String?                @db.VarChar(100)
+    zipCode                    String?                @map("zip_code") @db.VarChar(20)
   createdAt                  DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   branch                     Branch?                @relation(fields: [branchId], references: [id], onDelete: Cascade)

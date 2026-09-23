@@ -2,6 +2,10 @@ export class CreateBusinessUnitDto {
   name: string;
   branchId?: string;
   code?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
   market?: string;
   currency?: string;
   shiftTiming?: string;
