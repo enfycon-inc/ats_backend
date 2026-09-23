@@ -13,6 +13,9 @@ export class CreatePodDto {
   @ApiPropertyOptional({ example: 'd3b07384-d113-49c3-a555-9ee75c13ca33', description: 'Branch ID this pod is isolated to' })
   branchId?: string;
 
+  @ApiPropertyOptional({ example: 'd3b07384-d113-49c3-a555-9ee75c13ca33', description: 'Business Unit ID this pod belongs to' })
+  businessUnitId?: string;
+
   @ApiPropertyOptional({ example: 'Optional team description', description: 'Description of the recruitment team focus' })
   description?: string;
 }

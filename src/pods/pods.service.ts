@@ -15,6 +15,8 @@ export interface PodResponse {
   name: string;
   branchId: string | null;
   branchName: string | null;
+  businessUnitId: string | null;
+  businessUnitName: string | null;
   podHeadId: string | null;
   podHeadName: string | null;
   description: string | null;
@@ -145,10 +147,20 @@ export class PodsService {
   /**
    * Create a new recruitment pod
    */
-  async create(dto: CreatePodDto, tenantId: string, branchId?: string): Promise<PodResponse> {
+  async create(dto: CreatePodDto, tenantId: string, branchId?: string, businessUnitId?: string): Promise<PodResponse> {
     this.logger.log(`Creating pod "${dto.name}" for tenant ${tenantId}`);
 
+    let effectiveBusinessUnitId = dto.businessUnitId || businessUnitId || null;
     let effectiveBranchId = dto.branchId || branchId || null;
+
+    if (effectiveBusinessUnitId && !effectiveBranchId) {
+      const bu = await this.prisma.businessUnit.findFirst({
+        where: { id: effectiveBusinessUnitId, tenantId },
+        select: { branchId: true },
+      });
+      effectiveBranchId = bu?.branchId || null;
+    }
+
     if (!effectiveBranchId) {
       const defaultBranch = await this.prisma.branch.findFirst({
         where: { tenantId },
@@ -162,11 +174,11 @@ export class PodsService {
       where: {
         tenantId,
         name: { equals: dto.name.trim(), mode: 'insensitive' },
-        branchId: effectiveBranchId,
+        ...(effectiveBusinessUnitId ? { businessUnitId: effectiveBusinessUnitId } : { branchId: effectiveBranchId }),
       },
     });
     if (nameCheck) {
-      throw new ConflictException(`A pod with the name "${dto.name}" already exists in this branch.`);
+      throw new ConflictException(`A pod with the name "${dto.name}" already exists in this ${effectiveBusinessUnitId ? 'operating unit' : 'branch'}.`);
     }
 
     if (dto.podHeadId) {
@@ -183,6 +195,7 @@ export class PodsService {
       data: {
         tenantId,
         branchId: effectiveBranchId,
+        businessUnitId: effectiveBusinessUnitId,
         name: dto.name.trim(),
         podHeadId: dto.podHeadId || null,
         description: dto.description || null,
@@ -209,11 +222,13 @@ export class PodsService {
   }
 
   /**
-   * List all pods for a tenant (optionally scoped to a branch)
+   * List all pods for a tenant (optionally scoped to a branch or operating unit)
    */
-  async findAll(tenantId: string, branchId?: string): Promise<PodResponse[]> {
+  async findAll(tenantId: string, branchId?: string, businessUnitId?: string): Promise<PodResponse[]> {
     const where: any = { tenantId };
-    if (branchId) {
+    if (businessUnitId && businessUnitId !== 'all') {
+      where.businessUnitId = businessUnitId;
+    } else if (branchId && branchId !== 'all') {
       where.branchId = branchId;
     }
 
@@ -222,6 +237,7 @@ export class PodsService {
       include: {
         podHead: { select: { fullName: true } },
         branch: { select: { name: true } },
+        businessUnit: { select: { name: true } },
         _count: { select: { jobPods: true } },
         users: {
           include: {
@@ -238,6 +254,8 @@ export class PodsService {
       name: p.name,
       branchId: p.branchId || null,
       branchName: p.branch?.name || null,
+      businessUnitId: p.businessUnitId || null,
+      businessUnitName: p.businessUnit?.name || null,
       podHeadId: p.podHeadId || null,
       podHeadName: p.podHead?.fullName || null,
       description: p.description,
@@ -262,6 +280,7 @@ export class PodsService {
       include: {
         podHead: { select: { fullName: true } },
         branch: { select: { name: true } },
+        businessUnit: { select: { name: true } },
         _count: { select: { jobPods: true } },
         users: {
           include: {
@@ -281,6 +300,8 @@ export class PodsService {
       name: pod.name,
       branchId: pod.branchId || null,
       branchName: pod.branch?.name || null,
+      businessUnitId: pod.businessUnitId || null,
+      businessUnitName: pod.businessUnit?.name || null,
       podHeadId: pod.podHeadId || null,
       podHeadName: pod.podHead?.fullName || null,
       description: pod.description,
@@ -313,9 +334,9 @@ export class PodsService {
   }
 
   /**
-   * Get recruiters not assigned to any pod (optionally scoped to a branch)
+   * Get recruiters not assigned to any pod (optionally scoped to a branch or operating unit)
    */
-  async getAvailableRecruiters(tenantId: string, branchId?: string): Promise<any[]> {
+  async getAvailableRecruiters(tenantId: string, branchId?: string, businessUnitId?: string): Promise<any[]> {
     const where: any = {
       tenantId,
       podId: null,
@@ -329,7 +350,9 @@ export class PodsService {
       },
     };
 
-    if (branchId) {
+    if (businessUnitId && businessUnitId !== 'all') {
+      where.businessUnitId = businessUnitId;
+    } else if (branchId && branchId !== 'all') {
       where.branchId = branchId;
     }
 
@@ -362,23 +385,24 @@ export class PodsService {
       throw new NotFoundException(`Pod not found.`);
     }
 
+    const businessUnitId = dto.businessUnitId !== undefined ? dto.businessUnitId : existingPod.businessUnitId;
+    const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branchId;
+
     if (dto.name && dto.name.trim().toUpperCase() !== existingPod.name.toUpperCase()) {
-      const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branchId;
       const nameCheck = await this.prisma.pod.findFirst({
         where: {
           tenantId,
           name: { equals: dto.name.trim(), mode: 'insensitive' },
-          branchId,
+          ...(businessUnitId ? { businessUnitId } : { branchId }),
           id: { not: id },
         },
       });
       if (nameCheck) {
-        throw new ConflictException(`A pod with the name "${dto.name}" already exists in this branch.`);
+        throw new ConflictException(`A pod with the name "${dto.name}" already exists in this ${businessUnitId ? 'operating unit' : 'branch'}.`);
       }
     }
 
     const name = dto.name !== undefined ? dto.name.trim() : existingPod.name;
-    const branchId = dto.branchId !== undefined ? dto.branchId : existingPod.branchId;
     const podHeadId = dto.podHeadId !== undefined ? dto.podHeadId : existingPod.podHeadId;
     const description = dto.description !== undefined ? dto.description : existingPod.description;
 
@@ -397,6 +421,7 @@ export class PodsService {
       data: {
         name,
         branchId,
+        businessUnitId,
         podHeadId,
         description,
       },
@@ -472,9 +497,11 @@ export class PodsService {
   /**
    * Reset the round robin cycle for all pods
    */
-  async resetCycle(tenantId: string, branchId?: string) {
+  async resetCycle(tenantId: string, branchId?: string, businessUnitId?: string) {
     const where: any = { tenantId };
-    if (branchId) {
+    if (businessUnitId) {
+      where.businessUnitId = businessUnitId;
+    } else if (branchId) {
       where.branchId = branchId;
     }
 
@@ -483,6 +510,5 @@ export class PodsService {
       data: { isAvailableForAssignment: true },
     });
 
-    return { message: 'Round-robin assignment availability cycle has been reset.' };
   }
 }

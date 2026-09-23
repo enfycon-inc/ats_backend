@@ -66,6 +66,7 @@ export class BranchesController {
     return this.branchesService.getDelegationTargets(resolveTenantId(req.user, headerTenantId), req.user.branchId);
   }
 
+
   @Get('hierarchy')
   async getHierarchy(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
@@ -154,6 +155,7 @@ export class BranchesController {
     @Param('id') id: string,
     @Body('userId') userId: string,
     @Body('roles') roles: string[],
+    @Body('businessUnitId') businessUnitId: string | undefined,
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
@@ -166,13 +168,13 @@ export class BranchesController {
       }
     }
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.branchesService.assignUser(id, userId, tenantId, roles);
+    return this.branchesService.assignUser(id, userId, tenantId, roles, businessUnitId);
   }
 
-  @Patch(':id/manager')
-  async updateManager(
+  @Patch(':id/managers')
+  async updateManagers(
     @Param('id') id: string,
-    @Body('managerId') managerId: string | null,
+    @Body('managerIds') managerIds: string[],
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
@@ -185,6 +187,6 @@ export class BranchesController {
       }
     }
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.branchesService.updateManager(id, managerId, tenantId);
+    return this.branchesService.updateManagers(id, managerIds || [], tenantId);
   }
 }

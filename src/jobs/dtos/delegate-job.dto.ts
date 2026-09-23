@@ -1,8 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class DelegateJobDto {
-  @ApiProperty()
-  targetBranchId: string;
+  @ApiPropertyOptional({ description: 'Target operating unit ID (same market domain enforced)' })
+  targetUnitId?: string;
+
+  @ApiPropertyOptional({ description: 'Target branch ID (legacy fallback)' })
+  targetBranchId?: string;
 
   @ApiPropertyOptional()
   slaDaysTarget?: number;

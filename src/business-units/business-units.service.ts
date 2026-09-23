@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBusinessUnitDto } from './dtos/create-business-unit.dto';
 import { UpdateBusinessUnitDto } from './dtos/update-business-unit.dto';
@@ -9,8 +9,30 @@ export interface BusinessUnitResponse {
   code: string | null;
   market: string;
   currency: string;
+  branchId: string | null;
+  branchName: string | null;
+  branch?: {
+    id: string;
+    name: string;
+    code: string | null;
+    city: string | null;
+    country: string | null;
+  } | null;
+  shiftTiming: string | null;
+  workStartTime: string | null;
+  workEndTime: string | null;
+  timezone: string | null;
+  workingDays?: string[];
+  breakDurationMinutes?: number | null;
+  admins?: { id: string; fullName: string; email: string }[];
+  allowNone: boolean;
+  allowPods: boolean;
+  allowAll: boolean;
+  allowUnassigned: boolean;
+  podDistributionStrategy: string;
   usersCount: number;
   jobsCount: number;
+  podsCount: number;
   createdAt: string;
 }
 
@@ -23,42 +45,88 @@ export class BusinessUnitsService {
   async create(dto: CreateBusinessUnitDto, tenantId: string): Promise<BusinessUnitResponse> {
     this.logger.log(`Creating business unit "${dto.name}" for tenant ${tenantId}`);
 
+    let branch: any = null;
+    if (dto.branchId) {
+      branch = await this.prisma.branch.findFirst({
+        where: { id: dto.branchId, tenantId },
+      });
+      if (!branch) {
+        throw new NotFoundException(`Branch with ID "${dto.branchId}" not found.`);
+      }
+    }
+
     const existing = await this.prisma.businessUnit.findFirst({
       where: {
         tenantId,
+        ...(dto.branchId ? { branchId: dto.branchId } : {}),
         name: { equals: dto.name.trim(), mode: 'insensitive' },
       },
     });
 
     if (existing) {
-      throw new ConflictException(`A business unit with the name "${dto.name}" already exists.`);
+      throw new ConflictException(`A business unit with the name "${dto.name}" already exists in this branch.`);
     }
 
     const code = dto.code ? dto.code.trim().toUpperCase() : dto.name.substring(0, 4).toUpperCase();
-    const market = dto.market ? dto.market.trim().toUpperCase() : 'US';
+    const market = dto.market ? dto.market.trim().toUpperCase() : (branch?.market || 'US');
     const currency = dto.currency ? dto.currency.trim().toUpperCase() : (market === 'INDIA' ? 'INR' : 'USD');
+    const shiftTiming = dto.shiftTiming || branch?.shiftTiming || (market === 'US' ? 'US Shift' : 'General Shift');
+    const workStartTime = dto.workStartTime || branch?.workStartTime || '09:00';
+    const workEndTime = dto.workEndTime || branch?.workEndTime || '18:00';
+    const timezone = dto.timezone || branch?.timezone || (market === 'US' ? 'America/New_York' : 'Asia/Kolkata');
+    const workingDays = dto.workingDays || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+    const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : 60;
+    const allowNone = dto.allowNone !== undefined ? dto.allowNone : false;
+    const allowPods = dto.allowPods !== undefined ? dto.allowPods : true;
+    const allowAll = dto.allowAll !== undefined ? dto.allowAll : true;
+    const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : true;
+    const podDistributionStrategy = dto.podDistributionStrategy || 'AUTO';
 
     const bu = await this.prisma.businessUnit.create({
       data: {
         tenantId,
+        branchId: dto.branchId || null,
         name: dto.name.trim(),
         code,
         market,
+        marketSegmentId: (dto as any).marketSegmentId || null,
+        jobCodePattern: (dto as any).jobCodePattern || null,
         currency,
+        shiftTiming,
+        workStartTime,
+        workEndTime,
+        timezone,
+        workingDays,
+        breakDurationMinutes,
+        allowNone,
+        allowPods,
+        allowAll,
+        allowUnassigned,
+        podDistributionStrategy,
       },
     });
 
     return this.findOne(bu.id, tenantId);
   }
 
-  async findAll(tenantId: string): Promise<BusinessUnitResponse[]> {
+  async findAll(tenantId: string, branchId?: string): Promise<BusinessUnitResponse[]> {
     const units = await this.prisma.businessUnit.findMany({
-      where: { tenantId },
+      where: {
+        tenantId,
+        ...(branchId ? { branchId } : {}),
+      },
       include: {
+        branch: {
+          select: { id: true, name: true, code: true, city: true, country: true },
+        },
+        marketSegment: {
+          select: { id: true, name: true, code: true },
+        },
         _count: {
           select: {
             users: true,
             jobs: true,
+            pods: true,
           },
         },
       },
@@ -70,9 +138,35 @@ export class BusinessUnitsService {
       name: bu.name,
       code: bu.code,
       market: bu.market,
+      marketSegmentId: bu.marketSegmentId || null,
+      marketSegment: (bu as any).marketSegment || null,
+      jobCodePattern: bu.jobCodePattern || null,
       currency: bu.currency,
+      branchId: bu.branchId || null,
+      branchName: bu.branch?.name || null,
+      branch: bu.branch
+        ? {
+            id: bu.branch.id,
+            name: bu.branch.name,
+            code: bu.branch.code,
+            city: bu.branch.city,
+            country: bu.branch.country,
+          }
+        : null,
+      shiftTiming: bu.shiftTiming || null,
+      workStartTime: bu.workStartTime || null,
+      workEndTime: bu.workEndTime || null,
+      timezone: bu.timezone || null,
+      workingDays: bu.workingDays || [],
+      breakDurationMinutes: bu.breakDurationMinutes ?? 60,
+      allowNone: bu.allowNone ?? false,
+      allowPods: bu.allowPods ?? true,
+      allowAll: bu.allowAll ?? true,
+      allowUnassigned: bu.allowUnassigned ?? true,
+      podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
       usersCount: bu._count.users,
       jobsCount: bu._count.jobs,
+      podsCount: bu._count.pods,
       createdAt: bu.createdAt.toISOString(),
     }));
   }
@@ -81,10 +175,20 @@ export class BusinessUnitsService {
     const bu = await this.prisma.businessUnit.findFirst({
       where: { id, tenantId },
       include: {
+        branch: {
+          select: { id: true, name: true, code: true, city: true, country: true },
+        },
+        marketSegment: {
+          select: { id: true, name: true, code: true },
+        },
+        admins: {
+          select: { id: true, fullName: true, email: true },
+        },
         _count: {
           select: {
             users: true,
             jobs: true,
+            pods: true,
           },
         },
       },
@@ -99,27 +203,56 @@ export class BusinessUnitsService {
       name: bu.name,
       code: bu.code,
       market: bu.market,
+      marketSegmentId: bu.marketSegmentId || null,
+      marketSegment: (bu as any).marketSegment || null,
+      jobCodePattern: bu.jobCodePattern || null,
       currency: bu.currency,
+      branchId: bu.branchId || null,
+      branchName: bu.branch?.name || null,
+      branch: bu.branch
+        ? {
+            id: bu.branch.id,
+            name: bu.branch.name,
+            code: bu.branch.code,
+            city: bu.branch.city,
+            country: bu.branch.country,
+          }
+        : null,
+      shiftTiming: bu.shiftTiming || null,
+      workStartTime: bu.workStartTime || null,
+      workEndTime: bu.workEndTime || null,
+      timezone: bu.timezone || null,
+      workingDays: bu.workingDays || [],
+      breakDurationMinutes: bu.breakDurationMinutes ?? 60,
+      allowNone: bu.allowNone ?? false,
+      allowPods: bu.allowPods ?? true,
+      allowAll: bu.allowAll ?? true,
+      allowUnassigned: bu.allowUnassigned ?? true,
+      podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
       usersCount: bu._count.users,
       jobsCount: bu._count.jobs,
+      podsCount: bu._count.pods,
+      admins: (bu as any).admins || [],
       createdAt: bu.createdAt.toISOString(),
-    };
+    } as any;
   }
 
   async update(id: string, dto: UpdateBusinessUnitDto, tenantId: string): Promise<BusinessUnitResponse> {
     const existing = await this.findOne(id, tenantId);
+    const targetBranchId = dto.branchId !== undefined ? dto.branchId : existing.branchId;
 
     if (dto.name && dto.name.trim().toUpperCase() !== existing.name.toUpperCase()) {
       const conflict = await this.prisma.businessUnit.findFirst({
         where: {
           tenantId,
+          ...(targetBranchId ? { branchId: targetBranchId } : {}),
           name: { equals: dto.name.trim(), mode: 'insensitive' },
           id: { not: id },
         },
       });
 
       if (conflict) {
-        throw new ConflictException(`A business unit with the name "${dto.name}" already exists.`);
+        throw new ConflictException(`A business unit with the name "${dto.name}" already exists in this branch.`);
       }
     }
 
@@ -127,25 +260,331 @@ export class BusinessUnitsService {
     const code = dto.code !== undefined ? dto.code.trim().toUpperCase() : existing.code;
     const market = dto.market !== undefined ? dto.market.trim().toUpperCase() : existing.market;
     const currency = dto.currency !== undefined ? dto.currency.trim().toUpperCase() : existing.currency;
+    const shiftTiming = dto.shiftTiming !== undefined ? dto.shiftTiming : existing.shiftTiming;
+    const workStartTime = dto.workStartTime !== undefined ? dto.workStartTime : existing.workStartTime;
+    const workEndTime = dto.workEndTime !== undefined ? dto.workEndTime : existing.workEndTime;
+    const timezone = dto.timezone !== undefined ? dto.timezone : existing.timezone;
+    const workingDays = dto.workingDays !== undefined ? dto.workingDays : existing.workingDays;
+    const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : existing.breakDurationMinutes;
+    const allowNone = dto.allowNone !== undefined ? dto.allowNone : existing.allowNone;
+    const allowPods = dto.allowPods !== undefined ? dto.allowPods : existing.allowPods;
+    const allowAll = dto.allowAll !== undefined ? dto.allowAll : existing.allowAll;
+    const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : existing.allowUnassigned;
+    const podDistributionStrategy = dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy;
 
     await this.prisma.businessUnit.update({
       where: { id },
       data: {
+        ...(dto.branchId !== undefined ? { branchId: dto.branchId } : {}),
+        ...((dto as any).marketSegmentId !== undefined ? { marketSegmentId: (dto as any).marketSegmentId || null } : {}),
+        ...((dto as any).jobCodePattern !== undefined ? { jobCodePattern: (dto as any).jobCodePattern || null } : {}),
         name,
         code,
         market,
         currency,
+        shiftTiming,
+        workStartTime,
+        workEndTime,
+        timezone,
+        workingDays,
+        breakDurationMinutes,
+        allowNone,
+        allowPods,
+        allowAll,
+        allowUnassigned,
+        podDistributionStrategy,
       },
     });
 
     return this.findOne(id, tenantId);
   }
 
+  async getDelegationTargets(user: any, jobId: string, tenantId: string) {
+    if (!jobId) {
+      throw new BadRequestException('jobId is required to find valid delegation targets.');
+    }
+
+    const job = await this.prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+      include: {
+        businessUnitRef: true,
+        branch: true,
+      },
+    });
+
+    if (!job) {
+      throw new NotFoundException('Job not found.');
+    }
+
+    // Determine the job's market domain
+    let domain = 'US';
+    if (job.businessUnitRef?.market) {
+      domain = job.businessUnitRef.market.toUpperCase();
+    } else if (job.market) {
+      domain = job.market.toUpperCase();
+    } else if (job.branch?.market) {
+      domain = job.branch.market.toUpperCase();
+    }
+
+    const isDomestic = domain.includes('IND');
+
+    // Find all operating units in the same market domain, excluding the job's current operating unit
+    const units = await this.prisma.businessUnit.findMany({
+      where: {
+        tenantId,
+        ...(job.businessUnitId ? { id: { not: job.businessUnitId } } : {}),
+        market: {
+          in: isDomestic ? ['INDIA', 'DOMESTIC', 'IND'] : ['US', 'USA'],
+          mode: 'insensitive',
+        },
+      },
+      include: {
+        branch: {
+          select: { id: true, name: true, city: true, code: true },
+        },
+      },
+      orderBy: [
+        { name: 'asc' },
+      ],
+    });
+
+    return units.map((u) => ({
+      id: u.id,
+      name: u.name,
+      code: u.code,
+      market: u.market,
+      currency: u.currency,
+      shiftTiming: u.shiftTiming,
+      branchId: u.branchId,
+      branchName: u.branch?.name || 'Office Branch',
+      branchCity: u.branch?.city || '',
+      displayName: `${u.branch?.name || 'Branch'} — ${u.name} (${u.market === 'US' ? 'US IT' : 'Domestic IT'})`,
+    }));
+  }
+
   async remove(id: string, tenantId: string) {
-    await this.findOne(id, tenantId);
+    const existing = await this.findOne(id, tenantId);
+
+    if (existing.usersCount > 0 || existing.jobsCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete business unit "${existing.name}". It currently has ${existing.usersCount} assigned member(s) and ${existing.jobsCount} job requisition(s). Reassign them before deleting this unit.`
+      );
+    }
+
     await this.prisma.businessUnit.delete({
       where: { id },
     });
     return { message: 'Business Unit deleted successfully.' };
   }
+
+  async getMembers(unitId: string, tenantId: string) {
+    await this.findOne(unitId, tenantId);
+
+    const members = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        businessUnitId: unitId,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        firstName: true,
+        lastName: true,
+        profilePicture: true,
+        isActive: true,
+        branchId: true,
+        branch: {
+          select: { id: true, name: true, city: true },
+        },
+        customRole: {
+          select: { id: true, name: true, systemRole: { select: { systemKey: true } } },
+        },
+        pod: {
+          select: { id: true, name: true },
+        },
+      },
+      orderBy: { fullName: 'asc' },
+    });
+
+    return members.map((m) => ({
+      id: m.id,
+      email: m.email,
+      fullName: m.fullName,
+      firstName: m.firstName,
+      lastName: m.lastName,
+      profilePicture: m.profilePicture,
+      isActive: m.isActive,
+      branchId: m.branchId,
+      branchName: m.branch?.name || null,
+      roleName: m.customRole?.name || 'Recruiter',
+      systemRole: m.customRole?.systemRole?.systemKey || null,
+      podId: m.pod?.id || null,
+      podName: m.pod?.name || null,
+    }));
+  }
+
+  async getCandidateStaff(unitId: string, tenantId: string) {
+    const unit = await this.findOne(unitId, tenantId);
+
+    const users = await this.prisma.user.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        firstName: true,
+        lastName: true,
+        profilePicture: true,
+        isActive: true,
+        branchId: true,
+        businessUnitId: true,
+        branch: {
+          select: { id: true, name: true, city: true },
+        },
+        businessUnit: {
+          select: { id: true, name: true, code: true },
+        },
+        customRole: {
+          select: { id: true, name: true, systemRole: { select: { systemKey: true } } },
+        },
+        pod: {
+          select: { id: true, name: true },
+        },
+      },
+      orderBy: [{ fullName: 'asc' }],
+    });
+
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      fullName: u.fullName,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      profilePicture: u.profilePicture,
+      isActive: u.isActive,
+      branchId: u.branchId,
+      branchName: u.branch?.name || null,
+      currentUnitId: u.businessUnitId,
+      currentUnitName: u.businessUnit?.name || null,
+      roleName: u.customRole?.name || 'Recruiter',
+      systemRole: u.customRole?.systemRole?.systemKey || null,
+      podName: u.pod?.name || null,
+      isAssigned: u.businessUnitId === unitId,
+      isSameBranch: unit.branchId ? u.branchId === unit.branchId : true,
+    }));
+  }
+
+  async assignMembers(unitId: string, userIds: string[], tenantId: string) {
+    const unit = await this.prisma.businessUnit.findFirst({
+      where: { id: unitId, tenantId },
+    });
+
+    if (!unit) {
+      throw new NotFoundException(`Operating Unit with ID ${unitId} not found.`);
+    }
+
+    // 1. Unassign users currently in this unit who are not in userIds
+    await this.prisma.user.updateMany({
+      where: {
+        tenantId,
+        businessUnitId: unitId,
+        id: { notIn: userIds },
+      },
+      data: {
+        businessUnitId: null,
+      },
+    });
+
+    // 2. Assign selected userIds to this unit
+    if (userIds.length > 0) {
+      await this.prisma.user.updateMany({
+        where: {
+          tenantId,
+          id: { in: userIds },
+        },
+        data: {
+          businessUnitId: unit.id,
+          ...(unit.branchId ? { branchId: unit.branchId } : {}),
+        },
+      });
+    }
+
+    return this.getMembers(unitId, tenantId);
+  }
+
+  async removeMember(unitId: string, userId: string, tenantId: string) {
+    await this.prisma.user.updateMany({
+      where: {
+        id: userId,
+        businessUnitId: unitId,
+        tenantId,
+      },
+      data: {
+        businessUnitId: null,
+      },
+    });
+    return { message: 'Member unassigned successfully.' };
+  }
+
+  async updateAdmins(unitId: string, adminIds: string[], tenantId: string) {
+    await this.findOne(unitId, tenantId);
+
+    if (adminIds && adminIds.length > 0) {
+      const admins = await this.prisma.user.findMany({
+        where: { id: { in: adminIds }, tenantId },
+      });
+      if (admins.length !== adminIds.length) {
+        throw new NotFoundException('Some selected admin users were not found in tenant.');
+      }
+
+      const unitAdminRole = await this.prisma.customRole.findFirst({
+        where: {
+          tenantId,
+          AND: [
+            {
+              OR: [
+                { systemRole: { systemKey: 'UNIT_ADMIN' } },
+                { name: { in: ['UNIT_ADMIN', 'Unit Admin', 'UNIT ADMIN'], mode: 'insensitive' } },
+              ],
+            },
+          ],
+        },
+        orderBy: [
+          { isSystem: 'asc' },
+          { createdAt: 'asc' },
+        ],
+      });
+
+      for (const adm of admins) {
+        const updatedRoleIds = unitAdminRole?.id
+          ? Array.from(new Set([...(adm.assignedRoleIds || []), unitAdminRole.id]))
+          : (adm.assignedRoleIds || []);
+
+        await this.prisma.user.update({
+          where: { id: adm.id },
+          data: {
+            businessUnitId: unitId,
+            assignedRoleIds: updatedRoleIds,
+            ...(unitAdminRole?.id ? { roleId: unitAdminRole.id } : {}),
+          },
+        });
+      }
+    }
+
+    await this.prisma.businessUnit.update({
+      where: { id: unitId },
+      data: { 
+        admins: {
+          set: adminIds.map(id => ({ id }))
+        }
+      },
+    });
+
+    return this.findOne(unitId, tenantId);
+  }
 }
+

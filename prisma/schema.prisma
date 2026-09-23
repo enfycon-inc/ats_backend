@@ -26,6 +26,8 @@ model Tenant {
   updatedAt                 DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   jobAssignmentOptions      Json?                  @default("{}") @map("job_assignment_options")
   jobAssignmentMode         String?                @default("AUTO") @map("job_assignment_mode") @db.VarChar(50)
+  jobCodePattern            String?                @default("{BRANCH}-{UNIT}-{YYMMDD}-{SEQ}") @map("job_code_pattern") @db.VarChar(200)
+  enforceJobCodePattern     Boolean                @default(false) @map("enforce_job_code_pattern")
   auditLogs                 AuditLog[]
   branches                  Branch[]
   bulkUploads               BulkUpload[]
@@ -36,6 +38,7 @@ model Tenant {
   jobAssignmentLogs         JobAssignmentLog[]
   delegationRequests        JobDelegationRequest[]
   jobs                      Job[]
+  marketSegments            MarketSegment[]
   notifications             Notification[]
   pods                      Pod[]
   submissions               RecruiterSubmission[]
@@ -140,7 +143,6 @@ model Branch {
   state                      String?                @db.VarChar(100)
   country                    String                 @default("India") @db.VarChar(100)
   isActive                   Boolean                @default(true) @map("is_active")
-  managerId                  String?                @map("manager_id") @db.Uuid
   market                     String                 @default("INDIA") @db.VarChar(50)
   allowNone                  Boolean                @default(false) @map("allow_none")
   allowPods                  Boolean                @default(true) @map("allow_pods")
@@ -163,7 +165,7 @@ model Branch {
   createdAt                  DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   selectedGlobalRemarkIds    String?                @default("ALL") @map("selected_global_remark_ids")
-  manager                    User?                  @relation("BranchManager", fields: [managerId], references: [id])
+  managers                   User[]                 @relation("BranchManagers")
   tenant                     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   candidates                 Candidate[]
   clients                    Client[]
@@ -174,6 +176,7 @@ model Branch {
   pods                       Pod[]
   userInvitations            UserInvitation[]
   users                      User[]
+  businessUnits              BusinessUnit[]
 
   @@unique([tenantId, name])
   @@map("branches")
@@ -181,20 +184,66 @@ model Branch {
 }
 
 model BusinessUnit {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  name      String   @db.VarChar(255)
-  code      String?  @db.VarChar(50)
-  market    String   @default("US") @db.VarChar(50)
-  currency  String   @default("USD") @db.VarChar(10)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  jobs      Job[]
-  users     User[]
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  branchId      String?  @map("branch_id") @db.Uuid
+  name          String   @db.VarChar(255)
+  code          String?  @db.VarChar(50)
+  market        String   @default("US") @db.VarChar(50)
+  currency      String   @default("USD") @db.VarChar(10)
+  shiftTiming   String?  @default("General Shift") @map("shift_timing") @db.VarChar(100)
+  workStartTime String?  @default("09:00") @map("work_start_time") @db.VarChar(20)
+  workEndTime   String?  @default("18:00") @map("work_end_time") @db.VarChar(20)
+  timezone      String?                   @default("Asia/Kolkata") @db.VarChar(100)
+  workingDays   String[]                  @default(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) @map("working_days")
+  breakDurationMinutes Int?                @default(60) @map("break_duration_minutes")
+  allowNone                  Boolean                @default(false) @map("allow_none")
+  allowPods                  Boolean                @default(true) @map("allow_pods")
+  allowAll                   Boolean                @default(true) @map("allow_all")
+  allowUnassigned            Boolean                @default(true) @map("allow_unassigned")
+  podDistributionStrategy    String                 @default("AUTO") @map("pod_distribution_strategy") @db.VarChar(50)
+  marketSegmentId            String?                @map("market_segment_id") @db.Uuid
+  jobCodePattern             String?                @map("job_code_pattern") @db.VarChar(200)
+  createdAt     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  branch        Branch?                   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  tenant        Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  marketSegment MarketSegment?            @relation(fields: [marketSegmentId], references: [id])
+  jobs          Job[]
+  pods          Pod[]
+  users         User[]
+  admins        User[] @relation("BusinessUnitAdmins")
+  outgoingDelegationRequests JobDelegationRequest[] @relation("DelegationSourceUnit")
+  incomingDelegationRequests JobDelegationRequest[] @relation("DelegationTargetUnit")
 
-  @@unique([tenantId, name])
+  @@unique([tenantId, branchId, name])
+  @@index([tenantId, branchId])
   @@map("business_units")
+  @@schema("ats")
+}
+
+model MarketSegment {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String         @map("tenant_id") @db.Uuid
+  name             String         @db.VarChar(100)
+  code             String         @db.VarChar(20)
+  description      String?        @db.VarChar(500)
+  defaultCurrency  String         @default("USD") @map("default_currency") @db.VarChar(10)
+  defaultTimezone  String         @default("America/New_York") @map("default_timezone") @db.VarChar(100)
+  defaultShift     String         @default("General Shift") @map("default_shift") @db.VarChar(100)
+  defaultStartTime String?        @default("09:00") @map("default_start_time") @db.VarChar(20)
+  defaultEndTime   String?        @default("18:00") @map("default_end_time") @db.VarChar(20)
+  isActive         Boolean        @default(true) @map("is_active")
+  sortOrder        Int            @default(0) @map("sort_order")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  businessUnits    BusinessUnit[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("market_segments")
   @@schema("ats")
 }
 
@@ -243,6 +292,7 @@ model Pod {
   id                         String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId                   String                 @map("tenant_id") @db.Uuid
   branchId                   String?                @map("branch_id") @db.Uuid
+  businessUnitId             String?                @map("business_unit_id") @db.Uuid
   name                       String                 @db.VarChar(255)
   podHeadId                  String?                @map("pod_head_id") @db.Uuid
   description                String?
@@ -253,6 +303,7 @@ model Pod {
   assignedDelegationRequests JobDelegationRequest[]
   jobPods                    JobPod[]
   branch                     Branch?                @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  businessUnit               BusinessUnit?          @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
   podHead                    User?                  @relation("PodHead", fields: [podHeadId], references: [id])
   tenant                     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userInvitations            UserInvitation[]
@@ -282,7 +333,8 @@ model User {
   lastLoginAt          DateTime?                 @map("last_login_at") @db.Timestamptz(6)
   createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  managedBranches      Branch[]                  @relation("BranchManager")
+  managedBranches      Branch[]                  @relation("BranchManagers")
+  administeredUnits    BusinessUnit[]            @relation("BusinessUnitAdmins")
   notifications        Notification[]
   podsAsHead           Pod[]                     @relation("PodHead")
   notificationSettings UserNotificationSettings?
@@ -538,6 +590,8 @@ model JobDelegationRequest {
   jobId          String   @map("job_id") @db.Uuid
   sourceBranchId String   @map("source_branch_id") @db.Uuid
   targetBranchId String   @map("target_branch_id") @db.Uuid
+  sourceUnitId   String?  @map("source_unit_id") @db.Uuid
+  targetUnitId   String?  @map("target_unit_id") @db.Uuid
   status         String   @default("PENDING") @db.VarChar(50)
   slaDaysTarget  Int?     @map("sla_days_target")
   notes          String?
@@ -548,6 +602,8 @@ model JobDelegationRequest {
   job            Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
   sourceBranch   Branch   @relation("DelegationSourceBranch", fields: [sourceBranchId], references: [id], onDelete: Cascade)
   targetBranch   Branch   @relation("DelegationTargetBranch", fields: [targetBranchId], references: [id], onDelete: Cascade)
+  sourceUnit     BusinessUnit? @relation("DelegationSourceUnit", fields: [sourceUnitId], references: [id])
+  targetUnit     BusinessUnit? @relation("DelegationTargetUnit", fields: [targetUnitId], references: [id])
   tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("job_delegation_requests")

@@ -283,13 +283,40 @@ export class JobsService implements OnModuleInit {
     }
   }
 
-  async getNextJobCode(tenantId: string, branchId?: string | null, shiftInput?: string | null, offset = 0): Promise<string> {
-    // 1. Resolve Branch Code (manual code set by admin, or first 3 letters of branch name, or 'GEN')
-    let branchCode = 'GEN';
-    let branchMarket = '';
-    let branchName = '';
+  async getNextJobCode(tenantId: string, branchId?: string | null, shiftInput?: string | null, offset = 0, businessUnitId?: string | null): Promise<string> {
+    // 1. Fetch Tenant and default pattern
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { jobCodePattern: true, enforceJobCodePattern: true },
+    });
+    
+    let pattern = tenant?.jobCodePattern || '{BRANCH}-{UNIT}-{YYMMDD}-{SEQ}';
+    const enforceTenantPattern = tenant?.enforceJobCodePattern || false;
 
-    const lookupId = branchId ? branchId.trim() : '';
+    // 2. Resolve Business Unit
+    let unitCode = 'GEN';
+    let branchMarket = '';
+    let buBranchId: string | null = null;
+
+    if (businessUnitId) {
+      const bu = await this.prisma.businessUnit.findUnique({
+        where: { id: businessUnitId },
+        include: { marketSegment: true },
+      });
+      if (bu) {
+        if (bu.jobCodePattern && !enforceTenantPattern) {
+           pattern = bu.jobCodePattern;
+        }
+        unitCode = bu.code || bu.marketSegment?.code || 'GEN';
+        branchMarket = bu.market || '';
+        buBranchId = bu.branchId;
+      }
+    }
+
+    // 3. Resolve Branch Code (manual code set by admin, or first 3 letters of branch name, or 'GEN')
+    let branchCode = 'GEN';
+    let branchName = '';
+    const lookupId = branchId ? branchId.trim() : buBranchId ? buBranchId : '';
 
     let branch: any = null;
     if (lookupId && lookupId !== 'null' && lookupId !== 'undefined') {
@@ -317,7 +344,7 @@ export class JobsService implements OnModuleInit {
     }
 
     if (branch) {
-      branchMarket = branch.market || '';
+      branchMarket = branchMarket || branch.market || '';
       branchName = branch.name || '';
       if (branch.code && branch.code.trim().length > 0) {
         branchCode = branch.code.trim().toUpperCase();
@@ -326,7 +353,7 @@ export class JobsService implements OnModuleInit {
       }
     }
 
-    // 2. Resolve Shift Code ('D' for Day, 'N' for Night)
+    // 4. Resolve Shift Code ('D' for Day, 'N' for Night)
     let shiftCode = 'D';
     if (shiftInput) {
       const norm = shiftInput.trim().toUpperCase();
@@ -347,20 +374,45 @@ export class JobsService implements OnModuleInit {
       shiftCode = (currentHour >= 18 || currentHour < 6) ? 'N' : 'D';
     }
 
-    // 3. Format Date YYMMDD (e.g. 260817) and Monthly Scope YYMM (e.g. 2608)
+    // 5. Format Date components
     const date = new Date();
     const yy = date.getFullYear().toString().slice(-2);
     const mm = String(date.getMonth() + 1).padStart(2, '0');
     const dd = String(date.getDate()).padStart(2, '0');
+    const yymmdd = `${yy}${mm}${dd}`;
 
-    const dateStamp = `${yy}${mm}${dd}`;
-    const monthScope = `${branchCode}-${yy}${mm}`;
+    // 6. Build base pattern (without sequence) to search for max sequence
+    let basePatternStr = pattern
+      .replace('{BRANCH}', branchCode)
+      .replace('{UNIT}', unitCode)
+      .replace('{YYMMDD}', yymmdd)
+      .replace('{YYMM}', `${yy}${mm}`)
+      .replace('{YY}', yy)
+      .replace('{MM}', mm)
+      .replace('{DD}', dd)
+      .replace('{SHIFT}', shiftCode);
+      
+    // Parse sequence padding length from {SEQ:X} or {SEQ}
+    let seqPad = 3;
+    let seqPlaceholder = '{SEQ}';
+    const seqMatchInfo = basePatternStr.match(/\{SEQ(?:[:]?(\d+))?\}/);
+    if (seqMatchInfo) {
+       seqPlaceholder = seqMatchInfo[0];
+       if (seqMatchInfo[1]) {
+           seqPad = parseInt(seqMatchInfo[1], 10);
+       }
+    }
 
-    // 4. Find highest sequence for this branch in current month and shift
+    // Find the prefix before sequence placeholder to query max sequence
+    const seqIndex = basePatternStr.indexOf(seqPlaceholder);
+    const prefix = seqIndex >= 0 ? basePatternStr.substring(0, seqIndex) : basePatternStr;
+    const suffix = seqIndex >= 0 ? basePatternStr.substring(seqIndex + seqPlaceholder.length) : '';
+
+    // 7. Find highest sequence for this exact prefix
     const jobs = await this.prisma.job.findMany({
       where: {
         tenantId,
-        jobCode: { startsWith: monthScope },
+        jobCode: { startsWith: prefix },
       },
       select: { jobCode: true },
     });
@@ -368,18 +420,36 @@ export class JobsService implements OnModuleInit {
     let maxSequence = 0;
     for (const row of jobs) {
       const jobCodeStr = row.jobCode || '';
-      const match = jobCodeStr.match(new RegExp(`-${shiftCode}(\\d{1,6})$`));
-      if (match) {
-        const seq = parseInt(match[1], 10);
-        if (seq > maxSequence) {
-          maxSequence = seq;
+      let seqPart = jobCodeStr.substring(prefix.length);
+      if (suffix && seqPart.endsWith(suffix)) {
+        seqPart = seqPart.substring(0, seqPart.length - suffix.length);
+      }
+      
+      const seqMatch = seqPart.match(/^(\d+)$/);
+      if (seqMatch) {
+         const seq = parseInt(seqMatch[1], 10);
+         if (seq > maxSequence) {
+            maxSequence = seq;
+         }
+      } else {
+        const legacyMatch = seqPart.match(/(\d+)$/);
+        if (legacyMatch) {
+            const seq = parseInt(legacyMatch[1], 10);
+            if (seq > maxSequence) {
+                maxSequence = seq;
+            }
         }
       }
     }
 
     const nextSeq = maxSequence + 1 + offset;
-    const seqStr = String(nextSeq).padStart(5, '0');
-    return `${branchCode}-${dateStamp}-${shiftCode}${seqStr}`;
+    const seqStr = String(nextSeq).padStart(seqPad, '0');
+    
+    if (seqIndex >= 0) {
+      return basePatternStr.replace(seqPlaceholder, seqStr);
+    } else {
+       return `${basePatternStr}-${seqStr}`;
+    }
   }
 
   /**
@@ -2445,7 +2515,7 @@ export class JobsService implements OnModuleInit {
 
   // --- Cross-Branch Delegation Logic ---
 
-  async delegateJob(jobId: string, dto: DelegateJobDto, tenantId: string, sourceBranchId: string) {
+  async delegateJob(jobId: string, dto: DelegateJobDto, tenantId: string, sourceBranchId?: string, user?: any) {
     if (!sourceBranchId) throw new BadRequestException('User must belong to a branch to delegate jobs');
     if (sourceBranchId === dto.targetBranchId) throw new BadRequestException('Cannot delegate to the same branch');
 
@@ -2457,7 +2527,7 @@ export class JobsService implements OnModuleInit {
 
     // Check if pending request already exists
     const existingReq = await this.prisma.jobDelegationRequest.findFirst({
-      where: { jobId, targetBranchId: dto.targetBranchId, status: 'PENDING' },
+      where: { jobId, targetBranchId: dto.targetBranchId as string, status: 'PENDING' },
     });
     if (existingReq) throw new BadRequestException('A pending delegation request already exists for this branch');
 
@@ -2466,7 +2536,7 @@ export class JobsService implements OnModuleInit {
         tenantId,
         jobId,
         sourceBranchId,
-        targetBranchId: dto.targetBranchId,
+        targetBranchId: dto.targetBranchId as string,
         slaDaysTarget: dto.slaDaysTarget,
         notes: dto.notes,
         status: 'PENDING',
@@ -2484,7 +2554,7 @@ export class JobsService implements OnModuleInit {
     return req;
   }
 
-  async getDelegationRequests(tenantId: string, branchId: string, type: 'incoming' | 'outgoing' | 'all') {
+  async getDelegationRequests(tenantId: string, branchId?: string, type: 'incoming' | 'outgoing' | 'all' = 'all', user?: any) {
     if (!branchId) throw new BadRequestException('User must belong to a branch');
     
     const whereClause: any = { tenantId };
@@ -2511,7 +2581,7 @@ export class JobsService implements OnModuleInit {
     });
   }
 
-  async acceptDelegation(requestId: string, dto: AcceptDelegationDto, tenantId: string, targetBranchId: string) {
+  async acceptDelegation(requestId: string, dto: AcceptDelegationDto, tenantId: string, targetBranchId?: string, user?: any) {
     if (!targetBranchId) throw new BadRequestException('User must belong to a branch');
 
     const req = await this.prisma.jobDelegationRequest.findFirst({
@@ -2560,7 +2630,7 @@ export class JobsService implements OnModuleInit {
     return { success: true };
   }
 
-  async rejectDelegation(requestId: string, dto: RejectDelegationDto, tenantId: string, targetBranchId: string) {
+  async rejectDelegation(requestId: string, dto: RejectDelegationDto, tenantId: string, targetBranchId?: string, user?: any) {
     if (!targetBranchId) throw new BadRequestException('User must belong to a branch');
 
     const req = await this.prisma.jobDelegationRequest.findFirst({

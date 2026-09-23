@@ -17,6 +17,7 @@ import { EventsModule } from './events/events.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DiceModule } from './integrations/dice/dice.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { MarketSegmentsModule } from './market-segments/market-segments.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { PrismaModule } from './prisma/prisma.module';
     PodsModule,
     BranchesModule,
     BusinessUnitsModule,
+    MarketSegmentsModule,
     DiceModule,
   ],
   controllers: [AppController],

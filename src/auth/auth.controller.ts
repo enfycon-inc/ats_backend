@@ -458,6 +458,8 @@ Validates email + password and returns a signed JWT access token.
       candidatePoolMode?: string;
       jobAssignmentMode?: string;
       jobAssignmentOptions?: any;
+      jobCodePattern?: string;
+      enforceJobCodePattern?: boolean;
     },
   ) {
     return this.authService.updateTenantSettings(user.tenantId, body);

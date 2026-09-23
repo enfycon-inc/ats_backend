@@ -45,15 +45,29 @@ export class PodsController {
   @RequirePermissions('pod:create')
   @ApiOperation({ summary: 'Create a new recruitment pod' })
   @ApiResponse({ status: 201, description: 'Pod created successfully.' })
+  @ApiQuery({ name: 'businessUnitId', required: false, description: 'Filter/associate pod with operating unit UUID' })
   async create(
     @Body() dto: CreatePodDto,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') headerBranchId?: string,
     @Query('branchId') queryBranchId?: string,
+    @Query('businessUnitId') queryBusinessUnitId?: string,
   ): Promise<PodResponse> {
     const tid = resolveTenantId(user, tenantId);
     const isTenantAdmin = isTenantAdminUser(user);
+
+    const roles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
+    const isUnitAdmin = roles.includes('UNIT_ADMIN') || user?.systemRole === 'UNIT_ADMIN';
+
+    let effectiveBusinessUnitId = dto.businessUnitId || queryBusinessUnitId || (isUnitAdmin ? user.businessUnitId : undefined);
+
+    if (isUnitAdmin && user.businessUnitId) {
+      if (dto.businessUnitId && dto.businessUnitId !== user.businessUnitId) {
+        throw new ForbiddenException('Access denied. Unit admins can only create recruitment pods in their assigned operating unit.');
+      }
+      effectiveBusinessUnitId = user.businessUnitId;
+    }
 
     let effectiveBranchId = dto.branchId || queryBranchId || headerBranchId || user.branchId;
 
@@ -63,13 +77,13 @@ export class PodsController {
         throw new ForbiddenException('Access denied. You can only create recruitment pods within your assigned branch office.');
       }
       effectiveBranchId = dto.branchId || user.branchId || allowedBranchIds[0] || headerBranchId;
-      if (!effectiveBranchId) {
-        throw new ForbiddenException('You must be assigned to a branch office to create recruitment pods.');
+      if (!effectiveBranchId && !effectiveBusinessUnitId) {
+        throw new ForbiddenException('You must be assigned to a branch office or operating unit to create recruitment pods.');
       }
       dto.branchId = effectiveBranchId;
     }
 
-    return this.podsService.create(dto, tid, effectiveBranchId);
+    return this.podsService.create(dto, tid, effectiveBranchId, effectiveBusinessUnitId);
   }
 
   @Get()
@@ -77,14 +91,21 @@ export class PodsController {
   @ApiOperation({ summary: 'List all pods in the workspace' })
   @ApiResponse({ status: 200, description: 'Return pods list.' })
   @ApiQuery({ name: 'branchId', required: false, description: 'Filter pods by branch UUID' })
+  @ApiQuery({ name: 'businessUnitId', required: false, description: 'Filter pods by operating unit UUID' })
   async findAll(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') headerBranchId?: string,
     @Query('branchId') queryBranchId?: string,
+    @Query('businessUnitId') queryBusinessUnitId?: string,
   ): Promise<PodResponse[]> {
     const tid = resolveTenantId(user, tenantId);
     const isTenantAdmin = isTenantAdminUser(user);
+
+    const roles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
+    const isUnitAdmin = roles.includes('UNIT_ADMIN') || user?.systemRole === 'UNIT_ADMIN';
+
+    let effectiveBusinessUnitId = queryBusinessUnitId || (isUnitAdmin ? user.businessUnitId : undefined);
 
     let effectiveBranchId: string | undefined;
     if (isTenantAdmin) {
@@ -102,26 +123,33 @@ export class PodsController {
           : (user.branchId || allowedBranchIds[0]);
       }
 
-      if (!effectiveBranchId) {
+      if (!effectiveBranchId && !effectiveBusinessUnitId) {
         return [];
       }
     }
 
-    return this.podsService.findAll(tid, effectiveBranchId);
+    return this.podsService.findAll(tid, effectiveBranchId, effectiveBusinessUnitId);
   }
 
   @Get('available-recruiters')
   @RequirePermissions('pod:view')
   @ApiOperation({ summary: 'Get recruiters not associated with any pod' })
   @ApiQuery({ name: 'branchId', required: false, description: 'Filter available recruiters by branch UUID' })
+  @ApiQuery({ name: 'businessUnitId', required: false, description: 'Filter available recruiters by operating unit UUID' })
   async getAvailableRecruiters(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') headerBranchId?: string,
     @Query('branchId') queryBranchId?: string,
+    @Query('businessUnitId') queryBusinessUnitId?: string,
   ): Promise<any[]> {
     const tid = resolveTenantId(user, tenantId);
     const isTenantAdmin = isTenantAdminUser(user);
+
+    const roles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
+    const isUnitAdmin = roles.includes('UNIT_ADMIN') || user?.systemRole === 'UNIT_ADMIN';
+
+    let effectiveBusinessUnitId = queryBusinessUnitId || (isUnitAdmin ? user.businessUnitId : undefined);
 
     let effectiveBranchId: string | undefined;
     if (isTenantAdmin) {
@@ -133,7 +161,7 @@ export class PodsController {
         : (user.branchId || allowedBranchIds[0] || headerBranchId);
     }
 
-    return this.podsService.getAvailableRecruiters(tid, effectiveBranchId);
+    return this.podsService.getAvailableRecruiters(tid, effectiveBranchId, effectiveBusinessUnitId);
   }
 
   @Get('my-team')
@@ -219,15 +247,23 @@ export class PodsController {
   @RequirePermissions('pod:reset_cycle')
   @ApiOperation({ summary: 'Reset round-robin assignment cycle availability' })
   @ApiQuery({ name: 'branchId', required: false, description: 'Filter reset by branch UUID' })
+  @ApiQuery({ name: 'businessUnitId', required: false, description: 'Filter reset by operating unit UUID' })
   async resetCycle(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') headerBranchId?: string,
     @Query('branchId') queryBranchId?: string,
+    @Query('businessUnitId') queryBusinessUnitId?: string,
     @Body('branchId') bodyBranchId?: string,
+    @Body('businessUnitId') bodyBusinessUnitId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
     const isTenantAdmin = isTenantAdminUser(user);
+
+    const roles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
+    const isUnitAdmin = roles.includes('UNIT_ADMIN') || user?.systemRole === 'UNIT_ADMIN';
+
+    let effectiveBusinessUnitId = bodyBusinessUnitId || queryBusinessUnitId || (isUnitAdmin ? user.businessUnitId : undefined);
 
     let effectiveBranchId: string | undefined;
     if (isTenantAdmin) {
@@ -243,6 +279,6 @@ export class PodsController {
         : (user.branchId || allowedBranchIds[0] || headerBranchId);
     }
 
-    return this.podsService.resetCycle(tid, effectiveBranchId);
+    return this.podsService.resetCycle(tid, effectiveBranchId, effectiveBusinessUnitId);
   }
 }

@@ -10,7 +10,25 @@ export interface BranchMember {
   roles: string[];
   isActive: boolean;
   podId: string | null;
+  businessUnitId?: string | null;
+  businessUnitName?: string | null;
   createdAt: string;
+}
+
+export interface BusinessUnitSummary {
+  id: string;
+  name: string;
+  code: string | null;
+  market: string;
+  currency: string;
+  shiftTiming: string | null;
+  workStartTime: string | null;
+  workEndTime: string | null;
+  timezone: string | null;
+  workingDays?: string[];
+  breakDurationMinutes?: number;
+  usersCount: number;
+  jobsCount: number;
 }
 
 export interface BranchResponse {
@@ -21,9 +39,7 @@ export interface BranchResponse {
   state: string | null;
   country: string | null;
   market: string;
-  managerId: string | null;
-  managerName: string | null;
-  managerEmail: string | null;
+  managers: { id: string; fullName: string; email: string }[];
   isActive: boolean;
   allowNone: boolean;
   allowPods: boolean;
@@ -47,6 +63,7 @@ export interface BranchResponse {
   usersCount: number;
   jobsCount: number;
   podsCount: number;
+  businessUnits?: BusinessUnitSummary[];
   members?: BranchMember[];
   createdAt: string;
 }
@@ -75,6 +92,24 @@ export class BranchesService {
     const podsCount = b._count?.pods ?? (Array.isArray(b.pods) ? b.pods.length : 0);
     const allowPods = podsCount > 0 ? (b.allowPods !== false) : false;
 
+    const businessUnits: BusinessUnitSummary[] = Array.isArray(b.businessUnits)
+      ? b.businessUnits.map((bu: any) => ({
+          id: bu.id,
+          name: bu.name,
+          code: bu.code,
+          market: bu.market,
+          currency: bu.currency,
+          shiftTiming: bu.shiftTiming || null,
+          workStartTime: bu.workStartTime || null,
+          workEndTime: bu.workEndTime || null,
+          timezone: bu.timezone || null,
+          workingDays: bu.workingDays || [],
+          breakDurationMinutes: bu.breakDurationMinutes ?? 60,
+          usersCount: bu._count?.users ?? bu.usersCount ?? 0,
+          jobsCount: bu._count?.jobs ?? bu.jobsCount ?? 0,
+        }))
+      : [];
+
     return {
       id: b.id,
       name: b.name,
@@ -83,9 +118,7 @@ export class BranchesService {
       state: b.state,
       country: b.country,
       market: b.market || 'INDIA',
-      managerId: b.managerId || null,
-      managerName: b.manager?.fullName || null,
-      managerEmail: b.manager?.email || null,
+      managers: b.managers?.map(m => ({ id: m.id, fullName: m.fullName, email: m.email })) || [],
       isActive: b.isActive,
       allowNone: Boolean(b.allowNone),
       allowPods,
@@ -109,6 +142,7 @@ export class BranchesService {
       usersCount: members.length,
       jobsCount: b._count?.jobs ?? b.jobsCount ?? 0,
       podsCount,
+      businessUnits,
       members,
       createdAt: b.createdAt?.toISOString ? b.createdAt.toISOString() : String(b.createdAt),
     };
@@ -180,8 +214,14 @@ export class BranchesService {
       this.prisma.branch.findMany({
         where: { tenantId },
         include: {
-          manager: {
-            select: { fullName: true, email: true },
+        managers: {
+          select: { id: true, fullName: true, email: true },
+        },
+          businessUnits: {
+            include: {
+              _count: { select: { users: true, jobs: true } },
+            },
+            orderBy: { name: 'asc' },
           },
           _count: {
             select: { jobs: true, pods: true },
@@ -194,6 +234,9 @@ export class BranchesService {
         include: {
           customRole: {
             select: { name: true, systemRole: { select: { systemKey: true } } },
+          },
+          businessUnit: {
+            select: { id: true, name: true },
           },
         },
         orderBy: { fullName: 'asc' },
@@ -210,6 +253,8 @@ export class BranchesService {
           roles: [u.customRole?.name || u.customRole?.systemRole?.systemKey || 'RECRUITER'],
           isActive: u.isActive,
           podId: u.podId,
+          businessUnitId: u.businessUnitId || null,
+          businessUnitName: u.businessUnit?.name || null,
           createdAt: u.createdAt.toISOString(),
         }));
 
@@ -229,8 +274,14 @@ export class BranchesService {
     const branch = await this.prisma.branch.findFirst({
       where: { id, tenantId },
       include: {
-        manager: {
-          select: { fullName: true, email: true },
+        managers: {
+          select: { id: true, fullName: true, email: true },
+        },
+        businessUnits: {
+          include: {
+            _count: { select: { users: true, jobs: true } },
+          },
+          orderBy: { name: 'asc' },
         },
         _count: {
           select: { jobs: true, pods: true },
@@ -365,7 +416,25 @@ export class BranchesService {
   }
 
   async remove(id: string, tenantId: string) {
-    await this.findOne(id, tenantId);
+    const existing = await this.findOne(id, tenantId);
+
+    const totalBranches = await this.prisma.branch.count({ where: { tenantId } });
+    if (totalBranches <= 1) {
+      throw new BadRequestException('Cannot delete the primary/only branch of your company workspace.');
+    }
+
+    const [usersCount, jobsCount, podsCount] = await Promise.all([
+      this.prisma.user.count({ where: { branchId: id } }),
+      this.prisma.job.count({ where: { branchId: id } }),
+      this.prisma.pod.count({ where: { branchId: id } }),
+    ]);
+
+    if (usersCount > 0 || jobsCount > 0 || podsCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete branch "${existing.name}". It currently has ${usersCount} assigned user(s), ${jobsCount} job(s), and ${podsCount} pod(s). Reassign or archive them before deleting this branch.`
+      );
+    }
+
     await this.prisma.branch.delete({ where: { id } });
     return { message: 'Branch deleted successfully.' };
   }
@@ -381,6 +450,9 @@ export class BranchesService {
         customRole: {
           select: { name: true, systemRole: { select: { systemKey: true } } },
         },
+        businessUnit: {
+          select: { id: true, name: true },
+        },
       },
       orderBy: { fullName: 'asc' },
     });
@@ -392,11 +464,13 @@ export class BranchesService {
       roles: [u.customRole?.name || u.customRole?.systemRole?.systemKey || 'RECRUITER'],
       isActive: u.isActive,
       podId: u.podId,
+      businessUnitId: u.businessUnitId || null,
+      businessUnitName: u.businessUnit?.name || null,
       createdAt: u.createdAt.toISOString(),
     }));
   }
 
-  async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[]) {
+  async assignUser(branchId: string, userId: string, tenantId: string, roles?: string[], businessUnitId?: string) {
     await this.findOne(branchId, tenantId);
     const user = await this.prisma.user.findFirst({
       where: { id: userId, tenantId },
@@ -405,8 +479,28 @@ export class BranchesService {
       throw new NotFoundException('User not found in tenant.');
     }
 
-    // Single branch only — user belongs to exactly one branch
-    const singleBranch = [branchId];
+    let targetUnitId = businessUnitId;
+    if (targetUnitId) {
+      const bu = await this.prisma.businessUnit.findFirst({
+        where: { id: targetUnitId, tenantId, branchId },
+      });
+      if (!bu) {
+        throw new BadRequestException('Specified business unit does not belong to this branch.');
+      }
+    } else if (!user.businessUnitId || user.branchId !== branchId) {
+      const firstBu = await this.prisma.businessUnit.findFirst({
+        where: { tenantId, branchId },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (firstBu) {
+        targetUnitId = firstBu.id;
+      }
+    }
+
+    const updateData: any = {
+      branchId,
+      ...(targetUnitId ? { businessUnitId: targetUnitId } : {}),
+    };
 
     if (roles && Array.isArray(roles) && roles.length > 0) {
       const customRoles = await this.prisma.customRole.findMany({
@@ -428,45 +522,29 @@ export class BranchesService {
       const roleId = roleIds[0] || null;
 
       if (roleId) {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: {
-            branchId,
-            roleId,
-            assignedRoleIds: roleIds,
-          },
-        });
-      } else {
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: {
-            branchId,
-          },
-        });
+        updateData.roleId = roleId;
+        updateData.assignedRoleIds = roleIds;
       }
-    } else {
-      await this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          branchId,
-        },
-      });
     }
 
-    return { message: 'User assigned to branch and roles updated successfully.' };
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+    });
+
+    return { message: 'User assigned to branch and unit successfully.' };
   }
 
-  async updateManager(branchId: string, managerId: string | null, tenantId: string) {
+  async updateManagers(branchId: string, managerIds: string[], tenantId: string) {
     await this.findOne(branchId, tenantId);
 
-    if (managerId) {
-      const mgr = await this.prisma.user.findFirst({
-        where: { id: managerId, tenantId },
+    if (managerIds && managerIds.length > 0) {
+      const mgrs = await this.prisma.user.findMany({
+        where: { id: { in: managerIds }, tenantId },
       });
-      if (!mgr) {
-        throw new NotFoundException('Selected manager user not found in tenant.');
+      if (mgrs.length !== managerIds.length) {
+        throw new NotFoundException('Some selected manager users were not found in tenant.');
       }
-
 
       const branchAdminRole = await this.prisma.customRole.findFirst({
         where: {
@@ -487,23 +565,29 @@ export class BranchesService {
         ],
       });
 
-      const updatedRoleIds = branchAdminRole?.id
-        ? Array.from(new Set([...(mgr.assignedRoleIds || []), branchAdminRole.id]))
-        : (mgr.assignedRoleIds || []);
+      for (const mgr of mgrs) {
+        const updatedRoleIds = branchAdminRole?.id
+          ? Array.from(new Set([...(mgr.assignedRoleIds || []), branchAdminRole.id]))
+          : (mgr.assignedRoleIds || []);
 
-      await this.prisma.user.update({
-        where: { id: managerId },
-        data: {
-          branchId,
-          assignedRoleIds: updatedRoleIds,
-          ...(branchAdminRole?.id ? { roleId: branchAdminRole.id } : {}),
-        },
-      });
+        await this.prisma.user.update({
+          where: { id: mgr.id },
+          data: {
+            branchId,
+            assignedRoleIds: updatedRoleIds,
+            ...(branchAdminRole?.id ? { roleId: branchAdminRole.id } : {}),
+          },
+        });
+      }
     }
 
     await this.prisma.branch.update({
       where: { id: branchId },
-      data: { managerId },
+      data: { 
+        managers: {
+          set: managerIds.map(id => ({ id }))
+        }
+      },
     });
 
     return this.findOne(branchId, tenantId);

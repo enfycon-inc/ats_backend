@@ -89,10 +89,11 @@ export class JobsController {
     @Headers('x-branch-id') branchHeaderId?: string,
     @Query('branchId') queryBranchId?: string,
     @Query('shift') queryShift?: string,
+    @Query('businessUnitId') queryBusinessUnitId?: string,
   ): Promise<{ code: string }> {
     const tid = resolveTenantId(user, tenantId);
     const bid = queryBranchId || resolveBranchId(user, branchHeaderId);
-    const code = await this.jobsService.getNextJobCode(tid, bid, queryShift);
+    const code = await this.jobsService.getNextJobCode(tid, bid, queryShift, 0, queryBusinessUnitId);
     return { code };
   }
 
@@ -133,7 +134,7 @@ export class JobsController {
   ) {
     const tid = resolveTenantId(user, tenantId) as string;
     const branchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.getDelegationRequests(tid, branchId, type);
+    return this.jobsService.getDelegationRequests(tid, branchId, type, user);
   }
 
   @Patch('delegations/:requestId/accept')
@@ -151,7 +152,7 @@ export class JobsController {
     console.log(`[JobsController] acceptDelegation called for requestId=${requestId}`);
     const tid = resolveTenantId(user, tenantId) as string;
     const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.acceptDelegation(requestId, dto, tid, targetBranchId);
+    return this.jobsService.acceptDelegation(requestId, dto, tid, targetBranchId, user);
   }
 
   @Patch('delegations/:requestId/reject')
@@ -168,7 +169,7 @@ export class JobsController {
   ) {
     const tid = resolveTenantId(user, tenantId) as string;
     const targetBranchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.rejectDelegation(requestId, dto, tid, targetBranchId);
+    return this.jobsService.rejectDelegation(requestId, dto, tid, targetBranchId, user);
   }
 
   @Get(':id')
@@ -308,7 +309,7 @@ export class JobsController {
   ) {
     const tid = resolveTenantId(user, tenantId) as string;
     const sourceBranchId = resolveBranchId(user, branchHeaderId) as string;
-    return this.jobsService.delegateJob(jobId, dto, tid, sourceBranchId);
+    return this.jobsService.delegateJob(jobId, dto, tid, sourceBranchId, user);
   }
 
 }

@@ -12,6 +12,8 @@ import { AuthKeycloakService } from './auth-keycloak.service';
 import { AuthTenantService } from './auth-tenant.service';
 import { AuthRbacService } from './auth-rbac.service';
 import { AuthEmailService } from './auth-email.service';
+import { SsoLoginDto } from '../dtos/sso-login.dto';
+import * as crypto from 'crypto';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
 
@@ -498,12 +500,242 @@ export class AuthCoreService {
     };
   }
 
-  // ─── SSO Login (disabled — requires Keycloak token exchange; not currently in scope) ─
+  // ─── SSO Login (OAuth Identity Provider via Keycloak) ─────────────────────────
+  async ssoLogin(dto: SsoLoginDto) {
+    const cleanEmail = (dto.email || '').trim().toLowerCase();
+    if (!cleanEmail) {
+      throw new BadRequestException('Email is required for SSO login.');
+    }
+    const provider = dto.provider?.toLowerCase();
+    if (provider !== 'google' && provider !== 'microsoft') {
+      throw new BadRequestException('Provider must be either "google" or "microsoft".');
+    }
 
-  async ssoLogin(_dto: any): Promise<never> {
-    throw new BadRequestException(
-      'SSO login is not currently supported. Please use password-based login.'
-    );
+    // 1. Fetch user from DB
+    const result = await this.authQuery.query(
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, sr.system_key as system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+       FROM users u
+       LEFT JOIN tenants t ON u.tenant_id = t.id
+       LEFT JOIN custom_roles cr ON u.role_id = cr.id
+       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+       LEFT JOIN branches b ON u.branch_id = b.id
+       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
+      [cleanEmail]
+    ).catch(() => ({ rows: [], rowCount: 0 }));
+
+    if (result.rows.length === 0) {
+      throw new UnauthorizedException(
+        'No account found for this email address in this workspace. Please contact your organization administrator to be invited.'
+      );
+    }
+    const user: any = result.rows[0];
+
+    // 2. Check tenant status & user active/approved
+    if (user.tenant_status && user.tenant_status !== 'ACTIVE') {
+      throw new UnauthorizedException('Your company workspace is inactive. Contact the platform administrator.');
+    }
+    if (!user.is_active) {
+      throw new UnauthorizedException('Your account has been deactivated. Contact your administrator.');
+    }
+    if (!user.is_approved) {
+      if (user.tenant_status === 'ACTIVE') {
+        await this.authQuery.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
+        user.is_approved = true;
+      } else {
+        throw new UnauthorizedException('Your account is pending approval by the administrator.');
+      }
+    }
+
+    // 3. Subdomain / Workspace tenant verification
+    if (dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
+      const cleanSubdomain = dto.subdomain.split(':')[0].replace(/^https?:\/\//, '').trim().toLowerCase();
+      const domainMapping = await this.authQuery.query(
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(TRIM(domain_name)) = $1 OR LOWER(TRIM(domain_name)) = $2
+         UNION
+         SELECT id as tenant_id FROM tenants WHERE LOWER(TRIM(domain)) = $1 OR LOWER(TRIM(domain || '.enfyjobs.com')) = $1
+         LIMIT 1`,
+        [cleanSubdomain, cleanSubdomain.replace(/^www\./, '')]
+      );
+      if (domainMapping.rows.length > 0) {
+        const mappedTenantId = (domainMapping.rows[0] as any).tenant_id;
+        if (user.tenant_id !== mappedTenantId) {
+          throw new UnauthorizedException('User does not belong to this company workspace.');
+        }
+      } else {
+        const userTenant = await this.authQuery.query('SELECT domain FROM tenants WHERE id = $1', [user.tenant_id]);
+        if (userTenant.rows.length > 0) {
+          const tenantSlug = ((userTenant.rows[0] as any).domain || '').toLowerCase().trim();
+          if (!(cleanSubdomain === tenantSlug || cleanSubdomain === `${tenantSlug}.enfyjobs.com` || cleanSubdomain.startsWith(tenantSlug))) {
+            throw new UnauthorizedException('Workspace not found or user does not belong to this company workspace.');
+          }
+        } else {
+          throw new UnauthorizedException('Workspace not found.');
+        }
+      }
+    }
+
+    // 4. Tenant Auth Policy enforcement
+    const policy = await this.tenantService.getTenantAuthPolicy(user.tenant_id);
+
+    if (provider === 'google' && !policy.allowGoogleSso) {
+      throw new UnauthorizedException('Google Sign-In is disabled for this organization. Please use another login method.');
+    }
+    if (provider === 'microsoft' && !policy.allowMicrosoftSso) {
+      throw new UnauthorizedException('Microsoft Sign-In is disabled for this organization. Please use another login method.');
+    }
+
+    // Domain whitelist check
+    if (policy.allowedEmailDomains && policy.allowedEmailDomains.length > 0) {
+      const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
+      const normalizedAllowed = policy.allowedEmailDomains.map((d: string) => d.toLowerCase().replace(/^@/, ''));
+      if (!emailDomain || !normalizedAllowed.includes(emailDomain)) {
+        throw new UnauthorizedException(`Logins with @${emailDomain} domain are not permitted for this organization.`);
+      }
+    }
+
+    // Microsoft Tenant ID check (blocks foreign Microsoft 365 / Azure AD directories)
+    if (provider === 'microsoft' && policy.microsoftTenantId && policy.microsoftTenantId.trim()) {
+      if (!dto.microsoftTenantId || dto.microsoftTenantId.toLowerCase().trim() !== policy.microsoftTenantId.toLowerCase().trim()) {
+        throw new UnauthorizedException(
+          'Login rejected: Microsoft organization directory does not match the configured Azure Tenant ID for this workspace.'
+        );
+      }
+    }
+
+    // 5. Compute user roles and permissions
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const userRoleIds = new Set<string>();
+    const legacyRoleNames = new Set<string>();
+
+    if (user.role_id) {
+      if (uuidRegex.test(user.role_id)) userRoleIds.add(user.role_id);
+      else legacyRoleNames.add(user.role_id);
+    }
+    if (Array.isArray(user.assigned_role_ids)) {
+      user.assigned_role_ids.forEach((rid: string) => {
+        if (rid) { if (uuidRegex.test(rid)) userRoleIds.add(rid); else legacyRoleNames.add(rid); }
+      });
+    }
+
+    let permissions: string[] = [];
+    let dynamicRoles: string[] = [];
+
+    if (legacyRoleNames.size > 0) {
+      const legacyRes = await this.authQuery.query(
+        'SELECT cr.id, cr.name FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1 AND (UPPER(cr.name) = ANY($2) OR sr.system_key = ANY($2))',
+        [user.tenant_id, Array.from(legacyRoleNames).map(r => r.toUpperCase())]
+      ).catch(() => ({ rows: [] }));
+      (legacyRes.rows as any[]).forEach((r) => userRoleIds.add(r.id));
+    }
+
+    if (userRoleIds.size > 0) {
+      const validUuids = Array.from(userRoleIds).filter(id => uuidRegex.test(id));
+      if (validUuids.length > 0) {
+        const rolesResult = await this.authQuery.query(
+          'SELECT cr.id, cr.name, cr.permissions, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[])',
+          [validUuids]
+        ).catch(() => ({ rows: [] }));
+
+        const permSet = new Set<string>();
+        for (const row of rolesResult.rows as any[]) {
+          const pList = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
+          pList.forEach((p: string) => permSet.add(p));
+        }
+        permissions = Array.from(permSet);
+        dynamicRoles = Array.from(new Set((rolesResult.rows as any[]).map((row) => row.name)));
+      }
+    }
+    if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = [user.role_name];
+    if (dynamicRoles.length === 0) dynamicRoles = [user.system_role || 'RECRUITER'];
+
+    let systemRole = user.system_role || 'RECRUITER';
+
+    // 6. Obtain Keycloak token for this user
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    const ssoInternalPassword = crypto.createHmac('sha256', clientSecret).update(`SSO:${user.id}:${cleanEmail}`).digest('hex');
+
+    await this.keycloakService.provisionUserInKeycloak({
+      email: cleanEmail,
+      password: ssoInternalPassword,
+      fullName: user.full_name || dto.name,
+      tenantId: user.tenant_id,
+    }).catch((err) => {
+      this.logger.warn(`[SSO] Keycloak provision note for ${cleanEmail}: ${err.message}`);
+    });
+
+    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
+    const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+    const params = new URLSearchParams();
+    params.append('grant_type', 'password');
+    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
+    if (clientSecret) params.append('client_secret', clientSecret);
+    params.append('username', cleanEmail);
+    params.append('password', ssoInternalPassword);
+
+    let keycloakToken: string | null = null;
+    let refreshToken: string | null = null;
+    let expiresIn: number;
+
+    try {
+      let res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+      if (!res.ok && res.status !== 401 && res.status !== 400) {
+        const altUrl = tokenUrl.includes('localhost') ? tokenUrl.replace('localhost', 'keycloak') : tokenUrl.replace('keycloak', 'localhost');
+        res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+      }
+
+      if (res.ok) {
+        const tokenData = await res.json();
+        keycloakToken = tokenData.access_token;
+        refreshToken = tokenData.refresh_token;
+        expiresIn = tokenData.expires_in;
+
+        try {
+          const kcPayload = JSON.parse(Buffer.from(keycloakToken!.split('.')[1], 'base64url').toString('utf8'));
+          const kcRealmRoles: string[] = (kcPayload.realm_access?.roles || []).map((r: string) => r.toUpperCase());
+          if (kcRealmRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+          else if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+        } catch (decodeErr) {
+          if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+        }
+
+        await this.keycloakService.syncKeycloakUser({ keycloakId: user.id, email: user.email, fullName: user.full_name, roles: dynamicRoles }).catch(() => {});
+      } else {
+        const errText = await res.text().catch(() => '');
+        this.logger.error(`Keycloak SSO direct grant failed (${res.status}): ${errText}`);
+        throw new UnauthorizedException('Authentication failed with identity provider.');
+      }
+    } catch (kcErr: any) {
+      if (kcErr instanceof UnauthorizedException) throw kcErr;
+      this.logger.error(`Keycloak SSO error for ${cleanEmail}: ${kcErr.message}`);
+      throw new UnauthorizedException('Authentication failed with identity provider.');
+    }
+
+    return {
+      accessToken: keycloakToken,
+      refreshToken: refreshToken || keycloakToken,
+      expiresIn: expiresIn!,
+      tokenType: 'Bearer',
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name || '',
+        lastName: user.last_name || '',
+        fullName: user.full_name,
+        roles: dynamicRoles,
+        tenantId: user.tenant_id || DEFAULT_TENANT_ID,
+        defaultMarket: user.default_market || 'US',
+        tenantDomain: user.tenant_domain || '',
+        permissions,
+        systemRole,
+        podId: user.pod_id || null,
+        branchId: user.branch_id || null,
+        branchName: user.branch_name || null,
+        businessUnitId: user.business_unit_id || null,
+        businessUnitName: user.business_unit_name || null,
+        podSystemEnabled: user.pod_system_enabled ?? true,
+      },
+    };
   }
 }
 

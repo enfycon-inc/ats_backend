@@ -391,6 +391,8 @@ export class AuthTenantService {
     candidatePoolMode?: string;
     jobAssignmentMode?: string;
     jobAssignmentOptions?: any;
+      jobCodePattern?: string;
+      enforceJobCodePattern?: boolean;
   }) {
     this.logger.log(`Updating tenant settings for ${tenantId}: ${JSON.stringify(settings)}`);
 
@@ -421,6 +423,9 @@ export class AuthTenantService {
       params.push(typeof settings.jobAssignmentOptions === 'string' ? settings.jobAssignmentOptions : JSON.stringify(settings.jobAssignmentOptions));
       paramIndex++;
     }
+
+    if (settings.jobCodePattern !== undefined) { fields.push(`job_code_pattern = $${paramIndex}`); params.push(settings.jobCodePattern); paramIndex++; }
+    if (settings.enforceJobCodePattern !== undefined) { fields.push(`enforce_job_code_pattern = $${paramIndex}`); params.push(settings.enforceJobCodePattern); paramIndex++; }
 
     if (fields.length === 0) throw new BadRequestException('No valid setting fields provided.');
 

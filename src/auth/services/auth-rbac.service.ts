@@ -238,7 +238,7 @@ export class AuthRbacService {
       resolvedSystemRoleId = (baseRoleRes.rows[0] as any)?.system_role_id || null;
     }
 
-    if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
+    if (!['ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
       throw new BadRequestException('Invalid base system role selected.');
     }
 
@@ -335,7 +335,7 @@ export class AuthRbacService {
 
     if (body.systemRole !== undefined) {
       const resolvedSystemRole = body.systemRole.toUpperCase().trim();
-      if (!['ADMIN', 'BRANCH_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
+      if (!['ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
         throw new BadRequestException('Invalid base system role selected.');
       }
       const sysRoleRes = await this.authQuery.query('SELECT id FROM system_roles WHERE system_key = $1 LIMIT 1', [resolvedSystemRole]);
@@ -671,8 +671,8 @@ export class AuthRbacService {
       { id: 'job:assign', name: 'Assign Unassigned Jobs', group: 'Jobs Management' },
       { id: 'job:assign_recruiter', name: 'Assign Job to Specific Recruiter', group: 'Jobs Management' },
       { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
-      { id: 'job:delegate', name: 'Delegate Jobs to Other Branches', group: 'Jobs Management' },
-      { id: 'job:accept_delegation', name: 'Accept Delegated Jobs from Other Branches', group: 'Jobs Management' },
+      { id: 'job:delegate', name: 'Delegate Jobs to Same-Market Units in Other Branches', group: 'Jobs Management' },
+      { id: 'job:accept_delegation', name: 'Accept Delegated Jobs for Your Operating Unit', group: 'Jobs Management' },
       { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates Management' },
       { id: 'candidate:view', name: 'View Candidates & Resume Bank', group: 'Candidates Management' },
       { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Sourcing' },
@@ -707,6 +707,7 @@ export class AuthRbacService {
       { id: 'branch:edit', name: 'Edit Branch Operating Hours, Timezone & Policies', group: 'Branch & Multi-Office Management' },
       { id: 'branch:delete', name: 'Delete Branch Office Locations', group: 'Branch & Multi-Office Management' },
       { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff', group: 'Branch & Multi-Office Management' },
+      { id: 'unit_admin:manage', name: 'Manage Operating Unit & Unit Staff', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_branches', name: 'Search Candidates Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'job:view_all_branches', name: 'View Jobs Across All Branches', group: 'Branch & Multi-Office Management' },
       { id: 'candidate:search_all_markets', name: 'Search Candidates Across All Markets (US + India)', group: 'Branch & Multi-Office Management' },

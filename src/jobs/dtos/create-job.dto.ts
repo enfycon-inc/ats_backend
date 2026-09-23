@@ -30,6 +30,9 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 'enfysync Inc', description: 'Business unit / division' })
   businessUnit?: string;
 
+  @ApiPropertyOptional({ example: 'unit-uuid-123', description: 'Associated operating unit ID' })
+  businessUnitId?: string;
+
   @ApiPropertyOptional({ example: 'Texas', description: 'State / province' })
   state?: string;
 
