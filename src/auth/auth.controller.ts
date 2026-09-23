@@ -532,7 +532,7 @@ Validates email + password and returns a signed JWT access token.
   })
   async createCustomRole(
     @CurrentUser() user: AuthUser,
-    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string; baseRoleId?: string; branchId?: string },
+    @Body() body: { name: string; description: string; permissions: string[]; systemRole?: string; baseRoleId?: string; branchId?: string; businessUnitId?: string },
     @Headers('x-branch-id') headerBranchId?: string,
     @Query('branchId') queryBranchId?: string,
   ) {
@@ -551,7 +551,7 @@ Validates email + password and returns a signed JWT access token.
   async updateCustomRole(
     @CurrentUser() user: AuthUser,
     @Param('id') roleId: string,
-    @Body() body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; permissions?: string[] },
+    @Body() body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; businessUnitId?: string; permissions?: string[] },
   ) {
     return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId, user);
   }

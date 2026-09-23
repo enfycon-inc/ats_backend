@@ -201,6 +201,7 @@ export class AuthRbacService {
     permissions: string[],
     systemRole?: string,
     branchId?: string,
+    businessUnitId?: string,
     createdById?: string,
     baseRoleId?: string,
     requester?: AuthUser,
@@ -280,8 +281,8 @@ export class AuthRbacService {
     const roleRes = await this.authQuery.query(
       `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
        VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8::jsonb)
-       RETURNING id, tenant_id, branch_id as "branchId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
-      [tenantId, effectiveBranchId, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
+       RETURNING id, tenant_id, branch_id as "branchId", business_unit_id as "businessUnitId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
+      [tenantId, effectiveBranchId, businessUnitId || null, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
     );
     const role: any = roleRes.rows[0];
 
@@ -297,7 +298,7 @@ export class AuthRbacService {
   async updateCustomRole(
     tenantId: string,
     roleId: string,
-    body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; permissions?: string[] },
+    body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; businessUnitId?: string; permissions?: string[] },
     userId?: string,
     requester?: AuthUser,
   ) {
