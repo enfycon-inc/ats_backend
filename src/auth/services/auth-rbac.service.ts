@@ -280,8 +280,8 @@ export class AuthRbacService {
     }
 
     const roleRes = await this.authQuery.query(
-      `INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
-       VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8::jsonb)
+      `INSERT INTO custom_roles (tenant_id, branch_id, business_unit_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
+         VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9::jsonb)
        RETURNING id, tenant_id, branch_id as "branchId", business_unit_id as "businessUnitId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
       [tenantId, effectiveBranchId, businessUnitId || null, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
     );
@@ -348,6 +348,7 @@ export class AuthRbacService {
     }
 
     if (body.branchId !== undefined) { params.push(body.branchId); updates.push(`branch_id = $${params.length}::uuid`); }
+    if (body.businessUnitId !== undefined) { params.push(body.businessUnitId || null); updates.push(`business_unit_id = $${params.length}::uuid`); }
 
     if (updates.length > 1) {
       await this.authQuery.query(`UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1 AND tenant_id = $2`, params);
