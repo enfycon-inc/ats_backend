@@ -393,6 +393,9 @@ export class AuthTenantService {
     jobAssignmentOptions?: any;
       jobCodePattern?: string;
       enforceJobCodePattern?: boolean;
+    siteTitle?: string;
+    logoUrl?: string;
+    name?: string;
   }) {
     this.logger.log(`Updating tenant settings for ${tenantId}: ${JSON.stringify(settings)}`);
 
