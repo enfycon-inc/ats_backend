@@ -427,6 +427,10 @@ export class AuthTenantService {
     if (settings.jobCodePattern !== undefined) { fields.push(`job_code_pattern = $${paramIndex}`); params.push(settings.jobCodePattern); paramIndex++; }
     if (settings.enforceJobCodePattern !== undefined) { fields.push(`enforce_job_code_pattern = $${paramIndex}`); params.push(settings.enforceJobCodePattern); paramIndex++; }
 
+        if (settings.siteTitle !== undefined) { fields.push(`site_title = $${paramIndex}`); params.push(settings.siteTitle); paramIndex++; }
+    if (settings.logoUrl !== undefined) { fields.push(`logo_url = $${paramIndex}`); params.push(settings.logoUrl); paramIndex++; }
+    if (settings.name !== undefined) { fields.push(`name = $${paramIndex}`); params.push(settings.name); paramIndex++; }
+
     if (fields.length === 0) throw new BadRequestException('No valid setting fields provided.');
 
     const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`;
