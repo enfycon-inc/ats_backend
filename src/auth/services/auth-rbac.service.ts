@@ -95,8 +95,8 @@ export class AuthRbacService {
 
   async listRoles(tenantId: string, branchId?: string | string[], includeSystem = false) {
     let sql = `
-      SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName",
-             cr.name, cr.description, cr.is_system as "isSystem", sys_role.system_key as "systemRole", cr.system_role_id as "systemRoleId",
+      SELECT cr.id, cr.tenant_id, cr.branch_id as "branchId", b.name as "branchName", cr.business_unit_id as "businessUnitId", bu.name as "businessUnitName",
+               cr.name, cr.description, cr.is_system as "isSystem", sys_role.system_key as "systemRole", cr.system_role_id as "systemRoleId",
              cr.base_role_id as "baseRoleId", sr.name as "baseRoleName",
              cr.permissions,
              cr.created_at as "createdAt", cr.updated_at as "updatedAt",
@@ -104,7 +104,8 @@ export class AuthRbacService {
       FROM custom_roles cr
       LEFT JOIN system_roles sys_role ON sys_role.id = cr.system_role_id
       LEFT JOIN branches b ON b.id = cr.branch_id
-      LEFT JOIN users u ON u.id = cr.created_by
+        LEFT JOIN business_units bu ON bu.id = cr.business_unit_id
+        LEFT JOIN users u ON u.id = cr.created_by
       LEFT JOIN custom_roles sr ON cr.base_role_id = sr.id
       WHERE cr.tenant_id = $1
     `;
