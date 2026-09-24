@@ -8,6 +8,7 @@ import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as dns from 'node:dns';
 import * as express from 'express';
+import { logoDirectory, LOGO_URL_PREFIX } from './auth/utils/logo-storage';
 
 if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
@@ -26,6 +27,10 @@ async function bootstrap() {
   // Increase payload limit for large CSV uploads (mass mail)
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use(LOGO_URL_PREFIX, express.static(logoDirectory(), {
+    dotfiles: 'deny', index: false, maxAge: '1y', immutable: true,
+    setHeaders: (res) => { res.setHeader('X-Content-Type-Options', 'nosniff'); },
+  }));
 
   // Configure Swagger OpenAPI document metadata
   const config = new DocumentBuilder()

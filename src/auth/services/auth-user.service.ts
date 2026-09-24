@@ -35,6 +35,7 @@ export class AuthUserService {
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
+              t.site_title, t.logo_url,
               b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
@@ -118,7 +119,7 @@ export class AuthUserService {
       candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
       jobAssignmentMode: u.job_assignment_mode || 'AUTO',
       jobAssignmentOptions: u.job_assignment_options || { allowAuto: true, allowAll: true, allowUnassigned: true, allowedPodIds: [] },
-      tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '' },
+      tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '', siteTitle: u.site_title || '', logoUrl: u.logo_url || '' },
     };
   }
 
