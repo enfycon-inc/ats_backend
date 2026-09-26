@@ -258,7 +258,7 @@ export class AuthUserService {
     await this.rbacService.verifyLastAdminProtection(targetUser.tenant_id, userId, 'delete');
 
     await this.authQuery.query('UPDATE users SET job_reviewer_id = NULL WHERE job_reviewer_id = $1', [userId]).catch(() => {});
-    await this.authQuery.query('UPDATE branches SET branch_manager_id = NULL WHERE branch_manager_id = $1', [userId]).catch(() => {});
+    await this.authQuery.query('UPDATE branches SET manager_id = NULL WHERE manager_id = $1', [userId]).catch(() => {});
     await this.authQuery.query('UPDATE pods SET pod_head_id = NULL WHERE pod_head_id = $1', [userId]).catch(() => {});
     await this.authQuery.query('DELETE FROM user_invitations WHERE LOWER(email) = LOWER($1) AND tenant_id = $2', [targetUser.email, targetUser.tenant_id]).catch(() => {});
     await this.authQuery.query('DELETE FROM users WHERE id = $1', [userId]);
@@ -305,7 +305,7 @@ export class AuthUserService {
              (CASE WHEN  ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN cr.id = ::uuid ELSE false END)
              OR UPPER(cr.name) = UPPER()
              OR UPPER(COALESCE(sr.system_key, '')) = UPPER()
-             OR UPPER(COALESCE(cr.system_role, '')) = UPPER()
+             
            )
          ORDER BY (cr.is_system = false) DESC, cr.created_at DESC`,
       [tenantId, normalized]
@@ -568,7 +568,7 @@ async approveTenantUser(
       const defaultRoleRes = await this.authQuery.query(
         `SELECT cr.id FROM custom_roles cr
          LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
-         WHERE cr.tenant_id = $1::uuid AND (UPPER(cr.name) = 'RECRUITER' OR UPPER(COALESCE(sr.system_key, '')) = 'RECRUITER' OR UPPER(COALESCE(cr.system_role, '')) = 'RECRUITER')
+         WHERE cr.tenant_id = $1::uuid AND (UPPER(cr.name) = 'RECRUITER' OR UPPER(COALESCE(sr.system_key, '')) = 'RECRUITER' )
          LIMIT 1`,
         [targetUser.tenant_id]
       );
@@ -652,4 +652,5 @@ async approveTenantUser(
     return clean;
   }
 }
+
 
