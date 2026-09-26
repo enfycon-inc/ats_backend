@@ -37,11 +37,7 @@ export class AuthRbacService {
       const systemRoleId = sysRole.id;
       let perms: string[] = typeof sysRole.permissions === 'string' ? JSON.parse(sysRole.permissions) : sysRole.permissions;
 
-      // As per business requirements, only seed SUPER_ADMIN and TENANT_ADMIN by default.
-      // Branches are forced to manually create their own custom roles for everything else (RECRUITER, etc.).
-      if (systemKey !== 'SUPER_ADMIN' && systemKey !== 'TENANT_ADMIN') {
-        continue; 
-      }
+      // Removed restriction
 
       if (systemKey === 'SUPER_ADMIN' && tenantId !== DEFAULT_TENANT_ID) {
         continue; // Only seed SUPER_ADMIN for the default master tenant
@@ -770,3 +766,5 @@ export class AuthRbacService {
     }
   }
 }
+
+
