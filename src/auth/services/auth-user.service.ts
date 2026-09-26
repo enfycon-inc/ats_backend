@@ -544,7 +544,7 @@ async approveTenantUser(
              (CASE WHEN $3 ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN cr.id = $3::uuid ELSE false END)
              OR UPPER(cr.name) = UPPER($3)
              OR UPPER(COALESCE(sr.system_key, '')) = UPPER($3)
-             OR UPPER(COALESCE(cr.system_role, '')) = UPPER($3)
+             
            )
          ORDER BY (cr.is_system = false) DESC, cr.created_at ASC LIMIT 1`,
         [targetUser.tenant_id, branchId || null, targetRoleIdentifier]
@@ -652,3 +652,4 @@ async approveTenantUser(
     return clean;
   }
 }
+
