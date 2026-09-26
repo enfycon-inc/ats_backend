@@ -526,7 +526,10 @@ async approveTenantUser(
 
     const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
 
-    let targetRoleIdentifier = dto.roleId || (dto.roles && dto.roles[0]) || targetUser.requested_role;
+        let targetRoleIdentifier = dto.roleId || (dto.roles && dto.roles[0]) || targetUser.requested_role;
+    if (targetRoleIdentifier && typeof targetRoleIdentifier === 'string' && targetRoleIdentifier.toUpperCase() === 'BRANCH UNIT ADMIN') {
+      targetRoleIdentifier = 'UNIT_ADMIN';
+    }
     let assignedRoleId: string | null = null;
     let assignedRoleIds: string[] = [];
 
@@ -652,5 +655,6 @@ async approveTenantUser(
     return clean;
   }
 }
+
 
 
