@@ -15,9 +15,23 @@ export class AuthKeycloakService {
 
   constructor(private readonly authQuery: AuthQueryService) {}
 
-  async getKeycloakAdminToken(): Promise<string | null> {
+  /** Returns the base URL for Keycloak admin API calls — prefers KEYCLOAK_INTERNAL_URL (Docker-internal) */
+  private getKeycloakAdminBaseUrl(): string {
+    // If an explicit internal URL is set (e.g. http://ats_keycloak_dev:8080), use it
+    if (process.env.KEYCLOAK_INTERNAL_URL) {
+      return process.env.KEYCLOAK_INTERNAL_URL;
+    }
+    // Fall back: derive from KEYCLOAK_ISSUER, swapping localhost <-> keycloak hostname
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
     const baseUrl = issuer.split('/realms/')[0];
+    if (baseUrl.includes('localhost')) return baseUrl.replace('localhost', 'keycloak');
+    if (baseUrl.includes('keycloak')) return baseUrl;
+    // External URL (e.g. auth.enfyjobs.com) — try internal hostname
+    return 'http://ats_keycloak_dev:8080';
+  }
+
+  async getKeycloakAdminToken(): Promise<string | null> {
+    const adminBaseUrl = this.getKeycloakAdminBaseUrl();
     const adminUser = process.env.KEYCLOAK_ADMIN;
     const adminPass = process.env.KEYCLOAK_ADMIN_PASSWORD;
     if (!adminUser || !adminPass) {
@@ -25,33 +39,193 @@ export class AuthKeycloakService {
       return null;
     }
 
-    const tokenEndpoints = [
-      `${baseUrl}/realms/master/protocol/openid-connect/token`,
-      `${baseUrl.includes('localhost') ? baseUrl.replace('localhost', 'keycloak') : baseUrl.replace('keycloak', 'localhost')}/realms/master/protocol/openid-connect/token`,
-    ];
+    const tokenEndpoint = `${adminBaseUrl}/realms/master/protocol/openid-connect/token`;
+    try {
+      const params = new URLSearchParams();
+      params.append('grant_type', 'password');
+      params.append('client_id', 'admin-cli');
+      params.append('username', adminUser);
+      params.append('password', adminPass);
 
-    for (const url of tokenEndpoints) {
-      try {
-        const params = new URLSearchParams();
-        params.append('grant_type', 'password');
-        params.append('client_id', 'admin-cli');
-        params.append('username', adminUser);
-        params.append('password', adminPass);
-
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: params.toString(),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          return data.access_token;
-        }
-      } catch (err) {
-        // Continue to fallback endpoint
+      const res = await fetch(tokenEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        this.logger.debug(`[Keycloak] Admin token obtained from ${adminBaseUrl}`);
+        return data.access_token;
       }
+      this.logger.warn(`[Keycloak] Admin token request failed (${res.status}) at ${tokenEndpoint}`);
+    } catch (err: any) {
+      this.logger.warn(`[Keycloak] Could not reach admin token endpoint at ${tokenEndpoint}: ${err.message}`);
     }
     return null;
+  }
+
+
+  async configureTenantIdentityProvider(
+    tenantId: string,
+    clientId: string,
+    clientSecret: string,
+    microsoftTenantId?: string | null,
+  ): Promise<string | null> {
+    try {
+      const normalizedClientSecret = String(clientSecret || '').trim();
+      if (!normalizedClientSecret || /^[*•]+$/.test(normalizedClientSecret)) {
+        throw new Error('A real Microsoft client secret is required; a masked placeholder was supplied');
+      }
+
+      const adminToken = await this.getKeycloakAdminToken();
+      if (!adminToken) throw new Error('Failed to get Keycloak admin token');
+
+      const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+      const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
+      const adminBaseUrl = this.getKeycloakAdminBaseUrl();
+
+      const idpAlias = `microsoft-${tenantId}`;
+      const idpUrl = `${adminBaseUrl}/admin/realms/${realm}/identity-provider/instances`;
+
+      // 1. Check if it already exists
+      const checkRes = await fetch(`${idpUrl}/${idpAlias}`, {
+        headers: { 'Authorization': `Bearer ${adminToken}` }
+      });
+      if (!checkRes.ok && checkRes.status !== 404) {
+        throw new Error(`Failed to inspect existing IdP (${checkRes.status})`);
+      }
+
+      const normalizedMicrosoftTenantId = (microsoftTenantId || '').trim();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalizedMicrosoftTenantId)) {
+        throw new Error('A valid Microsoft Entra Directory (Tenant) ID is required');
+      }
+      const payload = {
+        alias: idpAlias,
+        providerId: 'microsoft',
+        enabled: true,
+        updateProfileFirstLoginMode: 'on',
+        trustEmail: true,
+        storeToken: false,
+        addReadTokenRoleOnCreate: false,
+        authenticateByDefault: false,
+        linkOnly: false,
+        firstBrokerLoginFlowAlias: 'first broker login',
+        config: {
+          clientId: clientId,
+          clientSecret: normalizedClientSecret,
+          // Keycloak uses /common when this property is absent. A tenant-specific
+          // endpoint is required for single-tenant Entra applications.
+          ...(normalizedMicrosoftTenantId ? { tenantId: normalizedMicrosoftTenantId } : {}),
+          defaultScope: 'openid email profile',
+          guiOrder: '1',
+          syncMode: 'IMPORT'
+        }
+      };
+
+      if (checkRes.ok) {
+        // Update existing IdP
+        const updateRes = await fetch(`${idpUrl}/${idpAlias}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+          body: JSON.stringify(payload)
+        });
+        if (!updateRes.ok) throw new Error(`Failed to update IdP: ${await updateRes.text()}`);
+      } else {
+        // Create new IdP
+        const createRes = await fetch(idpUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+          body: JSON.stringify(payload)
+        });
+        if (!createRes.ok) throw new Error(`Failed to create IdP: ${await createRes.text()}`);
+      }
+
+      await this.ensureIdentityProviderClaimMapper(adminToken, realm);
+
+      this.logger.log(`Successfully configured Keycloak Identity Provider: ${idpAlias}`);
+      // Return the generated redirect URI for the tenant to paste into Azure
+      // Use the public-facing KEYCLOAK_ISSUER base (not the internal Docker URL)
+      const issuerBase = (process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats').split('/realms/')[0];
+      return `${issuerBase}/realms/${realm}/broker/${idpAlias}/endpoint`;
+    } catch (err: any) {
+      this.logger.error(`Failed to configure tenant IdP in Keycloak: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Returns only the trusted, persisted Microsoft IdP metadata for a tenant.
+   * This is used after a broker token has been introspected; it never returns
+   * client credentials to callers.
+   */
+  async getTenantMicrosoftIdentityProvider(tenantId: string): Promise<{
+    enabled: boolean;
+    providerId: string;
+    tenantId: string | null;
+  } | null> {
+    try {
+      const adminToken = await this.getKeycloakAdminToken();
+      if (!adminToken) return null;
+      const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+      const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
+      const alias = `microsoft-${tenantId}`;
+      const response = await fetch(
+        `${this.getKeycloakAdminBaseUrl()}/admin/realms/${realm}/identity-provider/instances/${encodeURIComponent(alias)}`,
+        { headers: { Authorization: `Bearer ${adminToken}` } },
+      );
+      if (!response.ok) return null;
+      const provider: any = await response.json();
+      return {
+        enabled: provider.enabled === true,
+        providerId: typeof provider.providerId === 'string' ? provider.providerId : '',
+        tenantId: typeof provider.config?.tenantId === 'string' ? provider.config.tenantId : null,
+      };
+    } catch (err: any) {
+      this.logger.warn(`[Keycloak] Could not read Microsoft IdP metadata: ${err.message}`);
+      return null;
+    }
+  }
+
+  /** Ensure the broker alias is carried in the client access token. */
+  private async ensureIdentityProviderClaimMapper(adminToken: string, realm: string): Promise<void> {
+    const base = this.getKeycloakAdminBaseUrl();
+    const clientsResponse = await fetch(
+      `${base}/admin/realms/${realm}/clients?clientId=${encodeURIComponent(process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats')}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } },
+    );
+    if (!clientsResponse.ok) throw new Error(`Unable to find Keycloak client (${clientsResponse.status})`);
+    const clients: any[] = await clientsResponse.json();
+    const client = clients.find((entry) => entry.clientId === (process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats'));
+    if (!client?.id) throw new Error('Keycloak client was not found');
+
+    const mapper = {
+      name: 'identity-provider',
+      protocol: 'openid-connect',
+      protocolMapper: 'oidc-usersessionmodel-note-mapper',
+      config: {
+        'user.session.note': 'identity_provider',
+        'claim.name': 'identity_provider',
+        'jsonType.label': 'String',
+        'id.token.claim': 'true',
+        'access.token.claim': 'true',
+        'userinfo.token.claim': 'true',
+      },
+    };
+    const mapperUrl = `${base}/admin/realms/${realm}/clients/${encodeURIComponent(client.id)}/protocol-mappers/models`;
+    const existingResponse = await fetch(mapperUrl, { headers: { Authorization: `Bearer ${adminToken}` } });
+    if (!existingResponse.ok) throw new Error(`Unable to read Keycloak protocol mappers (${existingResponse.status})`);
+    const existing: any[] = await existingResponse.json();
+    const current = existing.find((entry) => entry.name === mapper.name);
+    if (current?.id) {
+      // The mapper already exists, no need to update it.
+      return;
+    }
+    const createResponse = await fetch(mapperUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify(mapper),
+    });
+    if (!createResponse.ok) throw new Error(`Unable to create Keycloak identity provider mapper (${createResponse.status})`);
   }
 
   async provisionUserInKeycloak(data: { email: string; password?: string; fullName?: string; tenantId?: string }): Promise<boolean> {
@@ -64,7 +238,7 @@ export class AuthKeycloakService {
 
       const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
       const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
-      const baseUrl = issuer.split('/realms/')[0];
+      const adminBaseUrl = this.getKeycloakAdminBaseUrl();
 
       const nameParts = (data.fullName || data.email).trim().split(' ');
       const firstName = nameParts[0] || 'User';
@@ -88,10 +262,8 @@ export class AuthKeycloakService {
         ];
       }
 
-      const targetEndpoints = [
-        `${baseUrl}/admin/realms/${realm}/users`,
-        `${baseUrl.includes('localhost') ? baseUrl.replace('localhost', 'keycloak') : baseUrl.replace('keycloak', 'localhost')}/admin/realms/${realm}/users`,
-      ];
+      const usersUrl = `${adminBaseUrl}/admin/realms/${realm}/users`;
+      const targetEndpoints = [ usersUrl ];
 
       for (const url of targetEndpoints) {
         try {
@@ -160,6 +332,7 @@ export class AuthKeycloakService {
     email: string;
     fullName: string;
     roles: string[];
+    tenantId?: string;
   }) {
     this.logger.debug(`Syncing Keycloak user: ${data.email}`);
 
@@ -167,14 +340,22 @@ export class AuthKeycloakService {
       .map((r) => r.toUpperCase().replace(/[\s-]/g, '_'))
       .filter((r) => r.length > 0);
 
-    const existing = await this.authQuery.query(
-      'SELECT id, tenant_id, is_active, role_id, assigned_role_ids, first_name, last_name, full_name, branch_id, pod_id, business_unit_id FROM users WHERE keycloak_id = $1 OR email = $2 LIMIT 1',
-      [data.keycloakId, data.email],
-    );
+    let existing: any;
+    if (data.tenantId) {
+      existing = await this.authQuery.query(
+        'SELECT id, tenant_id, is_active, is_approved, requested_role, role_id, assigned_role_ids, first_name, last_name, full_name, branch_id, pod_id, business_unit_id FROM users WHERE tenant_id = $3::uuid AND (keycloak_id = $1 OR LOWER(TRIM(email)) = LOWER(TRIM($2))) LIMIT 1',
+        [data.keycloakId, data.email, data.tenantId],
+      );
+    } else {
+      existing = await this.authQuery.query(
+        'SELECT id, tenant_id, is_active, is_approved, requested_role, role_id, assigned_role_ids, first_name, last_name, full_name, branch_id, pod_id, business_unit_id FROM users WHERE keycloak_id = $1 OR LOWER(TRIM(email)) = LOWER(TRIM($2)) ORDER BY (tenant_id <> $3::uuid) DESC LIMIT 1',
+        [data.keycloakId, data.email, DEFAULT_TENANT_ID],
+      );
+    }
 
-    let tenantId = existing.rows.length > 0
+    let tenantId = data.tenantId || (existing.rows.length > 0
       ? (existing.rows[0] as any).tenant_id
-      : DEFAULT_TENANT_ID;
+      : DEFAULT_TENANT_ID);
 
     let roleId = existing.rows.length > 0 ? (existing.rows[0] as any).role_id : null;
     const existingAssigned: string[] = existing.rows.length > 0 && Array.isArray((existing.rows[0] as any).assigned_role_ids)
@@ -231,15 +412,15 @@ export class AuthKeycloakService {
              assigned_role_ids = CASE WHEN cardinality(assigned_role_ids) = 0 THEN $6::uuid[] ELSE assigned_role_ids END,
              updated_at  = NOW()
          WHERE id = $7
-         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, is_approved, requested_role, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
         [data.keycloakId, firstName, lastName, fullName, roleId, assignedRoleIds, existingUser.id],
       );
       dbUser = updateRes.rows[0];
     } else {
       const insertRes = await this.authQuery.query(
         `INSERT INTO users (keycloak_id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, true, true, $7::uuid, $8::uuid[])
-         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
+         VALUES ($1, $2, $3, $4, $5, $6, true, false, $7::uuid, $8::uuid[])
+         RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, is_approved, requested_role, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
         [data.keycloakId, tenantId, data.email, firstName, lastName, fullName, roleId, assignedRoleIds],
       );
       dbUser = insertRes.rows[0];
@@ -266,7 +447,7 @@ export class AuthKeycloakService {
       : (dynamicRoles.find((r) => ['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'DELIVERY_HEAD', 'ACCOUNT_MANAGER', 'POD_LEAD', 'RECRUITER'].includes(r)) || 'RECRUITER');
 
     const uniqueRoles = Array.from(new Set(dynamicRoles));
-    return { ...dbUser, roles: uniqueRoles, permissions, system_role: primarySystemRole };
+    return { ...dbUser, is_approved: dbUser.is_approved !== false, requested_role: dbUser.requested_role || null, roles: uniqueRoles, permissions, system_role: primarySystemRole };
   }
 
   async deleteKeycloakUser(email: string): Promise<boolean> {
@@ -276,11 +457,10 @@ export class AuthKeycloakService {
 
       const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
       const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
-      const baseUrl = issuer.split('/realms/')[0];
+      const baseUrl = this.getKeycloakAdminBaseUrl();
 
       const targetEndpoints = [
         `${baseUrl}/admin/realms/${realm}/users`,
-        `${baseUrl.includes('localhost') ? baseUrl.replace('localhost', 'keycloak') : baseUrl.replace('keycloak', 'localhost')}/admin/realms/${realm}/users`,
       ];
 
       for (const url of targetEndpoints) {

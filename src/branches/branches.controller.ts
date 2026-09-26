@@ -54,9 +54,6 @@ export class BranchesController {
   @Get()
   async findAll(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    if (!this.canManageTenant(req.user)) {
-      return req.user.branchId ? [await this.branchesService.findOne(req.user.branchId, tenantId)] : [];
-    }
     return this.branchesService.findAll(tenantId);
   }
 

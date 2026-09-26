@@ -30,7 +30,7 @@ export class AuthUserService {
 
   async getProfile(userId: string) {
     const result = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.created_at, u.updated_at,
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.is_approved, u.requested_role, u.created_at, u.updated_at,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
@@ -109,7 +109,7 @@ export class AuthUserService {
       roles: cleanRoles.length > 0 ? cleanRoles : [roleName],
       roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds), assignedRoles,
       roleName, systemRole, baseRoleId, permissions: Array.from(userPerms), canReview,
-      tenantId: u.tenant_id, isActive: u.is_active, createdAt: u.created_at,
+      tenantId: u.tenant_id, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
       defaultMarket: u.default_market || 'US', tenantDomain: u.tenant_domain || '',
       userLimit: u.user_limit || 5, podId: u.pod_id, branchId: u.branch_id,
       branchName: u.branch_name || null,
@@ -139,7 +139,7 @@ export class AuthUserService {
     }
 
     const result = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at,
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at, u.requested_role,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
               u.business_unit_id, u.job_reviewer_id,
               rev.full_name as job_reviewer_name,
@@ -202,7 +202,7 @@ export class AuthUserService {
         id: u.id, email: u.email, firstName: u.first_name || '', lastName: u.last_name || '', fullName: u.full_name,
         roles: cleanRoles.length > 0 ? cleanRoles : [primaryRole],
         roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds),
-        roleName: primaryRole, systemRole, baseRoleId, isActive: u.is_active, isApproved: u.is_approved, createdAt: u.created_at,
+        roleName: primaryRole, systemRole, baseRoleId, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
         podId: u.pod_id, branchId: u.branch_id,
         branchName: u.branch_name || null, businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
         jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
@@ -298,9 +298,16 @@ export class AuthUserService {
 
     const customRolesRes = await this.authQuery.query(
       `SELECT cr.id, cr.name FROM custom_roles cr
-       LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
-       WHERE cr.tenant_id = $1 AND (UPPER(cr.name) = ANY($2::text[]) OR UPPER(sr.system_key) = ANY($2::text[]) OR cr.id::text = ANY($2::text[]))
-       ORDER BY (cr.is_system = false) DESC, cr.created_at DESC`,
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = ::uuid
+           AND (::text IS NULL OR cr.branch_id IS NULL OR cr.branch_id = ::uuid)
+           AND (
+             (CASE WHEN  ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN cr.id = ::uuid ELSE false END)
+             OR UPPER(cr.name) = UPPER()
+             OR UPPER(COALESCE(sr.system_key, '')) = UPPER()
+             OR UPPER(COALESCE(cr.system_role, '')) = UPPER()
+           )
+         ORDER BY (cr.is_system = false) DESC, cr.created_at DESC`,
       [tenantId, normalized]
     );
     const roleIds: string[] = (customRolesRes.rows as any[]).map((r) => r.id);
@@ -451,6 +458,176 @@ export class AuthUserService {
     }
 
     return this.getProfile(userId);
+  }
+
+    async requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string) {
+      const userRes = await this.authQuery.query(
+        'SELECT id, email, full_name, tenant_id FROM users WHERE id = $1 LIMIT 1',
+        [userId]
+      );
+      if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
+
+      await this.authQuery.query(
+        'UPDATE users SET requested_role = $1, branch_id = $2::uuid, business_unit_id = $3::uuid, updated_at = NOW() WHERE id = $4::uuid',
+        [role, branchId || null, businessUnitId || null, userId]
+      );
+
+      try {
+        const adminsRes = await this.authQuery.query(
+          "SELECT u.id FROM users u INNER JOIN custom_roles cr ON u.role_id = cr.id INNER JOIN system_roles sr ON cr.system_role_id = sr.id WHERE u.tenant_id = $1 AND sr.system_key IN ('ADMIN', 'SUPER_ADMIN') AND u.is_active = true",
+          [userRes.rows[0].tenant_id]
+        );
+        if (adminsRes.rows.length > 0) {
+          const title = 'New Role Request';
+          const msg = userRes.rows[0].email + ' requested the ' + role.replace(/_/g, ' ') + ' role.';
+          for (const admin of adminsRes.rows) {
+            await this.authQuery.query(
+              "INSERT INTO notifications (tenant_id, user_id, type, title, message, data, is_read, initiator_id, created_at) VALUES ($1, $2, 'ROLE_REQUEST', $3, $4, '{}'::jsonb, false, $5, NOW())",
+              [userRes.rows[0].tenant_id, admin.id, title, msg, userId]
+            );
+          }
+        }
+      } catch (err) {}
+
+      return { success: true, message: 'Role request submitted for approval.' };
+    }
+
+async approveTenantUser(
+    userId: string,
+    dto: { roleId?: string; roleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[] },
+    requester: AuthUser
+  ) {
+    const userRes = await this.authQuery.query(
+      'SELECT id, email, full_name, tenant_id, branch_id, business_unit_id, requested_role, is_approved, is_active FROM users WHERE id = $1 LIMIT 1',
+      [userId]
+    );
+    if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
+    const targetUser: any = userRes.rows[0];
+
+    // Multitenancy validation
+    if (!requester.roles?.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
+      throw new ForbiddenException('You are not authorized to approve users in another tenant.');
+    }
+
+    // Branch Admin validation
+    const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || requester.roles?.includes('ADMIN') || requester.roles?.includes('SUPER_ADMIN');
+    if (!isTenantAdmin && targetUser.branch_id) {
+      validateBranchAccess(requester, targetUser.branch_id, 'approve users');
+    }
+
+    // Check seat limit
+    if (!targetUser.is_active || !targetUser.is_approved) {
+      await this.rbacService.checkSeatLimit(targetUser.tenant_id);
+    }
+
+    const branchId = dto.branchId !== undefined ? (dto.branchId || null) : (targetUser.branch_id || (requester as any).branchId || null);
+    const businessUnitId = dto.businessUnitId !== undefined ? (dto.businessUnitId || null) : (targetUser.business_unit_id || (requester as any).businessUnitId || null);
+
+    const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+
+    let targetRoleIdentifier = dto.roleId || (dto.roles && dto.roles[0]) || targetUser.requested_role;
+    let assignedRoleId: string | null = null;
+    let assignedRoleIds: string[] = [];
+
+    if (dto.roleId && isUuid(dto.roleId)) {
+      assignedRoleId = dto.roleId;
+      assignedRoleIds = [dto.roleId];
+    } else if (targetRoleIdentifier) {
+      const matchRes = await this.authQuery.query(
+        `SELECT cr.id, cr.name, sr.system_key as system_role
+         FROM custom_roles cr
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = $1::uuid
+           AND ($2::text IS NULL OR cr.branch_id IS NULL OR cr.branch_id = $2::uuid)
+           AND (
+             (CASE WHEN $3 ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN cr.id = $3::uuid ELSE false END)
+             OR UPPER(cr.name) = UPPER($3)
+             OR UPPER(COALESCE(sr.system_key, '')) = UPPER($3)
+             OR UPPER(COALESCE(cr.system_role, '')) = UPPER($3)
+           )
+         ORDER BY (cr.is_system = false) DESC, cr.created_at ASC LIMIT 1`,
+        [targetUser.tenant_id, branchId || null, targetRoleIdentifier]
+      );
+
+      if (matchRes.rows.length > 0) {
+        assignedRoleId = matchRes.rows[0].id;
+        assignedRoleIds = [assignedRoleId!];
+      }
+    }
+
+    if (Array.isArray(dto.roleIds) && dto.roleIds.length > 0) {
+      const validRoleUuids = dto.roleIds.filter(isUuid);
+      if (validRoleUuids.length > 0) {
+        assignedRoleIds = validRoleUuids;
+        if (!assignedRoleId) assignedRoleId = validRoleUuids[0];
+      }
+    }
+
+    if (!assignedRoleId) {
+      const defaultRoleRes = await this.authQuery.query(
+        `SELECT cr.id FROM custom_roles cr
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         WHERE cr.tenant_id = $1::uuid AND (UPPER(cr.name) = 'RECRUITER' OR UPPER(COALESCE(sr.system_key, '')) = 'RECRUITER' OR UPPER(COALESCE(cr.system_role, '')) = 'RECRUITER')
+         LIMIT 1`,
+        [targetUser.tenant_id]
+      );
+      if (defaultRoleRes.rows.length > 0) {
+        assignedRoleId = defaultRoleRes.rows[0].id;
+        assignedRoleIds = [assignedRoleId!];
+      }
+    }
+
+    await this.authQuery.query(
+      `UPDATE users
+       SET is_approved = true,
+           is_active = true,
+           requested_role = NULL,
+           role_id = COALESCE($1::uuid, role_id),
+           assigned_role_ids = CASE WHEN $2::uuid[] IS NOT NULL AND array_length($2::uuid[], 1) > 0 THEN $2::uuid[] ELSE assigned_role_ids END,
+           branch_id = $3::uuid,
+           business_unit_id = $4::uuid,
+           updated_at = NOW()
+       WHERE id = $5::uuid`,
+      [assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId]
+    );
+
+    this.logger.log(`User ${userId} approved by ${requester.email}`);
+
+    // Ensure user is provisioned in Keycloak (critical for JIT/direct SSO users)
+    this.keycloakService.provisionUserInKeycloak({
+      email: targetUser.email,
+      fullName: targetUser.full_name,
+      tenantId: targetUser.tenant_id,
+    }).catch((err) => {
+      this.logger.warn(`Keycloak provisioning on approval failed (non-blocking): ${err.message}`);
+    });
+
+    return { success: true, message: `User ${targetUser.full_name || targetUser.email} has been approved.` };
+  }
+
+  async rejectTenantUser(userId: string, requester: AuthUser) {
+    const userRes = await this.authQuery.query(
+      'SELECT id, email, full_name, tenant_id, branch_id FROM users WHERE id = $1 LIMIT 1',
+      [userId]
+    );
+    if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
+    const targetUser: any = userRes.rows[0];
+
+    if (!requester.roles?.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
+      throw new ForbiddenException('You are not authorized to reject users in another tenant.');
+    }
+
+    const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || requester.roles?.includes('ADMIN') || requester.roles?.includes('SUPER_ADMIN');
+    if (!isTenantAdmin && targetUser.branch_id) {
+      validateBranchAccess(requester, targetUser.branch_id, 'reject users');
+    }
+
+    await this.authQuery.query('DELETE FROM users WHERE id = $1', [userId]);
+
+    this.logger.log(`User registration request for ${targetUser.email} was rejected by ${requester.email}`);
+    return { success: true, message: `Registration request for ${targetUser.email} was rejected.` };
   }
 
   async bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) {

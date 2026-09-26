@@ -324,7 +324,7 @@ model Pod {
 model User {
   id                   String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String                    @map("tenant_id") @db.Uuid
-  keycloakId           String?                   @unique @map("keycloak_id") @db.VarChar(255)
+  keycloakId           String?                   @map("keycloak_id") @db.VarChar(255)
   email                String                    @db.VarChar(255)
   firstName            String?                   @map("first_name") @db.VarChar(128)
   lastName             String?                   @map("last_name") @db.VarChar(128)
@@ -335,12 +335,15 @@ model User {
   roleId               String?                   @map("role_id") @db.Uuid
   assignedRoleIds      String[]                  @default([]) @map("assigned_role_ids") @db.Uuid
   branchId             String?                   @map("branch_id") @db.Uuid
+  assignedBranchIds    String[]                  @default([]) @map("assigned_branch_ids") @db.Uuid
+  branchRoles          Json                      @default("{}") @map("branch_roles")
   businessUnitId       String?                   @map("business_unit_id") @db.Uuid
   jobReviewerId        String?                   @map("job_reviewer_id") @db.Uuid
   podId                String?                   @map("pod_id") @db.Uuid
   lastLoginAt          DateTime?                 @map("last_login_at") @db.Timestamptz(6)
   createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  requestedRole        String?                   @map("requested_role") @db.VarChar(128)
   notifications        Notification[]
   podsAsHead           Pod[]                     @relation("PodHead")
   notificationSettings UserNotificationSettings?
@@ -355,6 +358,7 @@ model User {
   administeredUnits    BusinessUnit[]            @relation("BusinessUnitAdmins")
 
   @@unique([tenantId, email])
+  @@unique([tenantId, keycloakId])
   @@map("users")
   @@schema("ats")
 }

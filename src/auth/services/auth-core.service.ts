@@ -35,6 +35,17 @@ export class AuthCoreService {
     private readonly emailService: AuthEmailService,
   ) {}
 
+  private getKeycloakIssuer(): string {
+    return (process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats').replace(/\/$/, '');
+  }
+
+  private getKeycloakInternalIssuer(): string {
+    const issuer = this.getKeycloakIssuer();
+    const realmPath = new URL(issuer).pathname;
+    const internalBase = (process.env.KEYCLOAK_INTERNAL_URL || issuer.split('/realms/')[0]).replace(/\/$/, '');
+    return internalBase.endsWith(realmPath) ? internalBase : `${internalBase}${realmPath}`;
+  }
+
   // ─── Token decode helper (no signature check — for reading Keycloak JWT claims) ──
 
   decodeTokenPayload(token: string): any {
@@ -283,8 +294,7 @@ export class AuthCoreService {
     let refreshToken: string | null = null;
     let expiresIn: number;
 
-    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
-    const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+    const tokenUrl = `${this.getKeycloakInternalIssuer()}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
     params.append('grant_type', 'password');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
@@ -367,8 +377,7 @@ export class AuthCoreService {
   async refreshKeycloakToken(refreshToken: string) {
     if (!refreshToken) throw new BadRequestException('Refresh token is required.');
 
-    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
-    const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+    const tokenUrl = `${this.getKeycloakInternalIssuer()}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
     params.append('grant_type', 'refresh_token');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
@@ -501,50 +510,163 @@ export class AuthCoreService {
   }
 
   // ─── SSO Login (OAuth Identity Provider via Keycloak) ─────────────────────────
+
+  private async verifyBrokerAccessToken(accessToken?: string): Promise<any> {
+    const invalidToken = () => new UnauthorizedException('Microsoft sign-in could not be verified. Please sign in again.');
+    if (!accessToken || typeof accessToken !== 'string') throw invalidToken();
+
+    const issuer = (process.env.KEYCLOAK_ISSUER || '').replace(/\/$/, '');
+    const clientId = process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats';
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    if (!issuer || !clientSecret) {
+      throw new UnauthorizedException('Microsoft sign-in is not configured on this server.');
+    }
+
+    // The internal URL only changes transport; the token must still have the public issuer.
+    const internalBase = process.env.KEYCLOAK_INTERNAL_URL?.replace(/\/$/, '');
+    const tokenIssuer = internalBase ? `${internalBase}${new URL(issuer).pathname}` : issuer;
+    const params = new URLSearchParams({ token: accessToken, client_id: clientId, client_secret: clientSecret });
+    let introspection: any;
+    try {
+      const response = await fetch(`${tokenIssuer}/protocol/openid-connect/token/introspect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw invalidToken();
+      introspection = await response.json();
+    } catch {
+      throw invalidToken();
+    }
+
+    // Introspection authenticates this exact token before any JWT claim is trusted.
+    const claims = this.decodeTokenPayload(accessToken);
+    const now = Math.floor(Date.now() / 1000);
+    if (introspection.active !== true || !claims ||
+        claims.iss !== issuer ||
+        claims.azp !== clientId || (introspection.client_id || introspection.azp) !== clientId ||
+        typeof claims.sub !== 'string' || !claims.sub || introspection.sub !== claims.sub ||
+        typeof claims.exp !== 'number' || claims.exp <= now ||
+        typeof introspection.exp !== 'number' || introspection.exp <= now ||
+        typeof claims.email !== 'string' || !claims.email.trim() ||
+        typeof claims.identity_provider !== 'string' || !claims.identity_provider.startsWith('microsoft-')) {
+      throw invalidToken();
+    }
+    return claims;
+  }
+
   async ssoLogin(dto: SsoLoginDto) {
-    const cleanEmail = (dto.email || '').trim().toLowerCase();
+    const brokerClaims = dto.provider?.toLowerCase() === 'keycloak'
+      ? await this.verifyBrokerAccessToken(dto.accessToken)
+      : null;
+    const cleanEmail = (brokerClaims?.email || dto.email || '').trim().toLowerCase();
     if (!cleanEmail) {
       throw new BadRequestException('Email is required for SSO login.');
     }
-    const provider = dto.provider?.toLowerCase();
+    const provider = brokerClaims ? 'microsoft' : dto.provider?.toLowerCase();
     if (provider !== 'google' && provider !== 'microsoft') {
-      throw new BadRequestException('Provider must be either "google" or "microsoft".');
+      throw new BadRequestException('Provider must be "google", "microsoft", or "keycloak".');
     }
 
-    // 1. Fetch user from DB
-    const result = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.business_unit_id, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, sr.system_key as system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+    // 1. Resolve target workspace tenant ID FIRST from IdP hint or subdomain
+    let targetTenantId: string | null = null;
+    if (brokerClaims?.identity_provider?.startsWith('microsoft-')) {
+      targetTenantId = brokerClaims.identity_provider.replace('microsoft-', '');
+    } else if (dto.subdomain && !['www', 'localhost', 'enfycon.com', 'enfyjobs.com'].includes(dto.subdomain)) {
+      const cleanSub = dto.subdomain.split(':')[0].replace(/^https?:\/\//, '').trim().toLowerCase();
+      const domainMapping = await this.authQuery.query(
+        `SELECT tenant_id FROM tenant_domains WHERE LOWER(TRIM(domain_name)) = $1 OR LOWER(TRIM(domain_name)) = $2
+         UNION
+         SELECT id as tenant_id FROM tenants WHERE LOWER(TRIM(domain)) = $1 OR LOWER(TRIM(domain || '.enfyjobs.com')) = $1
+         LIMIT 1`,
+        [cleanSub, cleanSub.replace(/^www\./, '')]
+      );
+      if (domainMapping.rows.length > 0) targetTenantId = (domainMapping.rows[0] as any).tenant_id;
+    }
+
+    // 2. Fetch user from DB for this workspace
+    let result = await this.authQuery.query(
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.business_unit_id, u.requested_role, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, sr.system_key as system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
        LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
-       WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
-      [cleanEmail]
+       WHERE LOWER(TRIM(u.email)) = $1 ${targetTenantId ? 'AND u.tenant_id = $2::uuid' : ''} LIMIT 1`,
+      targetTenantId ? [cleanEmail, targetTenantId] : [cleanEmail]
     ).catch(() => ({ rows: [], rowCount: 0 }));
 
     if (result.rows.length === 0) {
-      throw new UnauthorizedException(
-        'No account found for this email address in this workspace. Please contact your organization administrator to be invited.'
+      // ── Auto-provision Just-In-Time (JIT) user for this tenant workspace ──
+      if (!targetTenantId) {
+        throw new UnauthorizedException(
+          'No account found for this email address in this workspace. Please contact your organization administrator to be invited.'
+        );
+      }
+
+      const tenantCheck = await this.authQuery.query(
+        'SELECT id, status FROM tenants WHERE id = $1 LIMIT 1',
+        [targetTenantId]
+      );
+      if (tenantCheck.rows.length === 0 || tenantCheck.rows[0].status !== 'ACTIVE') {
+        throw new UnauthorizedException('Workspace not found or is currently inactive.');
+      }
+
+      const policy = await this.tenantService.getTenantAuthPolicy(targetTenantId);
+      if (policy.allowedEmailDomains && policy.allowedEmailDomains.length > 0) {
+        const emailDomain = cleanEmail.split('@')[1]?.toLowerCase();
+        const normalizedAllowed = policy.allowedEmailDomains.map((d: string) => d.toLowerCase().replace(/^@/, ''));
+        if (!emailDomain || !normalizedAllowed.includes(emailDomain)) {
+          throw new UnauthorizedException(`Logins with @${emailDomain} domain are not permitted for this organization.`);
+        }
+      }
+
+      const newUserId = crypto.randomUUID();
+      const firstName = brokerClaims?.given_name || dto.name?.split(' ')[0] || '';
+      const lastName = brokerClaims?.family_name || dto.name?.split(' ').slice(1).join(' ') || '';
+      const fullName = dto.name || `${firstName} ${lastName}`.trim() || cleanEmail;
+
+      let keycloakSub = brokerClaims?.sub || null;
+      if (keycloakSub) {
+        const existingKc = await this.authQuery.query('SELECT id FROM users WHERE keycloak_id = $1 LIMIT 1', [keycloakSub]).catch(() => ({ rows: [] }));
+        if (existingKc.rows.length > 0) keycloakSub = null;
+      }
+
+      await this.authQuery.query(
+        `INSERT INTO users (id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, keycloak_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, true, false, $7, NOW(), NOW())
+         ON CONFLICT (tenant_id, email) DO UPDATE
+         SET is_active = true, is_approved = false, updated_at = NOW()`,
+        [newUserId, targetTenantId, cleanEmail, firstName, lastName, fullName, keycloakSub]
+      );
+
+      result = await this.authQuery.query(
+        `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.tenant_id, u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, u.business_unit_id, u.requested_role, t.default_market, t.domain as tenant_domain, t.status as tenant_status, t.pod_system_enabled, sr.system_key as system_role, cr.name as role_name, b.name as branch_name, bu.name as business_unit_name
+         FROM users u
+         LEFT JOIN tenants t ON u.tenant_id = t.id
+         LEFT JOIN custom_roles cr ON u.role_id = cr.id
+         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
+         LEFT JOIN branches b ON u.branch_id = b.id
+         LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+         WHERE LOWER(TRIM(u.email)) = $1 AND u.tenant_id = $2::uuid LIMIT 1`,
+        [cleanEmail, targetTenantId]
       );
     }
+
     const user: any = result.rows[0];
 
-    // 2. Check tenant status & user active/approved
+    if (brokerClaims && brokerClaims.identity_provider !== `microsoft-${user.tenant_id}`) {
+      throw new UnauthorizedException('Microsoft sign-in does not belong to this company workspace.');
+    }
+
+    // 2. Check tenant status & user active
     if (user.tenant_status && user.tenant_status !== 'ACTIVE') {
       throw new UnauthorizedException('Your company workspace is inactive. Contact the platform administrator.');
     }
     if (!user.is_active) {
       throw new UnauthorizedException('Your account has been deactivated. Contact your administrator.');
-    }
-    if (!user.is_approved) {
-      if (user.tenant_status === 'ACTIVE') {
-        await this.authQuery.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
-        user.is_approved = true;
-      } else {
-        throw new UnauthorizedException('Your account is pending approval by the administrator.');
-      }
     }
 
     // 3. Subdomain / Workspace tenant verification
@@ -595,7 +717,16 @@ export class AuthCoreService {
     }
 
     // Microsoft Tenant ID check (blocks foreign Microsoft 365 / Azure AD directories)
-    if (provider === 'microsoft' && policy.microsoftTenantId && policy.microsoftTenantId.trim()) {
+    if (brokerClaims) {
+      // The broker alias is verified in the token. Check that its trusted directory
+      // configuration still matches the workspace policy; never trust a posted tid.
+      const identityProvider = await this.keycloakService.getTenantMicrosoftIdentityProvider(user.tenant_id);
+      const directoryId = policy.microsoftTenantId?.trim().toLowerCase();
+      if (!directoryId || !identityProvider?.enabled || identityProvider.providerId !== 'microsoft' ||
+          identityProvider.tenantId?.trim().toLowerCase() !== directoryId) {
+        throw new UnauthorizedException('Microsoft sign-in directory configuration does not match this workspace. Contact your administrator.');
+      }
+    } else if (provider === 'microsoft' && policy.microsoftTenantId && policy.microsoftTenantId.trim()) {
       if (!dto.microsoftTenantId || dto.microsoftTenantId.toLowerCase().trim() !== policy.microsoftTenantId.toLowerCase().trim()) {
         throw new UnauthorizedException(
           'Login rejected: Microsoft organization directory does not match the configured Azure Tenant ID for this workspace.'
@@ -647,9 +778,29 @@ export class AuthCoreService {
       }
     }
     if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = [user.role_name];
-    if (dynamicRoles.length === 0) dynamicRoles = [user.system_role || 'RECRUITER'];
+    if (dynamicRoles.length === 0 && user.is_approved) dynamicRoles = [user.system_role || 'RECRUITER'];
 
-    let systemRole = user.system_role || 'RECRUITER';
+    let systemRole = user.is_approved ? (user.system_role || 'RECRUITER') : 'PENDING';
+
+    if (brokerClaims) {
+      // Authorization-code login already supplied the user's token. Reusing it
+      // preserves MFA and the broker session without resetting the user's password.
+      return {
+        accessToken: dto.accessToken!,
+        expiresIn: Math.max(0, brokerClaims.exp - Math.floor(Date.now() / 1000)),
+        tokenType: 'Bearer',
+        user: {
+          id: user.id, email: user.email, firstName: user.first_name || '', lastName: user.last_name || '',
+          fullName: user.full_name, roles: dynamicRoles, tenantId: user.tenant_id,
+          defaultMarket: user.default_market || 'US', tenantDomain: user.tenant_domain || '', permissions, systemRole,
+          podId: user.pod_id || null, branchId: user.branch_id || null, branchName: user.branch_name || null,
+          businessUnitId: user.business_unit_id || null, businessUnitName: user.business_unit_name || null,
+          podSystemEnabled: user.pod_system_enabled ?? true,
+          isApproved: user.is_approved,
+          requestedRole: user.requested_role || null,
+        },
+      };
+    }
 
     // 6. Obtain Keycloak token for this user
     const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
@@ -664,8 +815,7 @@ export class AuthCoreService {
       this.logger.warn(`[SSO] Keycloak provision note for ${cleanEmail}: ${err.message}`);
     });
 
-    const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
-    const tokenUrl = `${issuer}/protocol/openid-connect/token`;
+    const tokenUrl = `${this.getKeycloakInternalIssuer()}/protocol/openid-connect/token`;
     const params = new URLSearchParams();
     params.append('grant_type', 'password');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
@@ -734,6 +884,8 @@ export class AuthCoreService {
         businessUnitId: user.business_unit_id || null,
         businessUnitName: user.business_unit_name || null,
         podSystemEnabled: user.pod_system_enabled ?? true,
+        isApproved: user.is_approved,
+        requestedRole: user.requested_role || null,
       },
     };
   }

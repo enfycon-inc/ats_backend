@@ -74,6 +74,9 @@ export class AuthService {
   updateUserRoles(userId: string, roles: string[], requesterRoles: string[]) { return this.userService.updateUserRoles(userId, roles, requesterRoles); }
   updateUserDetails(userId: string, dto: any, requester: any) { return this.userService.updateUserDetails(userId, dto, requester); }
   bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) { return this.userService.bulkSetJobReviewer(tenantId, userIds, reviewerId); }
+  requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string) { return this.userService.requestRole(userId, role, branchId, businessUnitId); }
+  approveTenantUser(userId: string, dto: any, requester: any) { return this.userService.approveTenantUser(userId, dto, requester); }
+  rejectTenantUser(userId: string, requester: any) { return this.userService.rejectTenantUser(userId, requester); }
 
   // ─── Tenant Lifecycle ────────────────────────────────────────────────────────
   registerTenant(dto: RegisterTenantDto) { return this.tenantService.registerTenant(dto); }
@@ -115,7 +118,7 @@ export class AuthService {
 
   // ─── Keycloak ────────────────────────────────────────────────────────────────
   provisionUserInKeycloak(data: { email: string; password?: string; fullName?: string; tenantId?: string }) { return this.keycloakService.provisionUserInKeycloak(data); }
-  syncKeycloakUser(data: { keycloakId: string; email: string; fullName: string; roles: string[] }) { return this.keycloakService.syncKeycloakUser(data); }
+  syncKeycloakUser(data: { keycloakId: string; email: string; fullName: string; roles: string[]; tenantId?: string }) { return this.keycloakService.syncKeycloakUser(data); }
   deleteKeycloakUser(email: string) { return this.keycloakService.deleteKeycloakUser(email); }
   getKeycloakAdminToken() { return this.keycloakService.getKeycloakAdminToken(); }
 

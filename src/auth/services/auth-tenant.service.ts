@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import * as dns from 'dns/promises';
 import { AuthQueryService } from './auth-query.service';
@@ -481,6 +482,13 @@ export class AuthTenantService {
   }
 
   async updateTenantAuthPolicy(tenantId: string, dto: any) {
+    const submittedMicrosoftClientSecret = typeof dto.microsoftClientSecret === 'string'
+      ? dto.microsoftClientSecret.trim()
+      : '';
+    const microsoftClientSecret = submittedMicrosoftClientSecret && !/^[*•]+$/.test(submittedMicrosoftClientSecret)
+      ? submittedMicrosoftClientSecret
+      : null;
+
     const result = await this.authQuery.query(
       `INSERT INTO tenant_auth_settings (
          tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret
@@ -503,16 +511,42 @@ export class AuthTenantService {
         tenantId,
         dto.allowPasswordLogin ?? true, dto.allowMicrosoftSso ?? true, dto.allowGoogleSso ?? true,
         dto.enforceSsoOnly ?? false, dto.requireMfa ?? false, dto.allowPersonalEmails ?? true,
-        dto.allowedEmailDomains || [], dto.microsoftTenantId || null, dto.microsoftClientId || null, dto.microsoftClientSecret || null,
+        dto.allowedEmailDomains || [], dto.microsoftTenantId || null, dto.microsoftClientId || null, microsoftClientSecret,
       ]
     );
     const row: any = result.rows[0];
+
+    let redirectUri: string | null = null;
+    const configuredClientId = row.microsoft_client_id;
+    const configuredClientSecret = String(row.microsoft_client_secret || '').trim();
+    const configuredMicrosoftTenantId = String(row.microsoft_tenant_id || '').trim();
+    const microsoftTenantIdLooksValid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(configuredMicrosoftTenantId);
+    const microsoftClientSecretLooksValid = !!configuredClientSecret && !/^[*•]+$/.test(configuredClientSecret);
+    if (row.allow_microsoft_sso) {
+      if (!configuredClientId || !microsoftClientSecretLooksValid) {
+        throw new BadRequestException('Microsoft client ID and the full client secret are required. Re-enter the client secret; the masked value cannot be saved.');
+      }
+      if (!microsoftTenantIdLooksValid) {
+        throw new BadRequestException('A valid Microsoft Entra Directory (Tenant) ID is required when Microsoft sign-in is enabled.');
+      }
+      redirectUri = await this.keycloakService.configureTenantIdentityProvider(
+        tenantId,
+        configuredClientId,
+        configuredClientSecret,
+        configuredMicrosoftTenantId,
+      );
+      if (!redirectUri) {
+        throw new ServiceUnavailableException('Microsoft sign-in could not be synchronized with Keycloak. Check the client credentials and try again.');
+      }
+    }
+
     return {
       tenantId: row.tenant_id, allowPasswordLogin: row.allow_password_login,
       allowMicrosoftSso: row.allow_microsoft_sso, allowGoogleSso: row.allow_google_sso,
       enforceSsoOnly: row.enforce_sso_only, requireMfa: row.require_mfa,
       allowPersonalEmails: row.allow_personal_emails, allowedEmailDomains: row.allowed_email_domains,
       microsoftTenantId: row.microsoft_tenant_id, microsoftClientId: row.microsoft_client_id,
+      microsoftRedirectUri: redirectUri,
     };
   }
 

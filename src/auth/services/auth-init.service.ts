@@ -47,6 +47,54 @@ export class AuthInitService implements OnModuleInit {
         this.logger.warn(`[BOOT] Async Keycloak admin sync note: ${err.message}`);
       });
     }
+
+    // Re-provision all tenant SSO IdPs in Keycloak (they reset on container restart)
+    this.reprovisionAllKeycloakIdps().catch((err) => {
+      this.logger.warn(`[BOOT] Keycloak IdP re-provisioning note: ${err.message}`);
+    });
+  }
+
+  private async reprovisionAllKeycloakIdps() {
+    try {
+      const result = await this.authQuery.query(`
+        SELECT tenant_id, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret
+        FROM tenant_auth_settings
+        WHERE microsoft_client_id IS NOT NULL
+          AND microsoft_client_secret IS NOT NULL
+          AND microsoft_client_secret != ''
+      `);
+
+      if (result.rows.length === 0) {
+        this.logger.log('[BOOT] No tenant SSO configurations found to re-provision.');
+        return;
+      }
+
+      this.logger.log(`[BOOT] Re-provisioning ${result.rows.length} tenant Keycloak IdP(s)...`);
+      for (const row of result.rows as any[]) {
+        try {
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(row.microsoft_tenant_id || '').trim())) {
+            this.logger.warn(`[BOOT] Skipping Microsoft IdP for tenant ${row.tenant_id}: invalid Entra directory ID.`);
+            continue;
+          }
+          if (!row.microsoft_client_secret || /^[*•]+$/.test(String(row.microsoft_client_secret).trim())) {
+            this.logger.warn(`[BOOT] Skipping Microsoft IdP for tenant ${row.tenant_id}: the client secret is missing or masked.`);
+            continue;
+          }
+          const redirectUri = await this.keycloakService.configureTenantIdentityProvider(
+            row.tenant_id,
+            row.microsoft_client_id,
+            row.microsoft_client_secret,
+            row.microsoft_tenant_id,
+          );
+          if (!redirectUri) throw new Error('Keycloak IdP synchronization returned no redirect URI');
+          this.logger.log(`[BOOT] Re-provisioned Keycloak IdP for tenant ${row.tenant_id}`);
+        } catch (err: any) {
+          this.logger.warn(`[BOOT] Failed to re-provision IdP for tenant ${row.tenant_id}: ${err.message}`);
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`[BOOT] Could not query tenant SSO settings: ${err.message}`);
+    }
   }
 
   private async syncAllTenantRoles() {
@@ -105,6 +153,7 @@ export class AuthInitService implements OnModuleInit {
       -- Ensure branch_id, system_role_id, and base_role_id columns exist on custom_roles
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE CASCADE;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS system_role_id UUID REFERENCES system_roles(id) ON DELETE SET NULL;
+      ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE CASCADE;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS base_role_id UUID REFERENCES custom_roles(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles DROP CONSTRAINT IF EXISTS custom_roles_tenant_id_name_key;
@@ -169,7 +218,7 @@ export class AuthInitService implements OnModuleInit {
       CREATE TABLE IF NOT EXISTS users (
         id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_id     UUID NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
-        keycloak_id   VARCHAR(255) UNIQUE,
+        keycloak_id   VARCHAR(255),
         email         VARCHAR(255) NOT NULL UNIQUE,
         first_name    VARCHAR(128),
         last_name     VARCHAR(128),
@@ -203,6 +252,8 @@ export class AuthInitService implements OnModuleInit {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id UUID REFERENCES branches(id) ON DELETE SET NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS business_unit_id UUID REFERENCES business_units(id) ON DELETE SET NULL;
       ALTER TABLE users ADD COLUMN IF NOT EXISTS job_reviewer_id UUID REFERENCES users(id) ON DELETE SET NULL;
+      DROP INDEX IF EXISTS users_keycloak_id_key CASCADE;
+      CREATE UNIQUE INDEX IF NOT EXISTS users_tenant_id_keycloak_id_key ON users (tenant_id, keycloak_id);
 
       -- Update any existing users with null value to true
       UPDATE users SET is_approved = true WHERE is_approved IS NULL;

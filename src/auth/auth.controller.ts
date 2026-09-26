@@ -287,6 +287,55 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.bulkSetJobReviewer(currentUser.tenantId, body.userIds, body.reviewerId || null);
   }
 
+
+  // ─── POST /api/auth/request-role ────────────────────────────
+  @Post('request-role')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Request a role for newly joined user',
+    description: 'Submits a role request to workspace administrators for review and approval.',
+  })
+  async requestRole(
+    @CurrentUser() currentUser: AuthUser,
+    @Body() body: { role: string; branchId?: string; businessUnitId?: string },
+  ) {
+    if (!body?.role) throw new BadRequestException('Role is required');
+    return this.authService.requestRole(currentUser.dbId, body.role, body.branchId, body.businessUnitId);
+  }
+
+  // ─── PATCH /api/auth/users/:id/approve ──────────────────────
+  @Patch('users/:id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Approve a pending user registration and assign role/branch [ADMIN / BRANCH_ADMIN]',
+  })
+  async approveTenantUser(
+    @Param('id') userId: string,
+    @Body() body: { roleId?: string; roleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[] },
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.approveTenantUser(userId, body, currentUser);
+  }
+
+
+  // ─── PATCH /api/auth/users/:id/reject ───────────────────────
+  @Patch('users/:id/reject')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Reject a pending user registration request [ADMIN / BRANCH_ADMIN]',
+  })
+  async rejectTenantUser(
+    @Param('id') userId: string,
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.rejectTenantUser(userId, currentUser);
+  }
+
   // ─── GET /api/auth/approvals/pending ────────────────────────
   @Get('approvals/pending')
   @UseGuards(JwtAuthGuard, RolesGuard)

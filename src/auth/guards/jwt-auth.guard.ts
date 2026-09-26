@@ -40,8 +40,11 @@ export class JwtAuthGuard implements CanActivate {
     private readonly prisma: PrismaService,
   ) {
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
+    const internalIssuer = process.env.KEYCLOAK_INTERNAL_URL
+      ? `${process.env.KEYCLOAK_INTERNAL_URL.replace(/\/$/, '')}${new URL(issuer).pathname}`
+      : issuer;
     this.logger.log(
-      `[AUTH] KEYCLOAK mode active. JWKS: ${issuer}/protocol/openid-connect/certs`,
+      `[AUTH] KEYCLOAK mode active. JWKS: ${internalIssuer}/protocol/openid-connect/certs`,
     );
     // Ensure kv_store table exists for JWKS key persistence
     this.prisma.$executeRawUnsafe(`
@@ -129,8 +132,39 @@ export class JwtAuthGuard implements CanActivate {
       const groupRoles: string[] = (decoded.groups || []).filter((r: string) => !isTechnicalKeycloakRole(r));
       const allJwtRoles = [...realmRoles, ...clientRoles, ...groupRoles];
 
+      // Extract target tenant from header or host
+      let targetTenantId: string | undefined;
+      const headerTenant = request.headers['x-tenant-id'];
+      const headerDomain = request.headers['x-tenant-domain'];
+      const host = (request.headers['x-forwarded-host'] || request.headers['host'] || '') as string;
+
+      if (headerTenant && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(headerTenant)) {
+        targetTenantId = headerTenant;
+      } else {
+        let sub = typeof headerDomain === 'string' ? headerDomain : undefined;
+        if (!sub && host) {
+          const hostname = host.split(':')[0];
+          const parts = hostname.split('.');
+          if (hostname.includes('localhost') && parts.length > 1 && parts[0] !== 'localhost') {
+            sub = parts[0];
+          } else if (parts.length > 2 && parts[0] !== 'www' && parts[0] !== 'api') {
+            sub = parts[0];
+          }
+        }
+        if (sub && sub !== 'localhost' && sub !== 'api') {
+          const tenantMatch = await this.prisma.tenant.findFirst({
+            where: { OR: [{ domain: sub }, { prefixCode: sub.toUpperCase() }] },
+            select: { id: true },
+          });
+          if (tenantMatch) {
+            targetTenantId = tenantMatch.id;
+          }
+        }
+      }
+
+      const cacheKey = `${targetTenantId || 'default'}:${decoded.sub}`;
       let dbUser: any;
-      const cached = this.userCache.get(decoded.sub);
+      const cached = this.userCache.get(cacheKey);
       const currentState = cached ? await this.prisma.user.findUnique({
         where: { id: cached.user.id },
         select: { updatedAt: true, isActive: true },
@@ -145,8 +179,9 @@ export class JwtAuthGuard implements CanActivate {
           email: decoded.email,
           fullName: decoded.name || decoded.preferred_username || decoded.email,
           roles: allJwtRoles,
+          tenantId: targetTenantId,
         });
-        this.userCache.set(decoded.sub, {
+        this.userCache.set(cacheKey, {
           user: dbUser,
           expiresAt: Date.now() + 60_000,
         });
@@ -171,8 +206,10 @@ export class JwtAuthGuard implements CanActivate {
         email: decoded.email || dbUser.email,
         fullName: decoded.name || dbUser.full_name,
         roles: mergedRoles,
-        tenantId: dbUser.tenant_id || DEFAULT_TENANT_ID,
+        tenantId: dbUser.tenant_id || targetTenantId || DEFAULT_TENANT_ID,
         isActive: dbUser.is_active,
+        isApproved: dbUser.is_approved !== false,
+        requestedRole: dbUser.requested_role || null,
         permissions: dbUser.permissions || [],
         podId: dbUser.pod_id || null,
         branchId: dbUser.branch_id || null,
@@ -205,7 +242,9 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
-    let jwksUrl = `${issuer}/protocol/openid-connect/certs`;
+    let jwksUrl = process.env.KEYCLOAK_INTERNAL_URL
+      ? `${process.env.KEYCLOAK_INTERNAL_URL.replace(/\/$/, '')}${new URL(issuer).pathname}/protocol/openid-connect/certs`
+      : `${issuer}/protocol/openid-connect/certs`;
 
     let jwks: any;
     let keycloakReachable = false;

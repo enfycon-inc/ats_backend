@@ -3,16 +3,21 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class SsoLoginDto {
   @ApiProperty({
     example: 'google',
-    description: 'OAuth SSO provider (google or microsoft)',
-    enum: ['google', 'microsoft'],
+    description: 'OAuth SSO provider (keycloak requires a verified broker access token)',
+    enum: ['google', 'microsoft', 'keycloak'],
   })
-  provider: 'google' | 'microsoft';
+  provider: 'google' | 'microsoft' | 'keycloak';
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: 'recruiter.sarah@gmail.com',
-    description: 'Verified email returned by Google/Microsoft OAuth',
+    description: 'Email for legacy OAuth providers; Keycloak login derives email from the validated access token',
   })
-  email: string;
+  email?: string;
+
+  @ApiPropertyOptional({
+    description: 'Keycloak access token returned by the Microsoft broker authorization code flow',
+  })
+  accessToken?: string;
 
   @ApiPropertyOptional({
     example: 'Sarah Jenkins',
