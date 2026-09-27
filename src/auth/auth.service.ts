@@ -68,7 +68,7 @@ export class AuthService {
 
   // ─── User Management ─────────────────────────────────────────────────────────
   getProfile(userId: string) { return this.userService.getProfile(userId); }
-  listUsers(tenantId: string, scopedBranchId?: string | string[] | null) { return this.userService.listUsers(tenantId, scopedBranchId); }
+  listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) { return this.userService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId); }
   setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: any) { return this.userService.setUserActive(userId, isActive, requesterId, requester); }
   deleteUser(userId: string, requester: any) { return this.userService.deleteUser(userId, requester); }
   updateUserRoles(userId: string, roles: string[], requesterRoles: string[]) { return this.userService.updateUserRoles(userId, roles, requesterRoles); }

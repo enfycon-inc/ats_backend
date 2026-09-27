@@ -123,19 +123,23 @@ export class AuthUserService {
     };
   }
 
-  async listUsers(tenantId: string, scopedBranchId?: string | string[] | null) {
+  async listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) {
     let branchFilter = '';
     let queryParams: any[] = [tenantId];
 
     if (scopedBranchId) {
       if (Array.isArray(scopedBranchId) && scopedBranchId.length > 0) {
-        // Multiple branches: match if user's branch_id is in the list or assigned_branch_ids overlaps
         queryParams.push(scopedBranchId);
-        branchFilter = `AND u.branch_id = ANY($2::uuid[])`;
+        branchFilter += ` AND u.branch_id = ANY($${queryParams.length}::uuid[])`;
       } else if (typeof scopedBranchId === 'string') {
         queryParams.push(scopedBranchId);
-        branchFilter = `AND u.branch_id = $2`;
+        branchFilter += ` AND u.branch_id = $${queryParams.length}`;
       }
+    }
+    
+    if (scopedBusinessUnitId) {
+      queryParams.push(scopedBusinessUnitId);
+      branchFilter += ` AND u.business_unit_id = $${queryParams.length}`;
     }
 
     const result = await this.authQuery.query(
