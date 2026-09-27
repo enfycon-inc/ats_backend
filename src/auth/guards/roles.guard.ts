@@ -16,7 +16,7 @@ import { ROLES_KEY } from '../decorators/roles.decorator';
  *
  * Usage on controller method:
  *   @UseGuards(JwtAuthGuard, RolesGuard)
- *   @Roles('ADMIN', 'RECRUITER')
+ *   @Roles('TENANT_ADMIN', 'RECRUITER')
  *   async createJob(...) {}
  */
 @Injectable()

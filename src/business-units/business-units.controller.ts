@@ -22,6 +22,21 @@ import { resolveTenantId } from '../auth/utils/tenant-resolver';
 export class BusinessUnitsController {
   constructor(private readonly buService: BusinessUnitsService) {}
 
+  private tenantAccess(user: any) {
+    return (user?.permissions || []).some((p: string) => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
+  }
+
+  private async assertAccess(user: any, id: string, tenantId: string, mutate = false) {
+    const unit = await this.buService.findOne(id, tenantId);
+    if (this.tenantAccess(user)) return unit;
+    const permissions: string[] = user?.permissions || [];
+    if (!user.branchId || unit.branchId !== user.branchId) throw new ForbiddenException('You can only access units in your assigned branch.');
+    const branchManager = permissions.includes('branch_admin:manage');
+    if (permissions.includes('unit_admin:manage') && !branchManager && id !== user.businessUnitId) throw new ForbiddenException('You can only access your assigned unit.');
+    if (mutate && !branchManager && !(permissions.includes('unit_admin:manage') && id === user.businessUnitId)) throw new ForbiddenException('Unit administration permission is required.');
+    return unit;
+  }
+
   @Post()
   async create(
     @Body() dto: CreateBusinessUnitDto,
@@ -29,13 +44,21 @@ export class BusinessUnitsController {
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    if (!this.tenantAccess(req.user) && !(req.user.permissions?.includes('branch_admin:manage') && req.user.branchId && dto.branchId === req.user.branchId)) throw new ForbiddenException('Branch administration is required to create units.');
     return this.buService.create(dto, tenantId);
   }
 
   @Get()
   async findAll(@Req() req: any, @Query('branchId') branchId?: string, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.buService.findAll(tenantId, branchId);
+    if (this.tenantAccess(req.user)) return this.buService.findAll(tenantId, branchId);
+    if (branchId && branchId !== req.user.branchId) throw new ForbiddenException('You can only access your assigned branch.');
+    if (!req.user.branchId) return [];
+    if (req.user.permissions?.includes('unit_admin:manage') && !req.user.permissions?.includes('branch_admin:manage')) {
+      if (!req.user.businessUnitId) return [];
+      return [await this.assertAccess(req.user, req.user.businessUnitId, tenantId)];
+    }
+    return this.buService.findAll(tenantId, req.user.branchId);
   }
 
   @Get(':id')
@@ -45,7 +68,7 @@ export class BusinessUnitsController {
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.buService.findOne(id, tenantId);
+    return this.assertAccess(req.user, id, tenantId);
   }
 
   @Put(':id')
@@ -56,6 +79,8 @@ export class BusinessUnitsController {
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    const unit = await this.assertAccess(req.user, id, tenantId, true);
+    if (!this.tenantAccess(req.user) && dto.branchId !== undefined && dto.branchId !== unit.branchId) throw new ForbiddenException('Moving units requires tenant administration.');
     return this.buService.update(id, dto, tenantId);
   }
 
@@ -66,6 +91,8 @@ export class BusinessUnitsController {
     @Headers('x-tenant-id') headerTenantId?: string,
   ) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    await this.assertAccess(req.user, id, tenantId, true);
+    if (!this.tenantAccess(req.user) && !req.user.permissions?.includes('branch_admin:manage')) throw new ForbiddenException('Branch administration is required to delete units.');
     return this.buService.remove(id, tenantId);
   }
 
@@ -73,24 +100,28 @@ export class BusinessUnitsController {
   @Get(':id/members')
   async getMembers(@Param('id') id: string, @Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    await this.assertAccess(req.user, id, tenantId, true);
     return this.buService.getMembers(id, tenantId);
   }
 
   @Get(':id/candidate-staff')
   async getCandidateStaff(@Param('id') id: string, @Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    await this.assertAccess(req.user, id, tenantId, true);
     return this.buService.getCandidateStaff(id, tenantId);
   }
 
   @Post(':id/assign-members')
   async assignMembers(@Param('id') id: string, @Body() body: { userIds: string[] }, @Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    await this.assertAccess(req.user, id, tenantId, true);
     return this.buService.assignMembers(id, body?.userIds || [], tenantId);
   }
 
   @Delete(':id/members/:userId')
   async removeMember(@Param('id') id: string, @Param('userId') userId: string, @Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    await this.assertAccess(req.user, id, tenantId, true);
     return this.buService.removeMember(id, userId, tenantId);
   }
 
@@ -106,6 +137,7 @@ export class BusinessUnitsController {
     }
 
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    await this.assertAccess(req.user, id, tenantId, true);
     return this.buService.updateAdmins(id, adminIds || [], tenantId);
   }
 }

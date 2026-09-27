@@ -45,10 +45,11 @@ export class AuthRbacService {
 
       let roleRes = await this.authQuery.query(
         'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = UPPER($2) AND is_system = true LIMIT 1',
-        [tenantId, systemKey] // Wait, historically the name might be 'Admin' or 'ADMIN'
+        [tenantId, systemKey] // Wait, historically the name might be 'Admin' or 'TENANT_ADMIN'
       );
       
       let roleId: string;
+      let created = false;
       if (roleRes.rows.length === 0) {
         // Try looking up by name just in case
         roleRes = await this.authQuery.query(
@@ -69,6 +70,7 @@ export class AuthRbacService {
           systemRoleId,
         ]);
         roleId = (ins.rows[0] as any).id;
+        created = true;
       } else {
         roleId = (roleRes.rows[0] as any).id;
         await this.authQuery.query(
@@ -79,7 +81,7 @@ export class AuthRbacService {
 
       roleMap[systemKey] = roleId;
 
-      await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2', [JSON.stringify(perms), roleId]);
+      if (created) await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2', [JSON.stringify(perms), roleId]);
     }
 
     return roleMap;
@@ -153,14 +155,14 @@ export class AuthRbacService {
       const rolePerms = typeof role.permissions === 'string' ? JSON.parse(role.permissions) : (role.permissions || []);
 
       let displayName = role.name;
-      if (role.isSystem && (role.name === 'ADMIN' || role.name === 'TENANT_ADMIN')) {
+      if (role.isSystem && role.name === 'TENANT_ADMIN') {
         displayName = 'Tenant Admin';
       }
 
       result.push({
         ...role,
         name: displayName,
-        permissions: role.isSystem && defaultPerms.length > 0 ? (rolePerms.length > 0 ? rolePerms : defaultPerms) : rolePerms,
+        permissions: rolePerms,
         isExactSubstitution: !role.isSystem,
         replacesSystemRole: !role.isSystem && role.systemRole ? baseSysRole : null,
       });
@@ -171,7 +173,7 @@ export class AuthRbacService {
         const sysNorm = (r.systemRole || '').toUpperCase().replace(/[\s-_]/g, '');
         const nameNorm = (r.name || '').toUpperCase().replace(/[\s-_]/g, '');
         if (coveredArchetypes.has(sysNorm) || coveredArchetypes.has(nameNorm)) return false;
-        if (branchId && (nameNorm === 'ADMIN' || nameNorm === 'TENANTADMIN' || nameNorm === 'SUPERADMIN')) return false;
+        if (branchId && (nameNorm === 'TENANT_ADMIN' || nameNorm === 'TENANTADMIN' || nameNorm === 'SUPERADMIN')) return false;
       }
       return true;
     });
@@ -236,7 +238,7 @@ export class AuthRbacService {
       resolvedSystemRoleId = (baseRoleRes.rows[0] as any)?.system_role_id || null;
     }
 
-    if (!['ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
+    if (!['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
       throw new BadRequestException('Invalid base system role selected.');
     }
 
@@ -333,7 +335,7 @@ export class AuthRbacService {
 
     if (body.systemRole !== undefined) {
       const resolvedSystemRole = body.systemRole.toUpperCase().trim();
-      if (!['ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
+      if (!['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'ACCOUNT_MANAGER', 'RECRUITER', 'DELIVERY_HEAD', 'POD_LEAD'].includes(resolvedSystemRole)) {
         throw new BadRequestException('Invalid base system role selected.');
       }
       const sysRoleRes = await this.authQuery.query('SELECT id FROM system_roles WHERE system_key = $1 LIMIT 1', [resolvedSystemRole]);
@@ -555,7 +557,7 @@ export class AuthRbacService {
       }
     }
 
-    const isNewAdmin = newRolesData.some(r => r.system_role === 'ADMIN' || (r.name && r.name.toUpperCase() === 'ADMIN'));
+    const isNewAdmin = newRolesData.some(r => r.system_role === 'TENANT_ADMIN' || (r.name && r.name.toUpperCase() === 'TENANT_ADMIN'));
     if (!isNewAdmin) {
       await this.verifyLastAdminProtection(tenantId, userId, 'demote');
     }
@@ -745,7 +747,7 @@ export class AuthRbacService {
     );
     if (userRes.rows.length === 0) return;
     const user: any = userRes.rows[0];
-    const hasAdmin = user.system_role === 'ADMIN' || user.role_name === 'ADMIN';
+    const hasAdmin = user.system_role === 'TENANT_ADMIN' || user.role_name === 'TENANT_ADMIN';
 
     if (hasAdmin && user.is_active && user.is_approved) {
       const adminsRes = await this.authQuery.query(
@@ -754,7 +756,7 @@ export class AuthRbacService {
          LEFT JOIN custom_roles cr ON cr.id = u.role_id
          LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
          WHERE u.tenant_id = $1 AND u.is_active = true AND u.is_approved = true 
-           AND (sr.system_key = 'ADMIN' OR cr.name = 'ADMIN')`,
+           AND (sr.system_key = 'TENANT_ADMIN' OR cr.name = 'TENANT_ADMIN')`,
         [tenantId]
       );
       const adminCount = parseInt((adminsRes.rows[0] as any).count, 10);

@@ -302,7 +302,7 @@ export class RecruiterSubmissionsService {
 
     const userPerms = user.permissions || [];
     const isAm = user.roles?.includes('ACCOUNT_MANAGER');
-    const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
+    const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
     const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
     const isRecruiter = user.roles?.includes('RECRUITER');
     const isPodLead = user.roles?.includes('POD_LEAD');
@@ -538,7 +538,7 @@ export class RecruiterSubmissionsService {
     }
 
     const userPerms = user.permissions || [];
-    const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
+    const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
     const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
     const isAm = user.roles?.includes('ACCOUNT_MANAGER');
     const isPodLead = user.roles?.includes('POD_LEAD');
@@ -851,7 +851,7 @@ export class RecruiterSubmissionsService {
     let paramIndex = 2;
 
     const isAm = user.roles?.includes('ACCOUNT_MANAGER');
-    const isAdmin = user.roles?.includes('ADMIN') || user.roles?.includes('SUPER_ADMIN');
+    const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
     const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
     const isRecruiter = user.roles?.includes('RECRUITER');
     const isPodLead = user.roles?.includes('POD_LEAD');

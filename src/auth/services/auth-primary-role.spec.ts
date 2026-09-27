@@ -24,11 +24,11 @@ describe('configured primary dashboard role', () => {
     const query = jest.fn()
       .mockResolvedValueOnce({ rows: [{ id: 'user', tenant_id: 'tenant', role_id: 'tenant-admin', assigned_role_ids: ['north', 'south', 'empty'] }] })
       .mockResolvedValueOnce({ rows: [
-        { id: 'tenant-admin', name: 'Workspace Admin', system_role: 'ADMIN', is_system: true, branch_id: null },
+        { id: 'tenant-admin', name: 'Workspace Admin', system_role: 'TENANT_ADMIN', is_system: true, branch_id: null },
         { id: 'north', name: 'Regional Lead', system_role: 'DELIVERY_HEAD', is_system: false, branch_id: 'north-branch' },
         { id: 'south', name: 'Regional Lead', system_role: 'ACCOUNT_MANAGER', is_system: false, branch_id: 'south-branch' },
         { id: 'empty', name: 'Limited Admin', system_role: 'BRANCH_ADMIN', is_system: false, branch_id: 'north-branch' },
-        { id: 'unassigned', name: 'Other Admin', system_role: 'ADMIN', is_system: false },
+        { id: 'unassigned', name: 'Other Admin', system_role: 'TENANT_ADMIN', is_system: false },
       ] })
       .mockResolvedValueOnce({ rows: [
         { role_id: 'tenant-admin', permissions: ['tenant:settings'] },
@@ -42,7 +42,7 @@ describe('configured primary dashboard role', () => {
     const profile = await service.getProfile('user');
 
     expect(profile).toHaveProperty('assignedRoles', [
-      expect.objectContaining({ id: 'tenant-admin', name: 'Workspace Admin', systemRole: 'ADMIN', isSystem: true, permissions: ['tenant:settings'] }),
+      expect.objectContaining({ id: 'tenant-admin', name: 'Workspace Admin', systemRole: 'TENANT_ADMIN', isSystem: true, permissions: ['tenant:settings'] }),
       expect.objectContaining({ id: 'north', name: 'Regional Lead', systemRole: 'DELIVERY_HEAD', branchId: 'north-branch', isSystem: false, permissions: ['job:view'] }),
       expect.objectContaining({ id: 'south', name: 'Regional Lead', systemRole: 'ACCOUNT_MANAGER', branchId: 'south-branch', isSystem: false, permissions: ['client:view'] }),
       expect.objectContaining({ id: 'empty', name: 'Limited Admin', systemRole: 'BRANCH_ADMIN', isSystem: false, permissions: [] }),
@@ -55,7 +55,7 @@ describe('configured primary dashboard role', () => {
     const failure = new Error('temporary database failure');
     const query = jest.fn()
       .mockResolvedValueOnce({ rows: [{ id: 'user', tenant_id: 'tenant', role_id: 'admin', assigned_role_ids: ['admin'] }] })
-      .mockResolvedValueOnce({ rows: [{ id: 'admin', name: 'Admin', system_role: 'ADMIN' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'admin', name: 'Admin', system_role: 'TENANT_ADMIN' }] })
       .mockRejectedValueOnce(failure);
     const service = new AuthUserService({ query } as any, {} as any, {} as any);
 

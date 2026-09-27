@@ -205,8 +205,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenant-policy ──────────────────────────
   @Patch('tenant-policy')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant authentication policy [ADMIN only]',
@@ -223,8 +223,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/users/:id/status ───────────────────────
   @Patch('users/:id/status')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Activate or deactivate a user account [ADMIN only]',
@@ -241,8 +241,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── DELETE /api/auth/users/:id ─────────────────────────────
   @Delete('users/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Permanently delete a user account and revoke Keycloak access [ADMIN only]',
@@ -258,8 +258,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/users/:id ──────────────────────────────
   @Patch('users/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update user profile details, email typo, password, branch, reviewer [ADMIN only]',
@@ -274,8 +274,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── POST /api/auth/users/bulk-reviewer ─────────────────────
   @Post('users/bulk-reviewer')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Bulk update designated job reviewer for selected users',
@@ -306,8 +306,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/users/:id/approve ──────────────────────
   @Patch('users/:id/approve')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Approve a pending user registration and assign role/branch [ADMIN / BRANCH_ADMIN]',
@@ -323,8 +323,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/users/:id/reject ───────────────────────
   @Patch('users/:id/reject')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Reject a pending user registration request [ADMIN / BRANCH_ADMIN]',
@@ -493,8 +493,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenants/my-settings ────────────────────
   @Patch('tenants/my-settings')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant general settings [ADMIN only]',
@@ -734,8 +734,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── POST /api/auth/tenants/my-domains ──────────────────────
   @Post('tenants/my-domains')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Add custom domain for active tenant [ADMIN only]' })
   async addMyDomain(
@@ -747,8 +747,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── DELETE /api/auth/tenants/my-domains/:id ─────────────────
   @Delete('tenants/my-domains/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete custom domain for active tenant [ADMIN only]' })
   async deleteMyDomain(
@@ -760,8 +760,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── POST /api/auth/tenants/my-domains/verify ───────────────
   @Post('tenants/my-domains/verify')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Verify custom domain DNS records & provision SSL [ADMIN only]' })
   async verifyMyDomain(
@@ -786,8 +786,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── POST /api/auth/invite ──────────────────────────────────
   @Post('invite')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Invite new team member to workspace [ADMIN / BRANCH_ADMIN only]',
@@ -842,8 +842,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenant-auth-policy ──────────────────────
   @Patch('tenant-auth-policy')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN', 'ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant SSO and authentication policy [ADMIN only]',

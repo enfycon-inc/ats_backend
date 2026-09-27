@@ -1,3 +1,5 @@
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import {
   Controller,
   Get,
@@ -40,6 +42,8 @@ export class MarketSegmentsController {
   }
 
   @Post()
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   create(
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId: string,
@@ -50,6 +54,8 @@ export class MarketSegmentsController {
   }
 
   @Put(':id')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   update(
     @Req() req: any,
     @Headers('x-tenant-id') headerTenantId: string,
@@ -61,6 +67,8 @@ export class MarketSegmentsController {
   }
 
   @Delete(':id')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('tenant:settings')
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(
     @Req() req: any,

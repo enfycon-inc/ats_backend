@@ -182,7 +182,7 @@ export class EmailService {
     const params: any[] = [tenantId];
     
     // RBAC Filtering
-    if (user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'))) {
+    if (user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('SUPER_ADMIN'))) {
       // View all tenant campaigns
     } else if (user && user.roles && user.roles.includes('TENANT_BRANCH_ADMIN')) {
       // View campaigns in the same branch, or own campaigns
@@ -323,7 +323,7 @@ export class EmailService {
   }
   
   async getConnectedAccounts(tenantId: string, user: any) {
-    const isAdmin = !user || !user.dbId || (user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN')));
+    const isAdmin = !user || !user.dbId || (user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('SUPER_ADMIN')));
     
     if (isAdmin) {
       const rows = await this.prisma.emailAccount.findMany({
@@ -397,7 +397,7 @@ export class EmailService {
 
   async deleteAccount(id: string, tenantId: string, user: any) {
     const userId = user?.dbId || user?.id;
-    const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+    const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('SUPER_ADMIN'));
     
     if (isAdmin) {
       await this.prisma.emailAccount.deleteMany({ where: { id, tenantId } });
@@ -409,7 +409,7 @@ export class EmailService {
 
   async shareAccount(id: string, tenantId: string, user: any, dto: { sharedWithAll: boolean; sharedWithUsers: string[]; sharedWithBranches: string[] }) {
     const userId = user?.dbId || user?.id;
-    const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+    const isAdmin = user && user.roles && (user.roles.includes('TENANT_ADMIN') || user.roles.includes('SUPER_ADMIN'));
     
     if (isAdmin) {
       await this.prisma.emailAccount.updateMany({

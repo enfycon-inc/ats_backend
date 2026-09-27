@@ -12,7 +12,7 @@ export interface AuthUser {
   email: string;
   /** User's full display name */
   fullName: string;
-  /** Normalized, uppercase roles e.g. ["RECRUITER", "ADMIN"] */
+  /** Normalized, uppercase roles e.g. ["RECRUITER", "TENANT_ADMIN"] */
   roles: string[];
   /** The SaaS tenant UUID this user belongs to */
   tenantId: string;

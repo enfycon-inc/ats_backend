@@ -444,7 +444,7 @@ export class AuthKeycloakService {
 
     const primarySystemRole = (allRoleIds.length > 0 && typeof (this as any).prisma !== 'undefined')
       ? undefined
-      : (dynamicRoles.find((r) => ['SUPER_ADMIN', 'ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'DELIVERY_HEAD', 'ACCOUNT_MANAGER', 'POD_LEAD', 'RECRUITER'].includes(r)) || 'RECRUITER');
+      : (dynamicRoles.find((r) => ['SUPER_ADMIN', 'TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'DELIVERY_HEAD', 'ACCOUNT_MANAGER', 'POD_LEAD', 'RECRUITER'].includes(r)) || 'RECRUITER');
 
     const uniqueRoles = Array.from(new Set(dynamicRoles));
     return { ...dbUser, is_approved: dbUser.is_approved !== false, requested_role: dbUser.requested_role || null, roles: uniqueRoles, permissions, system_role: primarySystemRole };

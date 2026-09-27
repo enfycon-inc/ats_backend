@@ -21,9 +21,9 @@ function isTenantAdminUser(user: AuthUser): boolean {
   const sysRole = (user?.systemRole || '').toUpperCase();
   return (
     roles.includes('SUPER_ADMIN') ||
-    roles.includes('ADMIN') ||
+    roles.includes('TENANT_ADMIN') ||
     sysRole === 'SUPER_ADMIN' ||
-    sysRole === 'ADMIN' ||
+    sysRole === 'TENANT_ADMIN' ||
     perms.includes('tenant:settings') ||
     perms.includes('tenant:manage')
   );

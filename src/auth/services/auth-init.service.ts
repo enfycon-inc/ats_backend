@@ -1,3 +1,4 @@
+import { CANONICAL_SYSTEM_ROLES_SQL } from "./canonical-system-roles";
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { AuthQueryService } from './auth-query.service';
 import { AuthRbacService } from './auth-rbac.service';
@@ -25,6 +26,7 @@ export class AuthInitService implements OnModuleInit {
   async onModuleInit() {
     await this.ensureDefaultTenants();
     await this.ensureUsersTable();
+    await this.authQuery.query(CANONICAL_SYSTEM_ROLES_SQL);
     await this.seedDefaultUsers();
 
     // Sync active tenants' roles in background (non-blocking)
@@ -166,8 +168,8 @@ export class AuthInitService implements OnModuleInit {
 
       -- Populate standard system roles if they don't exist
       INSERT INTO system_roles (name, system_key, permissions) VALUES
-      ('Super Admin', 'SUPER_ADMIN', '["tenant:manage", "user:manage"]'),
-      ('Admin', 'ADMIN', '["job:create", "job:edit", "job:view", "job:publish_direct", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "candidate:create", "candidate:view", "submission:create", "submission:view", "submission:edit", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "client:view", "client:create", "client:direct_add", "client:edit", "client:approve", "client:reject", "client:delete", "placement:view", "placement:create", "report:view", "tenant:settings", "user:manage", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap", "branch:create", "branch:edit", "branch:delete", "branch_admin:manage", "candidate:search_all_branches", "job:view_all_branches", "candidate:search_all_markets"]'),
+      ('Super Admin', 'SUPER_ADMIN', '["platform:manage", "tenant:manage", "user:manage"]'),
+      ('Tenant Admin', 'TENANT_ADMIN', '["job:create", "job:edit", "job:view", "job:publish_direct", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "candidate:create", "candidate:view", "submission:create", "submission:view", "submission:edit", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "client:view", "client:create", "client:direct_add", "client:edit", "client:approve", "client:reject", "client:delete", "placement:view", "placement:create", "report:view", "tenant:settings", "user:manage", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap", "branch:create", "branch:edit", "branch:delete", "branch_admin:manage", "candidate:search_all_branches", "job:view_all_branches", "candidate:search_all_markets"]'),
       ('Branch Admin', 'BRANCH_ADMIN', '["job:create", "job:view", "job:edit", "job:publish_direct", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "job:delegate", "job:accept_delegation", "candidate:create", "candidate:view", "submission:create", "submission:view", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "submission:edit", "client:view", "client:create", "client:direct_add", "client:edit", "client:approve", "client:reject", "placement:view", "placement:create", "report:view", "branch:edit", "branch_admin:manage", "branch:assign_user", "branch:assign_manager", "user:manage", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap"]'),
       ('Unit Admin', 'UNIT_ADMIN', '["job:create", "job:view", "job:edit", "job:publish_direct", "job:approve", "job:reject", "job:assign", "job:assign_recruiter", "job:assign_pod", "job:delegate", "job:accept_delegation", "candidate:create", "candidate:view", "submission:create", "submission:view", "submission:internal_screening", "submission:audit_rounds", "submission:audit_l1", "submission:audit_l2", "submission:audit_l3", "submission:final_status", "submission:approve_client", "submission:schedule_interview", "submission:edit_rate", "submission:edit", "client:view", "client:create", "client:direct_add", "client:edit", "placement:view", "report:view", "unit_admin:manage", "branch:assign_user", "pod:create", "pod:edit", "pod:delete", "pod:view", "pod:reset_cycle", "pod:overlap"]'),
       ('Recruiter', 'RECRUITER', '["candidate:create", "candidate:view", "submission:create", "submission:view", "submission:edit", "job:view", "client:view", "pod:view"]'),
@@ -319,7 +321,7 @@ export class AuthInitService implements OnModuleInit {
       const rolesRes = await this.authQuery.query('SELECT * FROM custom_roles');
 
       const ROLE_RANK: Record<string, number> = {
-        SUPER_ADMIN: 100, ADMIN: 90, BRANCH_ADMIN: 80, UNIT_ADMIN: 75,
+        SUPER_ADMIN: 100, TENANT_ADMIN: 90, BRANCH_ADMIN: 80, UNIT_ADMIN: 75,
         DELIVERY_HEAD: 70, ACCOUNT_MANAGER: 60, POD_LEAD: 50, RECRUITER: 40,
       };
 
@@ -381,7 +383,7 @@ export class AuthInitService implements OnModuleInit {
           if (rank > highestRank) { highestRank = rank; bestRoleObj = r; }
         }
 
-        const finalRoleId = bestRoleObj ? bestRoleObj.id : (user.role_id || Array.from(resolvedRoleIds)[0] || null);
+        const finalRoleId = roleById[user.role_id] ? user.role_id : (bestRoleObj?.id || Array.from(resolvedRoleIds)[0] || null);
         const finalAssignedRoleIds = Array.from(resolvedRoleIds);
 
         await this.authQuery.query(

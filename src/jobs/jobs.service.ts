@@ -9,6 +9,7 @@ export interface JobProfile {
   jobCode: string;
   jobTitle: string;
   businessUnit: string;
+  businessUnitId?: string | null;
   client: string;
   clientJobId: string;
   location: string;
@@ -983,11 +984,19 @@ export class JobsService implements OnModuleInit {
       userPermissions.includes('job:view_all_branches') || 
       userPermissions.includes('tenant:settings') || 
       userPermissions.includes('tenant:manage') ||
-      userRoles.includes('SUPER_ADMIN');
+      userPermissions.includes('platform:manage');
 
-    const targetBranchId = activeBranchId || user?.branchId;
+    const targetBranchId = canViewAllBranches ? activeBranchId : user?.branchId;
+    if (!canViewAllBranches && !targetBranchId) return [];
+    const unitScoped = userPermissions.includes('unit_admin:manage') && !userPermissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage', 'branch_admin:manage', 'job:view_all_branches'].includes(p));
+    if (unitScoped) {
+      if (!user?.businessUnitId) return [];
+      sql += ' AND j.business_unit_id = $' + paramIndex;
+      params.push(user.businessUnitId);
+      paramIndex++;
+    }
 
-    if (targetBranchId && !canViewAllBranches) {
+    if (targetBranchId) {
       sql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL OR $${paramIndex} = ANY(j.shared_branch_ids))`;
       params.push(targetBranchId);
       paramIndex++;
@@ -1000,10 +1009,9 @@ export class JobsService implements OnModuleInit {
       userPermissions.includes('tenant:settings') || 
       userPermissions.includes('branch_admin:manage') ||
       userPermissions.includes('job:view_all') ||
-      userRoles.includes('SUPER_ADMIN') ||
-      userRoles.includes('ADMIN') ||
-      userRoles.includes('BRANCH_ADMIN') ||
-      userRoles.includes('DELIVERY_HEAD');
+      userPermissions.includes('platform:manage') ||
+      userPermissions.includes('unit_admin:manage') ||
+      userPermissions.includes('job:view_all_branches');
 
     // 2. Account Managers: MUST ONLY see jobs created/managed by themselves
     const isAccountManager = 
@@ -1175,7 +1183,8 @@ export class JobsService implements OnModuleInit {
       id: row.id,
       jobCode: row.job_code ?? row.jobCode,
       jobTitle: row.job_title ?? row.jobTitle,
-      businessUnit: row.business_unit ?? row.businessUnit ?? 'enfysync Inc',
+      businessUnit: row.business_unit ?? row.businessUnit ?? '',
+      businessUnitId: row.business_unit_id ?? row.businessUnitId ?? null,
       client: row.client_name ?? row.clientName,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
       location: row.job_location ?? row.jobLocation,
@@ -1551,7 +1560,7 @@ export class JobsService implements OnModuleInit {
     const isTenantAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage');
     const isBranchAdmin = 
       userPermissions.includes('branch_admin:manage') ||
-      (currentJob.branchId && user?.branchRoles?.[currentJob.branchId]?.some((r: string) => ['ADMIN', 'BRANCH_ADMIN'].includes(r)));
+      (currentJob.branchId && user?.branchRoles?.[currentJob.branchId]?.some((r: string) => ['TENANT_ADMIN', 'BRANCH_ADMIN'].includes(r)));
 
     const hasDelegatedAssignPermission = 
       userPermissions.includes('job:assign') ||

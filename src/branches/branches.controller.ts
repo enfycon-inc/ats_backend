@@ -54,7 +54,10 @@ export class BranchesController {
   @Get()
   async findAll(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.branchesService.findAll(tenantId);
+    if (this.canManageTenant(req.user)) return this.branchesService.findAll(tenantId);
+    if (!req.user.branchId) return [];
+    const branch = await this.branchesService.findOne(req.user.branchId, tenantId);
+    return branch ? [branch] : [];
   }
 
   @Get('delegation-targets')

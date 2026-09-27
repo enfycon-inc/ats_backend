@@ -8,14 +8,8 @@ import type { AuthUser } from '../interfaces/auth-user.interface';
  */
 export function isTenantAdmin(user: AuthUser): boolean {
   if (!user) return false;
-  const roles = user.roles || [];
-  if (roles.includes('SUPER_ADMIN') || roles.includes('ADMIN')) return true;
-
-  const sysRole = (user as any).systemRole;
-  if (sysRole === 'SUPER_ADMIN' || sysRole === 'ADMIN' || sysRole === 'TENANT_ADMIN') return true;
-
   const perms = Array.isArray(user.permissions) ? user.permissions : [];
-  if (perms.includes('tenant:manage') || perms.includes('tenant:settings')) return true;
+  if (perms.includes('tenant:manage') || perms.includes('tenant:settings') || perms.includes('platform:manage')) return true;
 
   return false;
 }

@@ -93,7 +93,7 @@ export class AuthTenantService {
     );
 
     const roleMap = await this.rbacService.seedTenantRoles(tenant.id);
-    const adminRoleId = roleMap['ADMIN'];
+    const adminRoleId = roleMap['TENANT_ADMIN'];
 
     const firstName = fullName.split(/\s+/)[0] || '';
     const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
@@ -112,7 +112,7 @@ export class AuthTenantService {
     return {
       message: 'Company registered successfully! Your account is pending platform administrator approval.',
       tenant: { id: tenant.id, name: tenant.name, subdomain: tenant.domain, workspaceUrl: `${tenant.domain}.${baseDomain}`, status: tenant.status },
-      user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, roles: ['ADMIN'], tenantId: user.tenant_id, createdAt: user.created_at },
+      user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, roles: ['TENANT_ADMIN'], tenantId: user.tenant_id, createdAt: user.created_at },
     };
   }
 
@@ -221,7 +221,7 @@ export class AuthTenantService {
     await this.authQuery.query(`INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1, $2, TRUE)`, [tenant.id, dto.subdomain]);
 
     const roleMap = await this.rbacService.seedTenantRoles(tenant.id);
-    const adminRoleId = roleMap['ADMIN'];
+    const adminRoleId = roleMap['TENANT_ADMIN'];
 
     const adminFullName = dto.adminFullName.trim();
     const firstName = adminFullName.split(/\s+/)[0] || '';

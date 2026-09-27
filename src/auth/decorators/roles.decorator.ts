@@ -7,7 +7,7 @@ export const ROLES_KEY = 'roles';
  * Works with RolesGuard (applied AFTER JwtAuthGuard).
  *
  * Usage:
- *   @Roles('ADMIN', 'RECRUITER')
+ *   @Roles('TENANT_ADMIN', 'RECRUITER')
  *   @UseGuards(JwtAuthGuard, RolesGuard)
  */
 export const Roles = (...roles: string[]) => SetMetadata(ROLES_KEY, roles);

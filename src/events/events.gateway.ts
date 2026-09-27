@@ -189,13 +189,13 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
          LEFT JOIN ats.system_roles sr ON cr.system_role_id = sr.id
          WHERE u.tenant_id = $1 AND u.is_active = true
            AND (
-             sr.system_key IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR
-             UPPER(cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN') OR
+             sr.system_key IN ('TENANT_ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR
+             UPPER(cr.name) IN ('TENANT_ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN') OR
              EXISTS (
                SELECT 1 FROM ats.custom_roles sub_cr
                LEFT JOIN ats.system_roles sub_sr ON sub_cr.system_role_id = sub_sr.id
                WHERE (sub_cr.id = u.role_id OR sub_cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-                 AND (sub_sr.system_key IN ('ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR UPPER(sub_cr.name) IN ('ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN'))
+                 AND (sub_sr.system_key IN ('TENANT_ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR UPPER(sub_cr.name) IN ('TENANT_ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN'))
              ) OR
              EXISTS (
                SELECT 1 FROM ats.custom_roles cr2 

@@ -131,7 +131,7 @@ export class CandidatesController {
   })
   @ApiParam({ name: 'id', description: 'The integer Database ID of the candidate record', type: Number })
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('TENANT_ADMIN', 'SUPER_ADMIN')
   async restore(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,
@@ -156,7 +156,7 @@ export class CandidatesController {
     description: 'Candidate not found.',
   })
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPER_ADMIN')
+  @Roles('TENANT_ADMIN', 'SUPER_ADMIN')
   async delete(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,

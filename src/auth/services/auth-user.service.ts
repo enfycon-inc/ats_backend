@@ -36,7 +36,10 @@ export class AuthUserService {
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
               t.site_title, t.logo_url,
-              b.name as branch_name, bu.name as business_unit_name
+              b.name as branch_name, bu.name as business_unit_name,
+              b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
+              COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
+              COALESCE(bu.work_end_time, b.work_end_time) as office_end_time
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN branches b ON u.branch_id = b.id
@@ -113,6 +116,8 @@ export class AuthUserService {
       defaultMarket: u.default_market || 'US', tenantDomain: u.tenant_domain || '',
       userLimit: u.user_limit || 5, podId: u.pod_id, branchId: u.branch_id,
       branchName: u.branch_name || null,
+      branchCity: u.branch_city || null, officeTimezone: u.office_timezone || null,
+      officeStartTime: u.office_start_time || null, officeEndTime: u.office_end_time || null,
       businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
       jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
       podSystemEnabled: u.pod_system_enabled !== false,
@@ -297,7 +302,7 @@ export class AuthUserService {
       throw new ForbiddenException('You are not authorized to assign the SUPER_ADMIN role.');
     }
 
-    const isNewAdmin = normalized.includes('ADMIN');
+    const isNewAdmin = normalized.includes('TENANT_ADMIN');
     if (!isNewAdmin) await this.rbacService.verifyLastAdminProtection(tenantId, userId, 'demote');
 
     const customRolesRes = await this.authQuery.query(
@@ -478,7 +483,7 @@ export class AuthUserService {
 
       try {
         const adminsRes = await this.authQuery.query(
-          "SELECT u.id FROM users u INNER JOIN custom_roles cr ON u.role_id = cr.id INNER JOIN system_roles sr ON cr.system_role_id = sr.id WHERE u.tenant_id = $1 AND sr.system_key IN ('ADMIN', 'SUPER_ADMIN') AND u.is_active = true",
+          "SELECT u.id FROM users u INNER JOIN custom_roles cr ON u.role_id = cr.id INNER JOIN system_roles sr ON cr.system_role_id = sr.id WHERE u.tenant_id = $1 AND sr.system_key IN ('TENANT_ADMIN', 'SUPER_ADMIN') AND u.is_active = true",
           [userRes.rows[0].tenant_id]
         );
         if (adminsRes.rows.length > 0) {
@@ -515,7 +520,7 @@ async approveTenantUser(
 
     // Branch Admin validation
     const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
-    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || requester.roles?.includes('ADMIN') || requester.roles?.includes('SUPER_ADMIN');
+    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || perms.includes('platform:manage');
     if (!isTenantAdmin && targetUser.branch_id) {
       validateBranchAccess(requester, targetUser.branch_id, 'approve users');
     }
@@ -626,7 +631,7 @@ async approveTenantUser(
     }
 
     const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
-    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || requester.roles?.includes('ADMIN') || requester.roles?.includes('SUPER_ADMIN');
+    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || perms.includes('platform:manage');
     if (!isTenantAdmin && targetUser.branch_id) {
       validateBranchAccess(requester, targetUser.branch_id, 'reject users');
     }

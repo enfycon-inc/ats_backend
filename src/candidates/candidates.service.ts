@@ -152,7 +152,7 @@ export class CandidatesService {
 
     const canSearchAllBranches =
       user?.permissions?.includes('candidate:search_all_branches') ||
-      user?.roles?.includes('ADMIN') ||
+      user?.roles?.includes('TENANT_ADMIN') ||
       user?.roles?.includes('SUPER_ADMIN');
 
     if (query.branchId && !isAllBranches) {

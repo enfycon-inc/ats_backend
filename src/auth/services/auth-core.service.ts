@@ -104,7 +104,7 @@ export class AuthCoreService {
 
     const allRoles = Array.from(new Set([...jwtRoles, ...dbRoles])).map((r) => r.toUpperCase());
     const tenantId = dbTenantId || payload.tenantId || null;
-    const isAdmin = allRoles.includes('ADMIN') || allRoles.includes('SUPER_ADMIN') || allRoles.includes('TENANT_ADMIN') || allRoles.includes('BRANCH_ADMIN');
+    const isAdmin = allRoles.includes('TENANT_ADMIN') || allRoles.includes('SUPER_ADMIN') || allRoles.includes('BRANCH_ADMIN');
 
     return { roles: allRoles, tenantId, isAdmin };
   }
