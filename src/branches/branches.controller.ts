@@ -54,7 +54,10 @@ export class BranchesController {
   @Get()
   async findAll(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
-    if (req.user.branchId && !this.canManageTenant(req.user)) {
+    // Unapproved / pending users need the full branch list so they can pick a branch
+    // during the onboarding role-request flow. Skip branch scoping for them.
+    const isPendingUser = req.user.isApproved === false || req.user.is_approved === false;
+    if (!isPendingUser && req.user.branchId && !this.canManageTenant(req.user)) {
       const branch = await this.branchesService.findOne(req.user.branchId, tenantId);
       return branch ? [branch] : [];
     }
