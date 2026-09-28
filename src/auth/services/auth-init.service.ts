@@ -266,14 +266,7 @@ export class AuthInitService implements OnModuleInit {
           last_name = SUBSTRING(full_name FROM POSITION(' ' IN full_name) + 1)
       WHERE (first_name IS NULL OR last_name IS NULL) AND full_name IS NOT NULL;
 
-      -- Auto-approve active users belonging to active company tenants
-      UPDATE users u
-      SET is_approved = true
-      FROM tenants t
-      WHERE u.tenant_id = t.id
-        AND t.status = 'ACTIVE'
-        AND u.is_active = true
-        AND u.is_approved = false;
+
 
       -- Ensure job_assignment_mode and job_assignment_options exist on tenants
       ALTER TABLE tenants ADD COLUMN IF NOT EXISTS job_assignment_mode VARCHAR(50) DEFAULT 'AUTO';

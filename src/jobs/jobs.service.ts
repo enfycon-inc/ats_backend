@@ -1100,7 +1100,9 @@ export class JobsService implements OnModuleInit {
     sql += ' ORDER BY j.created_at DESC';
 
     try {
+      this.logger.log(`findAllJobs SQL: ${sql} | Params: ${JSON.stringify(params)}`);
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
+      this.logger.log(`findAllJobs returned ${rows.length} jobs.`);
       return rows.map((row) => this.mapRowToProfile(row));
     } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
