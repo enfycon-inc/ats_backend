@@ -997,9 +997,27 @@ export class JobsService implements OnModuleInit {
     }
 
     if (targetBranchId) {
-      sql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL OR $${paramIndex} = ANY(j.shared_branch_ids))`;
-      params.push(targetBranchId);
-      paramIndex++;
+      if (user?.dbId) {
+        sql += ` AND (
+          j.branch_id = $${paramIndex} 
+          OR j.branch_id IS NULL 
+          OR $${paramIndex} = ANY(j.shared_branch_ids)
+          OR EXISTS (
+            SELECT 1 FROM ats.job_pods jp 
+            WHERE jp.job_id = j.id AND (
+              jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex + 1}::uuid AND pod_id IS NOT NULL)
+              OR jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex + 1}::uuid)
+            )
+          )
+        )`;
+        params.push(targetBranchId);
+        params.push(user.dbId);
+        paramIndex += 2;
+      } else {
+        sql += ` AND (j.branch_id = $${paramIndex} OR j.branch_id IS NULL OR $${paramIndex} = ANY(j.shared_branch_ids))`;
+        params.push(targetBranchId);
+        paramIndex++;
+      }
     }
 
     // ── Dynamic Role-Based Job Isolation Gates ─────────────────────────────
