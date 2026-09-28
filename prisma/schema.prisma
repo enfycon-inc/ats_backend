@@ -467,6 +467,7 @@ model Resume {
   fileHash      String?     @map("file_hash") @db.VarChar(255)
   parsedJson    Json?       @map("parsed_json")
   rawText       String?     @map("raw_text")
+  embedding     String?     @db.Text
   fileData      Bytes?      @map("file_data")
   fileMime      String?     @map("file_mime") @db.VarChar(150)
   fileSize      Int?        @map("file_size")
