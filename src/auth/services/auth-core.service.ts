@@ -257,7 +257,7 @@ export class AuthCoreService {
 
     const isSuperAdmin = dynamicRoles.includes('SUPER_ADMIN');
     if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
-      throw new UnauthorizedException('Super Administrators can only log in from the main domain.');
+      throw new UnauthorizedException('User does not belong to this company workspace.');
     }
 
     if (!isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
