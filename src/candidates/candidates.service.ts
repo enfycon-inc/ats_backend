@@ -704,8 +704,8 @@ export class CandidatesService {
           const taskId = resultData.task_id;
           this.logger.log(`[FILE PARSER] Celery task scheduled with ID=${taskId}. Starting status poll...`);
 
-          for (let attempt = 1; attempt <= 30; attempt++) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
             try {
               const statusRes = await fetch(`${apiHost}/api/v1/status/${taskId}`);
               if (statusRes.ok) {
