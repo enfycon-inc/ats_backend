@@ -180,13 +180,39 @@ Validates email + password and returns a signed JWT access token.
     @Headers('x-tenant-id') tenantHeader?: string,
   ) {
     const tenantId = resolveTenantId(user, tenantHeader);
-    // Branch Admins can only see their own branch users
-    const isBranchAdmin =
-      Array.isArray((user as any).permissions) &&
-      (user as any).permissions.includes('branch_admin:manage') &&
-      !(user as any).permissions.includes('tenant:settings');
-    const scopedBranchId = isBranchAdmin ? ((user as any).branchId || null) : null;
-    return this.authService.listUsers(tenantId, scopedBranchId);
+    // Branch Admins / Unit Admins can only see their own branch/unit users
+    const perms = Array.isArray((user as any).permissions) ? (user as any).permissions : [];
+    const isTenantAdmin = perms.includes('tenant:settings');
+    
+    const isBranchAdmin = perms.includes('branch_admin:manage') && !isTenantAdmin;
+    const isUnitAdmin = perms.includes('unit_admin:manage') && !isTenantAdmin;
+    
+    let scopedBranchId = null;
+    let scopedBusinessUnitId = null;
+    
+    if (isBranchAdmin || isUnitAdmin) {
+      scopedBranchId = (user as any).branchId || null;
+    }
+    if (isUnitAdmin) {
+      scopedBusinessUnitId = (user as any).businessUnitId || null;
+    }
+    
+    let users = await this.authService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId);
+    
+    if (isUnitAdmin || isBranchAdmin) {
+      users = users.filter((u: any) => {
+        const p = Array.isArray(u.permissions) ? u.permissions : [];
+        if (isUnitAdmin && (p.includes('tenant:settings') || p.includes('branch_admin:manage'))) {
+          return false; // Unit admin cannot see tenant admins or branch admins
+        }
+        if (isBranchAdmin && p.includes('tenant:settings')) {
+          return false; // Branch admin cannot see tenant admins
+        }
+        return true;
+      });
+    }
+    
+    return users;
   }
 
   // ─── GET /api/auth/tenant-policy ───────────────────────────

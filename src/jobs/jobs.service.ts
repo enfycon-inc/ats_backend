@@ -2631,7 +2631,7 @@ export class JobsService implements OnModuleInit {
     // Notify source branch
     await this.notifications.broadcastAnnouncement(tenantId, 'System', {
       title: 'Job Delegation Accepted',
-      message: `Your delegation request for job ${req.job.jobCode} was accepted.`,
+      message: `Your delegation request for job ${req.job.jobCode} was accepted by ${user?.fullName || user?.email || 'an admin'}.`,
       target: 'BRANCH',
       targetId: req.sourceBranchId,
     });
@@ -2656,7 +2656,7 @@ export class JobsService implements OnModuleInit {
     // Notify source branch
     await this.notifications.broadcastAnnouncement(tenantId, 'System', {
       title: 'Job Delegation Rejected',
-      message: `Your delegation request for job ${req.job.jobCode} was rejected.`,
+      message: `Your delegation request for job ${req.job.jobCode} was rejected by ${user?.fullName || user?.email || 'an admin'}.`,
       target: 'BRANCH',
       targetId: req.sourceBranchId,
     });
