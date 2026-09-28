@@ -52,8 +52,9 @@ export class BusinessUnitsController {
   async findAll(@Req() req: any, @Query('branchId') branchId?: string, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
     if (this.tenantAccess(req.user)) return this.buService.findAll(tenantId, branchId);
+    // Unassigned users (onboarding) need to see business units to select one
+    if (!req.user.branchId) return this.buService.findAll(tenantId, branchId);
     if (branchId && branchId !== req.user.branchId) throw new ForbiddenException('You can only access your assigned branch.');
-    if (!req.user.branchId) return [];
     if (req.user.permissions?.includes('unit_admin:manage') && !req.user.permissions?.includes('branch_admin:manage')) {
       if (!req.user.businessUnitId) return [];
       return [await this.assertAccess(req.user, req.user.businessUnitId, tenantId)];
