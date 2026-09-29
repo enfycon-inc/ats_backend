@@ -450,6 +450,34 @@ export class AuthKeycloakService {
     return { ...dbUser, is_approved: dbUser.is_approved !== false, requested_role: dbUser.requested_role || null, roles: uniqueRoles, permissions, system_role: primarySystemRole };
   }
 
+  async setKeycloakUserStatus(email: string, enabled: boolean): Promise<boolean> {
+    try {
+      const adminToken = await this.getKeycloakAdminToken();
+      if (!adminToken) return false;
+      const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
+      const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
+      const baseUrl = this.getKeycloakAdminBaseUrl();
+      const usersUrl = \/admin/realms//users;
+      const searchUrl = \?email=&exact=true;
+      const searchRes = await fetch(searchUrl, { headers: { Authorization: Bearer \ } });
+      const usersList = searchRes.ok ? await searchRes.json() : [];
+      if (Array.isArray(usersList) && usersList.length > 0) {
+        const kcUserId = usersList[0].id;
+        const updateUrl = \/\;
+        const updateRes = await fetch(updateUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: Bearer \ },
+          body: JSON.stringify({ enabled }),
+        });
+        return updateRes.ok;
+      }
+      return false;
+    } catch (e: any) {
+      this.logger.warn(Failed to update Keycloak status for : \);
+      return false;
+    }
+  }
+
   async deleteKeycloakUser(email: string): Promise<boolean> {
     try {
       const adminToken = await this.getKeycloakAdminToken();

@@ -124,7 +124,7 @@ export class AuthTenantService {
        FROM users u
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN custom_roles cr ON u.role_id = cr.id
-       WHERE u.is_approved = false
+       WHERE u.is_approved = false AND t.status = 'PENDING'
        ORDER BY u.created_at DESC`
     );
     return result.rows.map((row: any) => ({

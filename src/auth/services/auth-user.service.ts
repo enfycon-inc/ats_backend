@@ -224,13 +224,21 @@ export class AuthUserService {
     if (userId === requesterId) {
       if (!isActive) throw new BadRequestException('You cannot deactivate your own account.');
     }
-    const userRes = await this.authQuery.query('SELECT tenant_id, is_active, is_approved, branch_id FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const userRes = await this.authQuery.query('SELECT email, tenant_id, is_active, is_approved, branch_id FROM users WHERE id = $1 LIMIT 1', [userId]);
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = userRes.rows[0];
 
     // Branch isolation: branch admins can only change status of users in their assigned branches
     if (requester && user.branch_id) {
       validateBranchAccess(requester, user.branch_id, 'change user status');
+    }
+
+    const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+    const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || perms.includes('platform:manage');
+    if (!isTenantAdmin && (requester as any).businessUnitId) {
+      if (user.business_unit_id && user.business_unit_id !== (requester as any).businessUnitId) {
+        throw new ForbiddenException('Access denied. This user belongs to a different Business Unit.');
+      }
     }
 
     if (isActive) {
@@ -240,6 +248,7 @@ export class AuthUserService {
     }
 
     await this.authQuery.query(`UPDATE users SET is_active = $1, is_approved = true, updated_at = NOW() WHERE id = $2`, [isActive, userId]);
+    this.keycloakService.setKeycloakUserStatus(user.email, isActive).catch(() => {});
     return { message: `User ${isActive ? 'activated' : 'deactivated'} successfully.` };
   }
 
@@ -533,6 +542,15 @@ async approveTenantUser(
     const branchId = dto.branchId !== undefined ? (dto.branchId || null) : (targetUser.branch_id || (requester as any).branchId || null);
     const businessUnitId = dto.businessUnitId !== undefined ? (dto.businessUnitId || null) : (targetUser.business_unit_id || (requester as any).businessUnitId || null);
 
+    if (!isTenantAdmin && (requester as any).businessUnitId) {
+      if (businessUnitId && businessUnitId !== (requester as any).businessUnitId) {
+        throw new ForbiddenException('Access denied. You can only approve or assign users to your own Business Unit.');
+      }
+      if (targetUser.business_unit_id && targetUser.business_unit_id !== (requester as any).businessUnitId) {
+        throw new ForbiddenException('Access denied. This user belongs to a different Business Unit.');
+      }
+    }
+
     const isUuid = (val: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
 
         let targetRoleIdentifier = dto.roleId || (dto.roles && dto.roles[0]) || targetUser.requested_role;
@@ -636,7 +654,14 @@ async approveTenantUser(
       validateBranchAccess(requester, targetUser.branch_id, 'reject users');
     }
 
-    await this.authQuery.query('DELETE FROM users WHERE id = $1', [userId]);
+    if (!isTenantAdmin && (requester as any).businessUnitId) {
+      if (targetUser.business_unit_id && targetUser.business_unit_id !== (requester as any).businessUnitId) {
+        throw new ForbiddenException('Access denied. This user belongs to a different Business Unit.');
+      }
+    }
+
+    await this.authQuery.query('UPDATE users SET is_active = false, is_approved = false WHERE id = $1', [userId]);
+    this.keycloakService.setKeycloakUserStatus(targetUser.email, false).catch(() => {});
 
     this.logger.log(`User registration request for ${targetUser.email} was rejected by ${requester.email}`);
     return { success: true, message: `Registration request for ${targetUser.email} was rejected.` };
