@@ -1039,8 +1039,9 @@ export class JobsService implements OnModuleInit {
     if (isAccountManager && user?.dbId) {
       // Account manager cannot see jobs posted by other team members
       sql += ` AND (
-        j.created_by = $${paramIndex}::text 
+        j.created_by = $${paramIndex}::uuid 
 
+        OR j.account_manager_id = $${paramIndex}::uuid
         OR j.recruitment_manager_id = $${paramIndex}::uuid
       )`;
       params.push(user.dbId);
@@ -1070,8 +1071,9 @@ export class JobsService implements OnModuleInit {
     if (filter === 'my' && user?.dbId) {
       // "My Jobs" view: only show jobs created by self
       sql += ` AND (
-        j.created_by = ${paramIndex}::uuid 
-          OR j.recruitment_manager_id = ${paramIndex}::uuid
+        j.created_by = $${paramIndex}::uuid 
+        OR j.account_manager_id = $${paramIndex}::uuid 
+        OR j.recruitment_manager_id = $${paramIndex}::uuid
       )`;
       params.push(user.dbId);
       paramIndex += 1;
@@ -1127,7 +1129,8 @@ export class JobsService implements OnModuleInit {
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
-                uc.full_name AS creator_name, uc.email AS creator_email
+                uc.full_name AS creator_name, uc.email AS creator_email,
+                cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
@@ -1142,11 +1145,15 @@ export class JobsService implements OnModuleInit {
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
          LEFT JOIN ats.users uc ON (uc.id = j.created_by)
+         LEFT JOIN ats.clients cl ON cl.id = j.client_id
+         LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
+         LEFT JOIN ats.business_units bu ON bu.id = j.business_unit_id
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
-                uc.full_name AS creator_name, uc.email AS creator_email
+                uc.full_name AS creator_name, uc.email AS creator_email,
+                cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
@@ -1161,6 +1168,9 @@ export class JobsService implements OnModuleInit {
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
          LEFT JOIN ats.users uc ON (uc.id = j.created_by)
+         LEFT JOIN ats.clients cl ON cl.id = j.client_id
+         LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
+         LEFT JOIN ats.business_units bu ON bu.id = j.business_unit_id
          WHERE j.tenant_id = $1 AND j.job_code = $2 AND j.deleted_at IS NULL LIMIT 1`;
 
     try {
@@ -1199,9 +1209,9 @@ export class JobsService implements OnModuleInit {
       id: row.id,
       jobCode: row.job_code ?? row.jobCode,
       jobTitle: row.job_title ?? row.jobTitle,
-      businessUnit: row.business_unit ?? row.businessUnit ?? '',
+      businessUnit: row.mapped_business_unit_name || row.business_unit_id || '',
       businessUnitId: row.business_unit_id ?? row.businessUnitId ?? null,
-      client: row.client?.clientName || row.client_id,
+      client: row.mapped_client_name || row.client_id,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
       location: row.job_location ?? row.jobLocation,
       state: row.state || '',
