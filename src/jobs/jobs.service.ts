@@ -953,7 +953,10 @@ export class JobsService implements OnModuleInit {
              uc.full_name AS creator_name,
              uc.email AS creator_email,
              b.name AS branch_name,
-             b.code AS branch_code
+             b.code AS branch_code,
+             cl.client_name AS mapped_client_name,
+             ecl.client_name AS mapped_end_client_name,
+             bu.name AS mapped_business_unit_name
       FROM ats.jobs j
       LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
@@ -969,6 +972,9 @@ export class JobsService implements OnModuleInit {
       ) pod_info ON pod_info.job_id = j.id
       LEFT JOIN ats.users uc ON (uc.id = j.created_by)
       LEFT JOIN ats.branches b ON b.id = j.branch_id
+      LEFT JOIN ats.clients cl ON cl.id = j.client_id
+      LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
+      LEFT JOIN ats.business_units bu ON bu.id = j.business_unit_id
       WHERE j.tenant_id = $1 AND j.deleted_at IS NULL
     `;
     const params: any[] = [tenantId];
@@ -1037,15 +1043,15 @@ export class JobsService implements OnModuleInit {
       );
 
     if (isAccountManager && user?.dbId) {
-      // Account manager cannot see jobs posted by other team members
-      sql += ` AND (
-        j.created_by = $${paramIndex}::uuid 
-
-        OR j.account_manager_id = $${paramIndex}::uuid
-        OR j.recruitment_manager_id = $${paramIndex}::uuid
-      )`;
-      params.push(user.dbId);
+      if (user.businessUnitId) {
+        sql += ` AND j.business_unit_id = $${paramIndex}::uuid`;
+        params.push(user.businessUnitId);
+      } else {
+        sql += ` AND (j.created_by = $${paramIndex}::uuid OR j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
+        params.push(user.dbId);
+      }
       paramIndex += 1;
+
     } else if (!isGlobalOrBranchAdmin && user?.dbId) {
       // 3. Recruiters: Only see approved/active jobs assigned directly or to their Pod (NO open pool / ALL jobs)
       sql += ` AND (
