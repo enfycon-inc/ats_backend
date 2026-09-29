@@ -1071,7 +1071,17 @@ export class JobsService implements OnModuleInit {
     }
 
     // ── Sub-view Filter Parameters (direct, pod, unassigned) ─────────────────
-    if (filter === 'direct' && user?.dbId) {
+    if (filter === 'my' && user?.dbId) {
+      // "My Jobs" view: only show jobs created by self
+      sql += ` AND (
+        j.created_by = ${paramIndex}::text 
+        OR LOWER(j.created_by) = LOWER(${paramIndex + 1})
+        OR j.recruitment_manager_id = ${paramIndex}::uuid
+      )`;
+      params.push(user.dbId);
+      params.push(user.email || user.dbId);
+      paramIndex += 2;
+    } else if (filter === 'direct' && user?.dbId) {
       sql += ` AND j.primary_recruiter_id = $${paramIndex}::uuid`;
       params.push(user.dbId);
       paramIndex++;
