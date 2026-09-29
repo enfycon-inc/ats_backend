@@ -665,6 +665,7 @@ export class JobsService implements OnModuleInit {
     const resolvedPrimaryRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId || dto.assignedTo, tenantId);
     const resolvedRecruitmentManagerId = await this.resolveUserUuid(dto.recruitmentManagerId, tenantId);
     const resolvedAssignedApproverId = await this.resolveUserUuid(assignedApproverId, tenantId);
+    const resolvedAccountManagerId = await this.resolveUserUuid(dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), tenantId);
 
     try {
       const createdJob = await this.prisma.job.create({
@@ -697,7 +698,7 @@ export class JobsService implements OnModuleInit {
           endDate: dto.endDate ? new Date(dto.endDate) : null,
           hoursPerWeek: dto.hoursPerWeek || 40,
           duration: dto.duration || '',
-          accountManagerId: dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null),
+          accountManagerId: resolvedAccountManagerId || null,
           recruitmentManagerId: resolvedRecruitmentManagerId || null,
           primaryRecruiterId: resolvedPrimaryRecruiterId || null,
           assignedTo: dto.assignedTo || 'N/A',
@@ -1690,7 +1691,7 @@ export class JobsService implements OnModuleInit {
     if (dto.endDate !== undefined) dataToUpdate.endDate = dto.endDate ? new Date(dto.endDate) : null;
     if (dto.hoursPerWeek !== undefined) dataToUpdate.hoursPerWeek = dto.hoursPerWeek;
     if (dto.duration !== undefined) dataToUpdate.duration = dto.duration;
-    if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = dto.accountManagerId;
+    if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = await this.resolveUserUuid(dto.accountManagerId, tenantId);
     if (dto.recruitmentManagerId !== undefined) dataToUpdate.recruitmentManagerId = dto.recruitmentManagerId;
     if (dto.primaryRecruiterId !== undefined) dataToUpdate.primaryRecruiterId = dto.primaryRecruiterId;
     if (dto.assignedTo !== undefined) dataToUpdate.assignedTo = dto.assignedTo;

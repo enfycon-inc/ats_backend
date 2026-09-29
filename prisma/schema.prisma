@@ -373,7 +373,7 @@ model UserInvitation {
   podId           String?     @map("pod_id") @db.Uuid
   invitationToken String      @unique @map("invitation_token") @db.VarChar(255)
   tokenExpiresAt  DateTime    @map("token_expires_at") @db.Timestamptz(6)
-  createdBy       String?     @map("created_by") @db.VarChar(255)
+  createdBy            String?                @map("created_by") @db.Uuid
   isAccepted      Boolean     @default(false) @map("is_accepted")
   createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   systemRoleId    String?     @map("system_role_id") @db.Uuid
@@ -404,7 +404,7 @@ model Client {
   businessUnit        String?   @map("business_unit") @db.VarChar(100)
   ownership           String?   @db.VarChar(100)
   displayOnJobPosting Boolean   @default(true) @map("display_on_job_posting")
-  createdBy           String?   @map("created_by") @db.VarChar(255)
+  createdBy            String?                @map("created_by") @db.Uuid
   modifiedBy          String?   @map("modified_by") @db.VarChar(255)
   federalId           String?   @map("federal_id") @db.VarChar(100)
   emailId             String?   @map("email_id") @db.VarChar(255)
@@ -553,15 +553,15 @@ model Job {
   endDate              DateTime?              @map("end_date") @db.Date
   hoursPerWeek         Int?                   @default(40) @map("hours_per_week")
   duration             String?                @db.VarChar(100)
-  accountManagerId     String?                @map("account_manager_id") @db.VarChar(255)
-  recruitmentManagerId String?                @map("recruitment_manager_id") @db.VarChar(255)
-  primaryRecruiterId   String?                @map("primary_recruiter_id") @db.VarChar(255)
+  accountManagerId     String?                @map("account_manager_id") @db.Uuid
+  recruitmentManagerId String?                @map("recruitment_manager_id") @db.Uuid
+  primaryRecruiterId   String?                @map("primary_recruiter_id") @db.Uuid
   assignedTo           String?                @map("assigned_to") @db.VarChar(255)
   industry             String?                @db.VarChar(100)
   degree               String?                @db.VarChar(100)
   expMin               Int?                   @default(0) @map("exp_min")
   expMax               Int?                   @default(10) @map("exp_max")
-  createdBy            String?                @map("created_by") @db.VarChar(255)
+  createdBy            String?                @map("created_by") @db.Uuid
   respondBy            DateTime?              @map("respond_by") @db.Date
   noticePeriod         String?                @map("notice_period") @db.VarChar(100)
   approvalStatus       String?                @default("APPROVED") @map("approval_status") @db.VarChar(50)
@@ -865,7 +865,7 @@ model Campaign {
   subject        String?       @db.VarChar(255)
   bodyTemplate   String?       @map("body_template")
   status         String        @default("Draft") @db.VarChar(50)
-  createdBy      String?       @map("created_by") @db.VarChar(255)
+  createdBy            String?                @map("created_by") @db.Uuid
   scheduledAt    DateTime?     @map("scheduled_at") @db.Timestamptz(6)
   ratePerMinute  Int           @default(0) @map("rate_per_minute")
   ratePerHour    Int           @default(0) @map("rate_per_hour")
@@ -930,7 +930,7 @@ model EmailTemplate {
   name      String   @db.VarChar(255)
   subject   String?  @db.VarChar(255)
   body      String?
-  createdBy String?  @map("created_by") @db.VarChar(255)
+  createdBy            String?                @map("created_by") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@map("templates")

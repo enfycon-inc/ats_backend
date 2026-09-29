@@ -1,0 +1,1 @@
+const { PrismaClient } = require('@prisma/client'); const p = new PrismaClient(); p.\('SHOW log_statement').then(r => { console.log(r); process.exit(0); }).catch(e => { console.error(e); process.exit(1); })
