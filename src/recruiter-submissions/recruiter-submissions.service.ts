@@ -281,18 +281,18 @@ export class RecruiterSubmissionsService {
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
-      LEFT JOIN ats.users r ON s.recruiter_id = r.id::text
+      LEFT JOIN ats.users r ON s.recruiter_id = r.id
       LEFT JOIN ats.pods p ON r.pod_id = p.id
       LEFT JOIN ats.users ph ON p.pod_head_id = ph.id
       LEFT JOIN ats.users am ON (
-        j.account_manager_id = am.id::text 
-        OR LOWER(j.account_manager_id) = LOWER(am.email) 
-        OR LOWER(j.account_manager_id) = LOWER(am.full_name)
+        j.account_manager_id = am.id 
+
+
       )
       LEFT JOIN ats.users cb ON (
-        j.created_by = cb.id::text 
-        OR LOWER(j.created_by) = LOWER(cb.email) 
-        OR LOWER(j.created_by) = LOWER(cb.full_name)
+        j.created_by = cb.id 
+
+
       )
       WHERE s.tenant_id = $1
     `;
@@ -324,7 +324,7 @@ export class RecruiterSubmissionsService {
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
-      baseSql += ` AND s.recruiter_id IN (SELECT id::text FROM ats.users WHERE pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid))`;
+      baseSql += ` AND s.recruiter_id IN (SELECT id FROM ats.users WHERE pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid))`;
       params.push(user.dbId);
       paramIndex++;
     } else if (!canViewAll) {
@@ -337,7 +337,7 @@ export class RecruiterSubmissionsService {
       }
 
       if (isPodLead) {
-        roleConditions.push(`s.recruiter_id IN (SELECT id::text FROM ats.users WHERE pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}))`);
+        roleConditions.push(`s.recruiter_id IN (SELECT id FROM ats.users WHERE pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}))`);
         params.push(user.dbId);
         paramIndex++;
       }
@@ -346,13 +346,13 @@ export class RecruiterSubmissionsService {
         roleConditions.push(
           `(
             j.account_manager_id = $${paramIndex}
-            OR LOWER(j.account_manager_id) = LOWER($${paramIndex + 1})
-            OR LOWER(j.account_manager_id) = LOWER($${paramIndex + 2})
-            OR LOWER(j.created_by) = LOWER($${paramIndex + 1})
-            OR LOWER(j.created_by) = LOWER($${paramIndex + 2})
+
+
+
+
             OR s.recruiter_id = $${paramIndex}
-            OR LOWER(s.recruiter_id) = LOWER($${paramIndex + 1})
-            OR LOWER(s.recruiter_id) = LOWER($${paramIndex + 2})
+
+
           )`,
         );
         params.push(user.dbId, user.email || '', user.fullName || '');
@@ -380,9 +380,9 @@ export class RecruiterSubmissionsService {
 
     if (filters.branchId && filters.branchId.trim().length > 0 && filters.branchId !== 'null' && filters.branchId !== 'undefined') {
       baseSql += ` AND (
-        j.branch_id::text = $${paramIndex} 
+        j.branch_id = $${paramIndex} 
         OR j.branch_id IN (SELECT id FROM ats.branches WHERE LOWER(name) = LOWER($${paramIndex}) OR LOWER(code) = LOWER($${paramIndex}))
-        OR LOWER(j.business_unit) LIKE '%' || LOWER($${paramIndex}) || '%'
+
         OR j.branch_id IS NULL
       )`;
       params.push(filters.branchId.trim());
@@ -494,18 +494,18 @@ export class RecruiterSubmissionsService {
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
-      LEFT JOIN ats.users r ON s.recruiter_id = r.id::text
+      LEFT JOIN ats.users r ON s.recruiter_id = r.id
       LEFT JOIN ats.pods p ON r.pod_id = p.id
       LEFT JOIN ats.users ph ON p.pod_head_id = ph.id
       LEFT JOIN ats.users am ON (
-        j.account_manager_id = am.id::text 
-        OR LOWER(j.account_manager_id) = LOWER(am.email) 
-        OR LOWER(j.account_manager_id) = LOWER(am.full_name)
+        j.account_manager_id = am.id 
+
+
       )
       LEFT JOIN ats.users cb ON (
-        j.created_by = cb.id::text 
-        OR LOWER(j.created_by) = LOWER(cb.email) 
-        OR LOWER(j.created_by) = LOWER(cb.full_name)
+        j.created_by = cb.id 
+
+
       )
       WHERE s.id = $1 AND s.tenant_id = $2
       LIMIT 1
@@ -861,7 +861,7 @@ export class RecruiterSubmissionsService {
       }
 
       if (isPodLead) {
-        roleConditions.push(`recruiter_id IN (SELECT id::text FROM ats.users WHERE pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}))`);
+        roleConditions.push(`recruiter_id IN (SELECT id FROM ats.users WHERE pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}))`);
         params.push(user.dbId);
         paramIndex++;
       }
@@ -871,10 +871,10 @@ export class RecruiterSubmissionsService {
           `job_id IN (
             SELECT id FROM ats.jobs 
             WHERE account_manager_id = $${paramIndex}
-               OR LOWER(account_manager_id) = LOWER($${paramIndex + 1})
-               OR LOWER(account_manager_id) = LOWER($${paramIndex + 2})
-               OR LOWER(created_by) = LOWER($${paramIndex + 1})
-               OR LOWER(created_by) = LOWER($${paramIndex + 2})
+
+
+
+
           )`,
         );
         params.push(user.dbId, user.email || '', user.fullName || '');

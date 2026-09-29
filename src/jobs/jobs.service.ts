@@ -967,11 +967,7 @@ export class JobsService implements OnModuleInit {
         JOIN ats.pods p ON p.id = jp.pod_id
         GROUP BY jp.job_id
       ) pod_info ON pod_info.job_id = j.id
-      LEFT JOIN ats.users uc ON (
-        uc.id::text = j.created_by 
-        OR LOWER(uc.email) = LOWER(j.created_by) 
-        OR LOWER(uc.full_name) = LOWER(j.created_by)
-      )
+      LEFT JOIN ats.users uc ON (uc.id = j.created_by)
       LEFT JOIN ats.branches b ON b.id = j.branch_id
       WHERE j.tenant_id = $1 AND j.deleted_at IS NULL
     `;
@@ -1044,12 +1040,11 @@ export class JobsService implements OnModuleInit {
       // Account manager cannot see jobs posted by other team members
       sql += ` AND (
         j.created_by = $${paramIndex}::text 
-        OR LOWER(j.created_by) = LOWER($${paramIndex + 1})
+
         OR j.recruitment_manager_id = $${paramIndex}::uuid
       )`;
       params.push(user.dbId);
-      params.push(user.email || user.dbId);
-      paramIndex += 2;
+      paramIndex += 1;
     } else if (!isGlobalOrBranchAdmin && user?.dbId) {
       // 3. Recruiters: Only see approved/active jobs assigned directly or to their Pod (NO open pool / ALL jobs)
       sql += ` AND (
@@ -1075,13 +1070,11 @@ export class JobsService implements OnModuleInit {
     if (filter === 'my' && user?.dbId) {
       // "My Jobs" view: only show jobs created by self
       sql += ` AND (
-        j.created_by = $${paramIndex}::text 
-          OR LOWER(j.created_by) = LOWER($${paramIndex + 1})
-          OR j.recruitment_manager_id = $${paramIndex}::uuid
+        j.created_by = ${paramIndex}::uuid 
+          OR j.recruitment_manager_id = ${paramIndex}::uuid
       )`;
       params.push(user.dbId);
-      params.push(user.email || user.dbId);
-      paramIndex += 2;
+      paramIndex += 1;
     } else if (filter === 'direct' && user?.dbId) {
       sql += ` AND j.primary_recruiter_id = $${paramIndex}::uuid`;
       params.push(user.dbId);
@@ -1148,11 +1141,7 @@ export class JobsService implements OnModuleInit {
            JOIN ats.pods p ON p.id = jp.pod_id
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
-         LEFT JOIN ats.users uc ON (
-           uc.id::text = j.created_by 
-           OR LOWER(uc.email) = LOWER(j.created_by) 
-           OR LOWER(uc.full_name) = LOWER(j.created_by)
-         )
+         LEFT JOIN ats.users uc ON (uc.id = j.created_by)
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
                 app.full_name AS assigned_approver_name,
@@ -1171,11 +1160,7 @@ export class JobsService implements OnModuleInit {
            JOIN ats.pods p ON p.id = jp.pod_id
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
-         LEFT JOIN ats.users uc ON (
-           uc.id::text = j.created_by 
-           OR LOWER(uc.email) = LOWER(j.created_by) 
-           OR LOWER(uc.full_name) = LOWER(j.created_by)
-         )
+         LEFT JOIN ats.users uc ON (uc.id = j.created_by)
          WHERE j.tenant_id = $1 AND j.job_code = $2 AND j.deleted_at IS NULL LIMIT 1`;
 
     try {
