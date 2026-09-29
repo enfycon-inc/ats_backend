@@ -1,1 +1,0 @@
-const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient(); async function main() { console.log('Branches:', await prisma.branch.count()); console.log('Units:', await prisma.businessUnit.count()); } main().finally(() => prisma.());
