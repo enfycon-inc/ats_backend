@@ -191,12 +191,7 @@ export class AuthCoreService {
     }
     if (!user.is_active) throw new UnauthorizedException('Your account has been deactivated. Contact your administrator.');
     if (!user.is_approved) {
-      if (user.tenant_status === 'ACTIVE') {
-        await this.authQuery.query('UPDATE users SET is_approved = true WHERE id = $1', [user.id]);
-        user.is_approved = true;
-      } else {
-        throw new UnauthorizedException('Your account is pending approval by the administrator.');
-      }
+      throw new UnauthorizedException('Your account is pending approval by the administrator.');
     }
 
     const policy = await this.tenantService.getTenantAuthPolicy(user.tenant_id);

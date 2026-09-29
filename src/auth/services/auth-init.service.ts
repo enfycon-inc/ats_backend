@@ -360,7 +360,7 @@ export class AuthInitService implements OnModuleInit {
           }
         }
 
-        if (resolvedRoleIds.size === 0) {
+        if (resolvedRoleIds.size === 0 && user.is_approved) {
           const defaultRole = tenantRoles.find((r) => r.name === 'RECRUITER' || r.system_role === 'RECRUITER') || tenantRoles[0];
           if (defaultRole) resolvedRoleIds.add(defaultRole.id);
         }
