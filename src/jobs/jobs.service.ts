@@ -1074,9 +1074,9 @@ export class JobsService implements OnModuleInit {
     if (filter === 'my' && user?.dbId) {
       // "My Jobs" view: only show jobs created by self
       sql += ` AND (
-        j.created_by = ${paramIndex}::text 
-        OR LOWER(j.created_by) = LOWER(${paramIndex + 1})
-        OR j.recruitment_manager_id = ${paramIndex}::uuid
+        j.created_by = $${paramIndex}::text 
+          OR LOWER(j.created_by) = LOWER($${paramIndex + 1})
+          OR j.recruitment_manager_id = $${paramIndex}::uuid
       )`;
       params.push(user.dbId);
       params.push(user.email || user.dbId);
