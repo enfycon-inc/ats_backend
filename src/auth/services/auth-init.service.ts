@@ -4,7 +4,7 @@ import { AuthQueryService } from './auth-query.service';
 import { AuthRbacService } from './auth-rbac.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
 
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID ;
 
 /**
  * AuthInitService — handles all module initialization side-effects:

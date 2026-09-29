@@ -215,7 +215,7 @@ export class CandidatesService {
   /**
    * Retrieves a single candidate with joined resumes details, scoped by tenant
    */
-  async findOne(id: number, tenantId: string): Promise<CandidateProfile> {
+  async findOne(id: string, tenantId: string): Promise<CandidateProfile> {
     this.logger.log(`Fetching candidate detail for ID=${id} and tenant=${tenantId}`);
 
     const candidate = await this.prisma.candidate.findFirst({
@@ -261,7 +261,7 @@ export class CandidatesService {
   /**
    * Soft deletes a candidate by ID, scoped by tenant
    */
-  async deleteCandidate(id: number, tenantId: string): Promise<{ message: string }> {
+  async deleteCandidate(id: string, tenantId: string): Promise<{ message: string }> {
     this.logger.log(`Soft deleting Candidate ID=${id} for tenant: ${tenantId}`);
     const existing = await this.prisma.candidate.findFirst({
       where: { id, tenantId, deletedAt: null },
@@ -281,7 +281,7 @@ export class CandidatesService {
   /**
    * Restores a soft-deleted candidate by ID, scoped by tenant
    */
-  async restoreCandidate(id: number, tenantId: string): Promise<CandidateProfile> {
+  async restoreCandidate(id: string, tenantId: string): Promise<CandidateProfile> {
     this.logger.log(`Restoring Candidate ID=${id} for tenant: ${tenantId}`);
     const existing = await this.prisma.candidate.findFirst({
       where: { id, tenantId, deletedAt: { not: null } },
@@ -591,7 +591,7 @@ export class CandidatesService {
   /**
    * Retrieve the original stored CV file for a candidate (for download/preview).
    */
-  async getResumeFile(candidateId: number, tenantId: string): Promise<StoredResumeFile> {
+  async getResumeFile(candidateId: string, tenantId: string): Promise<StoredResumeFile> {
     const candidate = await this.prisma.candidate.findFirst({
       where: { id: candidateId, tenantId },
       include: { resumeRecord: true },
@@ -1070,7 +1070,7 @@ export class CandidatesService {
   /**
    * Delete a master term or alias from active dictionary
    */
-  async deleteDictionaryTerm(category: string, id: number, type: 'canonical' | 'alias'): Promise<any> {
+  async deleteDictionaryTerm(category: string, id: string, type: 'canonical' | 'alias'): Promise<any> {
     const upperCategory = category.toUpperCase();
     this.logger.log(`Deleting term from ${upperCategory} dictionary: id=${id}, type=${type}`);
 
@@ -1118,7 +1118,7 @@ export class CandidatesService {
     }
   }
 
-  async updateCandidate(id: number, dto: any, tenantId: string): Promise<CandidateProfile> {
+  async updateCandidate(id: string, dto: any, tenantId: string): Promise<CandidateProfile> {
     this.logger.log(`Updating candidate details for ID=${id} and tenant=${tenantId}`);
 
     const existing = await this.prisma.candidate.findFirst({

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Patch, Body, Query, Param, Headers, ParseIntPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, UseGuards, Res, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Patch, Body, Query, Param, Headers, ParseUUIDPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, UseGuards, Res, BadRequestException } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
@@ -92,7 +92,7 @@ export class CandidatesController {
   })
   @UseGuards(JwtAuthGuard)
   async findOne(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<CandidateProfile> {
@@ -116,7 +116,7 @@ export class CandidatesController {
   })
   @UseGuards(JwtAuthGuard)
   async update(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: any,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
@@ -133,7 +133,7 @@ export class CandidatesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('TENANT_ADMIN', 'SUPER_ADMIN')
   async restore(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<CandidateProfile> {
@@ -158,7 +158,7 @@ export class CandidatesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('TENANT_ADMIN', 'SUPER_ADMIN')
   async delete(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<{ message: string }> {
@@ -259,7 +259,7 @@ export class CandidatesController {
   @ApiParam({ name: 'id', description: 'Candidate database ID', type: Number })
   @UseGuards(JwtAuthGuard)
   async downloadResume(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @Res() res: Response,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
@@ -341,7 +341,7 @@ export class CandidatesController {
   })
   async deleteDictionaryTerm(
     @Param('category') category: string,
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @Query('type') type: 'canonical' | 'alias',
   ): Promise<any> {
     return this.candidatesService.deleteDictionaryTerm(category, id, type);

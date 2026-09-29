@@ -103,7 +103,7 @@ export interface JobProfile {
 
 /** A single candidate ranked against a job requisition. */
 export interface CandidateMatch {
-  candidateId: number;
+  candidateId: string;
   fullName: string;
   email: string;
   phone: string;

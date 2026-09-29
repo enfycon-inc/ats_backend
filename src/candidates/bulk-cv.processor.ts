@@ -70,7 +70,7 @@ export class BulkCvProcessor extends WorkerHost {
           where: { id: itemId },
           data: {
             status: 'completed',
-            candidateId: Number(result.candidate.dbId || result.candidate.id) || null,
+            candidateId: (result.candidate.dbId || result.candidate.id) ? String(result.candidate.dbId || result.candidate.id) : null,
             candidateName: result.candidate.fullName,
             candidateEmail: result.candidate.email || null,
           },

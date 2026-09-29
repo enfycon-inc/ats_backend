@@ -8,7 +8,7 @@ import {
   Query,
   Param,
   Headers,
-  ParseIntPipe,
+  ParseUUIDPipe,
   HttpStatus,
   HttpCode,
   UseGuards,
@@ -86,7 +86,7 @@ export class RecruiterSubmissionsController {
       l3Status,
       finalStatus,
       jobId,
-      candidateId: candidateId ? parseInt(candidateId, 10) : undefined,
+      candidateId: candidateId ? candidateId : undefined,
       branchId: bid || undefined,
       view,
     });
@@ -159,7 +159,7 @@ export class RecruiterSubmissionsController {
     description: 'Removes a custom remark template by ID. Global templates can only be deleted by Global Administrators.',
   })
   async deleteCustomRemark(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
@@ -176,7 +176,7 @@ export class RecruiterSubmissionsController {
   @ApiResponse({ status: 200, description: 'Detailed submission profile resolved successfully.' })
   @ApiResponse({ status: 404, description: 'Submission not found.' })
   async findOne(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<SubmissionDetails> {
@@ -193,7 +193,7 @@ export class RecruiterSubmissionsController {
   @ApiResponse({ status: 200, description: 'Submission record successfully updated.' })
   @ApiResponse({ status: 404, description: 'Submission not found.' })
   async update(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateSubmissionDto,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
@@ -212,7 +212,7 @@ export class RecruiterSubmissionsController {
   @ApiResponse({ status: 200, description: 'Submission removed successfully.' })
   @ApiResponse({ status: 404, description: 'Submission not found.' })
   async remove(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<{ message: string }> {

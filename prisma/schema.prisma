@@ -460,7 +460,7 @@ model Client {
 }
 
 model Resume {
-  id            Int         @id @default(autoincrement())
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   filename      String?     @db.VarChar(255)
   candidateName String?     @map("candidate_name") @db.VarChar(255)
   email         String?     @db.VarChar(255)
@@ -479,7 +479,7 @@ model Resume {
 }
 
 model Candidate {
-  id                    Int                   @id @default(autoincrement())
+  id                    String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId              String?               @map("tenant_id") @db.Uuid
   branchId              String?               @map("branch_id") @db.Uuid
   candidateCode         String?               @map("candidate_code") @db.VarChar(100)
@@ -502,7 +502,7 @@ model Candidate {
   panCard               String?               @map("pan_card") @db.VarChar(10)
   preferredLocations    String[]              @map("preferred_locations")
   skills                String[]              @default([])
-  resumeRecordId        Int?                  @map("resume_record_id")
+  resumeRecordId        String?               @map("resume_record_id") @db.Uuid
   uploadedByUserId      String?               @map("uploaded_by_user_id") @db.Uuid
   uploadedByName        String?               @map("uploaded_by_name") @db.VarChar(255)
   deletedAt             DateTime?             @map("deleted_at") @db.Timestamptz(6)
@@ -651,10 +651,10 @@ model JobAssignmentLog {
 }
 
 model RecruiterSubmission {
-  id               Int       @id @default(autoincrement())
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId         String    @map("tenant_id") @db.Uuid
   jobId            String    @map("job_id") @db.Uuid
-  candidateId      Int       @map("candidate_id")
+  candidateId      String    @map("candidate_id") @db.Uuid
   recruiterId      String    @map("recruiter_id") @db.VarChar(255)
   l1Status         String    @default("PENDING") @map("l1_status") @db.VarChar(50)
   l1Date           DateTime? @map("l1_date") @db.Timestamptz(6)
@@ -775,7 +775,7 @@ model BulkUploadItem {
   filename       String     @db.VarChar(255)
   status         String     @default("queued") @db.VarChar(50)
   errorMessage   String?    @map("error_message")
-  candidateId    Int?       @map("candidate_id")
+  candidateId    String?    @map("candidate_id") @db.Uuid
   candidateName  String?    @map("candidate_name") @db.VarChar(255)
   candidateEmail String?    @map("candidate_email") @db.VarChar(255)
   createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -883,7 +883,7 @@ model Campaign {
 model Recipients {
   id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   campaignId  String    @map("campaign_id") @db.Uuid
-  candidateId Int?      @map("candidate_id")
+  candidateId String?   @map("candidate_id") @db.Uuid
   email       String    @db.VarChar(255)
   firstName   String?   @map("first_name") @db.VarChar(255)
   lastName    String?   @map("last_name") @db.VarChar(255)

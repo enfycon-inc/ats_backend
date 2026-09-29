@@ -12,10 +12,10 @@ import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 export interface SubmissionDetails {
-  id: number;
+  id: string;
   tenantId: string;
   jobId: string;
-  candidateId: number;
+  candidateId: string;
   recruiterId: string;
   l1Status: string;
   l1Date: string | null;
@@ -246,7 +246,7 @@ export class RecruiterSubmissionsService {
       l3Status?: string;
       finalStatus?: string;
       jobId?: string;
-      candidateId?: number;
+      candidateId?: string;
       branchId?: string;
       view?: string;
     },
@@ -465,7 +465,7 @@ export class RecruiterSubmissionsService {
   /**
    * Find a single recruiter submission by ID
    */
-  async findOne(id: number, tenantId: string): Promise<SubmissionDetails> {
+  async findOne(id: string, tenantId: string): Promise<SubmissionDetails> {
     this.logger.log(`Fetching submission ID=${id} for tenant: ${tenantId}`);
 
     const sql = `
@@ -522,7 +522,7 @@ export class RecruiterSubmissionsService {
   /**
    * Update submission statuses with auto-rejection logic
    */
-  async update(id: number, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser): Promise<SubmissionDetails> {
+  async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser): Promise<SubmissionDetails> {
     this.logger.log(`Updating submission ID=${id} for tenant: ${tenantId}`);
 
     const existing = await this.prisma.recruiterSubmission.findFirst({
@@ -810,7 +810,7 @@ export class RecruiterSubmissionsService {
   /**
    * Delete a recruiter submission, scoped by tenant
    */
-  async remove(id: number, tenantId: string): Promise<{ message: string }> {
+  async remove(id: string, tenantId: string): Promise<{ message: string }> {
     this.logger.log(`Removing submission ID=${id} for tenant: ${tenantId}`);
 
     const existing = await this.prisma.recruiterSubmission.findFirst({
@@ -1128,7 +1128,7 @@ export class RecruiterSubmissionsService {
     return results.length === 1 ? results[0] : results;
   }
 
-  async deleteCustomRemark(tenantId: string, id: number, user?: AuthUser) {
+  async deleteCustomRemark(tenantId: string, id: string, user?: AuthUser) {
     const existing: any[] = await this.prisma.$queryRawUnsafe(
       `SELECT id, tenant_id, is_global, branch_id FROM ats.tenant_stage_remarks WHERE id = $1`,
       id,

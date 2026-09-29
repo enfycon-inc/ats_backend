@@ -11,7 +11,7 @@ export class CreateSubmissionDto {
     example: 42,
     description: 'The integer ID of the parsed Candidate profile',
   })
-  candidateId: number;
+  candidateId: string;
 
   @ApiProperty({
     example: 'recruiter-uuid-or-name',
