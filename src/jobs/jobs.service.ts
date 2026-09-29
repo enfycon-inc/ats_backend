@@ -39,7 +39,7 @@ export interface JobProfile {
   taxTerms: string;
 
   // Client hierarchy
-  endClientName: string;
+  
 
   // Staffing metrics
   noOfPositions: number;
@@ -679,7 +679,7 @@ export class JobsService implements OnModuleInit {
           skillsRequired: dto.skillsRequired || [],
           secondarySkills: dto.secondarySkills || [],
           status: initialJobStatus,
-          businessUnit: dto.businessUnit || tenantName,
+          
           state: dto.state || '',
           country: dto.country || 'United States',
           clientJobId: dto.clientJobId || 'N/A',
@@ -687,8 +687,8 @@ export class JobsService implements OnModuleInit {
           clientBillRate: dto.clientBillRate || 'N/A',
           payRate: dto.payRate || 'N/A',
           taxTerms: dto.taxTerms || 'C2C',
-          clientName: dto.client || dto.endClientName || 'Direct Client',
-          endClientName: dto.endClientName || dto.client || 'Direct Client',
+          
+          
           noOfPositions: dto.noOfPositions || 1,
           submissionRequired: dto.submissionRequired || 5,
           submissionDone: 0,
@@ -701,7 +701,7 @@ export class JobsService implements OnModuleInit {
           accountManagerId: resolvedAccountManagerId || null,
           recruitmentManagerId: resolvedRecruitmentManagerId || null,
           primaryRecruiterId: resolvedPrimaryRecruiterId || null,
-          assignedTo: dto.assignedTo || 'N/A',
+          
           industry: dto.industry || '',
           degree: dto.degree || '',
           expMin: dto.expMin ?? 0,
@@ -715,11 +715,11 @@ export class JobsService implements OnModuleInit {
           assignedApproverId: resolvedAssignedApproverId || null,
           assignedApproverRole,
           jobTimezone,
-          workStartTime,
-          workEndTime,
-          workingDays,
+          
+          
+          
           shiftTiming,
-          timingSnapshotAt: new Date(),
+          
         },
       });
       const jobId = createdJob.id;
@@ -742,7 +742,7 @@ export class JobsService implements OnModuleInit {
       if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
         await this.prisma.job.update({
           where: { id: jobId },
-          data: { assignedTo: 'ALL' },
+          data: { /* removed assignedTo */ },
         });
       } else if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
         assignedPodId = dto.podId;
@@ -1216,7 +1216,7 @@ export class JobsService implements OnModuleInit {
       jobTitle: row.job_title ?? row.jobTitle,
       businessUnit: row.business_unit ?? row.businessUnit ?? '',
       businessUnitId: row.business_unit_id ?? row.businessUnitId ?? null,
-      client: row.client_name ?? row.clientName,
+      client: row.client?.clientName || row.client_id,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
       location: row.job_location ?? row.jobLocation,
       state: row.state || '',
@@ -1244,7 +1244,7 @@ export class JobsService implements OnModuleInit {
       payRate: row.pay_rate ?? row.payRate ?? 'N/A',
       taxTerms: row.tax_terms ?? row.taxTerms ?? 'C2C',
 
-      endClientName: row.end_client_name ?? row.endClientName ?? row.client_name ?? row.clientName,
+      
 
       noOfPositions: row.no_of_positions ?? row.noOfPositions ?? 1,
       submissionRequired: row.submission_required ?? row.submissionRequired ?? 5,
@@ -1330,53 +1330,53 @@ export class JobsService implements OnModuleInit {
     }
 
     // Verify associated client (and end client) is in APPROVED status
-    if (currentJob.clientName) {
-      const isCUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentJob.clientName.trim());
+    if (false /* removed clientName */) {
+      const isCUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test("".trim());
       const clientCheck = await this.prisma.client.findFirst({
         where: {
           tenantId,
           deletedAt: null,
           OR: [
-            { clientName: { equals: currentJob.clientName.trim(), mode: 'insensitive' } },
-            ...(isCUuid ? [{ id: currentJob.clientName.trim() }] : []),
+            { clientName: { equals: "".trim(), mode: 'insensitive' } },
+            ...(isCUuid ? [{ id: "".trim() }] : []),
           ],
         },
         select: { clientName: true, status: true, approvalStatus: true },
       });
       if (clientCheck) {
-        if (clientCheck.status === 'Pending Approval' || clientCheck.approvalStatus === 'PENDING_APPROVAL') {
-          throw new BadRequestException(`Cannot activate job requisition: Client "${clientCheck.clientName}" is pending approval. The client must be approved before jobs can go live.`);
+        if (clientCheck?.status === 'Pending Approval' || clientCheck?.approvalStatus === 'PENDING_APPROVAL') {
+          throw new BadRequestException(`Cannot activate job requisition: Client is pending approval. The client must be approved before jobs can go live.`);
         }
-        if (clientCheck.status === 'Rejected' || clientCheck.approvalStatus === 'REJECTED') {
-          throw new BadRequestException(`Cannot activate job requisition: Client "${clientCheck.clientName}" was rejected. Please reactivate or approve the client first.`);
+        if (clientCheck?.status === 'Rejected' || clientCheck?.approvalStatus === 'REJECTED') {
+          throw new BadRequestException(`Cannot activate job requisition: Client was rejected. Please reactivate or approve the client first.`);
         }
       }
     }
 
-    if (currentJob.endClientName && currentJob.endClientName !== currentJob.clientName) {
-      const isEcUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentJob.endClientName.trim());
+    if (false /* removed endClientName */ && "" !== "") {
+      const isEcUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test("".trim());
       const endClientCheck = await this.prisma.client.findFirst({
         where: {
           tenantId,
           deletedAt: null,
           OR: [
-            { clientName: { equals: currentJob.endClientName.trim(), mode: 'insensitive' } },
-            ...(isEcUuid ? [{ id: currentJob.endClientName.trim() }] : []),
+            { clientName: { equals: "".trim(), mode: 'insensitive' } },
+            ...(isEcUuid ? [{ id: "".trim() }] : []),
           ],
         },
         select: { clientName: true, status: true, approvalStatus: true },
       });
       if (endClientCheck) {
-        if (endClientCheck.status === 'Pending Approval' || endClientCheck.approvalStatus === 'PENDING_APPROVAL') {
-          throw new BadRequestException(`Cannot activate job requisition: End Client "${endClientCheck.clientName}" is pending approval. The client must be approved first.`);
+        if (endClientCheck?.status === 'Pending Approval' || endClientCheck?.approvalStatus === 'PENDING_APPROVAL') {
+          throw new BadRequestException(`Cannot activate job requisition: End Client is pending approval. The client must be approved first.`);
         }
-        if (endClientCheck.status === 'Rejected' || endClientCheck.approvalStatus === 'REJECTED') {
-          throw new BadRequestException(`Cannot activate job requisition: End Client "${endClientCheck.clientName}" was rejected.`);
+        if (endClientCheck?.status === 'Rejected' || endClientCheck?.approvalStatus === 'REJECTED') {
+          throw new BadRequestException(`Cannot activate job requisition: End Client was rejected.`);
         }
       }
     }
 
-    const assignedTo = overrides?.assignedTo || currentJob.assignedTo || 'All Branch Recruiters';
+    
     const primaryRecruiterId = overrides?.primaryRecruiterId || currentJob.primaryRecruiterId;
 
     if (overrides?.podId) {
@@ -1394,8 +1394,7 @@ export class JobsService implements OnModuleInit {
         approvalStatus: 'APPROVED',
         approvedBy: approver?.dbId || null,
         approvedAt: new Date(),
-        assignedTo,
-        primaryRecruiterId: primaryRecruiterId || null,
+                primaryRecruiterId: primaryRecruiterId || null,
       },
     });
 
@@ -1561,7 +1560,7 @@ export class JobsService implements OnModuleInit {
 
     // If attempting to set status to 'Active', ensure client is approved
     if (dto.status === 'Active') {
-      const targetClient = dto.client || currentJob.clientName;
+      const targetClient = dto.client || "";
       if (targetClient) {
         const isClientUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetClient.trim());
         const clientCheck = await this.prisma.client.findFirst({
@@ -1576,10 +1575,10 @@ export class JobsService implements OnModuleInit {
           select: { clientName: true, status: true, approvalStatus: true },
         });
         if (clientCheck) {
-          if (clientCheck.status === 'Pending Approval' || clientCheck.approvalStatus === 'PENDING_APPROVAL') {
+          if (clientCheck?.status === 'Pending Approval' || clientCheck?.approvalStatus === 'PENDING_APPROVAL') {
             throw new BadRequestException(`Cannot make job Active: Client "${clientCheck.clientName}" is pending approval. The client must be approved before jobs can go live.`);
           }
-          if (clientCheck.status === 'Rejected' || clientCheck.approvalStatus === 'REJECTED') {
+          if (clientCheck?.status === 'Rejected' || clientCheck?.approvalStatus === 'REJECTED') {
             throw new BadRequestException(`Cannot make job Active: Client "${clientCheck.clientName}" is rejected.`);
           }
         }
@@ -1673,7 +1672,7 @@ export class JobsService implements OnModuleInit {
     if (dto.skillsRequired !== undefined) dataToUpdate.skillsRequired = dto.skillsRequired;
     if (dto.secondarySkills !== undefined) dataToUpdate.secondarySkills = dto.secondarySkills;
     if (dto.status !== undefined) dataToUpdate.status = dto.status;
-    if (dto.businessUnit !== undefined) dataToUpdate.businessUnit = dto.businessUnit;
+    
     if (dto.state !== undefined) dataToUpdate.state = dto.state;
     if (dto.country !== undefined) dataToUpdate.country = dto.country;
     if (dto.clientJobId !== undefined) dataToUpdate.clientJobId = dto.clientJobId;
@@ -1681,8 +1680,8 @@ export class JobsService implements OnModuleInit {
     if (dto.clientBillRate !== undefined) dataToUpdate.clientBillRate = dto.clientBillRate;
     if (dto.payRate !== undefined) dataToUpdate.payRate = dto.payRate;
     if (dto.taxTerms !== undefined) dataToUpdate.taxTerms = dto.taxTerms;
-    if (dto.client !== undefined) dataToUpdate.clientName = dto.client;
-    if (dto.endClientName !== undefined) dataToUpdate.endClientName = dto.endClientName;
+    
+    
     if (dto.noOfPositions !== undefined) dataToUpdate.noOfPositions = dto.noOfPositions;
     if (dto.submissionRequired !== undefined) dataToUpdate.submissionRequired = dto.submissionRequired;
     if (dto.priority !== undefined) dataToUpdate.urgency = dto.priority;
@@ -1694,7 +1693,7 @@ export class JobsService implements OnModuleInit {
     if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = await this.resolveUserUuid(dto.accountManagerId, tenantId);
     if (dto.recruitmentManagerId !== undefined) dataToUpdate.recruitmentManagerId = dto.recruitmentManagerId;
     if (dto.primaryRecruiterId !== undefined) dataToUpdate.primaryRecruiterId = dto.primaryRecruiterId;
-    if (dto.assignedTo !== undefined) dataToUpdate.assignedTo = dto.assignedTo;
+    
     if (dto.industry !== undefined) dataToUpdate.industry = dto.industry;
     if (dto.degree !== undefined) dataToUpdate.degree = dto.degree;
     if (dto.expMin !== undefined) dataToUpdate.expMin = dto.expMin;
@@ -1702,9 +1701,9 @@ export class JobsService implements OnModuleInit {
     if (dto.respondBy !== undefined) dataToUpdate.respondBy = dto.respondBy ? new Date(dto.respondBy) : null;
     if (dto.noticePeriod !== undefined) dataToUpdate.noticePeriod = dto.noticePeriod;
     if (dto.jobTimezone !== undefined) dataToUpdate.jobTimezone = dto.jobTimezone;
-    if (dto.workStartTime !== undefined) dataToUpdate.workStartTime = dto.workStartTime;
-    if (dto.workEndTime !== undefined) dataToUpdate.workEndTime = dto.workEndTime;
-    if (dto.workingDays !== undefined) dataToUpdate.workingDays = typeof dto.workingDays === 'string' ? dto.workingDays : JSON.stringify(dto.workingDays);
+    
+    
+    
     if (dto.shiftTiming !== undefined) dataToUpdate.shiftTiming = dto.shiftTiming;
 
     if (Object.keys(dataToUpdate).length > 0) {
@@ -1722,10 +1721,10 @@ export class JobsService implements OnModuleInit {
 
       await this.prisma.jobPod.deleteMany({ where: { jobId: id } });
       if (dto.podId === 'all') {
-        await this.prisma.job.update({ where: { id }, data: { assignedTo: 'ALL' } });
+        
       } else if (dto.podId === 'none' || dto.podId === 'off') {
         if (dto.assignedTo !== undefined) {
-          await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo } });
+          
         }
       } else {
         const podIdsToAssign: string[] = [];
@@ -1737,7 +1736,7 @@ export class JobsService implements OnModuleInit {
 
         if (podIdsToAssign.length > 0) {
           if (dto.assignedTo !== undefined) {
-            await this.prisma.job.update({ where: { id }, data: { assignedTo: dto.assignedTo } });
+            
           }
           for (const pId of podIdsToAssign) {
             await this.prisma.jobPod.upsert({
@@ -2450,7 +2449,7 @@ export class JobsService implements OnModuleInit {
             status: initialStatus,
             approvalStatus,
             primaryOwner: createdBy,
-            businessUnit: tenant?.name || 'Default',
+            
             createdBy,
             modifiedBy: createdBy,
             approvedBy,
@@ -2480,9 +2479,9 @@ export class JobsService implements OnModuleInit {
     const duplicateDto: CreateJobDto = {
       jobCode: newJobCode,
       title: `${original.jobTitle} (Copy)`,
-      businessUnit: original.businessUnit,
+      
       client: original.client,
-      endClientName: original.endClientName || original.client,
+      
       location: original.location,
       state: original.state,
       country: original.country,

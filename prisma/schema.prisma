@@ -443,7 +443,7 @@ model Client {
   aboutCompany        String?   @map("about_company")
   approvalStatus      String?   @default("APPROVED") @map("approval_status") @db.VarChar(50)
   assignedApproverId  String?   @map("assigned_approver_id") @db.Uuid
-  approvedBy          String?   @map("approved_by") @db.VarChar(255)
+  approvedBy           String?                @map("approved_by") @db.Uuid
   approvedAt          DateTime? @map("approved_at") @db.Timestamptz(6)
   rejectionReason     String?   @map("rejection_reason")
   deletedAt           DateTime? @map("deleted_at") @db.Timestamptz(6)
@@ -530,17 +530,14 @@ model Job {
   jobDescription       String?                @map("job_description")
   skillsRequired       String[]               @map("skills_required")
   secondarySkills      String[]               @default([]) @map("secondary_skills")
-  businessUnit         String?                @map("business_unit") @db.VarChar(100)
-  state                String?                @db.VarChar(100)
+    state                String?                @db.VarChar(100)
   country              String?                @default("United States") @db.VarChar(100)
   clientJobId          String?                @map("client_job_id") @db.VarChar(100)
   visaType             String?                @map("visa_type") @db.VarChar(500)
   clientBillRate       String                 @map("client_bill_rate") @db.VarChar(100)
   payRate              String                 @map("pay_rate") @db.VarChar(100)
   taxTerms             String?                @map("tax_terms") @db.VarChar(100)
-  clientName           String                 @map("client_name") @db.VarChar(255)
-  endClientName        String                 @map("end_client_name") @db.VarChar(255)
-  clientId             String?                @map("client_id") @db.Uuid
+      clientId             String?                @map("client_id") @db.Uuid
   endClientId          String?                @map("end_client_id") @db.Uuid
   noOfPositions        Int                    @default(1) @map("no_of_positions")
   submissionRequired   Int                    @default(5) @map("submission_required")
@@ -556,8 +553,7 @@ model Job {
   accountManagerId     String?                @map("account_manager_id") @db.Uuid
   recruitmentManagerId String?                @map("recruitment_manager_id") @db.Uuid
   primaryRecruiterId   String?                @map("primary_recruiter_id") @db.Uuid
-  assignedTo           String?                @map("assigned_to") @db.VarChar(255)
-  industry             String?                @db.VarChar(100)
+    industry             String?                @db.VarChar(100)
   degree               String?                @db.VarChar(100)
   expMin               Int?                   @default(0) @map("exp_min")
   expMax               Int?                   @default(10) @map("exp_max")
@@ -567,16 +563,12 @@ model Job {
   approvalStatus       String?                @default("APPROVED") @map("approval_status") @db.VarChar(50)
   assignedApproverId   String?                @map("assigned_approver_id") @db.Uuid
   assignedApproverRole String?                @map("assigned_approver_role") @db.VarChar(50)
-  approvedBy           String?                @map("approved_by") @db.VarChar(255)
+  approvedBy           String?                @map("approved_by") @db.Uuid
   approvedAt           DateTime?              @map("approved_at") @db.Timestamptz(6)
   rejectionReason      String?                @map("rejection_reason")
   jobTimezone          String?                @map("job_timezone") @db.VarChar(100)
-  workStartTime        String?                @map("work_start_time") @db.VarChar(20)
-  workEndTime          String?                @map("work_end_time") @db.VarChar(20)
-  workingDays          String?                @map("working_days")
-  shiftTiming          String?                @map("shift_timing") @db.VarChar(100)
-  timingSnapshotAt     DateTime?              @map("timing_snapshot_at") @db.Timestamptz(6)
-  deletedAt            DateTime?              @map("deleted_at") @db.Timestamptz(6)
+        shiftTiming          String?                @map("shift_timing") @db.VarChar(100)
+    deletedAt            DateTime?              @map("deleted_at") @db.Timestamptz(6)
   createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   isCoSourced          Boolean                @default(false) @map("is_co_sourced")

@@ -298,8 +298,8 @@ export class ClientsService {
         select: {
           clientId: true,
           endClientId: true,
-          clientName: true,
-          endClientName: true,
+          
+          
         },
       }),
     ]);
@@ -335,8 +335,8 @@ export class ClientsService {
         return (
           j.clientId === c.id ||
           j.endClientId === c.id ||
-          (j.clientName && j.clientName.toLowerCase() === cNameLower) ||
-          (j.endClientName && j.endClientName.toLowerCase() === cNameLower)
+          (j.clientId === c.id) ||
+          (j.endClientId === c.id)
         );
       }).length;
 
@@ -379,8 +379,8 @@ export class ClientsService {
         OR: [
           { clientId: id },
           { endClientId: id },
-          { clientName: { equals: client.clientName, mode: 'insensitive' } },
-          { endClientName: { equals: client.clientName, mode: 'insensitive' } },
+          { clientId: client.id },
+          { endClientId: client.id },
         ],
       },
       select: {
@@ -390,8 +390,8 @@ export class ClientsService {
         jobLocation: true,
         jobType: true,
         status: true,
-        clientName: true,
-        endClientName: true,
+        
+        
         createdAt: true,
       },
       orderBy: { createdAt: 'desc' },
@@ -403,8 +403,8 @@ export class ClientsService {
       job_title: j.jobTitle,
       job_location: j.jobLocation,
       job_type: j.jobType,
-      client_name: j.clientName,
-      end_client_name: j.endClientName,
+      
+      
       created_at: j.createdAt,
     }));
 
@@ -629,7 +629,7 @@ export class ClientsService {
           { clientCode: { equals: lookup, mode: 'insensitive' } },
         ],
       },
-      select: { id: true, clientName: true, status: true, approvalStatus: true },
+      select: { id: true,  status: true, approvalStatus: true },
     });
 
     if (!client) {
@@ -644,7 +644,7 @@ export class ClientsService {
     return {
       approved: isApproved,
       status: client.status || (client.approvalStatus === 'PENDING_APPROVAL' ? 'Pending Approval' : 'Active'),
-      clientName: client.clientName,
+      clientName: '',
     };
   }
 }

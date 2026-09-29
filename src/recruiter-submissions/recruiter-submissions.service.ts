@@ -528,7 +528,7 @@ export class RecruiterSubmissionsService {
     const existing = await this.prisma.recruiterSubmission.findFirst({
       where: { id, tenantId },
       include: {
-        job: { select: { id: true, jobCode: true, jobTitle: true, clientName: true, accountManagerId: true } },
+        job: { select: { id: true, jobCode: true, jobTitle: true, accountManagerId: true } },
         candidate: { select: { id: true, fullName: true, firstName: true, lastName: true, email: true } },
       },
     });
@@ -650,11 +650,11 @@ export class RecruiterSubmissionsService {
 
     // ── Candidate Submission Notification Dispatch ──────────────────────────────
     const candName =
-      existing.candidate?.fullName ||
-      `${existing.candidate?.firstName || ''} ${existing.candidate?.lastName || ''}`.trim() ||
+      (existing as any).candidate?.fullName ||
+      `${(existing as any).candidate?.firstName || ''} ${(existing as any).candidate?.lastName || ''}`.trim() ||
       'Candidate';
-    const jobCode = existing.job?.jobCode || '';
-    const jobTitle = existing.job?.jobTitle || '';
+    const jobCode = (existing as any).job?.jobCode || '';
+    const jobTitle = (existing as any).job?.jobTitle || '';
     const jobDisplay = jobCode ? `${jobCode} - ${jobTitle}` : jobTitle;
     const approverName = user?.fullName || user?.email || 'Approver';
     const feedbackNote = (
@@ -686,7 +686,6 @@ export class RecruiterSubmissionsService {
               jobId: existing.jobId,
               jobCode,
               jobTitle,
-              clientName: existing.job?.clientName,
               candidateId: existing.candidateId,
               candidateName: candName,
               status: 'SUBMITTED',
@@ -706,7 +705,6 @@ export class RecruiterSubmissionsService {
               jobId: existing.jobId,
               jobCode,
               jobTitle,
-              clientName: existing.job?.clientName,
               candidateId: existing.candidateId,
               candidateName: candName,
               status: 'REJECTED',
@@ -726,7 +724,6 @@ export class RecruiterSubmissionsService {
               jobId: existing.jobId,
               jobCode,
               jobTitle,
-              clientName: existing.job?.clientName,
               candidateId: existing.candidateId,
               candidateName: candName,
               status: 'OFFER',
@@ -745,7 +742,6 @@ export class RecruiterSubmissionsService {
               jobId: existing.jobId,
               jobCode,
               jobTitle,
-              clientName: existing.job?.clientName,
               candidateId: existing.candidateId,
               candidateName: candName,
               status: finalStatus,
@@ -764,7 +760,6 @@ export class RecruiterSubmissionsService {
               jobId: existing.jobId,
               jobCode,
               jobTitle,
-              clientName: existing.job?.clientName,
               candidateId: existing.candidateId,
               candidateName: candName,
               status: 'REJECTED',
@@ -962,8 +957,8 @@ export class RecruiterSubmissionsService {
       candidateNoticePeriod: row.candidate_notice_period || row.candidateNoticePeriod,
       jobCode: row.job_code || row.jobCode,
       jobTitle: row.job_title || row.jobTitle,
-      clientName: row.client_name || row.clientName,
-      endClientName: row.end_client_name || row.endClientName,
+      clientName: row.client?.clientName || row.client_id,
+      endClientName: row.end_client?.clientName || row.end_client_id,
       recruiterName: row.recruiter_name || row.recruiterName,
       podHeadName: row.pod_head_name || row.podHeadName,
       accountManagerName: row.am_name || row.accountManagerName,
