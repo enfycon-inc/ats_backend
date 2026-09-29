@@ -457,23 +457,23 @@ export class AuthKeycloakService {
       const issuer = process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats';
       const realm = issuer.split('/realms/')[1] || 'enfycon-ats';
       const baseUrl = this.getKeycloakAdminBaseUrl();
-      const usersUrl = \/admin/realms//users;
-      const searchUrl = \?email=&exact=true;
-      const searchRes = await fetch(searchUrl, { headers: { Authorization: Bearer \ } });
+      const usersUrl = `${baseUrl}/admin/realms/${realm}/users`;
+      const searchUrl = `${usersUrl}?email=${encodeURIComponent(email)}&exact=true`;
+      const searchRes = await fetch(searchUrl, { headers: { Authorization: `Bearer ${adminToken}` } });
       const usersList = searchRes.ok ? await searchRes.json() : [];
       if (Array.isArray(usersList) && usersList.length > 0) {
         const kcUserId = usersList[0].id;
-        const updateUrl = \/\;
+        const updateUrl = `${usersUrl}/${kcUserId}`;
         const updateRes = await fetch(updateUrl, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: Bearer \ },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
           body: JSON.stringify({ enabled }),
         });
         return updateRes.ok;
       }
       return false;
     } catch (e: any) {
-      this.logger.warn(Failed to update Keycloak status for : \);
+      this.logger.warn(`Failed to update Keycloak status for ${email}: ${e.message}`);
       return false;
     }
   }

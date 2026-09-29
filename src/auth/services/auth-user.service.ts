@@ -233,7 +233,7 @@ export class AuthUserService {
       validateBranchAccess(requester, user.branch_id, 'change user status');
     }
 
-    const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
+    const perms: string[] = Array.isArray(requester?.permissions) ? requester.permissions : [];
     const isTenantAdmin = perms.includes('tenant:settings') || perms.includes('tenant:manage') || perms.includes('platform:manage');
     if (!isTenantAdmin && (requester as any).businessUnitId) {
       if (user.business_unit_id && user.business_unit_id !== (requester as any).businessUnitId) {
