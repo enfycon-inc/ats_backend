@@ -31,7 +31,6 @@ import { AcceptInviteDto } from './dtos/accept-invite.dto';
 import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from './guards/optional-jwt-auth.guard';
-import { AuthUser } from './decorators/current-user.decorator';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
 import { RequirePermissions } from './decorators/permissions.decorator';

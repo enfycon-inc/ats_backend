@@ -62,7 +62,7 @@ export class AuthService {
 
   // ─── Core Auth ───────────────────────────────────────────────────────────────
   login(dto: LoginDto) { return this.coreService.login(dto); }
-  register(dto: RegisterDto, authHeader?: string) { return this.coreService.register(dto, authHeader); }
+  register(dto: RegisterDto, requesterUser?: any) { return this.coreService.register(dto, requesterUser); }
   refreshKeycloakToken(refreshToken: string) { return this.coreService.refreshKeycloakToken(refreshToken); }
   ssoLogin(dto: SsoLoginDto) { return this.coreService.ssoLogin(dto); }
 

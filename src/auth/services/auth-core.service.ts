@@ -418,7 +418,7 @@ export class AuthCoreService {
     branchId?: string;
     isApproved?: boolean;
     sendEmailInvite?: boolean;
-  }, authHeader?: string) {
+  }, requesterUser?: any) {
     const email = (dto.email || '').trim().toLowerCase();
     const firstName = (dto.firstName || (dto.fullName ? dto.fullName.trim().split(/\s+/)[0] : '') || '').trim();
     const lastName = (dto.lastName || (dto.fullName ? dto.fullName.trim().split(/\s+/).slice(1).join(' ') : '') || '').trim();
