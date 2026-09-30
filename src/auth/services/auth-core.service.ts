@@ -15,7 +15,7 @@ import { AuthEmailService } from './auth-email.service';
 import { SsoLoginDto } from '../dtos/sso-login.dto';
 import * as crypto from 'crypto';
 
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33'; // MUST BE CONFIGURED IN ENV
 
 /**
  * AuthCoreService — core authentication flows:
@@ -293,7 +293,8 @@ export class AuthCoreService {
     const params = new URLSearchParams();
     params.append('grant_type', 'password');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    if (!clientSecret) throw new InternalServerErrorException('KEYCLOAK_CLIENT_SECRET is not configured');
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', dto.password);
@@ -376,7 +377,8 @@ export class AuthCoreService {
     const params = new URLSearchParams();
     params.append('grant_type', 'refresh_token');
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    if (!clientSecret) throw new InternalServerErrorException('KEYCLOAK_CLIENT_SECRET is not configured');
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('refresh_token', refreshToken);
 
@@ -438,10 +440,9 @@ export class AuthCoreService {
     if (role === 'SUPER_ADMIN') throw new ForbiddenException('Registering with SUPER_ADMIN role is not allowed.');
     let tenantId = dto.tenantId || DEFAULT_TENANT_ID;
 
-    const requester = await this.getRequesterInfoFromToken(authHeader);
-    const requesterRoles = requester.roles;
-    const requesterIsAdmin = requester.isAdmin;
-    const requesterTenantId = requester.tenantId;
+    const requesterRoles = requesterUser?.roles || [];
+    const requesterIsAdmin = requesterRoles.includes('TENANT_ADMIN') || requesterRoles.includes('SUPER_ADMIN') || requesterRoles.includes('BRANCH_ADMIN');
+    const requesterTenantId = requesterUser?.tenantId || null;
 
     if (requesterIsAdmin && !requesterRoles.includes('SUPER_ADMIN') && requesterTenantId) tenantId = requesterTenantId;
 
@@ -513,6 +514,7 @@ export class AuthCoreService {
     const issuer = (process.env.KEYCLOAK_ISSUER || '').replace(/\/$/, '');
     const clientId = process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats';
     const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    if (!clientSecret) throw new InternalServerErrorException('KEYCLOAK_CLIENT_SECRET is not configured');
     if (!issuer || !clientSecret) {
       throw new UnauthorizedException('Microsoft sign-in is not configured on this server.');
     }
@@ -798,7 +800,8 @@ export class AuthCoreService {
     }
 
     // 6. Obtain Keycloak token for this user
-    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET || 'mL9aWPt1POtRCp2dDqCt9tG4fakwm7rn';
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    if (!clientSecret) throw new InternalServerErrorException('KEYCLOAK_CLIENT_SECRET is not configured');
     const ssoInternalPassword = crypto.createHmac('sha256', clientSecret).update(`SSO:${user.id}:${cleanEmail}`).digest('hex');
 
     await this.keycloakService.provisionUserInKeycloak({

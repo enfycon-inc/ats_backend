@@ -30,6 +30,8 @@ import { SsoLoginDto } from './dtos/sso-login.dto';
 import { AcceptInviteDto } from './dtos/accept-invite.dto';
 import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from './guards/optional-jwt-auth.guard';
+import { AuthUser } from './decorators/current-user.decorator';
 import { RolesGuard } from './guards/roles.guard';
 import { Roles } from './decorators/roles.decorator';
 import { RequirePermissions } from './decorators/permissions.decorator';
@@ -91,21 +93,19 @@ Validates email + password and returns a signed JWT access token.
   // ─── POST /api/auth/register ────────────────────────────────
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
+  @UseGuards(OptionalJwtAuthGuard)
   @ApiOperation({
     summary: 'Register new user account',
-    description:
-      'Creates a new user in the `users` table with a hashed password and assigned ATS role. ' +
-      'In production (Keycloak mode), user creation is managed inside Keycloak; this endpoint ' +
-      'is used for local/development user management only.',
+    description: 'Creates a new user. Admins can create approved users.',
   })
   @ApiResponse({ status: 201, description: 'User registered successfully.' })
   @ApiResponse({ status: 409, description: 'Email already registered.' })
   @ApiResponse({ status: 400, description: 'Invalid role or missing fields.' })
   async register(
     @Body() dto: RegisterDto,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() user?: AuthUser,
   ) {
-    return this.authService.register(dto, authHeader);
+    return this.authService.register(dto, user);
   }
 
   // ─── POST /api/auth/register-tenant ─────────────────────────

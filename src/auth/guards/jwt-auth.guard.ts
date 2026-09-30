@@ -11,7 +11,7 @@ import * as http from 'http';
 import { AuthService } from '../auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
 /**
  * ─────────────────────────────────────────────────────────────────────────────
@@ -193,9 +193,12 @@ export class JwtAuthGuard implements CanActivate {
         );
       }
 
+      // Filter out SUPER_ADMIN from dbUser.roles to ensure it ONLY comes from Keycloak
+      const safeDbRoles = (dbUser.roles || []).filter((r: string) => r !== 'SUPER_ADMIN' && r !== 'super_admin');
+      
       const mergedRoles = Array.from(
         // Tenant roles come from current DB assignments. Only the platform realm role is authoritative in the token.
-        new Set([...(realmRoles.includes('SUPER_ADMIN') ? ['SUPER_ADMIN'] : []), ...(dbUser.roles || [])]),
+        new Set([...(realmRoles.includes('SUPER_ADMIN') ? ['SUPER_ADMIN'] : []), ...safeDbRoles]),
       )
         .map((r) => (r as string).toUpperCase().replace(/[\s-]/g, '_'))
         .filter((r) => !isTechnicalKeycloakRole(r));

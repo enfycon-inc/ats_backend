@@ -12,7 +12,7 @@ import { AuthRbacService } from './auth-rbac.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
 import { storeTenantLogo } from '../utils/logo-storage';
 
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
 /**
  * AuthTenantService — manages all tenant lifecycle operations:

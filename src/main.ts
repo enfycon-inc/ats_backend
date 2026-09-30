@@ -19,7 +19,16 @@ async function bootstrap() {
 
   // Enable CORS so the recruiter dashboard front-end can communicate with backend endpoints
   app.enableCors({
-    origin: true,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
+      const isAllowed = /localhost:\d+$|\.enfyjobs\.com$|\.enfycon\.com$/i.test(origin) || allowedOrigins.includes(origin);
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(new Error('CORS not allowed for this origin'));
+      }
+    },
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id', 'x-branch-id', 'x-custom-tenant-domain', 'x-tenant-domain'],
   });
