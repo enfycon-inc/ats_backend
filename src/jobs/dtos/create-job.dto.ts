@@ -91,11 +91,7 @@ export class CreateJobDto {
   recruitmentManagerId?: string;
 
   @ApiPropertyOptional({ example: 'recruiter-uuid-789', description: 'Primary Recruiter user ID' })
-  primaryRecruiterId?: string;
-
-  @ApiPropertyOptional({ example: 'Recruitment Team A', description: 'Assigned team or person name' })
-  assignedTo?: string;
-
+  recruiterId?: string;
   @ApiPropertyOptional({ example: ['Docker', 'AWS', 'Git'], description: 'Secondary/nice-to-have skills' })
   secondarySkills?: string[];
 
@@ -125,10 +121,6 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: 'user-uuid-123', description: 'Assigned reviewer/approver user ID' })
   assignedApproverId?: string;
-
-  @ApiPropertyOptional({ example: 'POD_LEAD', enum: ['POD_LEAD', 'DELIVERY_HEAD', 'PRIMARY_RECRUITER', 'BRANCH_ADMIN'], description: 'Assigned approver persona role' })
-  assignedApproverRole?: string;
-
   @ApiPropertyOptional({ example: 'PENDING_APPROVAL', enum: ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'], description: 'Job approval status' })
   approvalStatus?: string;
 }

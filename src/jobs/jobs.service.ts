@@ -58,9 +58,8 @@ export interface JobProfile {
   accountManagerId: string;
   recruitmentManagerId: string;
   recruitmentManager: string;
-  primaryRecruiterId: string;
-  primaryRecruiter: string;
-  assignedTo: string;
+  recruiterId: string;
+  recruiter: string;
   createdBy: string;
 
   // Experience & education
@@ -87,16 +86,12 @@ export interface JobProfile {
   approvalStatus: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
   assignedApproverId?: string | null;
   assignedApproverName?: string | null;
-  assignedApproverRole?: string | null;
   approvedBy?: string | null;
   approvedAt?: string | null;
   rejectionReason?: string | null;
 
   // Branch Timing Snapshot
   jobTimezone?: string;
-  workStartTime?: string;
-  workEndTime?: string;
-  workingDays?: string[];
   shiftTiming?: string;
   timingSnapshotAt?: string | null;
 }
@@ -157,7 +152,7 @@ export class JobsService implements OnModuleInit {
           ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT 'United States',
           ADD COLUMN IF NOT EXISTS client_job_id VARCHAR(100) DEFAULT 'N/A',
           ADD COLUMN IF NOT EXISTS recruitment_manager_id UUID,
-          ADD COLUMN IF NOT EXISTS primary_recruiter_id UUID,
+          ADD COLUMN IF NOT EXISTS recruiter_id UUID,
           ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255) DEFAULT 'N/A',
           ADD COLUMN IF NOT EXISTS tax_terms VARCHAR(50) DEFAULT 'C2C',
           ADD COLUMN IF NOT EXISTS remote_job VARCHAR(20) DEFAULT 'No',
@@ -170,7 +165,7 @@ export class JobsService implements OnModuleInit {
           ADD COLUMN IF NOT EXISTS degree VARCHAR(100) DEFAULT '',
           ADD COLUMN IF NOT EXISTS exp_min INT DEFAULT 0,
           ADD COLUMN IF NOT EXISTS exp_max INT DEFAULT 10,
-          ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT 'System',
+          
           ALTER COLUMN visa_type TYPE VARCHAR(500),
           ADD COLUMN IF NOT EXISTS respond_by DATE,
           ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT '',
@@ -533,7 +528,6 @@ export class JobsService implements OnModuleInit {
     }
 
     let assignedApproverId = dto.assignedApproverId || null;
-    let assignedApproverRole = dto.assignedApproverRole || null;
     let requiresApprovalGate = false;
 
     if (createdByEmail && createdByEmail !== 'System') {
@@ -565,15 +559,12 @@ export class JobsService implements OnModuleInit {
 
         if (cRow.job_reviewer_id) {
           assignedApproverId = cRow.job_reviewer_id;
-          assignedApproverRole = 'DESIGNATED_REVIEWER';
           requiresApprovalGate = !hasDirectPublish;
         } else if (cRow.pod_head_id) {
           assignedApproverId = assignedApproverId || cRow.pod_head_id;
-          assignedApproverRole = assignedApproverRole || 'POD_LEAD';
           requiresApprovalGate = !hasDirectPublish;
         } else if (cRow.branch_manager_id) {
           assignedApproverId = assignedApproverId || cRow.branch_manager_id;
-          assignedApproverRole = assignedApproverRole || 'BRANCH_ADMIN';
           requiresApprovalGate = !hasDirectPublish;
         }
       }
@@ -662,7 +653,7 @@ export class JobsService implements OnModuleInit {
     if (!workingDays) workingDays = '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
     if (!shiftTiming) shiftTiming = `General Shift (${workStartTime} - ${workEndTime})`;
 
-    const resolvedPrimaryRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId || dto.assignedTo, tenantId);
+    const resolvedPrimaryRecruiterId = await this.resolveUserUuid(dto.recruiterId, tenantId);
     const resolvedRecruitmentManagerId = await this.resolveUserUuid(dto.recruitmentManagerId, tenantId);
     const resolvedAssignedApproverId = await this.resolveUserUuid(assignedApproverId, tenantId);
     const resolvedAccountManagerId = await this.resolveUserUuid(dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), tenantId);
@@ -700,20 +691,18 @@ export class JobsService implements OnModuleInit {
           duration: dto.duration || '',
           accountManagerId: resolvedAccountManagerId || null,
           recruitmentManagerId: resolvedRecruitmentManagerId || null,
-          primaryRecruiterId: resolvedPrimaryRecruiterId || null,
+          recruiterId: resolvedPrimaryRecruiterId || null,
           
           industry: dto.industry || '',
           degree: dto.degree || '',
           expMin: dto.expMin ?? 0,
           expMax: dto.expMax ?? 10,
-          createdBy: createdByEmail || 'System',
-          respondBy: dto.respondBy ? new Date(dto.respondBy) : null,
+                    respondBy: dto.respondBy ? new Date(dto.respondBy) : null,
           noticePeriod: dto.noticePeriod || '',
           market: dto.market || 'US',
           branchId,
           approvalStatus: initialApprovalStatus,
           assignedApproverId: resolvedAssignedApproverId || null,
-          assignedApproverRole,
           jobTimezone,
           
           
@@ -946,7 +935,7 @@ export class JobsService implements OnModuleInit {
     let sql = `
       SELECT j.*,
              rm.full_name AS recruitment_manager_name,
-             pr.full_name AS primary_recruiter_name,
+             pr.full_name AS recruiter_name,
              app.full_name AS assigned_approver_name,
              COALESCE(pod_info.pod_id, '') AS pod_id,
              COALESCE(pod_info.pod_name, '') AS pod_name,
@@ -959,7 +948,7 @@ export class JobsService implements OnModuleInit {
              bu.name AS mapped_business_unit_name
       FROM ats.jobs j
       LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
-      LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
+      LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
       LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
       LEFT JOIN (
         SELECT 
@@ -970,7 +959,7 @@ export class JobsService implements OnModuleInit {
         JOIN ats.pods p ON p.id = jp.pod_id
         GROUP BY jp.job_id
       ) pod_info ON pod_info.job_id = j.id
-      LEFT JOIN ats.users uc ON (uc.id = j.created_by)
+      LEFT JOIN ats.users uc ON (uc.id = j.account_manager_id)
       LEFT JOIN ats.branches b ON b.id = j.branch_id
       LEFT JOIN ats.clients cl ON cl.id = j.client_id
       LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
@@ -1047,27 +1036,17 @@ export class JobsService implements OnModuleInit {
         sql += ` AND j.business_unit_id = $${paramIndex}::uuid`;
         params.push(user.businessUnitId);
       } else {
-        sql += ` AND (j.created_by = $${paramIndex}::uuid OR j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
+        sql += ` AND (j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
         params.push(user.dbId);
       }
       paramIndex += 1;
 
     } else if (!isGlobalOrBranchAdmin && user?.dbId) {
-      // 3. Recruiters: Only see approved/active jobs assigned directly or to their Pod (NO open pool / ALL jobs)
+      // 3. Recruiters: Only see approved/active jobs (unit isolation is already applied above)
+      // They can see all jobs in their unit by default per user request.
       sql += ` AND (
         ((j.approval_status = 'APPROVED' OR j.approval_status IS NULL) AND UPPER(COALESCE(j.status, '')) NOT IN ('PENDING APPROVAL', 'PENDING_APPROVAL', 'DRAFT'))
         OR j.assigned_approver_id = $${paramIndex}::uuid
-      )`;
-
-      sql += ` AND (
-        j.primary_recruiter_id = $${paramIndex}::uuid
-        OR EXISTS (
-          SELECT 1 FROM ats.job_pods jp WHERE jp.job_id = j.id 
-          AND (
-            jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND pod_id IS NOT NULL)
-            OR jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}::uuid)
-          )
-        )
       )`;
       params.push(user.dbId);
       paramIndex++;
@@ -1075,16 +1054,15 @@ export class JobsService implements OnModuleInit {
 
     // ── Sub-view Filter Parameters (direct, pod, unassigned) ─────────────────
     if (filter === 'my' && user?.dbId) {
-      // "My Jobs" view: only show jobs created by self
-      sql += ` AND (
-        j.created_by = $${paramIndex}::uuid 
-        OR j.account_manager_id = $${paramIndex}::uuid 
-        OR j.recruitment_manager_id = $${paramIndex}::uuid
-      )`;
+      if (isAccountManager) {
+        sql += ` AND (j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
+      } else {
+        sql += ` AND j.recruiter_id = $${paramIndex}::uuid`;
+      }
       params.push(user.dbId);
       paramIndex += 1;
     } else if (filter === 'direct' && user?.dbId) {
-      sql += ` AND j.primary_recruiter_id = $${paramIndex}::uuid`;
+      sql += ` AND j.recruiter_id = $${paramIndex}::uuid`;
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'pod' && user?.dbId) {
@@ -1099,7 +1077,7 @@ export class JobsService implements OnModuleInit {
       paramIndex++;
     } else if (filter === 'unassigned') {
       sql += ` AND (
-        j.primary_recruiter_id IS NULL 
+        j.recruiter_id IS NULL 
         AND NOT EXISTS (SELECT 1 FROM ats.job_pods jp2 WHERE jp2.job_id = j.id)
         AND (
           j.assigned_to IS NULL 
@@ -1132,14 +1110,14 @@ export class JobsService implements OnModuleInit {
     const isUuid = uuidRegex.test(idOrCode);
 
     const sql = isUuid
-      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
+      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS recruiter_name,
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
                 uc.full_name AS creator_name, uc.email AS creator_email,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
-         LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
          LEFT JOIN (
            SELECT 
@@ -1150,19 +1128,19 @@ export class JobsService implements OnModuleInit {
            JOIN ats.pods p ON p.id = jp.pod_id
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
-         LEFT JOIN ats.users uc ON (uc.id = j.created_by)
+         LEFT JOIN ats.users uc ON (uc.id = j.account_manager_id)
          LEFT JOIN ats.clients cl ON cl.id = j.client_id
          LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
          LEFT JOIN ats.business_units bu ON bu.id = j.business_unit_id
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
-      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS primary_recruiter_name,
+      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS recruiter_name,
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
                 uc.full_name AS creator_name, uc.email AS creator_email,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
-         LEFT JOIN ats.users pr ON pr.id = j.primary_recruiter_id
+         LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
          LEFT JOIN (
            SELECT 
@@ -1173,7 +1151,7 @@ export class JobsService implements OnModuleInit {
            JOIN ats.pods p ON p.id = jp.pod_id
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
-         LEFT JOIN ats.users uc ON (uc.id = j.created_by)
+         LEFT JOIN ats.users uc ON (uc.id = j.account_manager_id)
          LEFT JOIN ats.clients cl ON cl.id = j.client_id
          LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
          LEFT JOIN ats.business_units bu ON bu.id = j.business_unit_id
@@ -1208,8 +1186,6 @@ export class JobsService implements OnModuleInit {
     const rawRespondBy = row.respond_by ?? row.respondBy;
     const rawApprovedAt = row.approved_at ?? row.approvedAt;
     const rawTimingSnapshotAt = row.timing_snapshot_at ?? row.timingSnapshotAt;
-
-    const workingDaysRaw = row.working_days ?? row.workingDays;
 
     return {
       id: row.id,
@@ -1261,10 +1237,9 @@ export class JobsService implements OnModuleInit {
       accountManagerId: row.account_manager_id ?? row.accountManagerId ?? '',
       recruitmentManagerId: row.recruitment_manager_id ?? row.recruitmentManagerId ?? '',
       recruitmentManager: row.recruitment_manager_name ?? row.recruitmentManagerName ?? 'N/A',
-      primaryRecruiterId: row.primary_recruiter_id ?? row.primaryRecruiterId ?? '',
-      primaryRecruiter: row.primary_recruiter_name ?? row.primaryRecruiterName ?? 'N/A',
-      assignedTo: row.assigned_to ?? row.assignedTo ?? 'N/A',
-      createdBy: row.creator_name ?? row.creatorName ?? row.created_by ?? row.createdBy ?? 'System',
+      recruiterId: row.recruiter_id ?? row.recruiterId ?? '',
+      recruiter: row.recruiter_name ?? row.recruiterName ?? 'N/A',
+      createdBy: row.creator_name ?? row.creatorName ?? 'System',
       creatorEmail: row.creator_email ?? row.creatorEmail ?? null,
 
       industry: row.industry || '',
@@ -1289,24 +1264,12 @@ export class JobsService implements OnModuleInit {
       approvalStatus: row.approval_status ?? row.approvalStatus ?? (row.status === 'Pending Approval' ? 'PENDING_APPROVAL' : 'APPROVED'),
       assignedApproverId: row.assigned_approver_id ?? row.assignedApproverId ?? null,
       assignedApproverName: row.assigned_approver_name ?? row.assignedApproverName ?? null,
-      assignedApproverRole: row.assigned_approver_role ?? row.assignedApproverRole ?? null,
       approvedBy: row.approved_by ?? row.approvedBy ?? null,
       approvedAt: rawApprovedAt ? new Date(rawApprovedAt).toISOString() : null,
       rejectionReason: row.rejection_reason ?? row.rejectionReason ?? null,
 
       // Branch Timing Snapshot
       jobTimezone: row.job_timezone ?? row.jobTimezone ?? (row.country === 'United States' || row.market === 'US' ? 'America/New_York' : 'Asia/Kolkata'),
-      workStartTime: row.work_start_time ?? row.workStartTime ?? '09:00',
-      workEndTime: row.work_end_time ?? row.workEndTime ?? '18:00',
-      workingDays: (() => {
-        try {
-          return typeof workingDaysRaw === 'string'
-            ? JSON.parse(workingDaysRaw)
-            : (workingDaysRaw || ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']);
-        } catch {
-          return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-        }
-      })(),
       shiftTiming: row.shift_timing ?? row.shiftTiming ?? 'General Day Shift (09:00 - 18:00)',
       timingSnapshotAt: rawTimingSnapshotAt ? new Date(rawTimingSnapshotAt).toISOString() : null,
     };
@@ -1319,7 +1282,7 @@ export class JobsService implements OnModuleInit {
     jobId: string,
     tenantId: string,
     approver: any,
-    overrides?: { assignedTo?: string; primaryRecruiterId?: string; podId?: string }
+    overrides?: { recruiterId?: string; podId?: string }
   ): Promise<JobProfile> {
     this.logger.log(`Approving job ${jobId} by ${approver?.email || approver?.dbId}`);
 
@@ -1378,7 +1341,7 @@ export class JobsService implements OnModuleInit {
     }
 
     
-    const primaryRecruiterId = overrides?.primaryRecruiterId || currentJob.primaryRecruiterId;
+    const recruiterId = overrides?.recruiterId || currentJob.recruiterId;
 
     if (overrides?.podId) {
       await this.prisma.jobPod.upsert({
@@ -1395,14 +1358,14 @@ export class JobsService implements OnModuleInit {
         approvalStatus: 'APPROVED',
         approvedBy: approver?.dbId || null,
         approvedAt: new Date(),
-                primaryRecruiterId: primaryRecruiterId || null,
+                recruiterId: recruiterId || null,
       },
     });
 
     // Live Notification on Approval: Notify Creator & Assigned Recruiter/Pod
     try {
-      if (currentJob.accountManagerId || currentJob.createdBy) {
-        const creatorTarget = currentJob.accountManagerId || currentJob.createdBy;
+      if (currentJob.accountManagerId ) {
+        const creatorTarget = currentJob.accountManagerId ;
         if (creatorTarget) {
           const isTargetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(creatorTarget);
           const creatorUser = await this.prisma.user.findFirst({
@@ -1432,7 +1395,7 @@ export class JobsService implements OnModuleInit {
       }
 
       const assignedRecruiters = new Set<string>();
-      if (primaryRecruiterId) assignedRecruiters.add(primaryRecruiterId);
+      if (recruiterId) assignedRecruiters.add(recruiterId);
       const effectivePodId = overrides?.podId;
       if (effectivePodId) {
         const podUsers = await this.prisma.user.findMany({
@@ -1503,8 +1466,8 @@ export class JobsService implements OnModuleInit {
 
     // Live Notification on Rejection: Notify Creator with Reason
     try {
-      if (currentJob.accountManagerId || currentJob.createdBy) {
-        const creatorTarget = currentJob.accountManagerId || currentJob.createdBy;
+      if (currentJob.accountManagerId ) {
+        const creatorTarget = currentJob.accountManagerId ;
         if (creatorTarget) {
           const isTargetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(creatorTarget);
           const creatorUser = await this.prisma.user.findFirst({
@@ -1608,9 +1571,9 @@ export class JobsService implements OnModuleInit {
     const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
     const isUnassignedJob = jobPods.length === 0;
 
-    // If updating primary_recruiter_id, apply validation rules
-    if (dto.primaryRecruiterId !== undefined) {
-      const newRecruiterId = dto.primaryRecruiterId;
+    // If updating recruiter_id, apply validation rules
+    if (dto.recruiterId !== undefined) {
+      const newRecruiterId = dto.recruiterId;
 
       if (isUnassignedJob && !canAssignAny) {
         throw new BadRequestException("Unassigned jobs can only be assigned by a Tenant Admin, Branch Admin, or an authorized staff member.");
@@ -1693,7 +1656,7 @@ export class JobsService implements OnModuleInit {
     if (dto.duration !== undefined) dataToUpdate.duration = dto.duration;
     if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = await this.resolveUserUuid(dto.accountManagerId, tenantId);
     if (dto.recruitmentManagerId !== undefined) dataToUpdate.recruitmentManagerId = dto.recruitmentManagerId;
-    if (dto.primaryRecruiterId !== undefined) dataToUpdate.primaryRecruiterId = dto.primaryRecruiterId;
+    if (dto.recruiterId !== undefined) dataToUpdate.recruiterId = dto.recruiterId;
     
     if (dto.industry !== undefined) dataToUpdate.industry = dto.industry;
     if (dto.degree !== undefined) dataToUpdate.degree = dto.degree;
@@ -1724,7 +1687,7 @@ export class JobsService implements OnModuleInit {
       if (dto.podId === 'all') {
         
       } else if (dto.podId === 'none' || dto.podId === 'off') {
-        if (dto.assignedTo !== undefined) {
+        if (false) {
           
         }
       } else {
@@ -1736,7 +1699,7 @@ export class JobsService implements OnModuleInit {
         }
 
         if (podIdsToAssign.length > 0) {
-          if (dto.assignedTo !== undefined) {
+          if (false) {
             
           }
           for (const pId of podIdsToAssign) {
@@ -1760,9 +1723,9 @@ export class JobsService implements OnModuleInit {
 
     // Dispatch live notification if primary recruiter was assigned or changed
     try {
-      if (dto.primaryRecruiterId !== undefined && dto.primaryRecruiterId) {
-        const resolvedRecruiterId = await this.resolveUserUuid(dto.primaryRecruiterId, tenantId);
-        if (resolvedRecruiterId && resolvedRecruiterId !== currentJob.primaryRecruiterId) {
+      if (dto.recruiterId !== undefined && dto.recruiterId) {
+        const resolvedRecruiterId = await this.resolveUserUuid(dto.recruiterId, tenantId);
+        if (resolvedRecruiterId && resolvedRecruiterId !== currentJob.recruiterId) {
           await this.notifications.create(tenantId, resolvedRecruiterId, {
             type: 'JOB_NEW',
             title: `Job Assigned: ${currentJob.jobCode}`,

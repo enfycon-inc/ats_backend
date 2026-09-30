@@ -552,18 +552,16 @@ model Job {
   duration             String?                @db.VarChar(100)
   accountManagerId     String?                @map("account_manager_id") @db.Uuid
   recruitmentManagerId String?                @map("recruitment_manager_id") @db.Uuid
-  primaryRecruiterId   String?                @map("primary_recruiter_id") @db.Uuid
+  recruiterId          String?                @map("recruiter_id") @db.Uuid
     industry             String?                @db.VarChar(100)
   degree               String?                @db.VarChar(100)
   expMin               Int?                   @default(0) @map("exp_min")
   expMax               Int?                   @default(10) @map("exp_max")
-  createdBy            String?                @map("created_by") @db.Uuid
   respondBy            DateTime?              @map("respond_by") @db.Date
   noticePeriod         String?                @map("notice_period") @db.VarChar(100)
   approvalStatus       String?                @default("APPROVED") @map("approval_status") @db.VarChar(50)
   assignedApproverId   String?                @map("assigned_approver_id") @db.Uuid
-  assignedApproverRole String?                @map("assigned_approver_role") @db.VarChar(50)
-  approvedBy           String?                @map("approved_by") @db.Uuid
+    approvedBy           String?                @map("approved_by") @db.Uuid
   approvedAt           DateTime?              @map("approved_at") @db.Timestamptz(6)
   rejectionReason      String?                @map("rejection_reason")
   jobTimezone          String?                @map("job_timezone") @db.VarChar(100)

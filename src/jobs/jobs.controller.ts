@@ -218,7 +218,7 @@ export class JobsController {
   })
   async approve(
     @Param('id') id: string,
-    @Body() body: { assignedTo?: string; primaryRecruiterId?: string; podId?: string },
+    @Body() body: { recruiterId?: string; podId?: string },
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<JobProfile> {
