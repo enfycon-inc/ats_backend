@@ -64,6 +64,7 @@ export class AuthService {
   login(dto: LoginDto) { return this.coreService.login(dto); }
   register(dto: RegisterDto, requesterUser?: any) { return this.coreService.register(dto, requesterUser); }
   refreshKeycloakToken(refreshToken: string) { return this.coreService.refreshKeycloakToken(refreshToken); }
+  logoutKeycloakSession(refreshToken: string) { return this.coreService.logoutKeycloakSession(refreshToken); }
   ssoLogin(dto: SsoLoginDto) { return this.coreService.ssoLogin(dto); }
 
   // ─── User Management ─────────────────────────────────────────────────────────
