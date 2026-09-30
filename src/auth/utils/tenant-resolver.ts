@@ -23,6 +23,10 @@ export function resolveTenantId(user?: AuthUser, headerTenantId?: string): strin
 
   if (isSuperAdmin) {
     if (cleanHeader) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(cleanHeader)) {
+        throw new ForbiddenException('Invalid tenant ID format provided.');
+      }
       return cleanHeader;
     }
     return user.tenantId || DEFAULT_TENANT_ID;

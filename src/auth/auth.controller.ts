@@ -91,6 +91,7 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── GET /api/auth/diagnostic ──────────────────────────────
   @Get('diagnostic')
+  @UseGuards(JwtAuthGuard)
   async diagnostic() {
     return this.authService.diagnostic();
   }

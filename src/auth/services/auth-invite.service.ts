@@ -15,7 +15,7 @@ import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
 
 
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
 /**
  * AuthInviteService — manages the full invitation lifecycle:

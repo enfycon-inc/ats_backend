@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -21,6 +23,7 @@ import { MarketSegmentsModule } from './market-segments/market-segments.module';
 
 @Module({
   imports: [
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST || 'redis',
@@ -45,7 +48,8 @@ import { MarketSegmentsModule } from './market-segments/market-segments.module';
     DiceModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },AppService],
 })
 export class AppModule {}
 

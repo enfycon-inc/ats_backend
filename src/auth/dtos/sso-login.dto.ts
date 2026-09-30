@@ -20,6 +20,11 @@ export class SsoLoginDto {
   accessToken?: string;
 
   @ApiPropertyOptional({
+    description: 'Google ID token for cryptographical verification',
+  })
+  idToken?: string;
+
+  @ApiPropertyOptional({
     example: 'Sarah Jenkins',
     description: 'Full name returned by OAuth identity provider',
   })

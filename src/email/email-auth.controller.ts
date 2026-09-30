@@ -31,7 +31,7 @@ export class EmailAuthController {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const redirectUri = process.env.GOOGLE_REDIRECT_URI;
     const scope = encodeURIComponent('https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email');
-    const defaultTenantId = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+    const defaultTenantId = process.env.DEFAULT_TENANT_ID ;
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const safeReturnTo = sanitizeReturnTo(returnTo, frontendUrl);
     const stateObj = { returnTo: safeReturnTo, tenantId: tenantId || defaultTenantId, userId: userId || null };
@@ -44,7 +44,7 @@ export class EmailAuthController {
   async googleAuthCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     let rawReturnPath = '/email';
-    let tenantId = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+    let tenantId = process.env.DEFAULT_TENANT_ID ;
     let userId = null;
     try {
       const decoded = decodeURIComponent(state);
@@ -94,7 +94,7 @@ export class EmailAuthController {
     }
 
     const scope = encodeURIComponent('offline_access Mail.Send User.Read');
-    const defaultTenantId = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+    const defaultTenantId = process.env.DEFAULT_TENANT_ID ;
     const stateObj = { returnTo: safeReturnTo, tenantId: tenantId || defaultTenantId, userId: userId || null };
     const state = encodeURIComponent(JSON.stringify(stateObj));
     const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scope}&state=${state}`;
@@ -105,7 +105,7 @@ export class EmailAuthController {
   async microsoftAuthCallback(@Query('code') code: string, @Query('state') state: string, @Res() res: Response) {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     let rawReturnPath = '/email';
-    let tenantId = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33';
+    let tenantId = process.env.DEFAULT_TENANT_ID ;
     let userId = null;
     try {
       const decoded = decodeURIComponent(state);

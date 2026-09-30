@@ -241,7 +241,7 @@ export class EmailService {
     }
   }
 
-  async handleGoogleCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33', userId: string | null = null) {
+  async handleGoogleCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID , userId: string | null = null) {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     const redirectUri = process.env.GOOGLE_REDIRECT_URI;
@@ -267,7 +267,7 @@ export class EmailService {
     await this.saveEmailAccount('google', email, access_token, tenantId, userId, refresh_token);
   }
 
-  async handleMicrosoftCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33', userId: string | null = null) {
+  async handleMicrosoftCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID , userId: string | null = null) {
     const clientId = process.env.MICROSOFT_CLIENT_ID;
     const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
     const redirectUri = process.env.MICROSOFT_REDIRECT_URI;

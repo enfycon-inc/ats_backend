@@ -349,8 +349,8 @@ export class JwtAuthGuard implements CanActivate {
   }
 
   private checkExpiry(exp: number | undefined, label: string): void {
-    // 30-second grace period for clock skew only
-    if (exp && Math.floor(Date.now() / 1000) > (exp + 30)) {
+    // 5-second grace period for clock skew only
+    if (exp && Math.floor(Date.now() / 1000) > (exp + 5)) {
       throw new UnauthorizedException(`${label} has expired. Please log in again.`);
     }
   }

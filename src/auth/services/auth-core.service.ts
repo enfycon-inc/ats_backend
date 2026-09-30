@@ -15,7 +15,7 @@ import { AuthEmailService } from './auth-email.service';
 import { SsoLoginDto } from '../dtos/sso-login.dto';
 import * as crypto from 'crypto';
 
-const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID || 'd3b07384-d113-49c3-a555-9ee75c13ca33'; // MUST BE CONFIGURED IN ENV
+const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string; // MUST BE CONFIGURED IN ENV
 
 /**
  * AuthCoreService — core authentication flows:
@@ -406,7 +406,7 @@ export class AuthCoreService {
 
   async logoutKeycloakSession(refreshToken: string) {
     if (!refreshToken) return { success: true };
-    const logoutUrl = ${this.getKeycloakInternalIssuer()}/protocol/openid-connect/logout;
+    const logoutUrl = `${this.getKeycloakInternalIssuer()}/protocol/openid-connect/logout`;
     const params = new URLSearchParams();
     params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
     const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
@@ -572,9 +572,15 @@ export class AuthCoreService {
   }
 
   async ssoLogin(dto: SsoLoginDto) {
-    const brokerClaims = dto.provider?.toLowerCase() === 'keycloak'
-      ? await this.verifyBrokerAccessToken(dto.accessToken)
-      : null;
+    let brokerClaims = null;
+    if (dto.provider?.toLowerCase() === 'keycloak') {
+      brokerClaims = await this.verifyBrokerAccessToken(dto.accessToken);
+    } else if (dto.provider?.toLowerCase() === 'google') {
+      if (!dto.idToken) throw new UnauthorizedException('Google ID token is required for verification.');
+      const res = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + dto.idToken).catch(() => null);
+      if (!res || !res.ok) throw new UnauthorizedException('Invalid Google ID token.');
+      brokerClaims = await res.json();
+    }
     const cleanEmail = (brokerClaims?.email || dto.email || '').trim().toLowerCase();
     if (!cleanEmail) {
       throw new BadRequestException('Email is required for SSO login.');
