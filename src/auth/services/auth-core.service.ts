@@ -572,7 +572,7 @@ export class AuthCoreService {
   }
 
   async ssoLogin(dto: SsoLoginDto) {
-    let brokerClaims = null;
+    let brokerClaims: any = null;
     if (dto.provider?.toLowerCase() === 'keycloak') {
       brokerClaims = await this.verifyBrokerAccessToken(dto.accessToken);
     } else if (dto.provider?.toLowerCase() === 'google') {
