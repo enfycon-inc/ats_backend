@@ -83,6 +83,12 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.refreshKeycloakToken(refreshToken);
   }
 
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  async logout(@Body('refreshToken') refreshToken: string) {
+    return this.authService.logoutKeycloakSession(refreshToken);
+  }
+
   // ─── GET /api/auth/diagnostic ──────────────────────────────
   @Get('diagnostic')
   async diagnostic() {

@@ -404,6 +404,24 @@ export class AuthCoreService {
     throw new UnauthorizedException('Your session has expired. Please log in again.');
   }
 
+  async logoutKeycloakSession(refreshToken: string) {
+    if (!refreshToken) return { success: true };
+    const logoutUrl = ${this.getKeycloakInternalIssuer()}/protocol/openid-connect/logout;
+    const params = new URLSearchParams();
+    params.append('client_id', process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats');
+    const clientSecret = process.env.KEYCLOAK_CLIENT_SECRET;
+    if (clientSecret) params.append('client_secret', clientSecret);
+    params.append('refresh_token', refreshToken);
+    try {
+      let res = await fetch(logoutUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
+      if (!res || !res.ok) {
+        const altUrl = logoutUrl.includes('localhost') ? logoutUrl.replace('localhost', 'keycloak') : logoutUrl.replace('keycloak', 'localhost');
+        res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
+      }
+    } catch (err: any) {}
+    return { success: true };
+  }
+
   // ─── Register (Admin creates user) ───────────────────────────────────────────
 
   async register(dto: {
