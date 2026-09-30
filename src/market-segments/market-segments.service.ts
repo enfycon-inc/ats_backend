@@ -11,9 +11,9 @@ import { UpdateMarketSegmentDto } from './dtos/update-market-segment.dto';
 export class MarketSegmentsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(tenantId: string) {
+  async findAll() {
     return this.prisma.marketSegment.findMany({
-      where: { tenantId },
+      
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       select: {
         id: true,
@@ -34,9 +34,9 @@ export class MarketSegmentsService {
     });
   }
 
-  async findOne(tenantId: string, id: string) {
+  async findOne(id: string) {
     const segment = await this.prisma.marketSegment.findFirst({
-      where: { id, tenantId },
+      where: { id },
       include: {
         businessUnits: {
           select: { id: true, name: true, code: true },
@@ -49,9 +49,9 @@ export class MarketSegmentsService {
     return segment;
   }
 
-  async create(tenantId: string, dto: CreateMarketSegmentDto) {
+  async create(dto: CreateMarketSegmentDto) {
     const existing = await this.prisma.marketSegment.findFirst({
-      where: { tenantId, code: dto.code.toUpperCase() },
+      where: { code: dto.code.toUpperCase() },
     });
     if (existing) {
       throw new ConflictException(
@@ -60,7 +60,7 @@ export class MarketSegmentsService {
     }
     return this.prisma.marketSegment.create({
       data: {
-        tenantId,
+        
         name: dto.name,
         code: dto.code.toUpperCase(),
         description: dto.description,
@@ -75,11 +75,11 @@ export class MarketSegmentsService {
     });
   }
 
-  async update(tenantId: string, id: string, dto: UpdateMarketSegmentDto) {
-    await this.findOne(tenantId, id);
+  async update(id: string, dto: UpdateMarketSegmentDto) {
+    await this.findOne( id);
     if (dto.code) {
       const conflict = await this.prisma.marketSegment.findFirst({
-        where: { tenantId, code: dto.code.toUpperCase(), NOT: { id } },
+        where: {  code: dto.code.toUpperCase(), NOT: { id } },
       });
       if (conflict) {
         throw new ConflictException(
@@ -104,8 +104,8 @@ export class MarketSegmentsService {
     });
   }
 
-  async remove(tenantId: string, id: string) {
-    const segment = await this.findOne(tenantId, id);
+  async remove(id: string) {
+    const segment = await this.findOne( id);
     // Check if any business units use this segment
     if ((segment as any)._count?.businessUnits > 0 || segment.businessUnits?.length > 0) {
       throw new ConflictException(

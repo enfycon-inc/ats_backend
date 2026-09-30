@@ -1,5 +1,6 @@
-import { PermissionsGuard } from '../auth/guards/permissions.guard';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import {
   Controller,
   Get,
@@ -26,56 +27,34 @@ export class MarketSegmentsController {
   constructor(private readonly marketSegmentsService: MarketSegmentsService) {}
 
   @Get()
-  findAll(@Req() req: any, @Headers('x-tenant-id') headerTenantId: string) {
-    const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.marketSegmentsService.findAll(tenantId);
+  findAll() {
+    return this.marketSegmentsService.findAll();
   }
 
   @Get(':id')
-  findOne(
-    @Req() req: any,
-    @Headers('x-tenant-id') headerTenantId: string,
-    @Param('id') id: string,
-  ) {
-    const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.marketSegmentsService.findOne(tenantId, id);
+  findOne(@Param('id') id: string) {
+    return this.marketSegmentsService.findOne(id);
   }
 
   @Post()
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('tenant:settings')
-  create(
-    @Req() req: any,
-    @Headers('x-tenant-id') headerTenantId: string,
-    @Body() dto: CreateMarketSegmentDto,
-  ) {
-    const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.marketSegmentsService.create(tenantId, dto);
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
+  create(@Body() dto: CreateMarketSegmentDto) {
+    return this.marketSegmentsService.create(dto);
   }
 
   @Put(':id')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('tenant:settings')
-  update(
-    @Req() req: any,
-    @Headers('x-tenant-id') headerTenantId: string,
-    @Param('id') id: string,
-    @Body() dto: UpdateMarketSegmentDto,
-  ) {
-    const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.marketSegmentsService.update(tenantId, id, dto);
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
+  update(@Param('id') id: string, @Body() dto: UpdateMarketSegmentDto) {
+    return this.marketSegmentsService.update(id, dto);
   }
 
   @Delete(':id')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('tenant:settings')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(
-    @Req() req: any,
-    @Headers('x-tenant-id') headerTenantId: string,
-    @Param('id') id: string,
-  ) {
-    const tenantId = resolveTenantId(req.user, headerTenantId);
-    return this.marketSegmentsService.remove(tenantId, id);
+  remove(@Param('id') id: string) {
+    return this.marketSegmentsService.remove(id);
   }
 }

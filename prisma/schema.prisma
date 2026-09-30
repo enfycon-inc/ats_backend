@@ -231,7 +231,7 @@ model BusinessUnit {
 
 model MarketSegment {
   id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId         String         @map("tenant_id") @db.Uuid
+  tenantId         String?        @map("tenant_id") @db.Uuid
   name             String         @db.VarChar(100)
   code             String         @db.VarChar(20)
   description      String?        @db.VarChar(500)
@@ -245,7 +245,7 @@ model MarketSegment {
   createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   businessUnits    BusinessUnit[]
-  tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant           Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, code])
   @@unique([tenantId, name])
