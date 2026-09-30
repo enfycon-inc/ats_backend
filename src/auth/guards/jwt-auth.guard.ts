@@ -120,16 +120,17 @@ export class JwtAuthGuard implements CanActivate {
         return IGNORED_KEYCLOAK_ROLES.has(upper);
       };
 
-      const realmRoles: string[] = (decoded.realm_access?.roles || []).filter((r: string) => !isTechnicalKeycloakRole(r));
+      console.log(`[DEBUG] Keycloak realm_access.roles:`, decoded.realm_access?.roles);
+        const realmRoles: string[] = (decoded.realm_access?.roles || []).map((r: string) => r.toUpperCase()).filter((r: string) => !isTechnicalKeycloakRole(r));
       const clientRoles: string[] = [];
       if (decoded.resource_access) {
         Object.values(decoded.resource_access).forEach((client: any) => {
           if (client?.roles) {
-            clientRoles.push(...client.roles.filter((r: string) => !isTechnicalKeycloakRole(r)));
+            clientRoles.push(...client.roles.map((r: string) => r.toUpperCase()).filter((r: string) => !isTechnicalKeycloakRole(r)));
           }
         });
       }
-      const groupRoles: string[] = (decoded.groups || []).filter((r: string) => !isTechnicalKeycloakRole(r));
+      const groupRoles: string[] = (decoded.groups || []).map((r: string) => r.toUpperCase()).filter((r: string) => !isTechnicalKeycloakRole(r));
       const allJwtRoles = [...realmRoles, ...clientRoles, ...groupRoles];
 
       // Extract target tenant from header or host
@@ -194,7 +195,8 @@ export class JwtAuthGuard implements CanActivate {
       }
 
       // Filter out SUPER_ADMIN from dbUser.roles to ensure it ONLY comes from Keycloak
-      const safeDbRoles = (dbUser.roles || []).filter((r: string) => r !== 'SUPER_ADMIN' && r !== 'super_admin');
+      // Filter out SUPER_ADMIN from dbUser.roles to ensure it ONLY comes from Keycloak
+        const safeDbRoles = (dbUser.roles || []).filter((r: string) => r !== 'SUPER_ADMIN' && r !== 'super_admin');
       
       const mergedRoles = Array.from(
         // Tenant roles come from current DB assignments. Only the platform realm role is authoritative in the token.

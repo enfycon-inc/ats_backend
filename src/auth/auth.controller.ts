@@ -115,6 +115,16 @@ Validates email + password and returns a signed JWT access token.
   }
 
   // ─── POST /api/auth/register-tenant ─────────────────────────
+  @Get('check-email')
+  @ApiOperation({
+    summary: 'Check if an email is already registered globally (Public)',
+    description: 'Returns true if the email is available, false if already taken in any tenant.',
+  })
+  @ApiResponse({ status: 200, description: 'Availability status returned.' })
+  async checkEmail(@Query('email') email: string) {
+    return this.authService.checkEmailAvailability(email);
+  }
+
   @Post('register-tenant')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({

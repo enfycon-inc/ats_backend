@@ -111,6 +111,13 @@ export class AuthCoreService {
 
   // --- Login -------------------------------------------------------------------
 
+  async checkEmailAvailability(email: string) {
+    if (!email) throw new BadRequestException('Email is required.');
+    const cleanEmail = email.trim().toLowerCase();
+    const result = await this.authQuery.query('SELECT id FROM users WHERE LOWER(TRIM(email)) = $1 LIMIT 1', [cleanEmail]);
+    return { available: result.rows.length === 0 };
+  }
+
   async login(dto: { email: string; password: string; subdomain?: string }) {
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
@@ -244,11 +251,11 @@ export class AuthCoreService {
           pList.forEach((p: string) => permSet.add(p));
         }
         permissions = Array.from(permSet);
-        dynamicRoles = Array.from(new Set((rolesResult.rows as any[]).map((row) => row.name)));
+        dynamicRoles = Array.from(new Set((rolesResult.rows as any[]).map((row) => row.name))).filter(r => r !== 'SUPER_ADMIN');
       }
     }
-    if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = [user.role_name];
-    if (dynamicRoles.length === 0) dynamicRoles = [user.system_role || 'RECRUITER'];
+    if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = user.role_name === 'SUPER_ADMIN' ? [] : [user.role_name];
+    if (dynamicRoles.length === 0) dynamicRoles = [(user.system_role === 'SUPER_ADMIN' ? 'TENANT_ADMIN' : user.system_role) || 'RECRUITER'];
 
     const isSuperAdmin = dynamicRoles.includes('SUPER_ADMIN');
     if (isSuperAdmin && dto.subdomain && dto.subdomain !== 'www' && dto.subdomain !== 'localhost' && dto.subdomain !== 'enfycon.com' && dto.subdomain !== 'enfyjobs.com') {
@@ -280,7 +287,7 @@ export class AuthCoreService {
       }
     }
 
-    let systemRole = user.system_role || 'RECRUITER';
+    let systemRole = (user.system_role === 'SUPER_ADMIN' || user.system_role === 'super_admin') ? 'TENANT_ADMIN' : (user.system_role || 'RECRUITER');
     // systemRole will be re-derived from Keycloak realm_access.roles after successful auth below.
 
 
@@ -331,11 +338,11 @@ export class AuthCoreService {
         try {
           const kcPayload = JSON.parse(Buffer.from(keycloakToken!.split('.')[1], 'base64url').toString('utf8'));
           const kcRealmRoles: string[] = (kcPayload.realm_access?.roles || []).map((r: string) => r.toUpperCase());
-          if (kcRealmRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
-          else if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+          if (kcRealmRoles.includes('SUPER_ADMIN')) { systemRole = 'SUPER_ADMIN'; if (!dynamicRoles.includes('SUPER_ADMIN')) dynamicRoles.push('SUPER_ADMIN'); }
+          // 
         } catch (decodeErr) {
           this.logger.warn(`[Auth] Could not decode Keycloak token for realm roles: ${decodeErr}`);
-          if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+          // if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN'; // STRICT KEYCLOAK ENFORCEMENT
         }
 
         await this.keycloakService.syncKeycloakUser({ keycloakId: user.id, email: user.email, fullName: user.full_name, roles: dynamicRoles }).catch(() => {});
@@ -622,10 +629,15 @@ export class AuthCoreService {
     if (result.rows.length === 0) {
       // ── Auto-provision Just-In-Time (JIT) user for this tenant workspace ──
       if (!targetTenantId) {
-        throw new UnauthorizedException(
-          'No account found for this email address in this workspace. Please contact your organization administrator to be invited.'
-        );
-      }
+          throw new UnauthorizedException(
+            'No account found for this email address in this workspace. Please contact your organization administrator to be invited.'
+          );
+        }
+
+        const globalCheck = await this.authQuery.query('SELECT id FROM users WHERE LOWER(email) = $1 LIMIT 1', [cleanEmail]);
+        if (globalCheck.rows.length > 0) {
+          throw new UnauthorizedException('This email is already registered to a different workspace. A single email cannot belong to multiple workspaces.');
+        }
 
       const tenantCheck = await this.authQuery.query(
         'SELECT id, status FROM tenants WHERE id = $1 LIMIT 1',
@@ -795,13 +807,13 @@ export class AuthCoreService {
           pList.forEach((p: string) => permSet.add(p));
         }
         permissions = Array.from(permSet);
-        dynamicRoles = Array.from(new Set((rolesResult.rows as any[]).map((row) => row.name)));
+        dynamicRoles = Array.from(new Set((rolesResult.rows as any[]).map((row) => row.name))).filter(r => r !== 'SUPER_ADMIN');
       }
     }
-    if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = [user.role_name];
-    if (dynamicRoles.length === 0 && user.is_approved) dynamicRoles = [user.system_role || 'RECRUITER'];
+    if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = user.role_name === 'SUPER_ADMIN' ? [] : [user.role_name];
+    if (dynamicRoles.length === 0 && user.is_approved) dynamicRoles = [(user.system_role === 'SUPER_ADMIN' ? 'TENANT_ADMIN' : user.system_role) || 'RECRUITER'];
 
-    let systemRole = user.is_approved ? (user.system_role || 'RECRUITER') : 'PENDING';
+    let systemRole = user.is_approved ? ((user.system_role === 'SUPER_ADMIN' || user.system_role === 'super_admin') ? 'TENANT_ADMIN' : (user.system_role || 'RECRUITER')) : 'PENDING';
 
     if (brokerClaims) {
       // Authorization-code login already supplied the user's token. Reusing it
@@ -866,9 +878,9 @@ export class AuthCoreService {
           const kcPayload = JSON.parse(Buffer.from(keycloakToken!.split('.')[1], 'base64url').toString('utf8'));
           const kcRealmRoles: string[] = (kcPayload.realm_access?.roles || []).map((r: string) => r.toUpperCase());
           if (kcRealmRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
-          else if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+          
         } catch (decodeErr) {
-          if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN';
+          // if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN'; // STRICT KEYCLOAK ENFORCEMENT
         }
 
         await this.keycloakService.syncKeycloakUser({ keycloakId: user.id, email: user.email, fullName: user.full_name, roles: dynamicRoles }).catch(() => {});

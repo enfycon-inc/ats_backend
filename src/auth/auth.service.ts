@@ -124,6 +124,10 @@ export class AuthService {
   getKeycloakAdminToken() { return this.keycloakService.getKeycloakAdminToken(); }
 
   // ─── Invitations ─────────────────────────────────────────────────────────────
+  async checkEmailAvailability(email: string) {
+    return this.coreService.checkEmailAvailability(email);
+  }
+
   inviteUser(dto: InviteUserDto, authHeader?: string) {
     return this.coreService.getRequesterInfoFromToken(authHeader).then((requester) =>
       this.inviteService.inviteUser(dto, requester)

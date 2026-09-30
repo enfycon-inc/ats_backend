@@ -59,10 +59,10 @@ export class AuthInviteService {
     }
 
     const existing = await this.authQuery.query(
-      'SELECT id, is_active FROM users WHERE LOWER(email) = $1 AND tenant_id = $2 LIMIT 1',
-      [cleanEmail, tenantId]
+      'SELECT id, is_active FROM users WHERE LOWER(email) = $1 LIMIT 1',
+        [cleanEmail]
     );
-    if (existing.rows.length > 0) throw new BadRequestException('This user is already part of your company workspace.');
+    if (existing.rows.length > 0) throw new BadRequestException('This email is already registered in the system. An email address cannot belong to multiple workspaces.');
 
     await this.rbacService.checkSeatLimit(tenantId);
 
