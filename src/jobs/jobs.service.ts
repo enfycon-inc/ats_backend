@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { delegationTargets } from '../business-units/business-units.service';
 
 export interface JobProfile {
   id: string;
@@ -2521,7 +2522,12 @@ export class JobsService implements OnModuleInit {
 
   async delegateJob(jobId: string, dto: DelegateJobDto, tenantId: string, sourceBranchId?: string, user?: any) {
     if (!sourceBranchId) throw new BadRequestException('User must belong to a branch to delegate jobs');
-    if (sourceBranchId === dto.targetBranchId) throw new BadRequestException('Cannot delegate to the same branch');
+    const targets = await delegationTargets(this.prisma, user, jobId, tenantId);
+    const target = targets.find(unit => unit.id === dto.targetUnitId);
+    if (!target || !target.branchId) throw new BadRequestException('Select an eligible operating unit in the same market segment.');
+    if (dto.targetBranchId && dto.targetBranchId !== target.branchId) throw new BadRequestException('Selected unit does not belong to the selected branch.');
+    const targetBranchId = target.branchId;
+    if (sourceBranchId === targetBranchId) throw new BadRequestException('Cannot delegate to the same branch');
 
     const job = await this.prisma.job.findFirst({
       where: { id: jobId, tenantId, branchId: sourceBranchId },
@@ -2531,7 +2537,7 @@ export class JobsService implements OnModuleInit {
 
     // Check if pending request already exists
     const existingReq = await this.prisma.jobDelegationRequest.findFirst({
-      where: { jobId, targetBranchId: dto.targetBranchId as string, status: 'PENDING' },
+      where: { tenantId, jobId, targetUnitId: target.id, status: 'PENDING' },
     });
     if (existingReq) throw new BadRequestException('A pending delegation request already exists for this branch');
 
@@ -2540,7 +2546,9 @@ export class JobsService implements OnModuleInit {
         tenantId,
         jobId,
         sourceBranchId,
-        targetBranchId: dto.targetBranchId as string,
+        targetBranchId,
+        sourceUnitId: job.businessUnitId,
+        targetUnitId: target.id,
         slaDaysTarget: dto.slaDaysTarget,
         notes: dto.notes,
         status: 'PENDING',
@@ -2552,7 +2560,7 @@ export class JobsService implements OnModuleInit {
       title: 'New Job Delegation Request',
       message: `Branch requested delegation for job ${job.jobCode} - ${job.jobTitle}.`,
       target: 'BRANCH',
-      targetId: dto.targetBranchId,
+      targetId: targetBranchId,
     });
 
     return req;

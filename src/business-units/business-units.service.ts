@@ -1,7 +1,27 @@
-import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBusinessUnitDto } from './dtos/create-business-unit.dto';
 import { UpdateBusinessUnitDto } from './dtos/update-business-unit.dto';
+
+// Shared by the picker and submission so a forged target cannot bypass eligibility.
+export async function delegationTargets(prisma: PrismaService, user: any, jobId: string, tenantId: string) {
+  if (!user?.permissions?.includes('job:delegate')) throw new ForbiddenException('Missing job:delegate permission.');
+  if (!jobId) throw new BadRequestException('jobId is required.');
+  const job = await prisma.job.findFirst({ where: { id: jobId, tenantId }, include: { businessUnitRef: true } });
+  if (!job) throw new NotFoundException('Job not found.');
+  if (!job.branchId) throw new BadRequestException('Assign the job to a branch before delegating.');
+  const tenantManager = user.permissions.some((p: string) => ['tenant:manage', 'tenant:settings', 'platform:manage'].includes(p));
+  if (!tenantManager && (!user.branchId || user.branchId !== job.branchId)) throw new ForbiddenException('You can only delegate jobs from your branch.');
+  const segmentId = job.businessUnitRef?.marketSegmentId;
+  if (!segmentId) throw new BadRequestException('Assign the job to an operating unit with a market segment before delegating.');
+  const units = await prisma.businessUnit.findMany({
+    where: { tenantId, marketSegmentId: segmentId, id: { not: job.businessUnitId! }, branchId: { not: job.branchId! }, branch: { tenantId } },
+    include: { marketSegment: true, branch: { select: { id: true, name: true } } },
+    orderBy: { name: 'asc' },
+  });
+  return units.map(u => ({ id: u.id, name: u.name, branchId: u.branchId, branchName: u.branch?.name,
+    marketSegmentId: u.marketSegmentId, market: u.marketSegment?.code, branch: u.branch }));
+}
 
 export interface BusinessUnitResponse {
   id: string;
@@ -299,62 +319,7 @@ export class BusinessUnitsService {
   }
 
   async getDelegationTargets(user: any, jobId: string, tenantId: string) {
-    if (!jobId) {
-      throw new BadRequestException('jobId is required to find valid delegation targets.');
-    }
-
-    const job = await this.prisma.job.findFirst({
-      where: { id: jobId, tenantId },
-      include: {
-        businessUnitRef: true,
-        branch: true,
-      },
-    });
-
-    if (!job) {
-      throw new NotFoundException('Job not found.');
-    }
-
-    // Determine the job's market domain
-    let domain = 'US';
-    if ((job.businessUnitRef as any)?.marketSegment?.code) {
-      domain = (job.businessUnitRef as any)?.marketSegment?.code?.toUpperCase() || "US";
-    } else if (job.market) {
-      domain = job.market.toUpperCase();
-    } else if ((job.branch as any)?.market) {
-      domain = (job.branch as any)?.market?.toUpperCase() || "INDIA";
-    }
-
-    const isDomestic = domain.includes('IND');
-
-    // Find all operating units in the same market domain, excluding the job's current operating unit
-    const units = await this.prisma.businessUnit.findMany({
-      where: {
-        tenantId,
-        ...(job.businessUnitId ? { id: { not: job.businessUnitId } } : {}),
-              },
-      include: {
-        branch: {
-          select: { id: true, name: true, city: true, code: true },
-        },
-      },
-      orderBy: [
-        { name: 'asc' },
-      ],
-    });
-
-    return units.map((u) => ({
-      id: u.id,
-      name: u.name,
-      code: u.code,
-      market: (u as any).marketSegment?.code || 'US',
-      currency: (u as any).marketSegment?.defaultCurrency || 'USD',
-      shiftTiming: u.shiftTiming,
-      branchId: u.branchId,
-      branchName: u.branch?.name || 'Office Branch',
-      branchCity: u.branch?.city || '',
-      displayName: `${u.branch?.name || 'Branch'} — ${u.name} (${(u as any).marketSegment?.code === 'US' ? 'US IT' : 'Domestic IT'})`,
-    }));
+    return delegationTargets(this.prisma, user, jobId, tenantId);
   }
 
   async remove(id: string, tenantId: string) {

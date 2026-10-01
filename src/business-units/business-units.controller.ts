@@ -62,6 +62,12 @@ export class BusinessUnitsController {
     return this.buService.findAll(tenantId, req.user.branchId);
   }
 
+  @Get('delegation-targets')
+  async delegationTargets(@Req() req: any, @Query('jobId') jobId: string, @Headers('x-tenant-id') headerTenantId?: string) {
+    if (!req.user.permissions?.includes('job:delegate')) throw new ForbiddenException('Missing job:delegate permission.');
+    return this.buService.getDelegationTargets(req.user, jobId, resolveTenantId(req.user, headerTenantId));
+  }
+
   @Get(':id')
   async findOne(
     @Param('id') id: string,
