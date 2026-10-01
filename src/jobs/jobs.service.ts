@@ -2581,14 +2581,42 @@ export class JobsService implements OnModuleInit {
       ];
     }
 
-    return this.prisma.jobDelegationRequest.findMany({
+    const requests = await this.prisma.jobDelegationRequest.findMany({
       where: whereClause,
-      include: { job: true,
+      include: { 
+        job: {
+          include: {
+            clientRef: { select: { clientName: true } },
+            endClientRef: { select: { clientName: true } }
+          }
+        },
         sourceBranch: { select: { id: true, name: true } },
         targetBranch: { select: { id: true, name: true } },
+        sourceUnit: { select: { id: true, name: true } },
         assignedPod: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
+    });
+
+    const userIds = [...new Set(requests.map(r => r.job?.accountManagerId).filter(Boolean))] as string[];
+    let usersMap: Record<string, any> = {};
+    if (userIds.length > 0) {
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, fullName: true, email: true }
+      });
+      usersMap = users.reduce((acc: any, u: any) => { acc[u.id] = u; return acc; }, {});
+    }
+
+    return requests.map(req => {
+      if (req.job) {
+        (req.job as any).client = (req.job as any).clientRef?.clientName || null;
+        (req.job as any).endClient = (req.job as any).endClientRef?.clientName || null;
+        const am = req.job.accountManagerId ? usersMap[req.job.accountManagerId] : null;
+        (req.job as any).createdBy = am?.fullName || am?.email || null;
+        (req.job as any).accountManagerName = am?.fullName || am?.email || null;
+      }
+      return req;
     });
   }
 
