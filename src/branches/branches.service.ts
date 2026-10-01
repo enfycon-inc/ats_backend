@@ -118,7 +118,7 @@ export class BranchesService {
       state: b.state,
       country: b.country,
       market: b.market || 'INDIA',
-      managers: b.managers?.map(m => ({ id: m.id, fullName: m.fullName, email: m.email })) || [],
+      managers: b.users?.map(m => ({ id: m.id, fullName: m.fullName, email: m.email })) || [],
       isActive: b.isActive,
       allowNone: Boolean(b.allowNone),
       allowPods,
@@ -214,9 +214,10 @@ export class BranchesService {
       this.prisma.branch.findMany({
         where: { tenantId },
         include: {
-        managers: {
-          select: { id: true, fullName: true, email: true },
-        },
+        users: {
+            where: { customRole: { systemRole: { systemKey: 'BRANCH_ADMIN' } } },
+            select: { id: true, fullName: true, email: true },
+          },
           businessUnits: {
             include: {
               _count: { select: { users: true, jobs: true } },
@@ -274,9 +275,10 @@ export class BranchesService {
     const branch = await this.prisma.branch.findFirst({
       where: { id, tenantId },
       include: {
-        managers: {
-          select: { id: true, fullName: true, email: true },
-        },
+        users: {
+            where: { customRole: { systemRole: { systemKey: 'BRANCH_ADMIN' } } },
+            select: { id: true, fullName: true, email: true },
+          },
         businessUnits: {
           include: {
             _count: { select: { users: true, jobs: true } },

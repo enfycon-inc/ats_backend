@@ -482,7 +482,7 @@ export class AuthCoreService {
     const rawRolesList: string[] = [];
     if (Array.isArray(dto.roles) && dto.roles.length > 0) rawRolesList.push(...dto.roles);
     else if (dto.role) rawRolesList.push(dto.role);
-    if (rawRolesList.length === 0) rawRolesList.push('RECRUITER');
+    // if (rawRolesList.length === 0) rawRolesList.push('RECRUITER'); // Disabled auto-recruiter fallback
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const resolvedRoleIds = new Set<string>();
@@ -494,7 +494,7 @@ export class AuthCoreService {
     );
     (rolesRes.rows as any[]).forEach((r) => {
       resolvedRoleIds.add(r.id);
-      if (!primaryRoleName || primaryRoleName === 'RECRUITER') primaryRoleName = r.name;
+      if (!primaryRoleName) primaryRoleName = r.name;
     });
 
     const assignedRoleIds: string[] = Array.from(resolvedRoleIds);
@@ -811,9 +811,9 @@ export class AuthCoreService {
       }
     }
     if (dynamicRoles.length === 0 && user.role_name) dynamicRoles = user.role_name === 'SUPER_ADMIN' ? [] : [user.role_name];
-    if (dynamicRoles.length === 0 && user.is_approved) dynamicRoles = [(user.system_role === 'SUPER_ADMIN' ? 'TENANT_ADMIN' : user.system_role) || 'RECRUITER'];
+    if (dynamicRoles.length === 0 && user.is_approved) dynamicRoles = [(user.system_role === 'SUPER_ADMIN' ? 'TENANT_ADMIN' : user.system_role) || 'UNASSIGNED'];
 
-    let systemRole = user.is_approved ? ((user.system_role === 'SUPER_ADMIN' || user.system_role === 'super_admin') ? 'TENANT_ADMIN' : (user.system_role || 'RECRUITER')) : 'PENDING';
+    let systemRole = user.is_approved ? ((user.system_role === 'SUPER_ADMIN' || user.system_role === 'super_admin') ? 'TENANT_ADMIN' : (user.system_role || 'UNASSIGNED')) : 'PENDING';
 
     if (brokerClaims) {
       // Authorization-code login already supplied the user's token. Reusing it

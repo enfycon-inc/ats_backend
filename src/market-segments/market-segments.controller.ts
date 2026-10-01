@@ -27,8 +27,10 @@ export class MarketSegmentsController {
   constructor(private readonly marketSegmentsService: MarketSegmentsService) {}
 
   @Get()
-  findAll() {
-    return this.marketSegmentsService.findAll();
+  async findAll() {
+    const data = await this.marketSegmentsService.findAll();
+    console.log("MARKETS RETURNED TO CLIENT:", data.length);
+    return data;
   }
 
   @Get(':id')

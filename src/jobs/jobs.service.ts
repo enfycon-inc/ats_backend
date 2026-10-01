@@ -303,8 +303,8 @@ export class JobsService implements OnModuleInit {
         if (bu.jobCodePattern && !enforceTenantPattern) {
            pattern = bu.jobCodePattern;
         }
-        unitCode = bu.code || bu.marketSegment?.code || 'GEN';
-        branchMarket = bu.market || '';
+        unitCode = bu.code || (bu as any).marketSegment?.code || 'GEN';
+        branchMarket = (bu as any).marketSegment?.code || '';
         buBranchId = bu.branchId;
       }
     }

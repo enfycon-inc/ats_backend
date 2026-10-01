@@ -3,10 +3,6 @@ export class CreateMarketSegmentDto {
   code: string;
   description?: string;
   defaultCurrency?: string;
-  defaultTimezone?: string;
-  defaultShift?: string;
-  defaultStartTime?: string;
-  defaultEndTime?: string;
-  isActive?: boolean;
+          isActive?: boolean;
   sortOrder?: number;
 }

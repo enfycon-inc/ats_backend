@@ -190,8 +190,6 @@ model BusinessUnit {
   tenantId                   String                 @map("tenant_id") @db.Uuid
   name                       String                 @db.VarChar(255)
   code                       String?                @db.VarChar(50)
-  market                     String                 @default("US") @db.VarChar(50)
-  currency                   String                 @default("USD") @db.VarChar(10)
   createdAt                  DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   branchId                   String?                @map("branch_id") @db.Uuid
