@@ -701,7 +701,8 @@ export class JobsService implements OnModuleInit {
           noticePeriod: dto.noticePeriod || '',
           market: dto.market || 'US',
           branchId,
-          approvalStatus: initialApprovalStatus,
+            businessUnitId: dto.businessUnitId || null,
+            approvalStatus: initialApprovalStatus,
           assignedApproverId: resolvedAssignedApproverId || null,
           jobTimezone,
           
