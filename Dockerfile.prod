@@ -33,6 +33,6 @@ COPY --from=build /app/dist ./dist
 EXPOSE 5000
 
 # Push schema to database then start the app
-CMD ["sh", "-c", "npx prisma db push --skip-generate && if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
 
 
