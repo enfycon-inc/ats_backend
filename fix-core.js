@@ -1,17 +1,28 @@
 const fs = require('fs');
-const data = fs.readFileSync('src/auth/services/auth-core.service.ts', 'utf8');
-const lines = data.split('\n');
-let out = [];
-for (let i = 0; i < lines.length; i++) {
-  if (lines[i].includes('async login(dto: LoginDto) {')) {
-    out.push('  async checkEmailAvailability(email: string) {');
-    out.push('    if (!email) throw new BadRequestException(\'Email is required.\');');
-    out.push('    const cleanEmail = email.trim().toLowerCase();');
-    out.push('    const result = await this.authQuery.query(\'SELECT id FROM users WHERE LOWER(TRIM(email)) = $1 LIMIT 1\', [cleanEmail]);');
-    out.push('    return { available: result.rows.length === 0 };');
-    out.push('  }');
-    out.push('');
-  }
-  out.push(lines[i]);
-}
-fs.writeFileSync('src/auth/services/auth-core.service.ts', out.join('\n'));
+let c = fs.readFileSync('src/auth/services/auth-core.service.ts', 'utf8');
+
+// 1. Remove rawRolesList pushing RECRUITER
+c = c.replace(
+  /if \(rawRolesList\.length === 0\) rawRolesList\.push\('RECRUITER'\);/,
+  `// if (rawRolesList.length === 0) rawRolesList.push('RECRUITER'); // Disabled auto-recruiter fallback`
+);
+
+// 2. Remove primaryRoleName RECRUITER fallback
+c = c.replace(
+  /if \(\!primaryRoleName \|\| primaryRoleName === 'RECRUITER'\) primaryRoleName = r\.name;/,
+  `if (!primaryRoleName) primaryRoleName = r.name;`
+);
+
+// 3. Update login response fallback
+c = c.replace(
+  /if \(dynamicRoles\.length === 0 && user\.is_approved\) dynamicRoles = \[\(user\.system_role === 'SUPER_ADMIN' \? 'TENANT_ADMIN' : user\.system_role\) \|\| 'RECRUITER'\];/,
+  `if (dynamicRoles.length === 0 && user.is_approved) dynamicRoles = [(user.system_role === 'SUPER_ADMIN' ? 'TENANT_ADMIN' : user.system_role) || 'UNASSIGNED'];`
+);
+
+c = c.replace(
+  /let systemRole = user\.is_approved \? \(\(user\.system_role === 'SUPER_ADMIN' \|\| user\.system_role === 'super_admin'\) \? 'TENANT_ADMIN' : \(user\.system_role \|\| 'RECRUITER'\)\) : 'PENDING';/,
+  `let systemRole = user.is_approved ? ((user.system_role === 'SUPER_ADMIN' || user.system_role === 'super_admin') ? 'TENANT_ADMIN' : (user.system_role || 'UNASSIGNED')) : 'PENDING';`
+);
+
+fs.writeFileSync('src/auth/services/auth-core.service.ts', c);
+console.log("Removed RECRUITER fallback in auth-core");
