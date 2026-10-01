@@ -2583,8 +2583,7 @@ export class JobsService implements OnModuleInit {
 
     return this.prisma.jobDelegationRequest.findMany({
       where: whereClause,
-      include: {
-        job: { select: { id: true, jobCode: true, jobTitle: true, isCoSourced: true } },
+      include: { job: true,
         sourceBranch: { select: { id: true, name: true } },
         targetBranch: { select: { id: true, name: true } },
         assignedPod: { select: { id: true, name: true } },
