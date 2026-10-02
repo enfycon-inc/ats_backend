@@ -466,7 +466,12 @@ export class AuthCoreService {
     let tenantId = dto.tenantId || DEFAULT_TENANT_ID;
 
     const requesterRoles = requesterUser?.roles || [];
-    const requesterIsAdmin = requesterRoles.includes('TENANT_ADMIN') || requesterRoles.includes('SUPER_ADMIN') || requesterRoles.includes('BRANCH_ADMIN');
+    const requesterIsAdmin = requesterRoles.includes('TENANT_ADMIN') || 
+                             requesterRoles.includes('SUPER_ADMIN') || 
+                             requesterRoles.includes('BRANCH_ADMIN') ||
+                             requesterRoles.includes('DELIVERY_HEAD') ||
+                             requesterRoles.includes('UNIT_ADMIN') ||
+                             (requesterUser?.permissions || []).includes('user:manage');
     const requesterTenantId = requesterUser?.tenantId || null;
 
     if (requesterIsAdmin && !requesterRoles.includes('SUPER_ADMIN') && requesterTenantId) tenantId = requesterTenantId;
@@ -474,7 +479,7 @@ export class AuthCoreService {
     let isApproved = false;
     if (requesterIsAdmin) {
       if (requesterRoles.includes('SUPER_ADMIN')) isApproved = dto.isApproved !== undefined ? dto.isApproved : true;
-      else if (requesterTenantId === tenantId) isApproved = true;
+      else if (requesterTenantId === tenantId) isApproved = dto.isApproved !== undefined ? dto.isApproved : true;
     }
 
     if (isApproved) await this.rbacService.checkSeatLimit(tenantId);
