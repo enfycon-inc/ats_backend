@@ -693,7 +693,7 @@ export class JobsService implements OnModuleInit {
           duration: dto.duration || '',
           accountManagerId: resolvedAccountManagerId || null,
           recruitmentManagerId: resolvedRecruitmentManagerId || null,
-          recruiterId: resolvedPrimaryRecruiterId || null,
+
           
           industry: dto.industry || '',
           degree: dto.degree || '',
@@ -714,7 +714,7 @@ export class JobsService implements OnModuleInit {
           
         },
       });
-      const jobId = createdJob.id;
+      const jobId = createdJob.id; if (resolvedPrimaryRecruiterId) { await this.prisma.jobRecruiter.create({ data: { jobId, recruiterId: resolvedPrimaryRecruiterId } }); }
 
       // Fetch branch-level assignment settings if branchId is present
       let branchSettings: any = null;
@@ -1378,7 +1378,7 @@ export class JobsService implements OnModuleInit {
     }
 
     
-    const recruiterId = overrides?.recruiterId || currentJob.recruiterId;
+    
 
     if (overrides?.podId) {
       await this.prisma.jobPod.upsert({
@@ -1395,7 +1395,7 @@ export class JobsService implements OnModuleInit {
         approvalStatus: 'APPROVED',
         approvedBy: approver?.dbId || null,
         approvedAt: new Date(),
-                recruiterId: recruiterId || null,
+                
       },
     });
 
@@ -1432,7 +1432,7 @@ export class JobsService implements OnModuleInit {
       }
 
       const assignedRecruiters = new Set<string>();
-      if (recruiterId) assignedRecruiters.add(recruiterId);
+      
       const effectivePodId = overrides?.podId;
       if (effectivePodId) {
         const podUsers = await this.prisma.user.findMany({
@@ -1602,7 +1602,7 @@ export class JobsService implements OnModuleInit {
       userPermissions.includes('pod:edit') ||
       userPermissions.includes('pod:overlap');
 
-    const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission || (currentJob.createdBy === user.dbId) || (currentJob.accountManagerId === user.dbId);
+    const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission || (currentJob.accountManagerId === user.dbId);
 
     // Fetch the job's current pod mappings
     const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
@@ -1703,7 +1703,7 @@ export class JobsService implements OnModuleInit {
     if (dto.duration !== undefined) dataToUpdate.duration = dto.duration;
     if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = await this.resolveUserUuid(dto.accountManagerId, tenantId);
     if (dto.recruitmentManagerId !== undefined) dataToUpdate.recruitmentManagerId = dto.recruitmentManagerId;
-    if (dto.recruiterId !== undefined) dataToUpdate.recruiterId = dto.recruiterId;
+
     
     if (dto.industry !== undefined) dataToUpdate.industry = dto.industry;
     if (dto.degree !== undefined) dataToUpdate.degree = dto.degree;
@@ -1782,7 +1782,7 @@ export class JobsService implements OnModuleInit {
     try {
       if (dto.recruiterId !== undefined && dto.recruiterId) {
         const resolvedRecruiterId = await this.resolveUserUuid(dto.recruiterId, tenantId);
-        if (resolvedRecruiterId && resolvedRecruiterId !== currentJob.recruiterId) {
+        if (resolvedRecruiterId) {
           await this.notifications.create(tenantId, resolvedRecruiterId, {
             type: 'JOB_NEW',
             title: `Job Assigned: ${currentJob.jobCode}`,

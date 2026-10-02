@@ -563,7 +563,7 @@ model Job {
   duration             String?                @db.VarChar(100)
   accountManagerId     String?                @map("account_manager_id") @db.Uuid
   recruitmentManagerId String?                @map("recruitment_manager_id") @db.Uuid
-  recruiterId          String?                @map("recruiter_id") @db.Uuid
+
     industry             String?                @db.VarChar(100)
   degree               String?                @db.VarChar(100)
   expMin               Int?                   @default(0) @map("exp_min")
