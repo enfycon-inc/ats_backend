@@ -59,7 +59,7 @@ export interface JobProfile {
   accountManagerId: string;
   recruitmentManagerId: string;
   recruitmentManager: string;
-  recruiterId: string;
+  recruiterId?: string;
   recruiterIds?: string[];
   recruiter: string;
   createdBy: string;
@@ -154,8 +154,6 @@ export class JobsService implements OnModuleInit {
           ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT 'United States',
           ADD COLUMN IF NOT EXISTS client_job_id VARCHAR(100) DEFAULT 'N/A',
           ADD COLUMN IF NOT EXISTS recruitment_manager_id UUID,
-          ADD COLUMN IF NOT EXISTS recruiter_id UUID,
-          ADD COLUMN IF NOT EXISTS assigned_to VARCHAR(255) DEFAULT 'N/A',
           ADD COLUMN IF NOT EXISTS tax_terms VARCHAR(50) DEFAULT 'C2C',
           ADD COLUMN IF NOT EXISTS remote_job VARCHAR(20) DEFAULT 'No',
           ADD COLUMN IF NOT EXISTS start_date DATE,
@@ -938,7 +936,7 @@ export class JobsService implements OnModuleInit {
     let sql = `
       SELECT j.*,
              rm.full_name AS recruitment_manager_name,
-             pr.full_name AS recruiter_name,
+             
              app.full_name AS assigned_approver_name,
              COALESCE(pod_info.pod_id, '') AS pod_id,
              COALESCE(pod_info.pod_name, '') AS pod_name,
@@ -953,7 +951,7 @@ export class JobsService implements OnModuleInit {
              bu.name AS mapped_business_unit_name
       FROM ats.jobs j
       LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
-      LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
+      
       LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
         LEFT JOIN (
           SELECT 
@@ -1071,12 +1069,12 @@ export class JobsService implements OnModuleInit {
       if (isAccountManager) {
         sql += ` AND (j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
       } else {
-        sql += ` AND j.recruiter_id = $${paramIndex}::uuid`;
+        sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters jr_f WHERE jr_f.job_id = j.id AND jr_f.recruiter_id = ${paramIndex}::uuid)`;
       }
       params.push(user.dbId);
       paramIndex += 1;
     } else if (filter === 'direct' && user?.dbId) {
-      sql += ` AND j.recruiter_id = $${paramIndex}::uuid`;
+      sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters jr_f WHERE jr_f.job_id = j.id AND jr_f.recruiter_id = ${paramIndex}::uuid)`;
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'pod' && user?.dbId) {
@@ -1090,14 +1088,9 @@ export class JobsService implements OnModuleInit {
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'unassigned') {
-      sql += ` AND (
-        j.recruiter_id IS NULL 
-        AND NOT EXISTS (SELECT 1 FROM ats.job_pods jp2 WHERE jp2.job_id = j.id)
-        AND (
-          j.assigned_to IS NULL 
-          OR TRIM(j.assigned_to) = '' 
-          OR UPPER(TRIM(j.assigned_to)) IN ('UNASSIGNED', 'NONE', 'N/A')
-        )
+        sql += ` AND (
+          NOT EXISTS (SELECT 1 FROM ats.job_recruiters jr_un WHERE jr_un.job_id = j.id)
+          AND NOT EXISTS (SELECT 1 FROM ats.job_pods jp2 WHERE jp2.job_id = j.id)
       )`;
     }
 
@@ -1124,7 +1117,7 @@ export class JobsService implements OnModuleInit {
     const isUuid = uuidRegex.test(idOrCode);
 
     const sql = isUuid
-      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS recruiter_name,
+      ? `SELECT j.*, rm.full_name AS recruitment_manager_name, 
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
@@ -1133,7 +1126,7 @@ export class JobsService implements OnModuleInit {
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
-         LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
+         
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
         LEFT JOIN (
           SELECT 
@@ -1158,7 +1151,7 @@ export class JobsService implements OnModuleInit {
          LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
          LEFT JOIN ats.business_units bu ON bu.id = j.business_unit_id
          WHERE j.tenant_id = $1 AND j.id = $2::uuid AND j.deleted_at IS NULL LIMIT 1`
-      : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS recruiter_name,
+      : `SELECT j.*, rm.full_name AS recruitment_manager_name, 
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
@@ -1167,7 +1160,7 @@ export class JobsService implements OnModuleInit {
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
-         LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
+         
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
         LEFT JOIN (
           SELECT 
@@ -1273,9 +1266,8 @@ export class JobsService implements OnModuleInit {
       accountManagerId: row.account_manager_id ?? row.accountManagerId ?? '',
       recruitmentManagerId: row.recruitment_manager_id ?? row.recruitmentManagerId ?? '',
       recruitmentManager: row.recruitment_manager_name ?? row.recruitmentManagerName ?? 'N/A',
-      recruiterId: row.recruiter_id ?? row.recruiterId ?? '',
-        recruiter: row.multi_recruiter_names || row.recruiter_name || row.recruiterName || 'N/A',
-        recruiterIds: row.recruiter_ids ? row.recruiter_ids.split(',').filter(Boolean) : (row.recruiter_id ? [row.recruiter_id] : []),
+              recruiter: row.multi_recruiter_names || row.recruiter_name || row.recruiterName || 'N/A',
+        recruiterIds: row.recruiter_ids ? String(row.recruiter_ids).split(',').filter(Boolean) : [],
       createdBy: row.creator_name ?? row.creatorName ?? 'System',
       creatorEmail: row.creator_email ?? row.creatorEmail ?? null,
 
