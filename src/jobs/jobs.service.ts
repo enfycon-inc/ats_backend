@@ -1602,7 +1602,7 @@ export class JobsService implements OnModuleInit {
       userPermissions.includes('pod:edit') ||
       userPermissions.includes('pod:overlap');
 
-    const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission;
+    const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission || (currentJob.createdBy === user.dbId) || (currentJob.accountManagerId === user.dbId);
 
     // Fetch the job's current pod mappings
     const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
