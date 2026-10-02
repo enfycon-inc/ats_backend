@@ -92,6 +92,9 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: 'recruiter-uuid-789', description: 'Primary Recruiter user ID' })
   recruiterId?: string;
+
+  @ApiPropertyOptional({ example: ['recruiter-uuid-789'], description: 'Array of Recruiter user IDs' })
+  recruiterIds?: string[];
   @ApiPropertyOptional({ example: ['Docker', 'AWS', 'Git'], description: 'Secondary/nice-to-have skills' })
   secondarySkills?: string[];
 
