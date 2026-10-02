@@ -60,6 +60,7 @@ export interface JobProfile {
   recruitmentManagerId: string;
   recruitmentManager: string;
   recruiterId: string;
+  recruiterIds?: string[];
   recruiter: string;
   createdBy: string;
 
@@ -941,6 +942,8 @@ export class JobsService implements OnModuleInit {
              app.full_name AS assigned_approver_name,
              COALESCE(pod_info.pod_id, '') AS pod_id,
              COALESCE(pod_info.pod_name, '') AS pod_name,
+               COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
+               COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
              uc.full_name AS creator_name,
              uc.email AS creator_email,
              b.name AS branch_name,
@@ -952,6 +955,15 @@ export class JobsService implements OnModuleInit {
       LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
       LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
       LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
+        LEFT JOIN (
+          SELECT 
+            jr.job_id,
+            STRING_AGG(u.id::text, ',') AS recruiter_ids,
+            STRING_AGG(u.full_name, ', ') AS recruiter_names
+          FROM ats.job_recruiters jr
+          JOIN ats.users u ON u.id = jr.recruiter_id
+          GROUP BY jr.job_id
+        ) recruiter_info ON recruiter_info.job_id = j.id
       LEFT JOIN (
         SELECT 
           jp.job_id,
@@ -1115,12 +1127,23 @@ export class JobsService implements OnModuleInit {
       ? `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS recruiter_name,
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
+               COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
+               COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
                 uc.full_name AS creator_name, uc.email AS creator_email,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
+        LEFT JOIN (
+          SELECT 
+            jr.job_id,
+            STRING_AGG(u.id::text, ',') AS recruiter_ids,
+            STRING_AGG(u.full_name, ', ') AS recruiter_names
+          FROM ats.job_recruiters jr
+          JOIN ats.users u ON u.id = jr.recruiter_id
+          GROUP BY jr.job_id
+        ) recruiter_info ON recruiter_info.job_id = j.id
          LEFT JOIN (
            SELECT 
              jp.job_id,
@@ -1138,12 +1161,23 @@ export class JobsService implements OnModuleInit {
       : `SELECT j.*, rm.full_name AS recruitment_manager_name, pr.full_name AS recruiter_name,
                 app.full_name AS assigned_approver_name,
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
+               COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
+               COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
                 uc.full_name AS creator_name, uc.email AS creator_email,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
          LEFT JOIN ats.users pr ON pr.id = j.recruiter_id
          LEFT JOIN ats.users app ON app.id = j.assigned_approver_id
+        LEFT JOIN (
+          SELECT 
+            jr.job_id,
+            STRING_AGG(u.id::text, ',') AS recruiter_ids,
+            STRING_AGG(u.full_name, ', ') AS recruiter_names
+          FROM ats.job_recruiters jr
+          JOIN ats.users u ON u.id = jr.recruiter_id
+          GROUP BY jr.job_id
+        ) recruiter_info ON recruiter_info.job_id = j.id
          LEFT JOIN (
            SELECT 
              jp.job_id,
@@ -1240,7 +1274,8 @@ export class JobsService implements OnModuleInit {
       recruitmentManagerId: row.recruitment_manager_id ?? row.recruitmentManagerId ?? '',
       recruitmentManager: row.recruitment_manager_name ?? row.recruitmentManagerName ?? 'N/A',
       recruiterId: row.recruiter_id ?? row.recruiterId ?? '',
-      recruiter: row.recruiter_name ?? row.recruiterName ?? 'N/A',
+        recruiter: row.multi_recruiter_names || row.recruiter_name || row.recruiterName || 'N/A',
+        recruiterIds: row.recruiter_ids ? row.recruiter_ids.split(',').filter(Boolean) : (row.recruiter_id ? [row.recruiter_id] : []),
       createdBy: row.creator_name ?? row.creatorName ?? 'System',
       creatorEmail: row.creator_email ?? row.creatorEmail ?? null,
 
@@ -1573,8 +1608,18 @@ export class JobsService implements OnModuleInit {
     const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
     const isUnassignedJob = jobPods.length === 0;
 
-    // If updating recruiter_id, apply validation rules
-    if (dto.recruiterId !== undefined) {
+    // If updating recruiter_id or recruiterIds, apply validation rules
+    let targetRecruiterIds: string[] = [];
+    if (dto.recruiterIds !== undefined) {
+      targetRecruiterIds = Array.isArray(dto.recruiterIds) ? dto.recruiterIds : [];
+      if (targetRecruiterIds.length > 0) dto.recruiterId = targetRecruiterIds[0];
+      else dto.recruiterId = null;
+    } else if (dto.recruiterId !== undefined) {
+      if (dto.recruiterId) targetRecruiterIds = [dto.recruiterId];
+    }
+
+    if (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) {
+
       const newRecruiterId = dto.recruiterId;
 
       if (isUnassignedJob && !canAssignAny) {
@@ -1678,6 +1723,16 @@ export class JobsService implements OnModuleInit {
         data: dataToUpdate,
       });
     }
+
+    if (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) {
+      await this.prisma.jobRecruiter.deleteMany({ where: { jobId: id } });
+      if (targetRecruiterIds.length > 0) {
+        await this.prisma.jobRecruiter.createMany({
+          data: targetRecruiterIds.map(rid => ({ jobId: id, recruiterId: rid }))
+        });
+      }
+    }
+
 
     // If updating pod assignment (e.g. for Admins/Branch Admins/Authorized Users re-routing jobs)
     if (dto.podId !== undefined || dto.podIds !== undefined) {

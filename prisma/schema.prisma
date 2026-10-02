@@ -55,6 +55,18 @@ model Tenant {
   @@map("tenants")
   @@schema("ats")
 }
+model JobRecruiter {
+  jobId       String   @map("job_id") @db.Uuid
+  recruiterId String   @map("recruiter_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  recruiter   User     @relation("JobToJobRecruiter", fields: [recruiterId], references: [id], onDelete: Cascade)
+
+  @@id([jobId, recruiterId])
+  @@map("job_recruiters")
+  @@schema("ats")
+}
+
 
 model TenantCounters {
   tenantId     String @map("tenant_id") @db.Uuid
@@ -344,6 +356,7 @@ model User {
   requestedRole        String?                   @map("requested_role") @db.VarChar(128)
   notifications        Notification[]
   podsAsHead           Pod[]                     @relation("PodHead")
+  assignedJobsRecruiter JobRecruiter[] @relation("JobToJobRecruiter")
   notificationSettings UserNotificationSettings?
   branch               Branch?                   @relation(fields: [branchId], references: [id])
   businessUnit         BusinessUnit?             @relation(fields: [businessUnitId], references: [id])
@@ -574,6 +587,7 @@ model Job {
   jobAssignmentLogs    JobAssignmentLog[]
   delegationRequests   JobDelegationRequest[]
   jobPods              JobPod[]
+  jobRecruiters        JobRecruiter[]
   branch               Branch?                @relation(fields: [branchId], references: [id])
   businessUnitRef      BusinessUnit?          @relation(fields: [businessUnitId], references: [id])
   clientRef            Client?                @relation("JobClient", fields: [clientId], references: [id])
