@@ -277,7 +277,7 @@ export class RecruiterSubmissionsService {
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        COALESCE(am.full_name, cb.full_name, j.account_manager_id::text) AS am_name
+        COALESCE(am.full_name, j.account_manager_id::text) AS am_name
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -291,11 +291,7 @@ export class RecruiterSubmissionsService {
 
 
       )
-      LEFT JOIN ats.users cb ON (
-        j.created_by = cb.id 
-
-
-      )
+      
       WHERE s.tenant_id = $1
     `;
 
@@ -486,7 +482,7 @@ export class RecruiterSubmissionsService {
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        COALESCE(am.full_name, cb.full_name, j.account_manager_id::text) AS am_name
+        COALESCE(am.full_name, j.account_manager_id::text) AS am_name
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -500,11 +496,7 @@ export class RecruiterSubmissionsService {
 
 
       )
-      LEFT JOIN ats.users cb ON (
-        j.created_by = cb.id 
-
-
-      )
+      
       WHERE s.id = $1 AND s.tenant_id = $2
       LIMIT 1
     `;
