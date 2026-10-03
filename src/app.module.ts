@@ -11,6 +11,7 @@ import { RecruiterSubmissionsModule } from './recruiter-submissions/recruiter-su
 import { EmailModule } from './email/email.module';
 import { BullModule } from '@nestjs/bullmq';
 import { ClientsModule } from './clients/clients.module';
+import { ClientContactsModule } from './client-contacts/client-contacts.module';
 import { PodsModule } from './pods/pods.module';
 import { BranchesModule } from './branches/branches.module';
 import { BusinessUnitsModule } from './business-units/business-units.module';
@@ -41,6 +42,7 @@ import { MarketSegmentsModule } from './market-segments/market-segments.module';
     RecruiterSubmissionsModule,
     EmailModule,
     ClientsModule,
+    ClientContactsModule,
     PodsModule,
     BranchesModule,
     BusinessUnitsModule,

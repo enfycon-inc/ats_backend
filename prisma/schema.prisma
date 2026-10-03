@@ -52,7 +52,8 @@ model Tenant {
   userInvitations           UserInvitation[]
   users                     User[]
 
-  @@map("tenants")
+    clientContacts       ClientContact[]
+@@map("tenants")
   @@schema("ats")
 }
 model JobRecruiter {
@@ -369,7 +370,8 @@ model User {
 
   @@unique([tenantId, email])
   @@unique([tenantId, keycloakId])
-  @@map("users")
+    createdContacts      ClientContact[]       @relation("ContactCreator")
+@@map("users")
   @@schema("ats")
 }
 
@@ -464,7 +466,10 @@ model Client {
   jobsAsClient        Job[]     @relation("JobClient")
   jobsAsEndClient     Job[]     @relation("JobEndClient")
 
-  @@unique([tenantId, clientCode])
+    commissionPercentage  Decimal?  @map("commission_percentage") @db.Decimal(5, 2)
+  contractMarkup        Decimal?  @map("contract_markup") @db.Decimal(5, 2)
+  clientContacts        ClientContact[]
+@@unique([tenantId, clientCode])
   @@map("clients")
   @@schema("ats")
 }
@@ -595,7 +600,9 @@ model Job {
   tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   submissions          RecruiterSubmission[]
 
-  @@map("jobs")
+    pocId                String?               @map("poc_id") @db.Uuid
+  poc                  ClientContact?        @relation("JobPoc", fields: [pocId], references: [id])
+@@map("jobs")
   @@schema("ats")
 }
 
@@ -649,6 +656,28 @@ model JobAssignmentLog {
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("job_assignment_logs")
+  @@schema("ats")
+}
+
+model ClientContact {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  clientId    String   @map("client_id") @db.Uuid
+  createdBy   String   @map("created_by") @db.Uuid
+  name        String   @db.VarChar(255)
+  designation String?  @db.VarChar(255)
+  email       String?  @db.VarChar(255)
+  phone       String?  @db.VarChar(50)
+  linkedinUrl String?  @map("linkedin_url") @db.VarChar(500)
+  isPrimary   Boolean  @default(false) @map("is_primary")
+  notes       String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  creator     User     @relation("ContactCreator", fields: [createdBy], references: [id])
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  jobs        Job[]    @relation("JobPoc")
+
+  @@map("client_contacts")
   @@schema("ats")
 }
 
