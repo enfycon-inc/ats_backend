@@ -271,8 +271,8 @@ export class RecruiterSubmissionsService {
         c.notice_period_days AS candidate_notice_period,
         j.job_code,
         j.job_title,
-        j.client_name,
-        j.end_client_name,
+        cl.client_name AS client_name,
+        ecl.client_name AS end_client_name,
         j.market,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
@@ -281,6 +281,8 @@ export class RecruiterSubmissionsService {
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
+      LEFT JOIN ats.clients cl ON cl.id = j.client_id
+      LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
       LEFT JOIN ats.users r ON s.recruiter_id = r.id
       LEFT JOIN ats.pods p ON r.pod_id = p.id
       LEFT JOIN ats.users ph ON p.pod_head_id = ph.id

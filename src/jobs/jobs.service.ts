@@ -1069,12 +1069,12 @@ export class JobsService implements OnModuleInit {
       if (isAccountManager) {
         sql += ` AND (j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
       } else {
-        sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters jr_f WHERE jr_f.job_id = j.id AND jr_f.recruiter_id = ${paramIndex}::uuid)`;
+        sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters jr_f WHERE jr_f.job_id = j.id AND jr_f.recruiter_id = $${paramIndex}::uuid)`;
       }
       params.push(user.dbId);
       paramIndex += 1;
     } else if (filter === 'direct' && user?.dbId) {
-      sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters jr_f WHERE jr_f.job_id = j.id AND jr_f.recruiter_id = ${paramIndex}::uuid)`;
+      sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters jr_f WHERE jr_f.job_id = j.id AND jr_f.recruiter_id = $${paramIndex}::uuid)`;
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'pod' && user?.dbId) {
