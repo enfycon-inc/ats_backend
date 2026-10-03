@@ -728,7 +728,7 @@ export class JobsService implements OnModuleInit {
           expMax: dto.expMax ?? 10,
                     respondBy: dto.respondBy ? new Date(dto.respondBy) : null,
           noticePeriod: dto.noticePeriod || '',
-          market: (dto.market === 'IND' ? 'IN' : dto.market) || 'US',
+          market: (dto.market === 'IN' ? 'IND' : dto.market) || 'US',
             clientId: resolvedClientId,
             endClientId: resolvedEndClientId,
           branchId,
@@ -2548,7 +2548,7 @@ export class JobsService implements OnModuleInit {
       degree: original.degree || '',
       expMin: (original as any).expMin ?? (original as any).experienceMin ?? 0,
       expMax: (original as any).expMax ?? (original as any).experienceMax ?? 10,
-      market: (original as any).market || 'IN',
+      market: (original as any).market || 'IND',
     };
 
     return this.createJob(duplicateDto, tenantId, user?.email, branchId);
