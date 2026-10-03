@@ -220,12 +220,12 @@ export class BranchesService {
           },
           businessUnits: {
             include: {
-              _count: { select: { users: true, jobs: true } },
+              _count: { select: { users: true, } },
             },
             orderBy: { name: 'asc' },
           },
           _count: {
-            select: { jobs: true, pods: true },
+            select: {  pods: true },
           },
         },
         orderBy: { name: 'asc' },
@@ -281,12 +281,12 @@ export class BranchesService {
           },
         businessUnits: {
           include: {
-            _count: { select: { users: true, jobs: true } },
+            _count: { select: { users: true, } },
           },
           orderBy: { name: 'asc' },
         },
         _count: {
-          select: { jobs: true, pods: true },
+          select: {  pods: true },
         },
       },
     });

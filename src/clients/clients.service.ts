@@ -387,7 +387,6 @@ export class ClientsService {
         id: true,
         jobCode: true,
         jobTitle: true,
-        jobLocation: true,
         jobType: true,
         status: true,
         
@@ -401,7 +400,6 @@ export class ClientsService {
       ...j,
       job_code: j.jobCode,
       job_title: j.jobTitle,
-      job_location: j.jobLocation,
       job_type: j.jobType,
       
       

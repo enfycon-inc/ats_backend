@@ -8,9 +8,6 @@ export class CreateJobDto {
   @ApiProperty({ example: 'Morph Enterprise', description: 'The hiring company or client name' })
   client: string;
 
-  @ApiProperty({ example: 'Dallas', description: 'City location of the role' })
-  location: string;
-
   @ApiProperty({ example: 'Contract', enum: ['Full-time', 'Contract', 'Part-time', 'C2C', 'W2'], description: 'Employment type' })
   type: string;
 

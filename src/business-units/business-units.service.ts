@@ -7,15 +7,15 @@ import { UpdateBusinessUnitDto } from './dtos/update-business-unit.dto';
 export async function delegationTargets(prisma: PrismaService, user: any, jobId: string, tenantId: string) {
   if (!user?.permissions?.includes('job:delegate')) throw new ForbiddenException('Missing job:delegate permission.');
   if (!jobId) throw new BadRequestException('jobId is required.');
-  const job = await prisma.job.findFirst({ where: { id: jobId, tenantId }, include: { businessUnitRef: true } });
+  const job = await prisma.job.findFirst({ where: { id: jobId, tenantId },  });
   if (!job) throw new NotFoundException('Job not found.');
   if (!job.branchId) throw new BadRequestException('Assign the job to a branch before delegating.');
   const tenantManager = user.permissions.some((p: string) => ['tenant:manage', 'tenant:settings', 'platform:manage'].includes(p));
   if (!tenantManager && (!user.branchId || user.branchId !== job.branchId)) throw new ForbiddenException('You can only delegate jobs from your branch.');
-  const segmentId = job.businessUnitRef?.marketSegmentId;
+  const segmentId = null;
   if (!segmentId) throw new BadRequestException('Assign the job to an operating unit with a market segment before delegating.');
   const units = await prisma.businessUnit.findMany({
-    where: { tenantId, marketSegmentId: segmentId, id: { not: job.businessUnitId! }, branchId: { not: job.branchId! }, branch: { tenantId } },
+    where: { tenantId, marketSegmentId: segmentId,  branchId: { not: job.branchId! }, branch: { tenantId } },
     include: { marketSegment: true, branch: { select: { id: true, name: true } } },
     orderBy: { name: 'asc' },
   });
@@ -36,7 +36,7 @@ export interface BusinessUnitResponse {
     name: string;
     code: string | null;
     city: string | null;
-    country: string | null;
+    
   } | null;
   shiftTiming: string | null;
   workStartTime: string | null;
@@ -51,7 +51,6 @@ export interface BusinessUnitResponse {
   allowUnassigned: boolean;
   podDistributionStrategy: string;
   usersCount: number;
-  jobsCount: number;
   podsCount: number;
   createdAt: string;
 }
@@ -145,7 +144,6 @@ export class BusinessUnitsService {
         _count: {
           select: {
             users: true,
-            jobs: true,
             pods: true,
           },
         },
@@ -166,11 +164,10 @@ export class BusinessUnitsService {
       branchName: bu.branch?.name || null,
       branch: bu.branch
         ? {
-            id: bu.branch.id,
-            name: bu.branch.name,
-            code: bu.branch.code,
-            city: bu.branch.city,
-            country: bu.branch.country,
+            id: bu.id,
+            name: bu.name,
+            code: bu.code,
+            city: bu.city,
           }
         : null,
       shiftTiming: bu.shiftTiming || null,
@@ -185,7 +182,6 @@ export class BusinessUnitsService {
       allowUnassigned: bu.allowUnassigned ?? true,
       podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
       usersCount: bu._count.users,
-      jobsCount: bu._count.jobs,
       podsCount: bu._count.pods,
       createdAt: bu.createdAt.toISOString(),
     }));
@@ -207,7 +203,6 @@ export class BusinessUnitsService {
         _count: {
           select: {
             users: true,
-            jobs: true,
             pods: true,
           },
         },
@@ -231,11 +226,10 @@ export class BusinessUnitsService {
       branchName: bu.branch?.name || null,
       branch: bu.branch
         ? {
-            id: bu.branch.id,
-            name: bu.branch.name,
-            code: bu.branch.code,
-            city: bu.branch.city,
-            country: bu.branch.country,
+            id: bu.id,
+            name: bu.name,
+            code: bu.code,
+            city: bu.city,
           }
         : null,
       shiftTiming: bu.shiftTiming || null,
@@ -250,7 +244,6 @@ export class BusinessUnitsService {
       allowUnassigned: bu.allowUnassigned ?? true,
       podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
       usersCount: bu._count.users,
-      jobsCount: bu._count.jobs,
       podsCount: bu._count.pods,
       admins: (bu as any).admins || [],
       createdAt: bu.createdAt.toISOString(),
@@ -325,9 +318,9 @@ export class BusinessUnitsService {
   async remove(id: string, tenantId: string) {
     const existing = await this.findOne(id, tenantId);
 
-    if (existing.usersCount > 0 || existing.jobsCount > 0) {
+    if (existing.usersCount > 0 ) {
       throw new BadRequestException(
-        `Cannot delete business unit "${existing.name}". It currently has ${existing.usersCount} assigned member(s) and ${existing.jobsCount} job requisition(s). Reassign them before deleting this unit.`
+        `Cannot delete business unit "${existing.name}". It currently has ${existing.usersCount} assigned member(s) . Reassign them before deleting this unit.`
       );
     }
 

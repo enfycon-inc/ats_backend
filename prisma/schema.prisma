@@ -228,7 +228,6 @@ model BusinessUnit {
   customRoles                CustomRole[]
   outgoingDelegationRequests JobDelegationRequest[] @relation("DelegationSourceUnit")
   incomingDelegationRequests JobDelegationRequest[] @relation("DelegationTargetUnit")
-  jobs                       Job[]
   pods                       Pod[]
   users                      User[]
   admins                     User[]                 @relation("BusinessUnitAdmins")
@@ -536,20 +535,18 @@ model Job {
   id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String                 @map("tenant_id") @db.Uuid
   branchId             String?                @map("branch_id") @db.Uuid
-  businessUnitId       String?                @map("business_unit_id") @db.Uuid
   jobCode              String                 @unique @map("job_code") @db.VarChar(100)
   jobTitle             String                 @map("job_title") @db.VarChar(255)
-  jobLocation          String                 @map("job_location") @db.VarChar(255)
   jobType              String                 @default("Full-time") @map("job_type") @db.VarChar(100)
   jobDescription       String?                @map("job_description")
   skillsRequired       String[]               @map("skills_required")
   secondarySkills      String[]               @default([]) @map("secondary_skills")
     state                String?                @db.VarChar(100)
-  country              String?                @default("United States") @db.VarChar(100)
+  country              String?                @db.VarChar(100)
   clientJobId          String?                @map("client_job_id") @db.VarChar(100)
   visaType             String?                @map("visa_type") @db.VarChar(500)
-  clientBillRate       String                 @map("client_bill_rate") @db.VarChar(100)
-  payRate              String                 @map("pay_rate") @db.VarChar(100)
+  clientBillRate       String?                @map("client_bill_rate") @db.VarChar(100)
+  payRate              String?                @map("pay_rate") @db.VarChar(100)
   taxTerms             String?                @map("tax_terms") @db.VarChar(100)
       clientId             String?                @map("client_id") @db.Uuid
   endClientId          String?                @map("end_client_id") @db.Uuid
@@ -592,7 +589,6 @@ model Job {
   jobPods              JobPod[]
   jobRecruiters        JobRecruiter[]
   branch               Branch?                @relation(fields: [branchId], references: [id])
-  businessUnitRef      BusinessUnit?          @relation(fields: [businessUnitId], references: [id])
   clientRef            Client?                @relation("JobClient", fields: [clientId], references: [id])
   endClientRef         Client?                @relation("JobEndClient", fields: [endClientId], references: [id])
   tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)

@@ -13,7 +13,6 @@ export interface JobProfile {
   businessUnitId?: string | null;
   client: string;
   clientJobId: string;
-  location: string;
   state: string;
   country: string;
   type: string;
@@ -104,7 +103,6 @@ export interface CandidateMatch {
   fullName: string;
   email: string;
   phone: string;
-  location: string;
   currentTitle: string;
   source: string;
   workAuthorization: string;
@@ -693,7 +691,6 @@ export class JobsService implements OnModuleInit {
           tenantId,
           jobCode,
           jobTitle: dto.title,
-          jobLocation: dto.location,
           jobType: dto.type,
           jobDescription: dto.description,
           skillsRequired: dto.skillsRequired || [],
@@ -701,12 +698,12 @@ export class JobsService implements OnModuleInit {
           status: initialJobStatus,
           
           state: dto.state || '',
-          country: dto.country || 'United States',
+          country: dto.country || null,
           clientJobId: dto.clientJobId || 'N/A',
-          visaType: dto.visaType || 'US Citizen / GC',
-          clientBillRate: dto.clientBillRate || 'N/A',
-          payRate: dto.payRate || 'N/A',
-          taxTerms: dto.taxTerms || 'C2C',
+          visaType: dto.visaType || null,
+          clientBillRate: dto.clientBillRate || null,
+          payRate: dto.payRate || null,
+          taxTerms: dto.taxTerms || null,
           
           
           noOfPositions: dto.noOfPositions || 1,
@@ -732,7 +729,6 @@ export class JobsService implements OnModuleInit {
             clientId: resolvedClientId,
             endClientId: resolvedEndClientId,
           branchId,
-            businessUnitId: dto.businessUnitId || null,
             approvalStatus: initialApprovalStatus,
           assignedApproverId: resolvedAssignedApproverId || null,
           jobTimezone,
@@ -1252,10 +1248,8 @@ export class JobsService implements OnModuleInit {
       jobCode: row.job_code ?? row.jobCode,
       jobTitle: row.job_title ?? row.jobTitle,
       businessUnit: row.mapped_business_unit_name || row.business_unit_id || '',
-      businessUnitId: row.business_unit_id ?? row.businessUnitId ?? null,
       client: row.mapped_client_name || row.client_id,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
-      location: row.job_location ?? row.jobLocation,
       state: row.state || '',
       country: row.country || 'United States',
       type: row.job_type ?? row.jobType,
@@ -1700,7 +1694,6 @@ export class JobsService implements OnModuleInit {
 
     const dataToUpdate: any = {};
     if (dto.title !== undefined) dataToUpdate.jobTitle = dto.title;
-    if (dto.location !== undefined) dataToUpdate.jobLocation = dto.location;
     if (dto.type !== undefined) dataToUpdate.jobType = dto.type;
     if (dto.description !== undefined) dataToUpdate.jobDescription = dto.description;
     if (dto.skillsRequired !== undefined) dataToUpdate.skillsRequired = dto.skillsRequired;
@@ -1959,12 +1952,12 @@ export class JobsService implements OnModuleInit {
 
       // 2. Location & Relocation Fit Score
       let locationScore = 0.5; // Neutral baseline
-      const jobLocLower = (job.location || '').toLowerCase();
+      const jobLocLower = "";
       const jobRemote = (job.workMode || '').toLowerCase();
       const candLocLower = (row.raw_current_location || '').toLowerCase();
       const prefLocs: string[] = Array.isArray(row.preferred_locations) ? row.preferred_locations.map((l: string) => l.toLowerCase()) : [];
 
-      if (jobRemote === 'yes' || jobLocLower.includes('remote') || !job.location) {
+      if (jobRemote === 'yes' || jobLocLower.includes('remote') ) {
         locationScore = 1.0;
       } else if (candLocLower && (jobLocLower.includes(candLocLower) || candLocLower.includes(jobLocLower))) {
         locationScore = 1.0; // Exact location match
@@ -2525,8 +2518,6 @@ export class JobsService implements OnModuleInit {
       title: `${original.jobTitle} (Copy)`,
       
       client: original.client,
-      
-      location: original.location,
       state: original.state,
       country: original.country,
       type: original.type || 'Full Time',
@@ -2625,7 +2616,6 @@ export class JobsService implements OnModuleInit {
         jobId,
         sourceBranchId,
         targetBranchId,
-        sourceUnitId: job.businessUnitId,
         targetUnitId: target.id,
         slaDaysTarget: dto.slaDaysTarget,
         notes: dto.notes,
