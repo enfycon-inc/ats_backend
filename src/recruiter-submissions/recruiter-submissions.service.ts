@@ -277,7 +277,7 @@ export class RecruiterSubmissionsService {
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        COALESCE(am.full_name, cb.full_name, j.account_manager_id) AS am_name
+        COALESCE(am.full_name, cb.full_name, j.account_manager_id::text) AS am_name
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -322,7 +322,7 @@ export class RecruiterSubmissionsService {
     const view = filters.view || 'all';
 
     if (view === 'my') {
-      baseSql += ` AND s.recruiter_id = $${paramIndex}`;
+      baseSql += ` AND s.recruiter_id = {paramIndex}${paramIndex}`;
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
@@ -333,7 +333,7 @@ export class RecruiterSubmissionsService {
       const roleConditions: string[] = [];
 
       if (isRecruiter) {
-        roleConditions.push(`s.recruiter_id = $${paramIndex}`);
+        roleConditions.push(`s.recruiter_id = ${paramIndex}${paramIndex}`);
         params.push(user.dbId);
         paramIndex++;
       }
@@ -348,17 +348,11 @@ export class RecruiterSubmissionsService {
         roleConditions.push(
           `(
             j.account_manager_id = $${paramIndex}
-
-
-
-
             OR s.recruiter_id = $${paramIndex}
-
-
-          )`,
+          )`
         );
-        params.push(user.dbId, user.email || '', user.fullName || '');
-        paramIndex += 3;
+        params.push(user.dbId);
+        paramIndex += 1;
       }
 
       if (roleConditions.length > 0) {
@@ -486,16 +480,18 @@ export class RecruiterSubmissionsService {
         c.notice_period_days AS candidate_notice_period,
         j.job_code,
         j.job_title,
-        j.client_name,
-        j.end_client_name,
+        cl.client_name AS client_name,
+        ecl.client_name AS end_client_name,
         j.market,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        COALESCE(am.full_name, cb.full_name, j.account_manager_id) AS am_name
+        COALESCE(am.full_name, cb.full_name, j.account_manager_id::text) AS am_name
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
+      LEFT JOIN ats.clients cl ON cl.id = j.client_id
+      LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
       LEFT JOIN ats.users r ON s.recruiter_id = r.id
       LEFT JOIN ats.pods p ON r.pod_id = p.id
       LEFT JOIN ats.users ph ON p.pod_head_id = ph.id
@@ -870,17 +866,13 @@ export class RecruiterSubmissionsService {
 
       if (isAm) {
         roleConditions.push(
-          `job_id IN (
-            SELECT id FROM ats.jobs 
-            WHERE account_manager_id = $${paramIndex}
-
-
-
-
-          )`,
+          `(
+            j.account_manager_id = ${paramIndex}
+            OR s.recruiter_id = ${paramIndex}
+          )`
         );
-        params.push(user.dbId, user.email || '', user.fullName || '');
-        paramIndex += 3;
+        params.push(user.dbId);
+        paramIndex += 1;
       }
 
       if (roleConditions.length > 0) {
