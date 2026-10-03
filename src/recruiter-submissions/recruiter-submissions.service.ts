@@ -17,6 +17,7 @@ export interface SubmissionDetails {
   jobId: string;
   candidateId: string;
   recruiterId: string;
+  recruiterJobReviewerId?: string | null;
   l1Status: string;
   l1Date: string | null;
   l2Status: string | null;
@@ -281,6 +282,7 @@ export class RecruiterSubmissionsService {
         j.market,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
+        r.job_reviewer_id AS recruiter_job_reviewer_id,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, j.account_manager_id::text) AS am_name
       FROM ats.recruiter_submissions s
@@ -535,15 +537,27 @@ export class RecruiterSubmissionsService {
     const userPerms = user.permissions || [];
     const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
     const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
+    const isUnitAdmin = user.roles?.includes('UNIT_ADMIN');
     const isAm = user.roles?.includes('ACCOUNT_MANAGER');
     const isPodLead = user.roles?.includes('POD_LEAD');
+    
+    let isReportingManager = false;
+    if (existing.recruiterId) {
+      const recruiter = await this.prisma.user.findFirst({
+        where: { id: existing.recruiterId, tenantId },
+        select: { jobReviewerId: true }
+      });
+      if (recruiter && recruiter.jobReviewerId === user.dbId) {
+        isReportingManager = true;
+      }
+    }
 
     const canAuditRounds = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:audit_rounds');
     const canAuditL1 = canAuditRounds || isAm || isPodLead || userPerms.includes('submission:audit_l1');
     const canAuditL2 = canAuditRounds || isAm || userPerms.includes('submission:audit_l2');
     const canAuditL3 = canAuditRounds || isAm || userPerms.includes('submission:audit_l3');
-    const canInternalScreen = isAdmin || isDeliveryHead || isPodLead || userPerms.includes('submission:internal_screening');
-    const canFinalStatus = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:final_status');
+    const canInternalScreen = isAdmin || isDeliveryHead || isUnitAdmin || isPodLead || isReportingManager || userPerms.includes('submission:internal_screening');
+    const canFinalStatus = isAdmin || isDeliveryHead || isUnitAdmin || isAm || userPerms.includes('submission:final_status');
     const canApproveClient = canInternalScreen || canFinalStatus;
     const canEditRate = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:edit_rate');
 
@@ -914,6 +928,7 @@ export class RecruiterSubmissionsService {
       jobId: row.job_id || row.jobId,
       candidateId: row.candidate_id || row.candidateId,
       recruiterId: row.recruiter_id || row.recruiterId,
+      recruiterJobReviewerId: row.recruiter_job_reviewer_id || row.recruiterJobReviewerId || null,
       l1Status: row.l1_status || row.l1Status,
       l1Date: row.l1_date || row.l1Date ? new Date(row.l1_date || row.l1Date).toISOString() : null,
       l2Status: row.l2_status || row.l2Status,
