@@ -28,6 +28,24 @@ export class CreateCandidateDto {
   @ApiProperty({ example: ['Email Security', 'Proofpoint', 'Cybersecurity'], description: 'List of matching skill strings' })
   skills: string[];
 
+  @ApiProperty({ required: false, description: 'Relevant years of experience' })
+  relevantExperienceYears?: number;
+
+  @ApiProperty({ required: false, description: 'Current Company Name' })
+  currentCompany?: string;
+
+  @ApiProperty({ required: false, description: 'Availability to Start (e.g., Immediate, 2 Weeks)' })
+  availabilityToStart?: string;
+
+  @ApiProperty({ required: false, description: 'Current CTC' })
+  currentCtc?: number;
+
+  @ApiProperty({ required: false, description: 'Expected CTC' })
+  expectedCtc?: number;
+
+  @ApiProperty({ required: false, description: 'Notice Period in Days' })
+  noticePeriodDays?: number;
+
   @ApiProperty({ example: 'Manoj Duggi\nEmail Security Specialist with 6 years experience...', description: 'Raw resume text' })
   rawText: string;
 

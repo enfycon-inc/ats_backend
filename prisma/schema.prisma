@@ -505,8 +505,11 @@ model Candidate {
   rawCurrentLocation    String?               @map("raw_current_location")
   rawCurrentDesignation String?               @map("raw_current_designation")
   totalExperienceYears  Decimal?              @map("total_experience_years") @db.Decimal(4, 1)
+  relevantExperienceYears Decimal?            @map("relevant_experience_years") @db.Decimal(4, 1)
   currentCtc            Decimal?              @map("current_ctc") @db.Decimal(10, 2)
   expectedCtc           Decimal?              @map("expected_ctc") @db.Decimal(10, 2)
+  currentCompany        String?               @map("current_company") @db.VarChar(255)
+  availabilityToStart   String?               @map("availability_to_start") @db.VarChar(100)
   noticePeriodDays      Int                   @default(0) @map("notice_period_days")
   servingNotice         Boolean               @default(false) @map("serving_notice")
   lastWorkingDay        DateTime?             @map("last_working_day") @db.Date
@@ -670,7 +673,6 @@ model RecruiterSubmission {
   l3Date           DateTime? @map("l3_date") @db.Timestamptz(6)
   l3Remarks        String?   @map("l3_remarks")
   l3Interviewer    String?   @map("l3_interviewer") @db.VarChar(255)
-  submittedRate    String?   @map("submitted_rate") @db.VarChar(100)
   meetingLink      String?   @map("meeting_link")
   finalStatus      String    @default("SUBMITTED") @map("final_status") @db.VarChar(50)
   remarks          String?

@@ -57,7 +57,7 @@ export interface SubmissionDetails {
   recruiterName?: string;
   podHeadName?: string;
   accountManagerName?: string;
-  submittedRate?: string | null;
+  
   market?: string;
   branchId?: string | null;
 }
@@ -157,7 +157,7 @@ export class RecruiterSubmissionsService {
           finalStatus,
           remarks: dto.remarks || null,
           recruiterComment: dto.recruiterComment || null,
-          submittedRate: dto.submittedRate || null,
+          
         },
       });
 
@@ -572,7 +572,7 @@ export class RecruiterSubmissionsService {
       delete dto.remarks;
     }
     if (!canEditRate) {
-      delete dto.submittedRate;
+      
     }
 
     const mergedL1Status = dto.l1Status !== undefined ? dto.l1Status : existing.l1Status;
@@ -617,7 +617,7 @@ export class RecruiterSubmissionsService {
     if (dto.recruiterId !== undefined) data.recruiterId = dto.recruiterId;
     if (dto.remarks !== undefined) data.remarks = dto.remarks;
     if (dto.recruiterComment !== undefined) data.recruiterComment = dto.recruiterComment;
-    if (dto.submittedRate !== undefined) data.submittedRate = dto.submittedRate;
+    
     if (dto.podLeadRemarks !== undefined) data.podLeadRemarks = dto.podLeadRemarks;
     if (dto.reviewFeedback !== undefined) {
       data.reviewFeedback = dto.reviewFeedback;
@@ -948,7 +948,7 @@ export class RecruiterSubmissionsService {
       recruiterName: row.recruiter_name || row.recruiterName,
       podHeadName: row.pod_head_name || row.podHeadName,
       accountManagerName: row.am_name || row.accountManagerName,
-      submittedRate: row.submitted_rate || row.submittedRate,
+      
       market: row.market,
       branchId: row.branch_id || row.branchId || null,
     };

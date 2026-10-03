@@ -78,6 +78,12 @@ export class CandidatesService {
             phone: dto.phone,
             rawCurrentLocation: dto.location,
             totalExperienceYears: dto.experienceYears ? Number(dto.experienceYears) : 0,
+            relevantExperienceYears: dto.relevantExperienceYears ? Number(dto.relevantExperienceYears) : null,
+            currentCompany: dto.currentCompany || null,
+            availabilityToStart: dto.availabilityToStart || null,
+            currentCtc: dto.currentCtc ? Number(dto.currentCtc) : null,
+            expectedCtc: dto.expectedCtc ? Number(dto.expectedCtc) : null,
+            noticePeriodDays: dto.noticePeriodDays ? Number(dto.noticePeriodDays) : 0,
             rawCurrentDesignation: dto.jobTitle,
             skills: dto.skills || [],
             source: dto.source,
@@ -398,7 +404,7 @@ export class CandidatesService {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { source?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string } = {},
+    meta: { source?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
     user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
