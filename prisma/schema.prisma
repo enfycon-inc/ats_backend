@@ -559,7 +559,7 @@ model Job {
   urgency              String                 @default("WARM") @db.VarChar(50)
   status               String                 @default("ACTIVE") @db.VarChar(50)
   market               String                 @default("US") @db.VarChar(50)
-  remoteJob            String?                @default("No") @map("remote_job") @db.VarChar(50)
+  workMode             String?                @default("In Office") @map("work_mode") @db.VarChar(50)
   startDate            DateTime?              @map("start_date") @db.Date
   endDate              DateTime?              @map("end_date") @db.Date
   hoursPerWeek         Int?                   @default(40) @map("hours_per_week")

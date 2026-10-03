@@ -69,8 +69,8 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 'C2C', enum: ['C2C', 'W2', '1099', 'Full-time'], description: 'Tax terms' })
   taxTerms?: string;
 
-  @ApiPropertyOptional({ example: 'Hybrid', enum: ['Yes', 'No', 'Hybrid'], description: 'Remote work arrangement' })
-  remoteJob?: string;
+  @ApiPropertyOptional({ example: 'Hybrid', enum: ['In Office', 'Remote', 'Hybrid'], description: 'Work Mode' })
+  workMode?: string;
 
   @ApiPropertyOptional({ example: '2026-06-01', description: 'Job start date (YYYY-MM-DD)' })
   startDate?: string;

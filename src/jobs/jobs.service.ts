@@ -49,7 +49,7 @@ export interface JobProfile {
   priority: string;
 
   // Schedule
-  remoteJob: string;
+  workMode: string;
   startDate: string | null;
   endDate: string | null;
   hoursPerWeek: number;
@@ -657,6 +657,35 @@ export class JobsService implements OnModuleInit {
     const resolvedRecruitmentManagerId = await this.resolveUserUuid(dto.recruitmentManagerId, tenantId);
     const resolvedAssignedApproverId = await this.resolveUserUuid(assignedApproverId, tenantId);
     const resolvedAccountManagerId = await this.resolveUserUuid(dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), tenantId);
+    
+      // Client Resolution
+      let resolvedClientId: string | null = null;
+      let resolvedEndClientId: string | null = null;
+
+      if (dto.client && dto.client.trim() !== '') {
+        let cName = dto.client.trim();
+        const existingC = await this.prisma.client.findFirst({
+          where: { clientName: { equals: cName, mode: 'insensitive' }, tenantId }
+        });
+        if (existingC) resolvedClientId = existingC.id;
+        else {
+          const newC = await this.prisma.client.create({ data: { clientName: cName, tenantId } });
+          resolvedClientId = newC.id;
+        }
+      }
+
+      if (dto.endClientName && dto.endClientName.trim() !== '') {
+        let ecName = dto.endClientName.trim();
+        const existingEc = await this.prisma.client.findFirst({
+          where: { clientName: { equals: ecName, mode: 'insensitive' }, tenantId }
+        });
+        if (existingEc) resolvedEndClientId = existingEc.id;
+        else {
+          const newEc = await this.prisma.client.create({ data: { clientName: ecName, tenantId } });
+          resolvedEndClientId = newEc.id;
+        }
+      }
+
 
     try {
       const createdJob = await this.prisma.job.create({
@@ -684,7 +713,7 @@ export class JobsService implements OnModuleInit {
           submissionRequired: dto.submissionRequired || 5,
           submissionDone: 0,
           urgency: dto.priority || 'Medium',
-          remoteJob: dto.remoteJob || 'No',
+          workMode: dto.workMode || (dto as any).remoteJob || 'In Office',
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
           hoursPerWeek: dto.hoursPerWeek || 40,
@@ -699,7 +728,9 @@ export class JobsService implements OnModuleInit {
           expMax: dto.expMax ?? 10,
                     respondBy: dto.respondBy ? new Date(dto.respondBy) : null,
           noticePeriod: dto.noticePeriod || '',
-          market: dto.market || 'US',
+          market: (dto.market === 'IND' ? 'IN' : dto.market) || 'US',
+            clientId: resolvedClientId,
+            endClientId: resolvedEndClientId,
           branchId,
             businessUnitId: dto.businessUnitId || null,
             approvalStatus: initialApprovalStatus,
@@ -1257,7 +1288,7 @@ export class JobsService implements OnModuleInit {
       submissionDone: row.submission_done ?? row.submissionDone ?? 0,
       priority: row.urgency || 'Medium',
 
-      remoteJob: row.remote_job ?? row.remoteJob ?? 'No',
+      workMode: row.work_mode ?? row.workMode ?? 'In Office',
       startDate: rawStartDate ? new Date(rawStartDate).toISOString().split('T')[0] : null,
       endDate: rawEndDate ? new Date(rawEndDate).toISOString().split('T')[0] : null,
       hoursPerWeek: row.hours_per_week ?? row.hoursPerWeek ?? 40,
@@ -1929,7 +1960,7 @@ export class JobsService implements OnModuleInit {
       // 2. Location & Relocation Fit Score
       let locationScore = 0.5; // Neutral baseline
       const jobLocLower = (job.location || '').toLowerCase();
-      const jobRemote = (job.remoteJob || '').toLowerCase();
+      const jobRemote = (job.workMode || '').toLowerCase();
       const candLocLower = (row.raw_current_location || '').toLowerCase();
       const prefLocs: string[] = Array.isArray(row.preferred_locations) ? row.preferred_locations.map((l: string) => l.toLowerCase()) : [];
 
@@ -2510,7 +2541,7 @@ export class JobsService implements OnModuleInit {
       noOfPositions: original.noOfPositions || 1,
       submissionRequired: original.submissionRequired || 5,
       priority: original.priority || 'Medium',
-      remoteJob: original.remoteJob || 'No',
+      workMode: (original as any).workMode || (original as any).remoteJob || 'In Office',
       duration: original.duration || '',
       hoursPerWeek: original.hoursPerWeek || 40,
       industry: original.industry || '',
