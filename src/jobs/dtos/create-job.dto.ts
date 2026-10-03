@@ -33,6 +33,9 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 'Texas', description: 'State / province' })
   state?: string;
 
+  @ApiPropertyOptional({ example: 'Dallas', description: 'City' })
+  city?: string;
+
   @ApiPropertyOptional({ example: 'United States', description: 'Country' })
   country?: string;
 

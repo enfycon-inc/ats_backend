@@ -14,6 +14,7 @@ export interface JobProfile {
   client: string;
   clientJobId: string;
   state: string;
+  city: string | null;
   country: string;
   type: string;
   description: string;
@@ -698,6 +699,7 @@ export class JobsService implements OnModuleInit {
           status: initialJobStatus,
           
           state: dto.state || '',
+          city: dto.city || null,
           country: dto.country || null,
           clientJobId: dto.clientJobId || 'N/A',
           visaType: dto.visaType || null,
@@ -1251,6 +1253,7 @@ export class JobsService implements OnModuleInit {
       client: row.mapped_client_name || row.client_id,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
       state: row.state || '',
+      city: row.city || null,
       country: row.country || 'United States',
       type: row.job_type ?? row.jobType,
       description: row.job_description ?? row.jobDescription,
@@ -1701,6 +1704,7 @@ export class JobsService implements OnModuleInit {
     if (dto.status !== undefined) dataToUpdate.status = dto.status;
     
     if (dto.state !== undefined) dataToUpdate.state = dto.state;
+    if (dto.city !== undefined) dataToUpdate.city = dto.city;
     if (dto.country !== undefined) dataToUpdate.country = dto.country;
     if (dto.clientJobId !== undefined) dataToUpdate.clientJobId = dto.clientJobId;
     if (dto.visaType !== undefined) dataToUpdate.visaType = dto.visaType;
@@ -2519,6 +2523,7 @@ export class JobsService implements OnModuleInit {
       
       client: original.client,
       state: original.state,
+      city: original.city || undefined,
       country: original.country,
       type: original.type || 'Full Time',
       description: original.description,

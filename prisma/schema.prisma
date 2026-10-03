@@ -542,6 +542,7 @@ model Job {
   skillsRequired       String[]               @map("skills_required")
   secondarySkills      String[]               @default([]) @map("secondary_skills")
     state                String?                @db.VarChar(100)
+    city                 String?                @db.VarChar(100)
   country              String?                @db.VarChar(100)
   clientJobId          String?                @map("client_job_id") @db.VarChar(100)
   visaType             String?                @map("visa_type") @db.VarChar(500)
