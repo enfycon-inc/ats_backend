@@ -51,6 +51,11 @@ export interface SubmissionDetails {
   candidateCurrentCtc?: string | null;
   candidateExpectedCtc?: string | null;
   candidateNoticePeriod?: number | null;
+  candidateRelevantExperience?: number | null;
+  candidatePreferredLocations?: string[] | null;
+  candidateSkills?: string[] | null;
+  jobSkillsRequired?: string[] | null;
+  jobSecondarySkills?: string[] | null;
   jobCode?: string;
   jobTitle?: string;
   clientName?: string;
@@ -275,6 +280,11 @@ export class RecruiterSubmissionsService {
         c.current_ctc AS candidate_current_ctc,
         c.expected_ctc AS candidate_expected_ctc,
         c.notice_period_days AS candidate_notice_period,
+        c.relevant_experience_years AS candidate_relevant_experience,
+        c.preferred_locations AS candidate_preferred_locations,
+        c.skills AS candidate_skills,
+        j.skills_required AS job_skills_required,
+        j.secondary_skills AS job_secondary_skills,
         j.job_code,
         j.job_title,
         cl.client_name AS client_name,
@@ -481,6 +491,11 @@ export class RecruiterSubmissionsService {
         c.current_ctc AS candidate_current_ctc,
         c.expected_ctc AS candidate_expected_ctc,
         c.notice_period_days AS candidate_notice_period,
+        c.relevant_experience_years AS candidate_relevant_experience,
+        c.preferred_locations AS candidate_preferred_locations,
+        c.skills AS candidate_skills,
+        j.skills_required AS job_skills_required,
+        j.secondary_skills AS job_secondary_skills,
         j.job_code,
         j.job_title,
         cl.client_name AS client_name,
@@ -961,6 +976,11 @@ export class RecruiterSubmissionsService {
       candidateCurrentCtc: row.candidate_current_ctc || row.candidateCurrentCtc,
       candidateExpectedCtc: row.candidate_expected_ctc || row.candidateExpectedCtc,
       candidateNoticePeriod: row.candidate_notice_period || row.candidateNoticePeriod,
+      candidateRelevantExperience: row.candidate_relevant_experience !== undefined ? Number(row.candidate_relevant_experience) : null,
+      candidatePreferredLocations: row.candidate_preferred_locations || null,
+      candidateSkills: row.candidate_skills || null,
+      jobSkillsRequired: row.job_skills_required || null,
+      jobSecondarySkills: row.job_secondary_skills || null,
       jobCode: row.job_code || row.jobCode,
       jobTitle: row.job_title || row.jobTitle,
       clientName: row.client?.clientName || row.client_id,
