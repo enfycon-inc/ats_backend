@@ -178,7 +178,7 @@ export class RecruiterSubmissionsService {
         const reviewTargets = new Set<string>();
         const recruiterUser = await this.prisma.user.findFirst({
           where: { id: dto.recruiterId, tenantId },
-          select: { id: true, fullName: true, podId: true },
+          select: { id: true, fullName: true, podId: true, jobReviewerId: true },
         });
 
         if (recruiterUser?.podId) {
@@ -187,6 +187,11 @@ export class RecruiterSubmissionsService {
             select: { podHeadId: true },
           });
           if (pod?.podHeadId) reviewTargets.add(pod.podHeadId);
+        }
+
+        // Notify reporting manager (jobReviewerId) if assigned to the recruiter
+        if (recruiterUser?.jobReviewerId) {
+          reviewTargets.add(recruiterUser.jobReviewerId);
         }
 
         const fullJob = await this.prisma.job.findUnique({
