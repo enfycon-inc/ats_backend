@@ -83,6 +83,18 @@ export class CreateSubmissionDto {
   })
   submittedRate?: string;
 
+  @ApiPropertyOptional({ description: 'Snapshot: candidate current CTC' })
+  candidateCurrentCtc?: number;
+
+  @ApiPropertyOptional({ description: 'Snapshot: candidate expected CTC' })
+  candidateExpectedCtc?: number;
+
+  @ApiPropertyOptional({ description: 'Snapshot: candidate notice period' })
+  candidateNoticePeriod?: number;
+
+  @ApiPropertyOptional({ description: 'Snapshot: candidate relevant experience' })
+  candidateRelevantExperience?: number;
+
   @ApiPropertyOptional({ description: 'Internal team lead or pod lead approval remarks' })
   podLeadRemarks?: string;
 

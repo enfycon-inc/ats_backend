@@ -27,6 +27,7 @@ export interface SubmissionDetails {
   finalStatus: string;
   remarks: string | null;
   recruiterComment: string | null;
+  submittedRate?: string | null;
   podLeadRemarks?: string | null;
   reviewFeedback?: string | null;
   l1Remarks?: string | null;
@@ -107,7 +108,7 @@ export class RecruiterSubmissionsService {
     // 2. Verify candidate exists and belongs to the tenant
     const candidate = await this.prisma.candidate.findFirst({
       where: { id: dto.candidateId, tenantId },
-      select: { id: true, fullName: true, firstName: true, lastName: true, email: true },
+      select: { id: true, fullName: true, firstName: true, lastName: true, email: true, currentCtc: true, expectedCtc: true, noticePeriodDays: true, relevantExperienceYears: true, preferredLocations: true },
     });
 
     if (!candidate) {
@@ -163,6 +164,12 @@ export class RecruiterSubmissionsService {
           finalStatus,
           remarks: dto.remarks || null,
           recruiterComment: dto.recruiterComment || null,
+          submittedRate: dto.submittedRate || null,
+          candidateCurrentCtc: dto.candidateCurrentCtc ?? candidate.currentCtc,
+          candidateExpectedCtc: dto.candidateExpectedCtc ?? candidate.expectedCtc,
+          candidateNoticePeriod: dto.candidateNoticePeriod ?? candidate.noticePeriodDays,
+          candidateRelevantExperience: dto.candidateRelevantExperience ?? candidate.relevantExperienceYears,
+          candidatePreferredLocations: candidate.preferredLocations || [],
           
         },
       });
@@ -277,11 +284,11 @@ export class RecruiterSubmissionsService {
         c.source AS candidate_source,
         c.candidate_code AS candidate_code,
         COALESCE(c.uploaded_by_name, 'System') AS candidate_uploader_name,
-        c.current_ctc AS candidate_current_ctc,
-        c.expected_ctc AS candidate_expected_ctc,
-        c.notice_period_days AS candidate_notice_period,
-        c.relevant_experience_years AS candidate_relevant_experience,
-        c.preferred_locations AS candidate_preferred_locations,
+        COALESCE(s.candidate_current_ctc, c.current_ctc) AS candidate_current_ctc,
+        COALESCE(s.candidate_expected_ctc, c.expected_ctc) AS candidate_expected_ctc,
+        COALESCE(s.candidate_notice_period, c.notice_period_days) AS candidate_notice_period,
+        COALESCE(s.candidate_relevant_experience, c.relevant_experience_years) AS candidate_relevant_experience,
+        COALESCE(s.candidate_preferred_locations, c.preferred_locations) AS candidate_preferred_locations,
         c.skills AS candidate_skills,
         j.skills_required AS job_skills_required,
         j.secondary_skills AS job_secondary_skills,
@@ -488,11 +495,11 @@ export class RecruiterSubmissionsService {
         c.raw_current_designation AS candidate_designation,
         c.work_authorization AS candidate_work_auth,
         c.source AS candidate_source,
-        c.current_ctc AS candidate_current_ctc,
-        c.expected_ctc AS candidate_expected_ctc,
-        c.notice_period_days AS candidate_notice_period,
-        c.relevant_experience_years AS candidate_relevant_experience,
-        c.preferred_locations AS candidate_preferred_locations,
+        COALESCE(s.candidate_current_ctc, c.current_ctc) AS candidate_current_ctc,
+        COALESCE(s.candidate_expected_ctc, c.expected_ctc) AS candidate_expected_ctc,
+        COALESCE(s.candidate_notice_period, c.notice_period_days) AS candidate_notice_period,
+        COALESCE(s.candidate_relevant_experience, c.relevant_experience_years) AS candidate_relevant_experience,
+        COALESCE(s.candidate_preferred_locations, c.preferred_locations) AS candidate_preferred_locations,
         c.skills AS candidate_skills,
         j.skills_required AS job_skills_required,
         j.secondary_skills AS job_secondary_skills,
@@ -651,6 +658,11 @@ export class RecruiterSubmissionsService {
     if (dto.recruiterId !== undefined) data.recruiterId = dto.recruiterId;
     if (dto.remarks !== undefined) data.remarks = dto.remarks;
     if (dto.recruiterComment !== undefined) data.recruiterComment = dto.recruiterComment;
+    if (dto.submittedRate !== undefined) data.submittedRate = dto.submittedRate;
+    if (dto.candidateCurrentCtc !== undefined) data.candidateCurrentCtc = dto.candidateCurrentCtc;
+    if (dto.candidateExpectedCtc !== undefined) data.candidateExpectedCtc = dto.candidateExpectedCtc;
+    if (dto.candidateNoticePeriod !== undefined) data.candidateNoticePeriod = dto.candidateNoticePeriod;
+    if (dto.candidateRelevantExperience !== undefined) data.candidateRelevantExperience = dto.candidateRelevantExperience;
     
     if (dto.podLeadRemarks !== undefined) data.podLeadRemarks = dto.podLeadRemarks;
     if (dto.reviewFeedback !== undefined) {
@@ -953,6 +965,7 @@ export class RecruiterSubmissionsService {
       finalStatus: row.final_status || row.finalStatus,
       remarks: row.remarks,
       recruiterComment: row.recruiter_comment || row.recruiterComment,
+      submittedRate: row.submitted_rate || row.submittedRate || null,
       podLeadRemarks: row.pod_lead_remarks || row.podLeadRemarks || row.review_feedback || row.reviewFeedback || null,
       reviewFeedback: row.review_feedback || row.reviewFeedback || row.pod_lead_remarks || row.podLeadRemarks || null,
       l1Remarks: row.l1_remarks || row.l1Remarks || null,
