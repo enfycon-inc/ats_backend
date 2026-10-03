@@ -475,7 +475,13 @@ export class CandidatesService {
     const expYears = typeof parsed?.experience_years === 'number'
       ? parsed.experience_years
       : (parsed?.experience_detailed?.length ? Number(parsed.experience_detailed.length) : 0);
-    const preferredLocations: string[] = Array.isArray(parsed?.preferred_locations) ? parsed.preferred_locations : [];
+    
+    let preferredLocations: string[] = Array.isArray(parsed?.preferred_locations) ? parsed.preferred_locations : [];
+    if (meta.preferredLocations) {
+      const formLocs = meta.preferredLocations.split(',').map((l: string) => l.trim()).filter(Boolean);
+      preferredLocations = [...new Set([...preferredLocations, ...formLocs])];
+    }
+    const currentCompany = meta.currentCompany || (parsed?.experience_detailed?.[0]?.organization) || '';
     const rawText = parsed?.raw_text || (parsed?.word_count ? parsed?.raw_text || '' : '') || (existing?.rawText || '');
 
     // 3. De-duplicate on Email (Option A - Update profile if email exists)
@@ -510,6 +516,7 @@ export class CandidatesService {
             phone,
             rawCurrentLocation: location,
             totalExperienceYears: expYears ? Number(expYears) : 0,
+              currentCompany: currentCompany || undefined,
               relevantExperienceYears: meta.relevantExperienceYears ? Number(meta.relevantExperienceYears) : undefined,
               currentCtc: meta.currentCtc ? Number(meta.currentCtc) : undefined,
               expectedCtc: meta.expectedCtc ? Number(meta.expectedCtc) : undefined,
@@ -560,6 +567,7 @@ export class CandidatesService {
               phone,
               rawCurrentLocation: location,
               totalExperienceYears: expYears ? Number(expYears) : 0,
+              currentCompany: currentCompany || undefined,
               relevantExperienceYears: meta.relevantExperienceYears ? Number(meta.relevantExperienceYears) : undefined,
               currentCtc: meta.currentCtc ? Number(meta.currentCtc) : undefined,
               expectedCtc: meta.expectedCtc ? Number(meta.expectedCtc) : undefined,
