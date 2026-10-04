@@ -730,6 +730,8 @@ export class JobsService implements OnModuleInit {
           market: (dto.market === 'IN' ? 'IND' : dto.market) || 'US',
             clientId: resolvedClientId,
             endClientId: resolvedEndClientId,
+            pocId: dto.pocId || undefined,
+            endClientPocId: dto.endClientPocId || undefined,
           branchId,
             approvalStatus: initialApprovalStatus,
           assignedApproverId: resolvedAssignedApproverId || null,
@@ -1707,6 +1709,8 @@ export class JobsService implements OnModuleInit {
     if (dto.city !== undefined) dataToUpdate.city = dto.city;
     if (dto.country !== undefined) dataToUpdate.country = dto.country;
     if (dto.clientJobId !== undefined) dataToUpdate.clientJobId = dto.clientJobId;
+    if (dto.pocId !== undefined) dataToUpdate.pocId = dto.pocId;
+    if (dto.endClientPocId !== undefined) dataToUpdate.endClientPocId = dto.endClientPocId;
     if (dto.visaType !== undefined) dataToUpdate.visaType = dto.visaType;
     if (dto.clientBillRate !== undefined) dataToUpdate.clientBillRate = dto.clientBillRate;
     if (dto.payRate !== undefined) dataToUpdate.payRate = dto.payRate;

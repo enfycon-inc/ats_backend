@@ -551,11 +551,19 @@ model Job {
   country              String?                @db.VarChar(100)
   clientJobId          String?                @map("client_job_id") @db.VarChar(100)
   visaType             String?                @map("visa_type") @db.VarChar(500)
-  clientBillRate       String?                @map("client_bill_rate") @db.VarChar(100)
-  payRate              String?                @map("pay_rate") @db.VarChar(100)
+  payRateMin           Decimal?               @map("pay_rate_min") @db.Decimal(10,2)
+  payRateMax           Decimal?               @map("pay_rate_max") @db.Decimal(10,2)
+  payCurrency          String?                @default("INR") @map("pay_currency") @db.VarChar(10)
+  payTerm              String?                @default("LPA") @map("pay_term") @db.VarChar(50)
+  clientBillRateMin    Decimal?               @map("client_bill_rate_min") @db.Decimal(10,2)
+  clientBillRateMax    Decimal?               @map("client_bill_rate_max") @db.Decimal(10,2)
+  clientBillCurrency   String?                @default("INR") @map("client_bill_currency") @db.VarChar(10)
+  clientBillTerm       String?                @default("LPA") @map("client_bill_term") @db.VarChar(50)
+  placementCommissionPct Decimal?             @map("placement_commission_pct") @db.Decimal(5,2)
   taxTerms             String?                @map("tax_terms") @db.VarChar(100)
       clientId             String?                @map("client_id") @db.Uuid
   endClientId          String?                @map("end_client_id") @db.Uuid
+  endClientPocId       String?                @map("end_client_poc_id") @db.Uuid
   noOfPositions        Int                    @default(1) @map("no_of_positions")
   submissionRequired   Int                    @default(5) @map("submission_required")
   submissionDone       Int                    @default(0) @map("submission_done")
@@ -602,6 +610,7 @@ model Job {
 
     pocId                String?               @map("poc_id") @db.Uuid
   poc                  ClientContact?        @relation("JobPoc", fields: [pocId], references: [id])
+  endClientPoc         ClientContact?        @relation("JobEndClientPoc", fields: [endClientPocId], references: [id])
 @@map("jobs")
   @@schema("ats")
 }
@@ -705,9 +714,13 @@ model RecruiterSubmission {
   recruiterComment String?   @map("recruiter_comment")
   podLeadRemarks   String?   @map("pod_lead_remarks")
   reviewFeedback   String?   @map("review_feedback")
-  submittedRate    String?   @map("submitted_rate") @db.VarChar(100)
+  submittedRateAmount   Decimal? @map("submitted_rate_amount") @db.Decimal(10,2)
+  submittedRateCurrency String?  @default("INR") @map("submitted_rate_currency") @db.VarChar(10)
+  submittedRateTerm     String?  @default("LPA") @map("submitted_rate_term") @db.VarChar(50)
   candidateCurrentCtc Decimal? @map("candidate_current_ctc") @db.Decimal(10,2)
   candidateExpectedCtc Decimal? @map("candidate_expected_ctc") @db.Decimal(10,2)
+  candidateCtcCurrency String?  @default("INR") @map("candidate_ctc_currency") @db.VarChar(10)
+  candidateCtcTerm     String?  @default("LPA") @map("candidate_ctc_term") @db.VarChar(50)
   candidateNoticePeriod Int? @map("candidate_notice_period")
   candidateRelevantExperience Decimal? @map("candidate_relevant_experience") @db.Decimal(4,1)
   candidatePreferredLocations String[] @default([]) @map("candidate_preferred_locations")

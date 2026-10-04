@@ -56,6 +56,12 @@ export class CreateJobDto {
 
   @ApiPropertyOptional({ example: 'End Client Corp', description: 'The end client name if different from direct client' })
   endClientName?: string;
+  @ApiPropertyOptional({ example: '123e4567-e89b-12d3-a456-426614174000', description: 'POC ID' })
+  pocId?: string;
+
+  @ApiPropertyOptional({ example: '123e4567-e89b-12d3-a456-426614174001', description: 'End Client POC ID' })
+  endClientPocId?: string;
+
 
   @ApiPropertyOptional({ example: 1, description: 'Number of open positions' })
   noOfPositions?: number;
