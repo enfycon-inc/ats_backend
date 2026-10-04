@@ -745,25 +745,44 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.unassignUserFromRole(user.tenantId, roleId, body.userId, user);
   }
 
-  // ─── GET /api/auth/check-ssl-domain ─────────────────────────
+  // ─── GET /api/auth/check-ssl-domain ─────────────────
+  // Called by Caddy on_demand TLS before issuing any SSL certificate.
+  // SECURITY: Only issue certs for platform subdomains or DB-registered tenant workspaces.
   @Get('check-ssl-domain')
   @ApiOperation({ summary: 'Caddy On-Demand TLS domain validation' })
   async checkSslDomain(@Query('domain') domain?: string): Promise<string> {
-    if (!domain) {
-      return 'OK';
-    }
+    if (!domain) return 'OK';
+
     const cleanDomain = domain.toLowerCase().trim();
-    // Allow root domain and any *.enfyjobs.com
-    if (cleanDomain === 'enfyjobs.com' || cleanDomain.endsWith('.enfyjobs.com')) {
+
+    // 1. Always allow the root domain
+    if (cleanDomain === 'enfyjobs.com' || cleanDomain === 'www.enfyjobs.com') {
       return 'OK';
     }
-    // Check if domain is registered in DB for custom client domains
+
+    // 2. For *.enfyjobs.com subdomains — enforce DB verification
+    if (cleanDomain.endsWith('.enfyjobs.com')) {
+      const subdomain = cleanDomain.slice(0, cleanDomain.length - '.enfyjobs.com'.length);
+
+      // 2a. Hardcoded platform subdomains always get a cert — no DB lookup needed
+      const PLATFORM_SUBDOMAINS = new Set(['api', 'auth', 'db', 'www', 'admin', 'mail', 'status', 'app']);
+      if (PLATFORM_SUBDOMAINS.has(subdomain)) return 'OK';
+
+      // 2b. All other subdomains MUST be a registered tenant in the DB
+      const isRegistered = await this.authService.isDomainRegistered(cleanDomain);
+      if (isRegistered) return 'OK';
+
+      // Deny — prevents cert exhaustion attacks against Let's Encrypt quota
+      throw new BadRequestException(`Subdomain "${subdomain}" is not a registered workspace.`);
+    }
+
+    // 3. Custom domains (e.g. recruitmentsolutions.io) — check tenant_domains table
     const isRegistered = await this.authService.isDomainRegistered(cleanDomain);
-    if (isRegistered) {
-      return 'OK';
-    }
+    if (isRegistered) return 'OK';
+
     throw new BadRequestException('Unauthorized Domain');
   }
+
 
   // ─── GET /api/auth/tenants/my-domains ───────────────────────
   @Get('tenants/my-domains')
