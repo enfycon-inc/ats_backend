@@ -65,7 +65,7 @@ export class AuthUserService {
     }
 
     const rolePermsRes = await this.authQuery.query(
-      `SELECT id as role_id, permissions FROM custom_roles WHERE tenant_id =  UNION ALL SELECT id as role_id, permissions FROM system_roles$1`,
+      `SELECT id as role_id, permissions FROM custom_roles WHERE tenant_id = $1 UNION ALL SELECT id as role_id, permissions FROM system_roles`,
       [u.tenant_id]
     );
 
@@ -177,7 +177,7 @@ export class AuthUserService {
     }
 
     const rolePermsRes = await this.authQuery.query(
-      `SELECT id as role_id, permissions FROM custom_roles WHERE tenant_id =  UNION ALL SELECT id as role_id, permissions FROM system_roles$1`,
+      `SELECT id as role_id, permissions FROM custom_roles WHERE tenant_id = $1 UNION ALL SELECT id as role_id, permissions FROM system_roles`,
       [tenantId]
     ).catch(() => ({ rows: [] }));
     const rolePermMap: Record<string, Set<string>> = {};
