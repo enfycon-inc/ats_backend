@@ -685,6 +685,7 @@ model ClientContact {
   creator     User     @relation("ContactCreator", fields: [createdBy], references: [id])
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   jobs        Job[]    @relation("JobPoc")
+  endClientJobs Job[]  @relation("JobEndClientPoc")
 
   @@map("client_contacts")
   @@schema("ats")
