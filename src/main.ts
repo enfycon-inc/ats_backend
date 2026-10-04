@@ -22,7 +22,7 @@ async function bootstrap() {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
-      const isAllowed = /localhost:\d+$|\.enfyjobs\.com$|\.enfycon\.com$/i.test(origin) || allowedOrigins.includes(origin);
+      const isAllowed = /localhost:\d+$|(^|\.)enfyjobs\.com$|(^|\.)enfycon\.com$/i.test(origin) || allowedOrigins.includes(origin);
       if (isAllowed) {
         callback(null, true);
       } else {
