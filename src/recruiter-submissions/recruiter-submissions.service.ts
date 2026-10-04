@@ -164,7 +164,7 @@ export class RecruiterSubmissionsService {
           finalStatus,
           remarks: dto.remarks || null,
           recruiterComment: dto.recruiterComment || null,
-          submittedRate: dto.submittedRate || null,
+          submittedRateAmount: typeof dto.submittedRate === 'string' ? parseFloat(dto.submittedRate) : dto.submittedRate || null,
           candidateCurrentCtc: dto.candidateCurrentCtc ?? candidate.currentCtc,
           candidateExpectedCtc: dto.candidateExpectedCtc ?? candidate.expectedCtc,
           candidateNoticePeriod: dto.candidateNoticePeriod ?? candidate.noticePeriodDays,
@@ -658,7 +658,7 @@ export class RecruiterSubmissionsService {
     if (dto.recruiterId !== undefined) data.recruiterId = dto.recruiterId;
     if (dto.remarks !== undefined) data.remarks = dto.remarks;
     if (dto.recruiterComment !== undefined) data.recruiterComment = dto.recruiterComment;
-    if (dto.submittedRate !== undefined) data.submittedRate = dto.submittedRate;
+    if (dto.submittedRate !== undefined) data.submittedRateAmount = typeof dto.submittedRate === 'string' ? parseFloat(dto.submittedRate) : dto.submittedRate;
     if (dto.candidateCurrentCtc !== undefined) data.candidateCurrentCtc = dto.candidateCurrentCtc;
     if (dto.candidateExpectedCtc !== undefined) data.candidateExpectedCtc = dto.candidateExpectedCtc;
     if (dto.candidateNoticePeriod !== undefined) data.candidateNoticePeriod = dto.candidateNoticePeriod;

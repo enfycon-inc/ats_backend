@@ -703,8 +703,10 @@ export class JobsService implements OnModuleInit {
           country: dto.country || null,
           clientJobId: dto.clientJobId || 'N/A',
           visaType: dto.visaType || null,
-          clientBillRate: dto.clientBillRate || null,
-          payRate: dto.payRate || null,
+          clientBillRateMin: typeof dto.clientBillRate === 'string' ? parseFloat(dto.clientBillRate) : dto.clientBillRate || null,
+          clientBillRateMax: typeof dto.clientBillRate === 'string' ? parseFloat(dto.clientBillRate) : dto.clientBillRate || null,
+          payRateMin: typeof dto.payRate === 'string' ? parseFloat(dto.payRate) : dto.payRate || null,
+          payRateMax: typeof dto.payRate === 'string' ? parseFloat(dto.payRate) : dto.payRate || null,
           taxTerms: dto.taxTerms || null,
           
           
@@ -1712,8 +1714,8 @@ export class JobsService implements OnModuleInit {
     if (dto.pocId !== undefined) dataToUpdate.pocId = dto.pocId;
     if (dto.endClientPocId !== undefined) dataToUpdate.endClientPocId = dto.endClientPocId;
     if (dto.visaType !== undefined) dataToUpdate.visaType = dto.visaType;
-    if (dto.clientBillRate !== undefined) dataToUpdate.clientBillRate = dto.clientBillRate;
-    if (dto.payRate !== undefined) dataToUpdate.payRate = dto.payRate;
+    if (dto.clientBillRate !== undefined) { dataToUpdate.clientBillRateMin = typeof dto.clientBillRate === 'string' ? parseFloat(dto.clientBillRate) : dto.clientBillRate; dataToUpdate.clientBillRateMax = dataToUpdate.clientBillRateMin; }
+    if (dto.payRate !== undefined) { dataToUpdate.payRateMin = typeof dto.payRate === 'string' ? parseFloat(dto.payRate) : dto.payRate; dataToUpdate.payRateMax = dataToUpdate.payRateMin; }
     if (dto.taxTerms !== undefined) dataToUpdate.taxTerms = dto.taxTerms;
     
     
