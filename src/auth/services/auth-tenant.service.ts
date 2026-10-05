@@ -544,10 +544,10 @@ export class AuthTenantService {
       : null;
 
     const result = await this.authQuery.query(
-      `INSERT INTO tenant_auth_settings (
+      `INSERT INTO ats.tenant_auth_settings AS auth_settings (
          tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11)
        ON CONFLICT (tenant_id) DO UPDATE SET
          allow_password_login    = EXCLUDED.allow_password_login,
          allow_microsoft_sso     = EXCLUDED.allow_microsoft_sso,
@@ -558,7 +558,7 @@ export class AuthTenantService {
          allowed_email_domains   = EXCLUDED.allowed_email_domains,
          microsoft_tenant_id     = EXCLUDED.microsoft_tenant_id,
          microsoft_client_id     = EXCLUDED.microsoft_client_id,
-         microsoft_client_secret = COALESCE(EXCLUDED.microsoft_client_secret, tenant_auth_settings.microsoft_client_secret),
+         microsoft_client_secret = COALESCE(EXCLUDED.microsoft_client_secret, auth_settings.microsoft_client_secret),
          updated_at              = NOW()
        RETURNING *`,
       [

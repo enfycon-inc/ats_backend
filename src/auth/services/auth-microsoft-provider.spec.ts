@@ -16,6 +16,28 @@ describe('tenant Microsoft identity provider configuration', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
+  it('binds a tenant UUID and empty domain list with explicit database types on first save', async () => {
+    const query = jest.fn(async (sql: string, params: any[]) => {
+      // Prisma binds JS strings as text; PostgreSQL cannot assign text to UUID.
+      // Enforce the same type boundary here rather than accepting every mock SQL.
+      if (!/VALUES\s*\(\$1::uuid,/.test(sql)) throw new Error('column tenant_id is of type uuid but expression is of type text');
+      if (!sql.includes('$8::text[]')) throw new Error('Email domains must bind as text[]');
+      expect(sql).toContain('INSERT INTO ats.tenant_auth_settings');
+      expect(params[0]).toBe(tenantId);
+      expect(params[7]).toEqual([]);
+      return { rows: [storedPolicy] };
+    });
+    const configureTenantIdentityProvider = jest.fn().mockResolvedValue('https://auth.example/endpoint');
+    const service = new AuthTenantService({ query } as any, {} as any, { configureTenantIdentityProvider } as any);
+    await expect(service.updateTenantAuthPolicy(tenantId, {
+      microsoftTenantId: directoryId,
+      microsoftClientId: 'application-id',
+      microsoftClientSecret: 'test-secret',
+      allowedEmailDomains: [],
+    })).resolves.toMatchObject({ tenantId, microsoftRedirectUri: 'https://auth.example/endpoint' });
+    expect(configureTenantIdentityProvider).toHaveBeenCalledTimes(1);
+  });
+
   it.each([200, 404])('uses the saved Microsoft directory when the provider lookup returns %s', async (status) => {
     const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async (input: any, init: any = {}) => {
       const url = String(input);
