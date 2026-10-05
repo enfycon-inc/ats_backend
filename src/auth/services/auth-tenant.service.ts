@@ -593,7 +593,14 @@ export class AuthTenantService {
         configuredMicrosoftTenantId,
       );
       if (!redirectUri) {
-        throw new ServiceUnavailableException('Microsoft sign-in could not be synchronized with Keycloak. Check the client credentials and try again.');
+        const reason = typeof (this.keycloakService as any).getLastIdentityProviderError === 'function'
+          ? (this.keycloakService as any).getLastIdentityProviderError()
+          : null;
+        throw new ServiceUnavailableException(
+          reason
+            ? `Microsoft sign-in could not be synchronized with Keycloak: ${reason}`
+            : 'Microsoft sign-in could not be synchronized with Keycloak. Check the client credentials and try again.',
+        );
       }
     }
 

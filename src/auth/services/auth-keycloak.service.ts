@@ -12,6 +12,7 @@ const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 @Injectable()
 export class AuthKeycloakService {
   private readonly logger = new Logger(AuthKeycloakService.name);
+  private lastIdentityProviderError: string | null = null;
 
   constructor(private readonly authQuery: AuthQueryService) {}
 
@@ -57,7 +58,8 @@ export class AuthKeycloakService {
         this.logger.debug(`[Keycloak] Admin token obtained from ${adminBaseUrl}`);
         return data.access_token;
       }
-      this.logger.warn(`[Keycloak] Admin token request failed (${res.status}) at ${tokenEndpoint}`);
+      const detail = (await res.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 240);
+      this.logger.warn(`[Keycloak] Admin token request failed (${res.status}) at ${tokenEndpoint}${detail ? `: ${detail}` : ''}`);
     } catch (err: any) {
       this.logger.warn(`[Keycloak] Could not reach admin token endpoint at ${tokenEndpoint}: ${err.message}`);
     }
@@ -71,6 +73,7 @@ export class AuthKeycloakService {
     clientSecret: string,
     microsoftTenantId?: string | null,
   ): Promise<string | null> {
+    this.lastIdentityProviderError = null;
     try {
       const normalizedClientSecret = String(clientSecret || '').trim();
       if (!normalizedClientSecret || /^[*•]+$/.test(normalizedClientSecret)) {
@@ -148,9 +151,14 @@ export class AuthKeycloakService {
       const issuerBase = (process.env.KEYCLOAK_ISSUER || 'http://localhost:8080/realms/enfycon-ats').split('/realms/')[0];
       return `${issuerBase}/realms/${realm}/broker/${idpAlias}/endpoint`;
     } catch (err: any) {
-      this.logger.error(`Failed to configure tenant IdP in Keycloak: ${err.message}`);
+      this.lastIdentityProviderError = String(err?.message || 'Unknown Keycloak synchronization error').replace(/\s+/g, ' ').slice(0, 500);
+      this.logger.error(`Failed to configure tenant IdP in Keycloak: ${this.lastIdentityProviderError}`);
       return null;
     }
+  }
+
+  getLastIdentityProviderError(): string | null {
+    return this.lastIdentityProviderError;
   }
 
   /**
