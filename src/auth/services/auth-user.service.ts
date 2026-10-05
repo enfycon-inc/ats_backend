@@ -686,9 +686,14 @@ async approveTenantUser(
 
   async bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) {
     if (!Array.isArray(userIds) || userIds.length === 0) throw new BadRequestException('userIds array is required.');
+    const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!validId.test(tenantId) || userIds.some(id => typeof id !== 'string' || !validId.test(id)) ||
+        (reviewerId && (typeof reviewerId !== 'string' || !validId.test(reviewerId.trim())))) {
+      throw new BadRequestException('Select valid users and a valid manager.');
+    }
     const cleanReviewerId = reviewerId && reviewerId.trim().length > 0 ? reviewerId.trim() : null;
     await this.authQuery.query(
-      `UPDATE users SET job_reviewer_id = $1, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND tenant_id = $3`,
+      `UPDATE users SET job_reviewer_id = $1::uuid, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND tenant_id = $3`,
       [cleanReviewerId, userIds, tenantId]
     );
     return { success: true, count: userIds.length, reviewerId: cleanReviewerId };
@@ -706,6 +711,5 @@ async approveTenantUser(
     return clean;
   }
 }
-
 
 

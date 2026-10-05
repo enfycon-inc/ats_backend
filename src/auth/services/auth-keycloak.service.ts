@@ -427,7 +427,7 @@ export class AuthKeycloakService {
     } else {
       const insertRes = await this.authQuery.query(
         `INSERT INTO users (keycloak_id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, true, false, $7::uuid, $8::uuid[])
+         VALUES ($1, $2::uuid, $3, $4, $5, $6, true, false, $7::uuid, $8::uuid[])
          RETURNING id, email, first_name, last_name, full_name, tenant_id, is_active, is_approved, requested_role, role_id, assigned_role_ids, branch_id, pod_id, business_unit_id, updated_at`,
         [data.keycloakId, tenantId, data.email, firstName, lastName, fullName, roleId, assignedRoleIds],
       );

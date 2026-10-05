@@ -380,7 +380,7 @@ export class AuthInitService implements OnModuleInit {
         const finalAssignedRoleIds = Array.from(resolvedRoleIds);
 
         await this.authQuery.query(
-          `UPDATE users SET role_id = $1, assigned_role_ids = $2::uuid[], branch_roles = $3::jsonb, updated_at = NOW() WHERE id = $4`,
+          `UPDATE users SET role_id = $1::uuid, assigned_role_ids = $2::uuid[], branch_roles = $3::jsonb, updated_at = NOW() WHERE id = $4`,
           [finalRoleId, finalAssignedRoleIds, JSON.stringify(normalizedBranchRoles), user.id]
         );
       }
@@ -417,14 +417,14 @@ export class AuthInitService implements OnModuleInit {
           const assignedRoleIds = Array.isArray(user.assigned_role_ids) ? [...user.assigned_role_ids] : [];
           if (superAdminRoleId && !assignedRoleIds.includes(superAdminRoleId)) assignedRoleIds.push(superAdminRoleId);
           await this.authQuery.query(
-            `UPDATE users SET is_approved = true, is_active = true, role_id = $1, assigned_role_ids = $2::uuid[] WHERE id = $3`,
+            `UPDATE users SET is_approved = true, is_active = true, role_id = $1::uuid, assigned_role_ids = $2::uuid[] WHERE id = $3`,
             [superAdminRoleId, assignedRoleIds, user.id]
           );
           this.logger.log(`✅ Platform SUPER_ADMIN verified in DB (${adminEmail}).`);
         } else {
           await this.authQuery.query(
             `INSERT INTO users (id, tenant_id, email, full_name, is_active, is_approved, role_id, assigned_role_ids, keycloak_id)
-             VALUES ('1d4ac532-4229-4c95-9b11-af573060020b', $1, $2, $3, true, true, $4, $5, '1d4ac532-4229-4c95-9b11-af573060020b')
+             VALUES ('1d4ac532-4229-4c95-9b11-af573060020b', $1::uuid, $2, $3, true, true, $4::uuid, $5::uuid[], '1d4ac532-4229-4c95-9b11-af573060020b')
              ON CONFLICT (id) DO UPDATE SET is_active = true, is_approved = true, role_id = EXCLUDED.role_id`,
             [DEFAULT_TENANT_ID, adminEmail, adminName, superAdminRoleId, [superAdminRoleId]]
           );

@@ -171,7 +171,7 @@ export class AuthCoreService {
           }
 
           if (roleId) {
-            await this.authQuery.query('UPDATE users SET role_id = $1 WHERE LOWER(email) = LOWER($2)', [roleId, cleanEmail]).catch(() => {});
+            await this.authQuery.query('UPDATE users SET role_id = $1::uuid WHERE LOWER(email) = LOWER($2)', [roleId, cleanEmail]).catch(() => {});
           }
 
           result = await this.authQuery.query(
@@ -455,6 +455,7 @@ export class AuthCoreService {
     roles?: string[];
     tenantId?: string;
     branchId?: string;
+    businessUnitId?: string;
     isApproved?: boolean;
     sendEmailInvite?: boolean;
   }, requesterUser?: any) {
@@ -498,6 +499,17 @@ export class AuthCoreService {
 
     if (isApproved) await this.rbacService.checkSeatLimit(tenantId);
 
+    const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const [field, value] of Object.entries({ tenantId, branchId: dto.branchId, businessUnitId: dto.businessUnitId })) {
+      if (value && (typeof value !== 'string' || !validId.test(value))) {
+        throw new BadRequestException(`${field} must be a valid ID.`);
+      }
+    }
+    if (dto.businessUnitId) {
+      const unit = await this.authQuery.query('SELECT id FROM business_units WHERE id = $1::uuid AND tenant_id = $2::uuid AND branch_id = $3::uuid', [dto.businessUnitId, tenantId, dto.branchId || null]);
+      if (!unit.rows.length) throw new BadRequestException('Select a unit in the chosen workspace and branch.');
+    }
+
     const rawRolesList: string[] = [];
     if (Array.isArray(dto.roles) && dto.roles.length > 0) rawRolesList.push(...dto.roles);
     else if (dto.role) rawRolesList.push(dto.role);
@@ -520,10 +532,10 @@ export class AuthCoreService {
     const roleId: string | null = assignedRoleIds[0] || null;
     const branchId: string | null = dto.branchId && uuidRegex.test(dto.branchId) ? dto.branchId : null;
     const result = await this.authQuery.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids, branch_id)
-       VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8::uuid[], $9)
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids, branch_id, business_unit_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, true, $6, $7::uuid, $8::uuid[], $9::uuid, $10::uuid)
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id, assigned_role_ids, branch_id`,
-      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds, branchId]
+      [tenantId, email, firstName, lastName, fullName, isApproved, roleId, assignedRoleIds, branchId, dto.businessUnitId || null]
     );
     const user: any = result.rows[0];
 

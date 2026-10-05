@@ -57,6 +57,9 @@ export class RegisterDto {
   @ApiPropertyOptional({ description: 'Primary branch office UUID' })
   branchId?: string;
 
+  @ApiPropertyOptional({ description: 'Operating unit UUID' })
+  businessUnitId?: string;
+
 
 
 

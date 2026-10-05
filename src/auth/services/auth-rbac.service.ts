@@ -460,7 +460,7 @@ export class AuthRbacService {
     let reassignedCount = 0;
     if (targetRole) {
       const updateRes = await this.authQuery.query(
-        'UPDATE users SET role_id = $1 WHERE role_id = $2 AND tenant_id = $3 RETURNING id',
+        'UPDATE users SET role_id = $1::uuid WHERE role_id = $2 AND tenant_id = $3 RETURNING id',
         [targetRole.id, roleId, tenantId]
       );
       reassignedCount = updateRes.rows.length;
@@ -563,7 +563,7 @@ export class AuthRbacService {
     }
 
     await this.authQuery.query(
-      `UPDATE users SET role_id = $1, assigned_role_ids = $2::uuid[], branch_roles = $3::jsonb, updated_at = NOW() WHERE id = $4 AND tenant_id = $5`,
+      `UPDATE users SET role_id = $1::uuid, assigned_role_ids = $2::uuid[], branch_roles = $3::jsonb, updated_at = NOW() WHERE id = $4 AND tenant_id = $5`,
       [roleIds[0] || targetUser.role_id, finalAssignedRoleIds, JSON.stringify(finalBranchRoles), userId, tenantId]
     );
 
@@ -654,7 +654,7 @@ export class AuthRbacService {
     }
 
     await this.authQuery.query(
-      `UPDATE users SET role_id = $1, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3 AND tenant_id = $4`,
+      `UPDATE users SET role_id = $1::uuid, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3 AND tenant_id = $4`,
       [nextRoleId, remainingAssigned, userId, tenantId]
     );
 

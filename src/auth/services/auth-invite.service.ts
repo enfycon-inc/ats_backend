@@ -48,6 +48,10 @@ export class AuthInviteService {
     }
 
     const tenantId = requester.tenantId || DEFAULT_TENANT_ID;
+    const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const [field, value] of Object.entries({ tenantId, roleId: dto.roleId, branchId: dto.branchId, podId: dto.podId })) {
+      if (value && (typeof value !== 'string' || !validId.test(value))) throw new BadRequestException(`${field} must be a valid ID.`);
+    }
     const cleanEmail = (dto.email || '').trim().toLowerCase();
     const fullName = (dto.fullName || '').trim();
 
@@ -107,7 +111,7 @@ export class AuthInviteService {
     const assignedRoleIds = roleId ? [roleId] : [];
     const insertUserRes = await this.authQuery.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, pod_id, is_active, is_approved)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, $9, true, true)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid, $7::uuid[], $8::uuid, $9::uuid, true, true)
        RETURNING id, email, first_name, last_name, full_name, created_at`,
       [tenantId, cleanEmail, firstName, lastName, fullName, roleId, assignedRoleIds, dto.branchId || null, dto.podId || null]
     );
@@ -118,7 +122,7 @@ export class AuthInviteService {
 
     await this.authQuery.query(
       `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role_id, branch_id, pod_id, invitation_token, token_expires_at, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10::uuid)
        ON CONFLICT (tenant_id, email) DO UPDATE SET
          invitation_token = EXCLUDED.invitation_token,
          token_expires_at = EXCLUDED.token_expires_at,
