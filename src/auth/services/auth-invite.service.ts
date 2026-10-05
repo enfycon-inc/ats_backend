@@ -123,7 +123,7 @@ export class AuthInviteService {
          invitation_token = EXCLUDED.invitation_token,
          token_expires_at = EXCLUDED.token_expires_at,
          is_accepted = FALSE`,
-      [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.isAdmin ? 'Admin' : 'BranchAdmin']
+      [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.dbId || null]
     );
 
     const tenantRes = await this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);

@@ -93,7 +93,7 @@ export class AuthTenantService {
     );
 
     const roleMap = await this.rbacService.seedTenantRoles(tenant.id);
-    const adminRoleId = roleMap['TENANT_ADMIN'];
+    const adminRoleId = roleMap['TENANT_ADMIN'] || roleMap['ADMIN'] || null;
 
     const firstName = fullName.split(/\s+/)[0] || '';
     const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
@@ -221,7 +221,7 @@ export class AuthTenantService {
     await this.authQuery.query(`INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1, $2, TRUE)`, [tenant.id, dto.subdomain]);
 
     const roleMap = await this.rbacService.seedTenantRoles(tenant.id);
-    const adminRoleId = roleMap['TENANT_ADMIN'];
+    const adminRoleId = roleMap['TENANT_ADMIN'] || roleMap['ADMIN'] || null;
 
     const adminFullName = dto.adminFullName.trim();
     const firstName = adminFullName.split(/\s+/)[0] || '';
