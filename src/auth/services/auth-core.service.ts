@@ -308,10 +308,10 @@ export class AuthCoreService {
     params.append('password', dto.password);
 
     try {
-      let res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+      let res = await fetch(tokenUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
       if (!res.ok && res.status !== 401 && res.status !== 400) {
         const altUrl = tokenUrl.includes('localhost') ? tokenUrl.replace('localhost', 'keycloak') : tokenUrl.replace('keycloak', 'localhost');
-        res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+        res = await fetch(altUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
       }
 
       // If rejected (401) and it's the platform super admin configured in env, auto-sync credentials in Keycloak and retry
@@ -327,7 +327,7 @@ export class AuthCoreService {
           fullName: user.full_name,
           tenantId: user.tenant_id,
         }).catch((err) => this.logger.warn(`Keycloak provision error: ${err.message}`));
-        res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+        res = await fetch(tokenUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
       }
       if (res.ok) {
         const tokenData = await res.json();
@@ -899,10 +899,10 @@ export class AuthCoreService {
     let expiresIn: number;
 
     try {
-      let res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+      let res = await fetch(tokenUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
       if (!res.ok && res.status !== 401 && res.status !== 400) {
         const altUrl = tokenUrl.includes('localhost') ? tokenUrl.replace('localhost', 'keycloak') : tokenUrl.replace('keycloak', 'localhost');
-        res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+        res = await fetch(altUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
       }
 
       if (res.ok) {

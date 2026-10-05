@@ -46,4 +46,19 @@ describe('Keycloak session transport', () => {
     await service.logoutKeycloakSession('valid');
     expect(mock.mock.calls[0][1]?.headers).toMatchObject({ 'X-Forwarded-Proto': 'https' });
   });
+  it('issues password tokens using the same HTTPS scheme as renewal', async () => {
+    const query = { query: jest.fn().mockResolvedValue({ rows: [{
+      id: 'user', email: 'user@example.test', tenant_id: 'tenant', tenant_domain: 'workspace',
+      is_active: true, is_approved: true, tenant_status: 'ACTIVE', system_role: 'RECRUITER',
+    }] }) };
+    const keycloak = { syncKeycloakUser: jest.fn().mockResolvedValue(undefined) };
+    const tenant = { getTenantAuthPolicy: jest.fn().mockResolvedValue({ allowPasswordLogin: true }) };
+    service = new AuthCoreService(query as any, keycloak as any, tenant as any, null as any, null as any);
+    const mock = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'header.eyJzdWIiOiJ1c2VyIn0.signature', refresh_token: 'renewal', expires_in: 300,
+    })));
+    await expect(service.login({ email: 'user@example.test', password: 'example' })).resolves.toMatchObject({ refreshToken: 'renewal', expiresIn: 300 });
+    expect(new URLSearchParams(mock.mock.calls[0][1]?.body as string).get('grant_type')).toBe('password');
+    expect(mock.mock.calls[0][1]?.headers).toMatchObject({ 'X-Forwarded-Proto': 'https' });
+  });
 });
