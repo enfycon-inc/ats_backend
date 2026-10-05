@@ -419,7 +419,8 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: {
       companyName: string;
       subdomain: string;
-      adminFullName: string;
+      adminFirstName: string;
+        adminLastName: string;
       adminEmail: string;
       adminPassword?: string;
       userLimit?: number;
@@ -916,4 +917,5 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantAuthPolicy(user.tenantId, dto);
   }
 }
+
 

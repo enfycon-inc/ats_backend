@@ -169,7 +169,8 @@ export class AuthTenantService {
   async createManualTenant(dto: {
     companyName: string;
     subdomain: string;
-    adminFullName: string;
+    adminFirstName: string;
+      adminLastName: string;
     adminEmail: string;
     adminPassword?: string;
     userLimit?: number;
@@ -184,7 +185,7 @@ export class AuthTenantService {
     const password = dto.adminPassword;
     const userLimit = dto.userLimit || 20;
     const maxBranches = dto.maxBranches || 5;
-    const market = dto.defaultMarket || 'US';
+    const market = 'US';
 
     if (!dto.subdomain || !/^[a-z0-9-]+$/.test(dto.subdomain)) {
       throw new BadRequestException('Subdomain must contain only lowercase letters, numbers, and hyphens.');
@@ -223,9 +224,9 @@ export class AuthTenantService {
     const roleMap = await this.rbacService.seedTenantRoles(tenant.id);
     const adminRoleId = roleMap['TENANT_ADMIN'] || roleMap['ADMIN'] || null;
 
-    const adminFullName = dto.adminFullName.trim();
-    const firstName = adminFullName.split(/\s+/)[0] || '';
-    const lastName = adminFullName.split(/\s+/).slice(1).join(' ') || '';
+    const firstName = dto.adminFirstName.trim();
+      const lastName = dto.adminLastName.trim();
+      const adminFullName = (firstName + ' ' + lastName).trim();
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
     const userResult = await this.authQuery.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
@@ -622,3 +623,4 @@ export class AuthTenantService {
     return { success: true, verified: true, status: 'VERIFIED', domainName: normalized, sslStatus: 'ACTIVE', message: `DNS verified successfully (${matchDetail}) and SSL is active!` };
   }
 }
+
