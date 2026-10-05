@@ -323,15 +323,10 @@ export class RecruiterSubmissionsService {
     let paramIndex = 2;
 
     const userPerms = user.permissions || [];
-    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
-    const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
-    const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
-    const isRecruiter = user.roles?.includes('RECRUITER');
-    const isPodLead = user.roles?.includes('POD_LEAD');
-
     const canViewAll =
-      isAdmin ||
-      isDeliveryHead ||
+      userPerms.includes('tenant:manage') ||
+      userPerms.includes('tenant:settings') ||
+      userPerms.includes('platform:manage') ||
       userPerms.includes('submission:view') ||
       userPerms.includes('submission:audit_rounds') ||
       userPerms.includes('submission:audit_l1') ||
@@ -340,46 +335,27 @@ export class RecruiterSubmissionsService {
       userPerms.includes('submission:approve_client');
 
     const view = filters.view || 'all';
+    if (!['my', 'pod', 'all'].includes(view)) {
+      throw new BadRequestException('Invalid submission view.');
+    }
+    if (!canViewAll && !userPerms.includes('submission:create')) {
+      throw new ForbiddenException('Missing submission access permission.');
+    }
+    if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');
 
     if (view === 'my') {
-      baseSql += ` AND s.recruiter_id = {paramIndex}${paramIndex}`;
+      baseSql += ` AND s.recruiter_id = $${paramIndex}`;
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
-      baseSql += ` AND s.recruiter_id IN (SELECT id FROM ats.users WHERE pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid))`;
+      if (!userPerms.includes('pod:view')) throw new ForbiddenException('Missing pod:view permission.');
+      baseSql += ` AND s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1 AND pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1))`;
       params.push(user.dbId);
       paramIndex++;
     } else if (!canViewAll) {
-      const roleConditions: string[] = [];
-
-      if (isRecruiter) {
-        roleConditions.push(`s.recruiter_id = ${paramIndex}${paramIndex}`);
-        params.push(user.dbId);
-        paramIndex++;
-      }
-
-      if (isPodLead) {
-        roleConditions.push(`s.recruiter_id IN (SELECT id FROM ats.users WHERE pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}))`);
-        params.push(user.dbId);
-        paramIndex++;
-      }
-
-      if (isAm) {
-        roleConditions.push(
-          `(
-            j.account_manager_id = $${paramIndex}
-            OR s.recruiter_id = $${paramIndex}
-          )`
-        );
-        params.push(user.dbId);
-        paramIndex += 1;
-      }
-
-      if (roleConditions.length > 0) {
-        baseSql += ` AND (${roleConditions.join(' OR ')})`;
-      } else {
-        baseSql += ` AND 1=0`;
-      }
+      baseSql += ` AND s.recruiter_id = $${paramIndex}`;
+      params.push(user.dbId);
+      paramIndex++;
     }
 
     if (filters.jobId) {
@@ -452,7 +428,11 @@ export class RecruiterSubmissionsService {
     const limit = Math.min(Math.max(1, filters.limit || 20), 100);
     const offset = (page - 1) * limit;
 
-    const countSql = `SELECT COUNT(*) as count FROM (${baseSql}) AS counted`;
+    const countSql = `SELECT COUNT(*) as count,
+      COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
+      COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
+      COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
+      FROM (${baseSql}) AS counted`;
     const retrieveSql = `${baseSql} ORDER BY s.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
 
@@ -471,6 +451,12 @@ export class RecruiterSubmissionsService {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+        stats: {
+          total,
+          l1Pending: Number(countRes[0]?.l1_pending || 0),
+          l2Pending: Number(countRes[0]?.l2_pending || 0),
+          l3Pending: Number(countRes[0]?.l3_pending || 0),
+        },
       };
     } catch (err: any) {
       this.logger.error(`Failed to retrieve submissions: ${err.message}`, err.stack);
@@ -874,75 +860,9 @@ export class RecruiterSubmissionsService {
   /**
    * Retrieve aggregate status counts for recruiter tracker, scoped by tenant
    */
-  async getTrackerStats(tenantId: string, user: AuthUser) {
-    this.logger.log(`Retrieving aggregate tracker stats for tenant: ${tenantId}`);
-
-    let baseFilter = 'WHERE tenant_id = $1';
-    const params: any[] = [tenantId];
-    let paramIndex = 2;
-
-    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
-    const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
-    const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
-    const isRecruiter = user.roles?.includes('RECRUITER');
-    const isPodLead = user.roles?.includes('POD_LEAD');
-
-    if (!isAdmin && !isDeliveryHead) {
-      const roleConditions: string[] = [];
-
-      if (isRecruiter) {
-        roleConditions.push(`recruiter_id = $${paramIndex}`);
-        params.push(user.dbId);
-        paramIndex++;
-      }
-
-      if (isPodLead) {
-        roleConditions.push(`recruiter_id IN (SELECT id FROM ats.users WHERE pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex}))`);
-        params.push(user.dbId);
-        paramIndex++;
-      }
-
-      if (isAm) {
-        roleConditions.push(
-          `(
-            j.account_manager_id = ${paramIndex}
-            OR s.recruiter_id = ${paramIndex}
-          )`
-        );
-        params.push(user.dbId);
-        paramIndex += 1;
-      }
-
-      if (roleConditions.length > 0) {
-        baseFilter += ` AND (${roleConditions.join(' OR ')})`;
-      } else {
-        baseFilter += ` AND 1=0`;
-      }
-    }
-
-    const statsSql = `
-      SELECT 
-        COUNT(*) as total,
-        COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
-        COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
-        COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
-      FROM ats.recruiter_submissions
-      ${baseFilter}
-    `;
-
-    try {
-      const statsRes: any = await this.prisma.$queryRawUnsafe(statsSql, ...params);
-      const row = statsRes[0] || {};
-      return {
-        total: Number(row.total || 0),
-        l1Pending: Number(row.l1_pending || 0),
-        l2Pending: Number(row.l2_pending || 0),
-        l3Pending: Number(row.l3_pending || 0),
-      };
-    } catch (err: any) {
-      this.logger.error(`Failed to calculate tracker statistics: ${err.message}`, err.stack);
-      return { total: 0, l1Pending: 0, l2Pending: 0, l3Pending: 0 };
-    }
+  async getTrackerStats(tenantId: string, user: AuthUser, filters: { view?: string; branchId?: string } = {}) {
+    const result = await this.findAll(tenantId, user, { ...filters, limit: 1 });
+    return result.stats;
   }
 
   /**

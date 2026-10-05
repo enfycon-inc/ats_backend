@@ -101,9 +101,12 @@ export class RecruiterSubmissionsController {
   async getTrackerStats(
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('view') view?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.getTrackerStats(tid, user);
+    const bid = resolveBranchId(user, branchHeaderId);
+    return this.service.getTrackerStats(tid, user, { view, branchId: bid || undefined });
   }
 
   @Get('custom-remarks')

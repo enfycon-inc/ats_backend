@@ -64,3 +64,4 @@ prisma/generated
 # Scratch & temporary migration scripts
 scratch/
 /public/image/logos/
+/memory
