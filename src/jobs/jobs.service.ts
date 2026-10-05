@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
@@ -129,76 +129,13 @@ export interface CandidateMatch {
 }
 
 @Injectable()
-export class JobsService implements OnModuleInit {
+export class JobsService {
   private readonly logger = new Logger(JobsService.name);
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
   ) {}
-
-  async onModuleInit() {
-    await this.ensureJobsTableV2();
-  }
-
-  /**
-   * Expanded jobs table with all Ceipal-matching columns + branch timing snapshot
-   */
-  private async ensureJobsTableV2() {
-    try {
-      await this.prisma.$executeRawUnsafe(`
-        ALTER TABLE ats.jobs
-          ADD COLUMN IF NOT EXISTS business_unit VARCHAR(255) DEFAULT 'enfysync Inc',
-          ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT '',
-          ADD COLUMN IF NOT EXISTS country VARCHAR(100) DEFAULT 'United States',
-          ADD COLUMN IF NOT EXISTS client_job_id VARCHAR(100) DEFAULT 'N/A',
-          ADD COLUMN IF NOT EXISTS recruitment_manager_id UUID,
-          ADD COLUMN IF NOT EXISTS tax_terms VARCHAR(50) DEFAULT 'C2C',
-          ADD COLUMN IF NOT EXISTS remote_job VARCHAR(20) DEFAULT 'No',
-          ADD COLUMN IF NOT EXISTS start_date DATE,
-          ADD COLUMN IF NOT EXISTS end_date DATE,
-          ADD COLUMN IF NOT EXISTS hours_per_week INT DEFAULT 40,
-          ADD COLUMN IF NOT EXISTS duration VARCHAR(100) DEFAULT '',
-          ADD COLUMN IF NOT EXISTS secondary_skills TEXT[] DEFAULT '{}',
-          ADD COLUMN IF NOT EXISTS industry VARCHAR(100) DEFAULT '',
-          ADD COLUMN IF NOT EXISTS degree VARCHAR(100) DEFAULT '',
-          ADD COLUMN IF NOT EXISTS exp_min INT DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS exp_max INT DEFAULT 10,
-          
-          ALTER COLUMN visa_type TYPE VARCHAR(500),
-          ADD COLUMN IF NOT EXISTS respond_by DATE,
-          ADD COLUMN IF NOT EXISTS notice_period VARCHAR(100) DEFAULT '',
-          ADD COLUMN IF NOT EXISTS approval_status VARCHAR(50) DEFAULT 'APPROVED',
-          ADD COLUMN IF NOT EXISTS assigned_approver_id UUID,
-          ADD COLUMN IF NOT EXISTS assigned_approver_role VARCHAR(50),
-          ADD COLUMN IF NOT EXISTS approved_by UUID,
-          ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP,
-          ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
-          ADD COLUMN IF NOT EXISTS job_timezone VARCHAR(100),
-          ADD COLUMN IF NOT EXISTS work_start_time VARCHAR(20),
-          ADD COLUMN IF NOT EXISTS work_end_time VARCHAR(20),
-          ADD COLUMN IF NOT EXISTS working_days TEXT,
-          ADD COLUMN IF NOT EXISTS shift_timing VARCHAR(100),
-          ADD COLUMN IF NOT EXISTS timing_snapshot_at TIMESTAMP WITH TIME ZONE;
-      `);
-    } catch (err: any) {
-      this.logger.debug(`Jobs schema update note: ${err.message}`);
-    }
-
-    // Auto-heal existing jobs created under Hydrabad Branch that have GEN- prefix
-    try {
-      await this.prisma.$executeRawUnsafe(`
-        UPDATE ats.jobs
-        SET job_code = REPLACE(job_code, 'GEN-', 'HYD-')
-        WHERE job_code LIKE 'GEN-%' 
-          AND (business_unit ILIKE '%hydrabad%' OR business_unit ILIKE '%hyderabad%')
-      `);
-    } catch (e: any) {
-      this.logger.warn(`Auto-heal GEN job codes failed: ${e.message}`);
-    }
-
-    this.logger.log('Jobs table V2 schema verified (all Ceipal fields + approval workflow present).');
-  }
 
   /**
    * Resolve any user identifier (UUID, email, name, prefixed 'rec:uuid'/'dh:uuid') to a pure user UUID.
@@ -1261,7 +1198,7 @@ export class JobsService implements OnModuleInit {
     const rawEndDate = row.end_date ?? row.endDate;
     const rawRespondBy = row.respond_by ?? row.respondBy;
     const rawApprovedAt = row.approved_at ?? row.approvedAt;
-    const rawTimingSnapshotAt = row.timing_snapshot_at ?? row.timingSnapshotAt;
+
 
     return {
       id: row.id,
@@ -1347,7 +1284,7 @@ export class JobsService implements OnModuleInit {
       // Branch Timing Snapshot
       jobTimezone: row.job_timezone ?? row.jobTimezone ?? (row.country === 'United States' || row.market === 'US' ? 'America/New_York' : 'Asia/Kolkata'),
       shiftTiming: row.shift_timing ?? row.shiftTiming ?? 'General Day Shift (09:00 - 18:00)',
-      timingSnapshotAt: rawTimingSnapshotAt ? new Date(rawTimingSnapshotAt).toISOString() : null,
+      timingSnapshotAt: null,
     };
   }
 
