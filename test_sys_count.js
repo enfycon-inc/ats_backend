@@ -1,1 +1,0 @@
-const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient(); async function main() { const c = await prisma.$queryRawUnsafe('SELECT COUNT(*) FROM ats.system_roles'); console.log(c); await prisma.$disconnect(); } main();

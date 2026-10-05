@@ -1,1 +1,0 @@
-const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient(); async function main() { const c = await prisma.$queryRawUnsafe('SELECT email FROM keycloak.user_entity'); console.log(c); await prisma.$disconnect(); } main();

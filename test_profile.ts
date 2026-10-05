@@ -1,1 +1,0 @@
-import { PrismaClient } from '@prisma/client'; async function main() { const prisma = new PrismaClient(); try { const u = await prisma.user.findFirst(); if(!u) return console.log('no user'); console.log('testing profile for', u.id); } catch(e) { console.error('Error:', e); } finally { await prisma.\(); } } main();
