@@ -533,7 +533,7 @@ Validates email + password and returns a signed JWT access token.
   // ─── PATCH /api/auth/tenants/my-subdomain ───────────────────
   @Patch('tenants/my-subdomain')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('platform:manage')
+  @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant subdomain identifier [SUPER_ADMIN only]',
