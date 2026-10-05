@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -6,6 +6,13 @@ export class ClientsService {
   private readonly logger = new Logger(ClientsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private validateActorId(actorId: string): string {
+    if (typeof actorId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actorId)) {
+      throw new BadRequestException('A valid authenticated user ID is required. Please sign in again.');
+    }
+    return actorId;
+  }
 
   private formatClient(
     client: any,
@@ -87,6 +94,12 @@ export class ClientsService {
 
   async createClient(dto: any, tenantId: string, createdBy: string) {
     this.logger.log(`Creating client for tenant ${tenantId}`);
+    this.validateActorId(createdBy);
+    const creator = await this.prisma.user.findFirst({
+      where: { id: createdBy, tenantId },
+      select: { id: true, jobReviewerId: true, roleId: true, assignedRoleIds: true },
+    });
+    if (!creator) throw new ForbiddenException('The authenticated user does not belong to this workspace.');
 
     // Fetch tenant details first
     const tenant = await this.prisma.tenant.findUnique({
@@ -141,83 +154,59 @@ export class ClientsService {
     let initialStatus = 'Active';
     let approvalStatus = 'APPROVED';
     let assignedApproverId: string | null = null;
-    let approvedBy: string | null = 'System';
+    let approvedBy: string | null = creator.id;
     let approvedAt: Date | null = new Date();
 
-    if (createdBy && createdBy !== 'System') {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(createdBy);
-      try {
-        const creator = await this.prisma.user.findFirst({
-          where: {
-            tenantId,
-            OR: isUuid ? [{ id: createdBy }, { email: createdBy }] : [{ email: createdBy }],
-          },
-          select: {
-            id: true,
-            jobReviewerId: true,
-            roleId: true,
-            assignedRoleIds: true,
-            fullName: true,
-            email: true,
-          },
-        });
+    let roleIds: string[] = [];
+    if (creator.roleId) roleIds.push(creator.roleId);
+    if (creator.assignedRoleIds && creator.assignedRoleIds.length > 0) {
+      roleIds.push(...creator.assignedRoleIds);
+    }
+    roleIds = [...new Set(roleIds)];
 
-        if (creator) {
-          let roleIds: string[] = [];
-          if (creator.roleId) roleIds.push(creator.roleId);
-          if (creator.assignedRoleIds && creator.assignedRoleIds.length > 0) {
-            roleIds.push(...creator.assignedRoleIds);
-          }
-          roleIds = [...new Set(roleIds)];
-
-          let perms: string[] = [];
-          if (roleIds.length > 0) {
-            const customRoles = await this.prisma.customRole.findMany({
-              where: { id: { in: roleIds } },
-              select: { permissions: true },
-            });
-            const systemRoles = await this.prisma.systemRole.findMany({
-              where: { id: { in: roleIds } },
-              select: { permissions: true },
-            });
-            const allPerms = [...customRoles, ...systemRoles].flatMap((r) => {
-              const p = r.permissions;
-              if (Array.isArray(p)) return p as string[];
-              if (typeof p === 'string') {
-                try {
-                  const parsed = JSON.parse(p);
-                  return Array.isArray(parsed) ? parsed : [];
-                } catch {
-                  return [];
-                }
-              }
-              return [];
-            });
-            perms = [...new Set(allPerms)];
-          }
-
-          const hasDirectAddPerm =
-            perms.includes('client:direct_add') ||
-            perms.includes('client:approve') ||
-            perms.includes('tenant:settings') ||
-            perms.includes('tenant:manage');
-
-          if (!hasDirectAddPerm) {
-            initialStatus = 'Pending Approval';
-            approvalStatus = 'PENDING_APPROVAL';
-            assignedApproverId = creator.jobReviewerId || null;
-            approvedBy = null;
-            approvedAt = null;
-          } else {
-            initialStatus = 'Active';
-            approvalStatus = 'APPROVED';
-            approvedBy = creator.fullName || creator.email || 'System';
-            approvedAt = new Date();
+    let perms: string[] = [];
+    if (roleIds.length > 0) {
+      const customRoles = await this.prisma.customRole.findMany({
+        where: { id: { in: roleIds } },
+        select: { permissions: true },
+      });
+      const systemRoles = await this.prisma.systemRole.findMany({
+        where: { id: { in: roleIds } },
+        select: { permissions: true },
+      });
+      const allPerms = [...customRoles, ...systemRoles].flatMap((r) => {
+        const p = r.permissions;
+        if (Array.isArray(p)) return p as string[];
+        if (typeof p === 'string') {
+          try {
+            const parsed = JSON.parse(p);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
           }
         }
-      } catch (err) {
-        this.logger.warn(`Could not resolve creator permissions for ${createdBy}: ${err}`);
-      }
+        return [];
+      });
+      perms = [...new Set(allPerms)];
+    }
+
+    const hasDirectAddPerm =
+      perms.includes('client:direct_add') ||
+      perms.includes('client:approve') ||
+      perms.includes('tenant:settings') ||
+      perms.includes('tenant:manage');
+
+    if (!hasDirectAddPerm) {
+      initialStatus = 'Pending Approval';
+      approvalStatus = 'PENDING_APPROVAL';
+      assignedApproverId = creator.jobReviewerId || null;
+      approvedBy = null;
+      approvedAt = null;
+    } else {
+      initialStatus = 'Active';
+      approvalStatus = 'APPROVED';
+      approvedBy = creator.id;
+      approvedAt = new Date();
     }
 
     const created = await this.prisma.client.create({
@@ -415,6 +404,7 @@ export class ClientsService {
   }
 
   async approveClient(id: string, tenantId: string, approvedBy: string) {
+    this.validateActorId(approvedBy);
     const existing = await this.prisma.client.findFirst({
       where: { id, tenantId, deletedAt: null },
     });
@@ -437,6 +427,7 @@ export class ClientsService {
   }
 
   async rejectClient(id: string, tenantId: string, rejectedBy: string, reason?: string) {
+    this.validateActorId(rejectedBy);
     const existing = await this.prisma.client.findFirst({
       where: { id, tenantId, deletedAt: null },
     });

@@ -40,7 +40,7 @@ export class ClientsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.clientsService.createClient(dto, tid, user?.dbId || 'System');
+    return this.clientsService.createClient(dto, tid, user?.dbId);
   }
 
   @Get()
@@ -102,7 +102,7 @@ export class ClientsController {
       throw new ForbiddenException('Only Delivery Heads, Tenant Admins, Branch Admins, and authorized staff with client:approve permission can approve client accounts.');
     }
 
-    const approvedBy = (user as any)?.fullName || user?.email || 'Reviewer';
+    const approvedBy = user?.dbId;
     return this.clientsService.approveClient(id, tid, approvedBy);
   }
 
@@ -128,7 +128,7 @@ export class ClientsController {
       throw new ForbiddenException('Only Delivery Heads, Tenant Admins, Branch Admins, and authorized staff with client:reject permission can reject client accounts.');
     }
 
-    const rejectedBy = (user as any)?.fullName || user?.email || 'Reviewer';
+    const rejectedBy = user?.dbId;
     return this.clientsService.rejectClient(id, tid, rejectedBy, body?.reason);
   }
 
