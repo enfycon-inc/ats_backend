@@ -61,7 +61,7 @@ export class AuthRbacService {
       if (roleRes.rows.length === 0) {
         const ins = await this.authQuery.query(`
           INSERT INTO custom_roles (tenant_id, branch_id, name, description, is_system, system_role_id)
-          VALUES ($1, NULL, $2, $3, true, $4)
+          VALUES ($1::uuid, NULL, $2, $3, true, $4::uuid)
           RETURNING id
         `, [
           tenantId,
@@ -74,14 +74,14 @@ export class AuthRbacService {
       } else {
         roleId = (roleRes.rows[0] as any).id;
         await this.authQuery.query(
-          'UPDATE custom_roles SET system_role_id = $1, description = $2 WHERE id = $3',
+          'UPDATE custom_roles SET system_role_id = $1::uuid, description = $2 WHERE id = $3::uuid',
           [systemRoleId, `Default system role for ${roleName.toLowerCase()}.`, roleId]
         );
       }
 
       roleMap[systemKey] = roleId;
 
-      if (created) await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2', [JSON.stringify(perms), roleId]);
+      if (created) await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2::uuid', [JSON.stringify(perms), roleId]);
     }
 
     return roleMap;
@@ -279,7 +279,7 @@ export class AuthRbacService {
 
     const roleRes = await this.authQuery.query(
       `INSERT INTO custom_roles (tenant_id, branch_id, business_unit_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
-         VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9::jsonb)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, false, $6::uuid, $7::uuid, $8::uuid, $9::jsonb)
        RETURNING id, tenant_id, branch_id as "branchId", business_unit_id as "businessUnitId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
       [tenantId, effectiveBranchId, businessUnitId || null, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
     );
@@ -349,7 +349,7 @@ export class AuthRbacService {
     if (body.businessUnitId !== undefined) { params.push(body.businessUnitId || null); updates.push(`business_unit_id = $${params.length}::uuid`); }
 
     if (updates.length > 1) {
-      await this.authQuery.query(`UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1 AND tenant_id = $2`, params);
+      await this.authQuery.query(`UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1::uuid AND tenant_id = $2::uuid`, params);
 
       if (body.name !== undefined && body.name.trim() !== existingRole.name) {
         const oldName = existingRole.name;
@@ -402,7 +402,7 @@ export class AuthRbacService {
     const allowedCeiling = new Set(DEFAULT_PERMS[sysKey] || DEFAULT_PERMS.RECRUITER);
     const filteredPermissions = role.is_system ? permissions : permissions.filter(p => allowedCeiling.has(p));
 
-    await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2', [JSON.stringify(filteredPermissions), roleId]);
+    await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2::uuid', [JSON.stringify(filteredPermissions), roleId]);
 
     return { message: 'Permissions updated successfully.', permissions: filteredPermissions };
   }
@@ -484,7 +484,7 @@ export class AuthRbacService {
     await this.authQuery.query('UPDATE user_invitations SET role_id = NULL WHERE role_id = $1', [roleId]).catch(() => {});
 
     await this.authQuery.query('DELETE FROM user_roles WHERE role_id = $1', [roleId]).catch(() => {});
-    await this.authQuery.query('DELETE FROM custom_roles WHERE id = $1 AND tenant_id = $2', [roleId, tenantId]);
+    await this.authQuery.query('DELETE FROM custom_roles WHERE id = $1::uuid AND tenant_id = $2::uuid', [roleId, tenantId]);
 
     return {
       message: `Custom role "${roleToDel.name}" deleted successfully.${reassignedCount > 0 ? ` Reassigned ${reassignedCount} staff member(s) to ${targetRole?.name || 'default role'}.` : ''}`,

@@ -1,0 +1,1 @@
+const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient(); async function main() { const c = await prisma.$queryRawUnsafe('SELECT * FROM ats.custom_roles LIMIT 1'); console.log(c); await prisma.$disconnect(); } main();

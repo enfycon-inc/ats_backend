@@ -1,0 +1,1 @@
+SELECT data_type FROM information_schema.columns WHERE table_name = 'custom_roles' AND column_name = 'permissions'; SELECT data_type FROM information_schema.columns WHERE table_name = 'system_roles' AND column_name = 'permissions';

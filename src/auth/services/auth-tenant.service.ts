@@ -88,7 +88,7 @@ export class AuthTenantService {
     const tenant: any = tenantResult.rows[0];
 
     await this.authQuery.query(
-      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1, $2, TRUE)`,
+      `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1::uuid, $2, TRUE)`,
       [tenant.id, dto.subdomain]
     );
 
@@ -100,7 +100,7 @@ export class AuthTenantService {
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
     const userResult = await this.authQuery.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
-       VALUES ($1, $2, $3, $4, $5, true, false, $6, $7::uuid[])
+       VALUES ($1::uuid, $2, $3, $4, $5, true, false, $6::uuid, $7::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
       [tenant.id, email, firstName, lastName, fullName, adminRoleId, assignedRoleIds],
     );
@@ -218,7 +218,7 @@ export class AuthTenantService {
     );
     const tenant: any = tenantResult.rows[0];
 
-    await this.authQuery.query(`INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1, $2, TRUE)`, [tenant.id, dto.subdomain]);
+    await this.authQuery.query(`INSERT INTO tenant_domains (tenant_id, domain_name, is_primary) VALUES ($1::uuid, $2, TRUE)`, [tenant.id, dto.subdomain]);
 
     const roleMap = await this.rbacService.seedTenantRoles(tenant.id);
     const adminRoleId = roleMap['TENANT_ADMIN'] || roleMap['ADMIN'] || null;
@@ -229,7 +229,7 @@ export class AuthTenantService {
     const assignedRoleIds = adminRoleId ? [adminRoleId] : [];
     const userResult = await this.authQuery.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, is_active, is_approved, role_id, assigned_role_ids)
-       VALUES ($1, $2, $3, $4, $5, true, true, $6, $7::uuid[])
+       VALUES ($1::uuid, $2, $3, $4, $5, true, true, $6::uuid, $7::uuid[])
        RETURNING id, email, first_name, last_name, full_name, tenant_id, created_at, role_id`,
       [tenant.id, email, firstName, lastName, adminFullName, adminRoleId, assignedRoleIds]
     );
@@ -353,7 +353,7 @@ export class AuthTenantService {
     if (exists.rows.length > 0) throw new ConflictException('Domain name is already registered by another workspace.');
     const res = await this.authQuery.query(
       `INSERT INTO tenant_domains (tenant_id, domain_name, is_primary, verification_status, ssl_status)
-       VALUES ($1, $2, FALSE, 'PENDING', 'PENDING')
+       VALUES ($1::uuid, $2, FALSE, 'PENDING', 'PENDING')
        RETURNING id, domain_name, is_primary, verification_status, ssl_status, created_at`,
       [tenantId, normalizedDomain]
     );

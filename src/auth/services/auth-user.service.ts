@@ -333,7 +333,7 @@ export class AuthUserService {
     const roleId = roleIds[0] || null;
 
     await this.authQuery.query(
-      `UPDATE users SET role_id = $1, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3`,
+      `UPDATE users SET role_id = $1::uuid, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3::uuid`,
       [roleId, roleIds, userId],
     );
     return { message: 'User roles updated successfully.', roles: cleanRoleNames.length > 0 ? cleanRoleNames : normalized };
@@ -465,7 +465,7 @@ export class AuthUserService {
     else if (!hasRoleUpdates && user.role_id && uuidRegex.test(user.role_id)) primaryRoleId = user.role_id;
 
     await this.authQuery.query(
-      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, business_unit_id = $6, job_reviewer_id = $7, role_id = $8, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10 AND tenant_id = $11`,
+      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, business_unit_id = $6, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10::uuid AND tenant_id = $11::uuid`,
       [firstName, lastName, fullName, email, branchId, businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds), userId, user.tenant_id]
     );
 
