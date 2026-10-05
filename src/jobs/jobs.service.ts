@@ -496,6 +496,14 @@ export class JobsService implements OnModuleInit {
     }
 
     // Use submitted jobCode if provided and unique, otherwise auto-generate
+    const businessUnitId = dto.businessUnitId || null;
+    if (businessUnitId) {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(businessUnitId)) {
+        throw new BadRequestException('Select a valid operating unit.');
+      }
+      const unit = await this.prisma.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
+      if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
+    }
     let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
     if (jobCode) {
       const check = await this.prisma.job.findUnique({
@@ -512,7 +520,7 @@ export class JobsService implements OnModuleInit {
       let attempts = 0;
 
       while (!isUnique && attempts < 10) {
-        jobCode = await this.getNextJobCode(tenantId, branchId || branchCodeHint || dto.businessUnit, (dto as any)?.shift, attempts);
+        jobCode = await this.getNextJobCode(tenantId, branchId || branchCodeHint || dto.businessUnit, (dto as any)?.shift, attempts, businessUnitId || undefined);
         const check = await this.prisma.job.findUnique({
           where: { jobCode },
           select: { id: true },
@@ -532,7 +540,7 @@ export class JobsService implements OnModuleInit {
     if (createdByEmail && createdByEmail !== 'System') {
       // Cascading reviewer resolution: 1. User's designated reviewer -> 2. Pod Head -> 3. Branch Manager
       const creatorRows = await this.prisma.$queryRawUnsafe<any[]>(
-        `          SELECT u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id, b.manager_id as branch_manager_id,
+        `          SELECT u.id, u.job_reviewer_id, u.pod_id, p.pod_head_id,
                   u.role_id,
                   (
                     SELECT COALESCE(jsonb_agg(DISTINCT p), '[]'::jsonb)
@@ -541,14 +549,19 @@ export class JobsService implements OnModuleInit {
                   ) as permissions
            FROM ats.users u
            LEFT JOIN ats.pods p ON p.id = u.pod_id
-           LEFT JOIN ats.branches b ON b.id = u.branch_id
            WHERE (u.email = $1 OR u.id::text = $1) AND u.tenant_id = $2
            LIMIT 1`,
         createdByEmail, tenantId
-      ).catch(() => []);
+      );
+
+      const managedBranch = branchId ? await this.prisma.branch.findFirst({
+        where: { id: branchId, tenantId },
+        select: { managers: { where: { tenantId, isActive: true }, orderBy: { id: 'asc' }, select: { id: true } } },
+      }) : null;
 
       if (creatorRows.length > 0) {
         const cRow = creatorRows[0];
+        cRow.branch_manager_id = managedBranch?.managers.find(manager => manager.id !== cRow.id)?.id || null;
         const cPerms: string[] = Array.isArray(cRow.permissions) ? cRow.permissions : [];
         const hasDirectPublish = 
           cPerms.includes('job:publish_direct') || 
@@ -735,6 +748,7 @@ export class JobsService implements OnModuleInit {
             pocId: dto.pocId || undefined,
             endClientPocId: dto.endClientPocId || undefined,
           branchId,
+          businessUnitId,
             approvalStatus: initialApprovalStatus,
           assignedApproverId: resolvedAssignedApproverId || null,
           jobTimezone,
@@ -1254,6 +1268,7 @@ export class JobsService implements OnModuleInit {
       jobCode: row.job_code ?? row.jobCode,
       jobTitle: row.job_title ?? row.jobTitle,
       businessUnit: row.mapped_business_unit_name || row.business_unit_id || '',
+      businessUnitId: row.business_unit_id || null,
       client: row.mapped_client_name || row.client_id,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
       state: row.state || '',

@@ -540,6 +540,7 @@ model Job {
   id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String                 @map("tenant_id") @db.Uuid
   branchId             String?                @map("branch_id") @db.Uuid
+  businessUnitId       String?                @map("business_unit_id") @db.Uuid
   jobCode              String                 @unique @map("job_code") @db.VarChar(100)
   jobTitle             String                 @map("job_title") @db.VarChar(255)
   jobType              String                 @default("Full-time") @map("job_type") @db.VarChar(100)
