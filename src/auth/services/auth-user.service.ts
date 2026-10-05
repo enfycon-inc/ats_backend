@@ -347,6 +347,14 @@ export class AuthUserService {
     dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
     requester: any
   ) {
+    const assignmentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const field of ['branchId', 'businessUnitId', 'jobReviewerId'] as const) {
+      const value = dto[field];
+      if (value !== undefined && value !== null && value !== '' &&
+          (typeof value !== 'string' || !assignmentUuid.test(value.trim()))) {
+        throw new BadRequestException(`${field} must be a valid ID or empty.`);
+      }
+    }
     const userRes = await this.authQuery.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = userRes.rows[0];
@@ -391,8 +399,8 @@ export class AuthUserService {
       email = cleanEmail;
     }
 
-    if (dto.branchId !== undefined) branchId = dto.branchId || null;
-    if (dto.businessUnitId !== undefined) businessUnitId = dto.businessUnitId || null;
+    if (dto.branchId !== undefined) branchId = dto.branchId?.trim() || null;
+    if (dto.businessUnitId !== undefined) businessUnitId = dto.businessUnitId?.trim() || null;
     if (dto.jobReviewerId !== undefined) jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -468,7 +476,7 @@ export class AuthUserService {
     else if (!hasRoleUpdates && user.role_id && uuidRegex.test(user.role_id)) primaryRoleId = user.role_id;
 
     await this.authQuery.query(
-      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5, business_unit_id = $6, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10::uuid AND tenant_id = $11::uuid`,
+      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5::uuid, business_unit_id = $6::uuid, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10::uuid AND tenant_id = $11::uuid`,
       [firstName, lastName, fullName, email, branchId, businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds), userId, user.tenant_id]
     );
 
