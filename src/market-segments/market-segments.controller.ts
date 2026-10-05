@@ -1,6 +1,6 @@
 
-import { Roles } from '../auth/decorators/roles.decorator';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import {
   Controller,
   Get,
@@ -11,7 +11,6 @@ import {
   Param,
   UseGuards,
   Req,
-  Headers,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -19,7 +18,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { MarketSegmentsService } from './market-segments.service';
 import { CreateMarketSegmentDto } from './dtos/create-market-segment.dto';
 import { UpdateMarketSegmentDto } from './dtos/update-market-segment.dto';
-import { resolveTenantId } from '../auth/utils/tenant-resolver';
 
 @Controller('api/market-segments')
 @UseGuards(JwtAuthGuard)
@@ -27,10 +25,11 @@ export class MarketSegmentsController {
   constructor(private readonly marketSegmentsService: MarketSegmentsService) {}
 
   @Get()
-  async findAll() {
-    const data = await this.marketSegmentsService.findAll();
-    console.log("MARKETS RETURNED TO CLIENT:", data.length);
-    return data;
+  findAll(@Req() req: any) {
+    const permissions = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+    return this.marketSegmentsService.findAll(
+      permissions.includes('platform:manage') || permissions.includes('*'),
+    );
   }
 
   @Get(':id')
@@ -39,22 +38,22 @@ export class MarketSegmentsController {
   }
 
   @Post()
-  @UseGuards(RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('platform:manage')
   create(@Body() dto: CreateMarketSegmentDto) {
     return this.marketSegmentsService.create(dto);
   }
 
   @Put(':id')
-  @UseGuards(RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('platform:manage')
   update(@Param('id') id: string, @Body() dto: UpdateMarketSegmentDto) {
     return this.marketSegmentsService.update(id, dto);
   }
 
   @Delete(':id')
-  @UseGuards(RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
     return this.marketSegmentsService.remove(id);
