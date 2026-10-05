@@ -9,7 +9,7 @@ import type { AuthUser } from '../interfaces/auth-user.interface';
 export function isTenantAdmin(user: AuthUser): boolean {
   if (!user) return false;
   const perms = Array.isArray(user.permissions) ? user.permissions : [];
-  if (perms.includes('tenant:manage') || perms.includes('tenant:settings') || perms.includes('platform:manage')) return true;
+  if (perms.includes('*') || perms.includes('tenant:manage') || perms.includes('tenant:settings') || perms.includes('platform:manage')) return true;
 
   return false;
 }
