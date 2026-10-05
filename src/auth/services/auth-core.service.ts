@@ -6,6 +6,7 @@ import {
   ConflictException,
   ForbiddenException,
   InternalServerErrorException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { AuthQueryService } from './auth-query.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
@@ -389,12 +390,13 @@ export class AuthCoreService {
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('refresh_token', refreshToken);
 
-    let res = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
-    if (!res || !res.ok) {
+    const headers = this.sessionTransportHeaders();
+    let res = await fetch(tokenUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
+    if (!res || res.status >= 500) {
       const altUrl = tokenUrl.includes('localhost')
         ? tokenUrl.replace('localhost', 'keycloak')
         : tokenUrl.replace('keycloak', 'localhost');
-      res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
+      res = await fetch(altUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
     }
 
     if (res && res.ok) {
@@ -406,9 +408,20 @@ export class AuthCoreService {
       };
     }
 
-    // Keycloak rejected the refresh token — session has genuinely expired
-    this.logger.warn('[Auth] Keycloak refresh token rejected — session expired.');
-    throw new UnauthorizedException('Your session has expired. Please log in again.');
+    const error = res ? await res.json().catch(() => ({})) : {};
+    if (res?.status === 400 && error.error === 'invalid_grant') {
+      this.logger.warn('[Auth refresh] rejected: invalid_grant');
+      throw new UnauthorizedException('Your session has expired or was revoked. Please log in again.');
+    }
+    this.logger.warn(`[Auth refresh] unavailable: status=${res?.status || 'network'}`);
+    throw new ServiceUnavailableException('Session renewal is temporarily unavailable. Please try again.');
+  }
+
+  private sessionTransportHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Forwarded-Proto': new URL(this.getKeycloakIssuer()).protocol.slice(0, -1),
+    };
   }
 
   async logoutKeycloakSession(refreshToken: string) {
@@ -420,10 +433,11 @@ export class AuthCoreService {
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('refresh_token', refreshToken);
     try {
-      let res = await fetch(logoutUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
+      const headers = this.sessionTransportHeaders();
+      let res = await fetch(logoutUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
       if (!res || !res.ok) {
         const altUrl = logoutUrl.includes('localhost') ? logoutUrl.replace('localhost', 'keycloak') : logoutUrl.replace('keycloak', 'localhost');
-        res = await fetch(altUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() }).catch(() => null);
+        res = await fetch(altUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
       }
     } catch (err: any) {}
     return { success: true };
