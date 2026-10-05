@@ -68,7 +68,19 @@ export class AuthService {
   ssoLogin(dto: SsoLoginDto) { return this.coreService.ssoLogin(dto); }
 
   // ─── User Management ─────────────────────────────────────────────────────────
-  getProfile(userId: string) { return this.userService.getProfile(userId); }
+  async getProfile(userId: string, context?: any) {
+    const profile = await this.userService.getProfile(userId);
+    if (!context?.managedTenant) return profile;
+    const tenant = context.managedTenant;
+    return { ...profile, tenantId: tenant.id, managedTenantId: tenant.id, homeTenantId: context.homeTenantId,
+      permissions: context.permissions, defaultMarket: tenant.defaultMarket, tenantDomain: tenant.domain,
+      userLimit: tenant.userLimit, maxBranches: tenant.maxBranches, branchId: null, branchName: null,
+      businessUnitId: null, businessUnitName: null, podId: null, assignedBranchIds: [],
+      officeTimezone: null, officeStartTime: null, officeEndTime: null,
+      podSystemEnabled: tenant.podSystemEnabled, candidatePoolMode: tenant.candidatePoolMode,
+      jobAssignmentMode: tenant.jobAssignmentMode, jobAssignmentOptions: tenant.jobAssignmentOptions,
+      tenant: { name: tenant.name, domain: tenant.domain, siteTitle: tenant.siteTitle, logoUrl: tenant.logoUrl || '' } };
+  }
   listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) { return this.userService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId); }
   setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: any) { return this.userService.setUserActive(userId, isActive, requesterId, requester); }
   deleteUser(userId: string, requester: any) { return this.userService.deleteUser(userId, requester); }
@@ -84,6 +96,7 @@ export class AuthService {
   listPendingApprovals() { return this.tenantService.listPendingApprovals(); }
   approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number) { return this.tenantService.approveUser(userId, market, subdomain, userLimit, maxBranches); }
   createManualTenant(dto: any) { return this.tenantService.createManualTenant(dto); }
+  updateTenant(tenantId: string, dto: any) { return this.tenantService.updateTenant(tenantId, dto); }
   listTenants() { return this.tenantService.listTenants(); }
   getTenantDetails(tenantId: string) { return this.tenantService.getTenantDetails(tenantId); }
   updateTenantStatus(tenantId: string, status: string) { return this.tenantService.updateTenantStatus(tenantId, status); }

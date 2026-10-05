@@ -105,11 +105,11 @@ export class BusinessUnitsService {
 
       data: {
         tenantId,
-        ...(dto.branchId ? { branch: { connect: { id: dto.branchId } } } : {}),
-        name: dto.name.trim(),
-        code,
+        ...(dto.branchId ? { branchId: dto.branchId } : {}),
+          name: dto.name.trim(),
+          code,
 
-        ...((dto as any).marketSegmentId ? { marketSegment: { connect: { id: (dto as any).marketSegmentId } } } : {}),
+          ...((dto as any).marketSegmentId ? { marketSegmentId: (dto as any).marketSegmentId } : {}),
         jobCodePattern: (dto as any).jobCodePattern || null,
         shiftTiming,
         workStartTime,
@@ -289,8 +289,8 @@ export class BusinessUnitsService {
 
       where: { id },
       data: {
-        ...(dto.branchId !== undefined ? (dto.branchId ? { branch: { connect: { id: dto.branchId } } } : { branch: { disconnect: true } }) : {}),
-        ...((dto as any).marketSegmentId !== undefined ? ((dto as any).marketSegmentId ? { marketSegment: { connect: { id: (dto as any).marketSegmentId } } } : { marketSegment: { disconnect: true } }) : {}),
+        ...(dto.branchId !== undefined ? { branchId: dto.branchId || null } : {}),
+          ...((dto as any).marketSegmentId !== undefined ? { marketSegmentId: (dto as any).marketSegmentId || null } : {}),
         ...((dto as any).jobCodePattern !== undefined ? { jobCodePattern: (dto as any).jobCodePattern || null } : {}),
         name,
         code,

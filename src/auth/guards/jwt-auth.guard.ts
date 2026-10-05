@@ -3,6 +3,8 @@ import {
   CanActivate,
   ExecutionContext,
   UnauthorizedException,
+  ForbiddenException,
+  NotFoundException,
   Logger,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
@@ -163,7 +165,20 @@ export class JwtAuthGuard implements CanActivate {
         }
       }
 
-      const cacheKey = `${targetTenantId || 'default'}:${decoded.sub}`;
+      // A tenant selection scopes operations, never identity synchronization.
+      // Resolve the actor's existing membership before honoring the selection.
+      let identityTenantId = targetTenantId;
+      if (headerTenant) {
+        if (typeof headerTenant !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(headerTenant)) {
+          throw new ForbiddenException('Invalid tenant ID format provided.');
+        }
+        const actor = await this.prisma.user.findFirst({
+          where: { keycloakId: decoded.sub }, orderBy: { createdAt: 'asc' }, select: { tenantId: true },
+        });
+        identityTenantId = actor?.tenantId;
+      }
+
+      const cacheKey = `${identityTenantId || 'default'}:${decoded.sub}`;
       let dbUser: any;
       const cached = this.userCache.get(cacheKey);
       const currentState = cached ? await this.prisma.user.findUnique({
@@ -180,7 +195,7 @@ export class JwtAuthGuard implements CanActivate {
           email: decoded.email,
           fullName: decoded.name || decoded.preferred_username || decoded.email,
           roles: allJwtRoles,
-          tenantId: targetTenantId,
+          tenantId: identityTenantId,
         });
         this.userCache.set(cacheKey, {
           user: dbUser,
@@ -226,6 +241,25 @@ export class JwtAuthGuard implements CanActivate {
           ? 'SUPER_ADMIN'
           : (dbUser.system_role || 'RECRUITER'),
       };
+
+      if (headerTenant) {
+        const actor = request.user;
+        const permissions: string[] = Array.isArray(actor.permissions) ? actor.permissions : [];
+        const canManagePlatform = permissions.includes('platform:manage') || permissions.includes('*');
+        if (!canManagePlatform && headerTenant !== actor.tenantId) {
+          throw new ForbiddenException('Cross-tenant data access is denied.');
+        }
+        if (canManagePlatform) {
+          const tenant = await this.prisma.tenant.findUnique({ where: { id: headerTenant } });
+          if (!tenant) throw new NotFoundException('Tenant not found.');
+          const tenantAdmin = await this.prisma.systemRole.findUnique({ where: { systemKey: 'TENANT_ADMIN' }, select: { permissions: true } });
+          const tenantPermissions = Array.isArray(tenantAdmin?.permissions) ? tenantAdmin.permissions.filter((p): p is string => typeof p === 'string') : [];
+          request.user = { ...actor, homeTenantId: actor.tenantId, tenantId: tenant.id, managedTenant: tenant,
+            branchId: null, businessUnitId: null, podId: null, assignedBranchIds: [],
+            permissions: [...new Set([...permissions, ...tenantPermissions, 'tenant:settings', 'tenant:manage', 'user:manage'])],
+            defaultMarket: tenant.defaultMarket, tenantDomain: tenant.domain };
+        }
+      }
 
       return true;
     }

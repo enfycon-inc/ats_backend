@@ -15,9 +15,8 @@ export function resolveTenantId(user?: AuthUser, headerTenantId?: string): strin
     throw new UnauthorizedException('Authentication context is required for tenant resolution.');
   }
 
-  const isSuperAdmin = Array.isArray(user.roles) && user.roles.some(
-    (role) => role.toUpperCase() === 'SUPER_ADMIN'
-  );
+  const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+  const isSuperAdmin = permissions.includes('platform:manage') || permissions.includes('*');
 
   const cleanHeader = headerTenantId ? headerTenantId.trim() : undefined;
 

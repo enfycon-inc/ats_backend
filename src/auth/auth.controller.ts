@@ -1,5 +1,6 @@
 import {
   Controller,
+  ParseUUIDPipe,
   Post,
   Get,
   Put,
@@ -159,7 +160,7 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 200, description: 'User profile returned.' })
   @ApiResponse({ status: 401, description: 'Token missing or invalid.' })
   async getMe(@CurrentUser() user: AuthUser) {
-    return this.authService.getProfile(user.dbId);
+    return this.authService.getProfile(user.dbId, user);
   }
 
   // ─── GET /api/auth/profile/:id ──────────────────────────────
@@ -178,7 +179,7 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 401, description: 'Token missing or invalid.' })
   async getProfileById(@CurrentUser() user: AuthUser) {
     // Always return the authenticated caller's own profile
-    return this.authService.getProfile(user.dbId);
+    return this.authService.getProfile(user.dbId, user);
   }
 
   // ─── GET /api/auth/users ────────────────────────────────────
@@ -380,8 +381,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── GET /api/auth/approvals/pending ────────────────────────
   @Get('approvals/pending')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'List users pending administrator approval [SUPER_ADMIN only]',
@@ -393,8 +394,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── POST /api/auth/approvals/approve/:id ───────────────────
   @Post('approvals/approve/:id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Approve a user registration and configure market & limits [SUPER_ADMIN only]',
@@ -408,8 +409,8 @@ Validates email + password and returns a signed JWT access token.
   }
 
   @Post('tenants/manual')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Manually create and activate a new company tenant [SUPER_ADMIN only]',
@@ -433,8 +434,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── GET /api/auth/tenants ──────────────────────────────────
   @Get('tenants')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'List all tenants in the system [SUPER_ADMIN only]',
@@ -444,9 +445,20 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.listTenants();
   }
 
+  @Patch('tenants/:id/management')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
+  @ApiBearerAuth()
+  async updateTenant(
+    @Param('id', new ParseUUIDPipe()) tenantId: string,
+    @Body() body: { name?: string; subdomain?: string; userLimit?: number; maxBranches?: number },
+  ) {
+    return this.authService.updateTenant(tenantId, body);
+  }
+
   @Get('tenants/:id/details')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get full tenant details, user list, and usage stats [SUPER_ADMIN only]',
@@ -457,8 +469,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenants/:id/status ─────────────────────
   @Patch('tenants/:id/status')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant status (ACTIVE/INACTIVE/PENDING) [SUPER_ADMIN only]',
@@ -473,8 +485,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenants/:id/user-limit ─────────────────
   @Patch('tenants/:id/user-limit')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant active user/seats limit [SUPER_ADMIN only]',
@@ -488,8 +500,8 @@ Validates email + password and returns a signed JWT access token.
   }
 
   @Patch('tenants/:id/branch-limit')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant max branches limit [SUPER_ADMIN only]',
@@ -504,8 +516,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenants/:id/market ─────────────────────
   @Patch('tenants/:id/market')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant default staffing market [SUPER_ADMIN only]',
@@ -520,8 +532,8 @@ Validates email + password and returns a signed JWT access token.
 
   // ─── PATCH /api/auth/tenants/my-subdomain ───────────────────
   @Patch('tenants/my-subdomain')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('SUPER_ADMIN')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('platform:manage')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update tenant subdomain identifier [SUPER_ADMIN only]',

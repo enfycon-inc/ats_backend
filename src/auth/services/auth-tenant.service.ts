@@ -247,7 +247,7 @@ export class AuthTenantService {
 
   async listTenants() {
     const result = await this.authQuery.query(
-      `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", created_at as "createdAt"
+      `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", max_branches as "maxBranches", created_at as "createdAt"
        FROM tenants ORDER BY name ASC`
     );
     return result.rows;
@@ -255,7 +255,7 @@ export class AuthTenantService {
 
   async getTenantDetails(tenantId: string) {
     const tenantRes = await this.authQuery.query(
-      `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", created_at as "createdAt"
+      `SELECT id, name, domain, status, default_market as "defaultMarket", user_limit as "userLimit", max_branches as "maxBranches", created_at as "createdAt"
        FROM tenants WHERE id = $1 LIMIT 1`,
       [tenantId]
     );
@@ -289,6 +289,67 @@ export class AuthTenantService {
     };
   }
 
+  async updateTenant(tenantId: string, dto: { name?: string; subdomain?: string; userLimit?: number; maxBranches?: number }) {
+    const data: { name?: string; domain?: string; userLimit?: number; maxBranches?: number } = {};
+    if (dto.name !== undefined) {
+      if (typeof dto.name !== 'string' || !dto.name.trim() || dto.name.trim().length > 255) {
+        throw new BadRequestException('Company name must contain 1 to 255 characters.');
+      }
+      data.name = dto.name.trim();
+    }
+    if (dto.subdomain !== undefined) {
+      if (typeof dto.subdomain !== 'string') throw new BadRequestException('Invalid subdomain.');
+      const domain = dto.subdomain.trim().toLowerCase();
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(domain) || ['www', 'api', 'auth', 'admin', 'mail', 'app', 'localhost'].includes(domain)) {
+        throw new BadRequestException('Use a valid subdomain of up to 63 letters, numbers, or hyphens. This name may be reserved.');
+      }
+      data.domain = domain;
+    }
+    for (const key of ['userLimit', 'maxBranches'] as const) {
+      if (dto[key] !== undefined) {
+        if (!Number.isSafeInteger(dto[key]) || dto[key]! < 1 || dto[key]! > 2147483647) {
+          throw new BadRequestException(`${key === 'userLimit' ? 'Seat capacity' : 'Branch capacity'} must be a positive integer.`);
+        }
+        data[key] = dto[key];
+      }
+    }
+    if (!Object.keys(data).length) throw new BadRequestException('No tenant changes supplied.');
+    try {
+      return await this.authQuery.prisma.$transaction(async tx => {
+        // Serialize domain claims and update both routing records atomically.
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(71620432)::text`;
+        const tenant = await tx.tenant.findUnique({ where: { id: tenantId } });
+        if (!tenant) throw new NotFoundException('Tenant not found.');
+        if (data.domain && data.domain !== tenant.domain) {
+          const tenantConflict = await tx.tenant.findFirst({ where: { id: { not: tenantId }, domain: { equals: data.domain, mode: 'insensitive' } } });
+          const domainConflict = await tx.tenantDomain.findFirst({ where: { tenantId: { not: tenantId }, domainName: { equals: data.domain, mode: 'insensitive' } } });
+          if (tenantConflict || domainConflict) throw new ConflictException('Subdomain is already taken by another company.');
+        }
+        if (data.userLimit !== undefined) {
+          const activeUsers = await tx.user.count({ where: { tenantId, isActive: true, isApproved: true } });
+          if (data.userLimit < activeUsers) throw new BadRequestException(`Seat capacity cannot be below the ${activeUsers} active approved users.`);
+        }
+        if (data.maxBranches !== undefined) {
+          const branches = await tx.branch.count({ where: { tenantId } });
+          if (data.maxBranches < branches) throw new BadRequestException(`Branch capacity cannot be below the ${branches} existing branches.`);
+        }
+        const updated = await tx.tenant.update({ where: { id: tenantId }, data });
+        if (data.domain && data.domain !== tenant.domain) {
+          const primary = await tx.tenantDomain.findFirst({ where: { tenantId, isPrimary: true } });
+          const ownAlias = await tx.tenantDomain.findFirst({ where: { tenantId, domainName: data.domain, isPrimary: false } });
+          if (ownAlias) await tx.tenantDomain.delete({ where: { id: ownAlias.id } });
+          if (primary) await tx.tenantDomain.update({ where: { id: primary.id }, data: { domainName: data.domain } });
+          else await tx.tenantDomain.create({ data: { tenantId, domainName: data.domain, isPrimary: true } });
+        }
+        return { id: updated.id, name: updated.name, domain: updated.domain, status: updated.status,
+          defaultMarket: updated.defaultMarket, userLimit: updated.userLimit, maxBranches: updated.maxBranches, createdAt: updated.createdAt };
+      });
+    } catch (error) {
+      if (error?.code === 'P2002') throw new ConflictException('Subdomain is already taken by another company.');
+      throw error;
+    }
+  }
+
   async updateTenantStatus(tenantId: string, status: string) {
     let upperStatus = status.toUpperCase().trim();
     if (upperStatus === 'SUSPENDED') upperStatus = 'INACTIVE';
@@ -300,15 +361,11 @@ export class AuthTenantService {
   }
 
   async updateTenantUserLimit(tenantId: string, limit: number) {
-    if (isNaN(limit) || limit < 1) throw new BadRequestException('Invalid user limit. Must be a positive integer.');
-    await this.authQuery.query('UPDATE tenants SET user_limit = $1, updated_at = NOW() WHERE id = $2', [limit, tenantId]);
-    return { message: 'Tenant user limit updated successfully.', userLimit: limit };
+    return this.updateTenant(tenantId, { userLimit: limit });
   }
 
   async updateTenantBranchLimit(tenantId: string, limit: number) {
-    if (isNaN(limit) || limit < 1) throw new BadRequestException('Invalid branch limit. Must be a positive integer.');
-    await this.authQuery.query('UPDATE tenants SET max_branches = $1, updated_at = NOW() WHERE id = $2', [limit, tenantId]);
-    return { message: 'Tenant max branches limit updated successfully.', maxBranches: limit };
+    return this.updateTenant(tenantId, { maxBranches: limit });
   }
 
   async updateTenantMarket(tenantId: string, market: string) {
@@ -318,17 +375,8 @@ export class AuthTenantService {
   }
 
   async updateTenantSubdomain(tenantId: string, subdomain: string) {
-    if (!subdomain || !/^[a-z0-9-]+$/.test(subdomain)) {
-      throw new BadRequestException('Subdomain must contain alphanumeric characters and hyphens only.');
-    }
-    const exists = await this.authQuery.query(
-      'SELECT id FROM tenant_domains WHERE domain_name = $1 AND tenant_id <> $2 LIMIT 1',
-      [subdomain, tenantId]
-    );
-    if (exists.rows.length > 0) throw new ConflictException('Subdomain is already taken by another company.');
-    await this.authQuery.query('UPDATE tenants SET domain = $1, updated_at = NOW() WHERE id = $2', [subdomain, tenantId]);
-    await this.authQuery.query('UPDATE tenant_domains SET domain_name = $1 WHERE tenant_id = $2 AND is_primary = TRUE', [subdomain, tenantId]);
-    return { message: 'Subdomain updated successfully.', subdomain };
+    const tenant = await this.updateTenant(tenantId, { subdomain });
+    return { message: 'Subdomain updated successfully.', subdomain: tenant.domain };
   }
 
   async getTenantDomains(tenantId: string) {
