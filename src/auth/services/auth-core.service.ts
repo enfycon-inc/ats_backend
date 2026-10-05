@@ -538,8 +538,11 @@ export class AuthCoreService {
   // ─── SSO Login (OAuth Identity Provider via Keycloak) ─────────────────────────
 
   private async verifyBrokerAccessToken(accessToken?: string): Promise<any> {
-    const invalidToken = () => new UnauthorizedException('Microsoft sign-in could not be verified. Please sign in again.');
-    if (!accessToken || typeof accessToken !== 'string') throw invalidToken();
+    const invalidToken = (reason: string) => {
+      this.logger.warn(`[SSO verification] rejected: ${reason}`);
+      return new UnauthorizedException('Microsoft sign-in could not be verified. Please sign in again.');
+    };
+    if (!accessToken || typeof accessToken !== 'string') throw invalidToken('missing_access_token');
 
     const issuer = (process.env.KEYCLOAK_ISSUER || '').replace(/\/$/, '');
     const clientId = process.env.KEYCLOAK_CLIENT_ID || 'enfycon-ats';
@@ -552,34 +555,37 @@ export class AuthCoreService {
     // The internal URL only changes transport; the token must still have the public issuer.
     const internalBase = process.env.KEYCLOAK_INTERNAL_URL?.replace(/\/$/, '');
     const tokenIssuer = internalBase ? `${internalBase}${new URL(issuer).pathname}` : issuer;
+    // A hostname-only Keycloak configuration derives its issuer scheme from
+    // the request. Preserve the public scheme on the private HTTP transport.
+    const introspectionHeaders: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+    if (internalBase) introspectionHeaders['X-Forwarded-Proto'] = new URL(issuer).protocol.slice(0, -1);
     const params = new URLSearchParams({ token: accessToken, client_id: clientId, client_secret: clientSecret });
     let introspection: any;
     try {
       const response = await fetch(`${tokenIssuer}/protocol/openid-connect/token/introspect`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: introspectionHeaders,
         body: params.toString(),
         signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) throw invalidToken();
+      if (!response.ok) throw invalidToken(`introspection_http_${response.status}`);
       introspection = await response.json();
-    } catch {
-      throw invalidToken();
+    } catch (error) {
+      if (error instanceof UnauthorizedException) throw error;
+      throw invalidToken('introspection_request_failed');
     }
 
     // Introspection authenticates this exact token before any JWT claim is trusted.
     const claims = this.decodeTokenPayload(accessToken);
     const now = Math.floor(Date.now() / 1000);
-    if (introspection.active !== true || !claims ||
-        claims.iss !== issuer ||
-        claims.azp !== clientId || (introspection.client_id || introspection.azp) !== clientId ||
-        typeof claims.sub !== 'string' || !claims.sub || introspection.sub !== claims.sub ||
-        typeof claims.exp !== 'number' || claims.exp <= now ||
-        typeof introspection.exp !== 'number' || introspection.exp <= now ||
-        typeof claims.email !== 'string' || !claims.email.trim() ||
-        typeof claims.identity_provider !== 'string' || !claims.identity_provider.startsWith('microsoft-')) {
-      throw invalidToken();
-    }
+    if (introspection.active !== true) throw invalidToken('inactive_token');
+    if (!claims) throw invalidToken('invalid_token_payload');
+    if (claims.iss !== issuer) throw invalidToken('issuer_mismatch');
+    if (claims.azp !== clientId || (introspection.client_id || introspection.azp) !== clientId) throw invalidToken('client_mismatch');
+    if (typeof claims.sub !== 'string' || !claims.sub || introspection.sub !== claims.sub) throw invalidToken('subject_mismatch');
+    if (typeof claims.exp !== 'number' || claims.exp <= now || typeof introspection.exp !== 'number' || introspection.exp <= now) throw invalidToken('expired_token');
+    if (typeof claims.email !== 'string' || !claims.email.trim()) throw invalidToken('missing_email_claim');
+    if (typeof claims.identity_provider !== 'string' || !claims.identity_provider.startsWith('microsoft-')) throw invalidToken('missing_microsoft_provider_claim');
     return claims;
   }
 
@@ -674,7 +680,7 @@ export class AuthCoreService {
 
       await this.authQuery.query(
         `INSERT INTO users (id, tenant_id, email, first_name, last_name, full_name, is_active, is_approved, keycloak_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, true, false, $7, NOW(), NOW())
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, true, false, $7, NOW(), NOW())
          ON CONFLICT (tenant_id, email) DO UPDATE
          SET is_active = true, is_approved = false, updated_at = NOW()`,
         [newUserId, targetTenantId, cleanEmail, firstName, lastName, fullName, keycloakSub]
@@ -929,4 +935,3 @@ export class AuthCoreService {
     };
   }
 }
-
