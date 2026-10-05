@@ -577,6 +577,9 @@ export class AuthTenantService {
     const microsoftTenantIdLooksValid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(configuredMicrosoftTenantId);
     const microsoftClientSecretLooksValid = !!configuredClientSecret && !/^[*•]+$/.test(configuredClientSecret);
     if (row.allow_microsoft_sso) {
+      if (configuredClientId && configuredClientId.includes('@')) {
+        throw new BadRequestException('Microsoft Client ID must be the Application (client) ID from Entra App registrations, not an email address.');
+      }
       if (!configuredClientId || !microsoftClientSecretLooksValid) {
         throw new BadRequestException('Microsoft client ID and the full client secret are required. Re-enter the client secret; the masked value cannot be saved.');
       }

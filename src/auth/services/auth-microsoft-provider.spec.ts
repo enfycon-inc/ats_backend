@@ -100,6 +100,20 @@ describe('tenant Microsoft identity provider configuration', () => {
     })).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('rejects an email address in the Microsoft application client ID field', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [{ ...storedPolicy, microsoft_client_id: 'sahadeb@enfycon.com' }] });
+    const service = new AuthTenantService(
+      { query } as any,
+      {} as any,
+      { configureTenantIdentityProvider: jest.fn() } as any,
+    );
+    await expect(service.updateTenantAuthPolicy(tenantId, {
+      microsoftTenantId: directoryId,
+      microsoftClientId: 'sahadeb@enfycon.com',
+      microsoftClientSecret: 'secret',
+    })).rejects.toThrow('Application (client) ID');
+  });
+
   it('restores the directory restriction when providers are provisioned at startup', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [storedPolicy] });
     const configureTenantIdentityProvider = jest.fn().mockResolvedValue('https://auth.example/endpoint');
