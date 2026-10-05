@@ -6,12 +6,14 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  Optional,
 } from '@nestjs/common';
 import { AuthQueryService } from './auth-query.service';
 import { AuthRbacService } from './auth-rbac.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
+import { EventsGateway } from '../../events/events.gateway';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -26,6 +28,7 @@ export class AuthUserService {
     private readonly authQuery: AuthQueryService,
     private readonly rbacService: AuthRbacService,
     private readonly keycloakService: AuthKeycloakService,
+    @Optional() private readonly events?: EventsGateway,
   ) {}
 
   async getProfile(userId: string) {
@@ -623,6 +626,12 @@ async approveTenantUser(
     );
 
     this.logger.log(`User ${userId} approved by ${requester.email}`);
+
+    // A signal only: the waiting page fetches its own authenticated profile.
+    // Do not send role details or permission data over the existing presence channel.
+    await this.events?.sendToUser(userId, 'account_approved', {}).catch(() => {
+      this.logger.warn('Approval notification failed; the user can recheck their status.');
+    });
 
     // Ensure user is provisioned in Keycloak (critical for JIT/direct SSO users)
     this.keycloakService.provisionUserInKeycloak({
