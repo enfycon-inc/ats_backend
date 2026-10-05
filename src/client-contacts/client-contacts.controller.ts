@@ -14,24 +14,24 @@ export class ClientContactsController {
   @ApiOperation({ summary: 'List all contacts for a client (mine first, then others)' })
   @Get()
   list(@Param('clientId') clientId: string, @Req() req: any) {
-    return this.service.findAllForClient(clientId, req.user.tenantId, req.user.id);
+    return this.service.findAllForClient(clientId, req.user.tenantId, req.user.dbId);
   }
 
   @ApiOperation({ summary: 'Create a new contact for a client' })
   @Post()
   create(@Param('clientId') clientId: string, @Body() dto: CreateClientContactDto, @Req() req: any) {
-    return this.service.create(clientId, req.user.tenantId, req.user.id, dto);
+    return this.service.create(clientId, req.user.tenantId, req.user.dbId, dto);
   }
 
   @ApiOperation({ summary: 'Update a contact (only creator or admin)' })
   @Patch(':id')
   update(@Param('clientId') clientId: string, @Param('id') id: string, @Body() dto: Partial<CreateClientContactDto>, @Req() req: any) {
-    return this.service.update(id, req.user.tenantId, req.user.id, dto, req.user.permissions);
+    return this.service.update(id, req.user.tenantId, req.user.dbId, dto, req.user.permissions);
   }
 
   @ApiOperation({ summary: 'Delete a contact (only creator or admin)' })
   @Delete(':id')
   remove(@Param('clientId') clientId: string, @Param('id') id: string, @Req() req: any) {
-    return this.service.remove(id, req.user.tenantId, req.user.id, req.user.permissions);
+    return this.service.remove(id, req.user.tenantId, req.user.dbId, req.user.permissions);
   }
 }
