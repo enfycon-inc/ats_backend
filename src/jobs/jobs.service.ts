@@ -2329,7 +2329,7 @@ export class JobsService {
 
     return {
       success: true,
-      jobTitle: jobTitle || 'Senior Java Developer',
+      jobTitle,
       experienceMin: experienceMin || 5,
       experienceMax: experienceMax || 10,
       payRate,
