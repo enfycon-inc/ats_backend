@@ -488,6 +488,7 @@ model Resume {
   fileSize      Int?        @map("file_size")
   createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
   candidates    Candidate[]
+  parserCandidates parser_candidates[]
 
   @@map("resumes")
   @@schema("ats")
@@ -854,6 +855,8 @@ model SkillMaster {
   category      String?      @db.VarChar(100)
   createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   aliases       SkillAlias[]
+  categoryId Int? @map("category_id")
+  parsedCandidateSkills candidate_skills[]
 
   @@map("skills_master")
   @@schema("ats")
@@ -986,4 +989,170 @@ model EmailTemplate {
 
   @@map("templates")
   @@schema("mass_mail")
+}
+
+// Shared parser tables are tracked here to prevent accidental drops by Prisma Migrate.
+model candidate_education {
+  id                Int                @id @default(autoincrement())
+  candidate_id      Int?
+  degree_id         Int?
+  raw_degree        String?            @db.VarChar
+  institution_name  String?            @db.VarChar
+  start_year        Int?
+  end_year          Int?
+  parser_candidates parser_candidates? @relation(fields: [candidate_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  degrees_master    degrees_master?    @relation(fields: [degree_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([candidate_id], map: "ix_candidate_education_candidate_id")
+  @@index([degree_id], map: "ix_candidate_education_degree_id")
+  @@schema("ats")
+}
+
+model candidate_experience {
+  id                  Int                  @id @default(autoincrement())
+  candidate_id        Int?
+  company_id          Int?
+  raw_company_name    String?              @db.VarChar
+  designation_id      Int?
+  raw_designation     String?              @db.VarChar
+  start_date          DateTime?            @db.Date
+  end_date            DateTime?            @db.Date
+  currently_working   Boolean?
+  parser_candidates   parser_candidates?   @relation(fields: [candidate_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  companies_master    companies_master?    @relation(fields: [company_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  designations_master designations_master? @relation(fields: [designation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([candidate_id], map: "ix_candidate_experience_candidate_id")
+  @@index([company_id], map: "ix_candidate_experience_company_id")
+  @@index([designation_id], map: "ix_candidate_experience_designation_id")
+  @@schema("ats")
+}
+
+model candidate_skills {
+  id                  Int                @id @default(autoincrement())
+  candidate_id        Int?
+  skill_id            Int?
+  years_of_experience Int?
+  parser_candidates   parser_candidates? @relation(fields: [candidate_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  skills_master       SkillMaster?       @relation(fields: [skill_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([candidate_id], map: "ix_candidate_skills_candidate_id")
+  @@index([skill_id], map: "ix_candidate_skills_skill_id")
+  @@schema("ats")
+}
+
+model companies_master {
+  id                     Int                    @id @default(autoincrement())
+  canonical_company_name String                 @unique(map: "ix_companies_master_canonical_company_name") @db.VarChar
+  candidate_experience   candidate_experience[]
+  company_aliases        company_aliases[]
+
+  @@schema("ats")
+}
+
+model company_aliases {
+  id               Int               @id @default(autoincrement())
+  alias            String            @unique(map: "ix_company_aliases_alias") @db.VarChar
+  company_id       Int?
+  companies_master companies_master? @relation(fields: [company_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([company_id], map: "ix_company_aliases_company_id")
+  @@schema("ats")
+}
+
+model degree_aliases {
+  id             Int             @id @default(autoincrement())
+  alias          String          @unique(map: "ix_degree_aliases_alias") @db.VarChar
+  degree_id      Int?
+  degrees_master degrees_master? @relation(fields: [degree_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([degree_id], map: "ix_degree_aliases_degree_id")
+  @@schema("ats")
+}
+
+model degrees_master {
+  id                  Int                   @id @default(autoincrement())
+  canonical_degree    String                @unique(map: "ix_degrees_master_canonical_degree") @db.VarChar
+  candidate_education candidate_education[]
+  degree_aliases      degree_aliases[]
+
+  @@schema("ats")
+}
+
+model designation_aliases {
+  id                  Int                  @id @default(autoincrement())
+  alias               String               @unique(map: "ix_designation_aliases_alias") @db.VarChar
+  designation_id      Int?
+  designations_master designations_master? @relation(fields: [designation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([designation_id], map: "ix_designation_aliases_designation_id")
+  @@schema("ats")
+}
+
+model designations_master {
+  id                    Int                    @id @default(autoincrement())
+  canonical_designation String                 @unique(map: "ix_designations_master_canonical_designation") @db.VarChar
+  seniority_level       String?                @db.VarChar
+  candidate_experience  candidate_experience[]
+  designation_aliases   designation_aliases[]
+  parser_candidates     parser_candidates[]
+
+  @@schema("ats")
+}
+
+model location_aliases {
+  id               Int               @id @default(autoincrement())
+  alias            String            @unique(map: "ix_location_aliases_alias") @db.VarChar
+  location_id      Int?
+  locations_master locations_master? @relation(fields: [location_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([location_id], map: "ix_location_aliases_location_id")
+  @@schema("ats")
+}
+
+model locations_master {
+  id                 Int                 @id @default(autoincrement())
+  canonical_location String              @unique(map: "ix_locations_master_canonical_location") @db.VarChar
+  country            String?             @db.VarChar
+  state              String?             @db.VarChar
+  location_aliases   location_aliases[]
+  parser_candidates  parser_candidates[]
+
+  @@schema("ats")
+}
+
+model parser_candidates {
+  id                      Int                    @id @default(autoincrement())
+  full_name               String?                @db.VarChar
+  email                   String?                @db.VarChar
+  phone                   String?                @db.VarChar
+  current_location_id     Int?
+  raw_current_location    String?                @db.VarChar
+  total_experience_years  Int?
+  current_designation_id  Int?
+  raw_current_designation String?                @db.VarChar
+  created_at              DateTime?              @db.Timestamp(6)
+  source                  String?                @db.VarChar
+  work_authorization      String?                @db.VarChar
+  resume_record_id        String?                @db.Uuid
+  candidate_education     candidate_education[]
+  candidate_experience    candidate_experience[]
+  candidate_skills        candidate_skills[]
+  designations_master     designations_master?   @relation(fields: [current_designation_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  locations_master        locations_master?      @relation(fields: [current_location_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  resumes                 Resume?                @relation(fields: [resume_record_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([current_designation_id], map: "ix_parser_candidates_current_designation_id")
+  @@index([current_location_id], map: "ix_parser_candidates_current_location_id")
+  @@index([email], map: "ix_parser_candidates_email")
+  @@index([full_name], map: "ix_parser_candidates_full_name")
+  @@index([phone], map: "ix_parser_candidates_phone")
+  @@schema("ats")
+}
+
+model skill_categories {
+  id   Int    @id @default(autoincrement())
+  name String @unique @db.VarChar
+
+  @@schema("ats")
 }
