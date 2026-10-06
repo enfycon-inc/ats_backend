@@ -16,6 +16,8 @@ if (typeof dns.setDefaultResultOrder === 'function') {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Let queue workers finish active jobs before a release retires this process.
+  app.enableShutdownHooks();
 
   // Enable CORS so the recruiter dashboard front-end can communicate with backend endpoints
   app.enableCors({

@@ -13,6 +13,7 @@ export class MarketSegmentsService implements OnModuleInit {
   constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit() {
+    if (process.env.ATS_SKIP_BOOTSTRAP === 'true') return;
     // Serialize initialization across replicas: nullable tenant IDs do not provide
     // a unique constraint for global codes in PostgreSQL.
     await this.prisma.$transaction(async (tx) => {

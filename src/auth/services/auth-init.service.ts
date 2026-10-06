@@ -24,6 +24,12 @@ export class AuthInitService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    // Production replicas use a database initialized by the active release.
+    // Bootstrap/migration writes are never repeated by a blue/green candidate.
+    if (process.env.ATS_SKIP_BOOTSTRAP === 'true') {
+      this.logger.log('Production replica: bootstrap writes disabled.');
+      return;
+    }
     await this.ensureDefaultTenants();
     await this.ensureUsersTable();
     await this.authQuery.query(CANONICAL_SYSTEM_ROLES_SQL);

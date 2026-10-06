@@ -33,6 +33,6 @@ COPY --from=build /app/dist ./dist
 EXPOSE 5000
 
 # Apply reviewed migrations separately before deployment; startup never synchronizes schema.
-CMD ["sh", "-c", "if [ -f dist/main.js ]; then node dist/main.js; else node dist/src/main.js; fi"]
+CMD ["sh", "-c", "if [ -f dist/main.js ]; then exec node dist/main.js; else exec node dist/src/main.js; fi"]
 
 
