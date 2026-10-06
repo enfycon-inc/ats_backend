@@ -9,6 +9,9 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as dns from 'node:dns';
 import * as express from 'express';
 import { logoDirectory, LOGO_URL_PREFIX } from './auth/utils/logo-storage';
+import { BulkCvProcessor } from './candidates/bulk-cv.processor';
+import { EmailProcessor } from './email/email.processor';
+import { closeAfterJobs } from './graceful-shutdown';
 
 if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
@@ -16,8 +19,6 @@ if (typeof dns.setDefaultResultOrder === 'function') {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  // Let queue workers finish active jobs before a release retires this process.
-  app.enableShutdownHooks();
 
   // Enable CORS so the recruiter dashboard front-end can communicate with backend endpoints
   app.enableCors({
@@ -62,6 +63,19 @@ async function bootstrap() {
   // Bind to port 5000 as configured in docker-compose.yml
   const port = process.env.PORT ?? 5000;
   await app.listen(port, '0.0.0.0');
+  let draining = false;
+  const shutdown = () => {
+    if (draining) return;
+    draining = true;
+    closeAfterJobs([app.get(BulkCvProcessor).worker, app.get(EmailProcessor).worker], () => app.close())
+      .then(() => process.exit(0))
+      .catch(() => {
+        draining = false;
+        console.error('Graceful shutdown could not complete; application resources remain open.');
+      });
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
   
   console.log(`[ATS BACKEND] NestJS Core API server started on port ${port}`);
   console.log(`[ATS BACKEND] Swagger UI Documentation available at http://localhost:${port}/docs`);
