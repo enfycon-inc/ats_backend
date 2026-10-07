@@ -168,7 +168,7 @@ export class AuthUserService {
     );
 
     const rolesRes = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.base_role_id FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1`,
+      `SELECT cr.id, cr.name, cr.is_system, cr.branch_id, sr.system_key as system_role, cr.base_role_id FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1`,
       [tenantId]
     );
     const roleById: Record<string, any> = {};
@@ -214,6 +214,7 @@ export class AuthUserService {
         id: u.id, email: u.email, firstName: u.first_name || '', lastName: u.last_name || '', fullName: u.full_name,
         roles: cleanRoles.length > 0 ? cleanRoles : [primaryRole],
         roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds),
+        assignedRoles: assignedRoleObjs.map(role => ({ id: role.id, name: role.name, isSystem: role.is_system === true, systemRole: role.system_role, branchId: role.branch_id })),
         roleName: primaryRole, systemRole, baseRoleId, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
         podId: u.pod_id, branchId: u.branch_id,
         branchName: u.branch_name || null, businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,

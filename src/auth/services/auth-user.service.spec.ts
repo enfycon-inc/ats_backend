@@ -54,3 +54,18 @@ describe('member role replacement', () => {
     expect(protection).not.toHaveBeenCalled();
   });
 });
+
+describe('assigned member role metadata', () => {
+  it('returns every exact assigned role including roles hidden from the selectable catalog', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [{ id: 'user', role_id: 'tenant', assigned_role_ids: ['tenant', 'unit'], full_name: 'Member' }] })
+      .mockResolvedValueOnce({ rows: [
+        { id: 'tenant', name: 'TENANT_ADMIN', is_system: true, system_role: 'TENANT_ADMIN', branch_id: null },
+        { id: 'unit', name: 'Unit Admin', is_system: true, system_role: 'UNIT_ADMIN', branch_id: null },
+      ] })
+      .mockResolvedValueOnce({ rows: [] });
+    const service = new AuthUserService({ query } as any, {} as any, {} as any);
+    const users = await service.listUsers('tenant-id');
+    expect(users[0].assignedRoles.map(role => [role.id, role.systemRole])).toEqual([['tenant', 'TENANT_ADMIN'], ['unit', 'UNIT_ADMIN']]);
+  });
+});
