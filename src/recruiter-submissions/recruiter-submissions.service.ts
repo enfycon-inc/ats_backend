@@ -4,14 +4,22 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { submissionCapabilities } from './submission-capabilities';
+import { validateTrackerUpdate } from './validate-tracker-update';
+import type { SubmissionCapabilities, TrackerBucket, TrackerSubmission } from './tracker-contract';
 
-export interface SubmissionDetails {
+export interface SubmissionDetails extends TrackerSubmission {
+  capabilities?: SubmissionCapabilities;
+  timezone?: string | null;
+  submittedRateCurrency?: string | null;
+  submittedRateTerm?: string | null;
   id: string;
   tenantId: string;
   jobId: string;
@@ -267,13 +275,48 @@ export class RecruiterSubmissionsService {
       candidateId?: string;
       branchId?: string;
       view?: string;
+      submissionId?: string;
+      search?: string;
+      bucket?: TrackerBucket;
     },
   ) {
     this.logger.log(`Listing submissions for tenant: ${tenantId} under user role visibility, view=${filters.view || 'all'}`);
 
     let baseSql = `
       SELECT 
-        s.*,
+        s.id,
+        s.tenant_id,
+        s.job_id,
+        s.candidate_id,
+        s.recruiter_id,
+        s.l1_status,
+        s.l1_date,
+        s.l1_remarks,
+        s.l1_interviewer,
+        s.l2_status,
+        s.l2_date,
+        s.l2_remarks,
+        s.l2_interviewer,
+        s.l3_status,
+        s.l3_date,
+        s.l3_remarks,
+        s.l3_interviewer,
+        s.meeting_link,
+        s.final_status,
+        s.remarks,
+        s.recruiter_comment,
+        s.pod_lead_remarks,
+        s.review_feedback,
+        s.submitted_rate_amount,
+        s.submitted_rate_currency,
+        s.submitted_rate_term,
+        s.candidate_current_ctc,
+        s.candidate_expected_ctc,
+        s.candidate_notice_period,
+        s.candidate_relevant_experience,
+        s.candidate_preferred_locations,
+        s.created_at,
+        s.updated_at,
         c.full_name AS candidate_name,
         c.email AS candidate_email,
         c.phone AS candidate_phone,
@@ -297,6 +340,7 @@ export class RecruiterSubmissionsService {
         cl.client_name AS client_name,
         ecl.client_name AS end_client_name,
         j.market,
+        j.job_timezone AS job_timezone,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         r.job_reviewer_id AS recruiter_job_reviewer_id,
@@ -324,6 +368,7 @@ export class RecruiterSubmissionsService {
 
     const userPerms = user.permissions || [];
     const canViewAll =
+      userPerms.includes('*') ||
       userPerms.includes('tenant:manage') ||
       userPerms.includes('tenant:settings') ||
       userPerms.includes('platform:manage') ||
@@ -332,6 +377,9 @@ export class RecruiterSubmissionsService {
       userPerms.includes('submission:audit_l1') ||
       userPerms.includes('submission:audit_l2') ||
       userPerms.includes('submission:audit_l3') ||
+      userPerms.includes('submission:internal_screening') ||
+      userPerms.includes('submission:schedule_interview') ||
+      userPerms.includes('submission:final_status') ||
       userPerms.includes('submission:approve_client');
 
     const view = filters.view || 'all';
@@ -355,6 +403,12 @@ export class RecruiterSubmissionsService {
     } else if (!canViewAll) {
       baseSql += ` AND s.recruiter_id = $${paramIndex}`;
       params.push(user.dbId);
+      paramIndex++;
+    }
+
+    if (filters.submissionId) {
+      baseSql += ` AND s.id = $${paramIndex}`;
+      params.push(filters.submissionId);
       paramIndex++;
     }
 
@@ -405,6 +459,12 @@ export class RecruiterSubmissionsService {
       paramIndex++;
     }
 
+    if (filters.search?.trim()) {
+      baseSql += ` AND (c.full_name ILIKE $${paramIndex} OR c.email ILIKE $${paramIndex} OR j.job_code ILIKE $${paramIndex} OR j.job_title ILIKE $${paramIndex} OR cl.client_name ILIKE $${paramIndex})`;
+      params.push(`%${filters.search.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      paramIndex++;
+    }
+
     if (filters.startDate && filters.startDate !== 'undefined' && filters.startDate !== 'null') {
       const start = new Date(filters.startDate);
       if (!isNaN(start.getTime())) {
@@ -428,12 +488,26 @@ export class RecruiterSubmissionsService {
     const limit = Math.min(Math.max(1, filters.limit || 20), 100);
     const offset = (page - 1) * limit;
 
-    const countSql = `SELECT COUNT(*) as count,
+    const bucketConditions: Record<TrackerBucket, string> = {
+      all: 'TRUE',
+      review: "final_status = 'PENDING_APPROVAL'",
+      interviews: "final_status = 'SUBMITTED'",
+      offers: "final_status = 'OFFER'",
+      closed: "final_status IN ('REJECTED', 'JOIN')",
+    };
+    const bucket = filters.bucket || 'all';
+    if (!Object.prototype.hasOwnProperty.call(bucketConditions, bucket)) throw new BadRequestException('Invalid tracker filter.');
+    const countSql = `SELECT COUNT(*) FILTER (WHERE ${bucketConditions[bucket]}) as count,
+      COUNT(*) as all_count,
+      COUNT(*) FILTER (WHERE ${bucketConditions.review}) as review_count,
+      COUNT(*) FILTER (WHERE ${bucketConditions.interviews}) as interviews_count,
+      COUNT(*) FILTER (WHERE ${bucketConditions.offers}) as offers_count,
+      COUNT(*) FILTER (WHERE ${bucketConditions.closed}) as closed_count,
       COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
       COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
       COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
       FROM (${baseSql}) AS counted`;
-    const retrieveSql = `${baseSql} ORDER BY s.created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    const retrieveSql = `${baseSql} AND ${bucketConditions[bucket].replace(/final_status/g, 's.final_status')} ORDER BY s.created_at DESC, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
 
     try {
@@ -443,7 +517,7 @@ export class RecruiterSubmissionsService {
       ]);
 
       const total = Number(countRes[0]?.count || 0);
-      const data = (retrieveRes || []).map((row: any) => this.mapRowToDetails(row));
+      const data = (retrieveRes || []).map((row: any) => ({ ...this.mapRowToDetails(row), capabilities: submissionCapabilities(user.permissions) }));
 
       return {
         data,
@@ -451,6 +525,13 @@ export class RecruiterSubmissionsService {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+        counts: {
+          all: Number(countRes[0]?.all_count || 0),
+          review: Number(countRes[0]?.review_count || 0),
+          interviews: Number(countRes[0]?.interviews_count || 0),
+          offers: Number(countRes[0]?.offers_count || 0),
+          closed: Number(countRes[0]?.closed_count || 0),
+        },
         stats: {
           total,
           l1Pending: Number(countRes[0]?.l1_pending || 0),
@@ -467,12 +548,49 @@ export class RecruiterSubmissionsService {
   /**
    * Find a single recruiter submission by ID
    */
-  async findOne(id: string, tenantId: string): Promise<SubmissionDetails> {
+  async findOne(id: string, tenantId: string, user?: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
+    if (user) {
+      const result = await this.findAll(tenantId, user, { submissionId: id, branchId: branchId || undefined, limit: 1 });
+      if (!result.data.length) throw new NotFoundException('Submission not found in your accessible workspace.');
+      return result.data[0];
+    }
     this.logger.log(`Fetching submission ID=${id} for tenant: ${tenantId}`);
 
     const sql = `
       SELECT 
-        s.*,
+        s.id,
+        s.tenant_id,
+        s.job_id,
+        s.candidate_id,
+        s.recruiter_id,
+        s.l1_status,
+        s.l1_date,
+        s.l1_remarks,
+        s.l1_interviewer,
+        s.l2_status,
+        s.l2_date,
+        s.l2_remarks,
+        s.l2_interviewer,
+        s.l3_status,
+        s.l3_date,
+        s.l3_remarks,
+        s.l3_interviewer,
+        s.meeting_link,
+        s.final_status,
+        s.remarks,
+        s.recruiter_comment,
+        s.pod_lead_remarks,
+        s.review_feedback,
+        s.submitted_rate_amount,
+        s.submitted_rate_currency,
+        s.submitted_rate_term,
+        s.candidate_current_ctc,
+        s.candidate_expected_ctc,
+        s.candidate_notice_period,
+        s.candidate_relevant_experience,
+        s.candidate_preferred_locations,
+        s.created_at,
+        s.updated_at,
         c.full_name AS candidate_name,
         c.email AS candidate_email,
         c.phone AS candidate_phone,
@@ -527,7 +645,8 @@ export class RecruiterSubmissionsService {
   /**
    * Update submission statuses with auto-rejection logic
    */
-  async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser): Promise<SubmissionDetails> {
+  async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
+    await this.findOne(id, tenantId, user, branchId);
     this.logger.log(`Updating submission ID=${id} for tenant: ${tenantId}`);
 
     const existing = await this.prisma.recruiterSubmission.findFirst({
@@ -542,64 +661,10 @@ export class RecruiterSubmissionsService {
       throw new NotFoundException(`Recruiter submission with ID ${id} was not found.`);
     }
 
-    const userPerms = user.permissions || [];
-    const isAdmin = user.roles?.includes('TENANT_ADMIN') || user.roles?.includes('SUPER_ADMIN');
-    const isDeliveryHead = user.roles?.includes('DELIVERY_HEAD');
-    const isUnitAdmin = user.roles?.includes('UNIT_ADMIN');
-    const isAm = user.roles?.includes('ACCOUNT_MANAGER');
-    const isPodLead = user.roles?.includes('POD_LEAD');
-    
-    let isReportingManager = false;
-    if (existing.recruiterId) {
-      const recruiter = await this.prisma.user.findFirst({
-        where: { id: existing.recruiterId, tenantId },
-        select: { jobReviewerId: true }
-      });
-      if (recruiter && recruiter.jobReviewerId === user.dbId) {
-        isReportingManager = true;
-      }
-    }
-
-    const canAuditRounds = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:audit_rounds');
-    const canAuditL1 = canAuditRounds || isAm || isPodLead || userPerms.includes('submission:audit_l1');
-    const canAuditL2 = canAuditRounds || isAm || userPerms.includes('submission:audit_l2');
-    const canAuditL3 = canAuditRounds || isAm || userPerms.includes('submission:audit_l3');
-    const canInternalScreen = isAdmin || isDeliveryHead || isUnitAdmin || isPodLead || isReportingManager || userPerms.includes('submission:internal_screening');
-    const canFinalStatus = isAdmin || isDeliveryHead || isUnitAdmin || isAm || userPerms.includes('submission:final_status');
-    const canApproveClient = canInternalScreen || canFinalStatus;
-    const canEditRate = isAdmin || isDeliveryHead || isAm || userPerms.includes('submission:edit_rate');
-
-    if (!canAuditL1) {
-      delete dto.l1Status;
-      delete dto.l1Date;
-      delete dto.l1Remarks;
-      delete dto.l1Interviewer;
-    }
-    if (!canAuditL2) {
-      delete dto.l2Status;
-      delete dto.l2Date;
-      delete dto.l2Remarks;
-      delete dto.l2Interviewer;
-    }
-    if (!canAuditL3) {
-      delete dto.l3Status;
-      delete dto.l3Date;
-      delete dto.l3Remarks;
-      delete dto.l3Interviewer;
-    }
-    if (existing.finalStatus === 'PENDING_APPROVAL' && !canInternalScreen) {
-      delete dto.finalStatus;
-      delete (dto as any).reviewFeedback;
-    } else if (existing.finalStatus !== 'PENDING_APPROVAL' && (dto.finalStatus === 'OFFER' || dto.finalStatus === 'JOIN') && !canFinalStatus) {
-      delete dto.finalStatus;
-    } else if (!canApproveClient) {
-      delete dto.finalStatus;
-    }
-    if (!canFinalStatus && !canInternalScreen) {
-      delete dto.remarks;
-    }
-    if (!canEditRate) {
-      
+    const caps = submissionCapabilities(user.permissions);
+    validateTrackerUpdate(existing, dto, caps);
+    if (dto.expectedUpdatedAt && new Date(dto.expectedUpdatedAt).getTime() !== existing.updatedAt.getTime()) {
+      throw new ConflictException('This submission was updated by someone else. Reload it before saving.');
     }
 
     const mergedL1Status = dto.l1Status !== undefined ? dto.l1Status : existing.l1Status;
@@ -664,11 +729,21 @@ export class RecruiterSubmissionsService {
     if (dto.l3Remarks !== undefined) data.l3Remarks = dto.l3Remarks;
     if (dto.l3Interviewer !== undefined) data.l3Interviewer = dto.l3Interviewer;
     if (dto.meetingLink !== undefined) data.meetingLink = dto.meetingLink;
+    if (l1Status === 'REJECTED') {
+      data.l2Remarks = null; data.l2Interviewer = null; data.l3Remarks = null; data.l3Interviewer = null;
+    } else if (l2Status === 'REJECTED') {
+      data.l3Remarks = null; data.l3Interviewer = null;
+    }
 
-    await this.prisma.recruiterSubmission.update({
-      where: { id },
+    // Atomic compare-and-set, including legacy callers without an explicit version.
+    // PostgreSQL default timestamps can have microseconds; compare the read millisecond.
+    const version = existing.updatedAt.getTime();
+    data.updatedAt = new Date(Math.max(Date.now(), version + 1));
+    const saved = await this.prisma.recruiterSubmission.updateMany({
+      where: { id, tenantId, updatedAt: { gte: new Date(version), lt: new Date(version + 1) } },
       data,
     });
+    if (saved.count !== 1) throw new ConflictException('This submission changed while saving. Reload it and try again.');
 
     // ── Candidate Submission Notification Dispatch ──────────────────────────────
     const candName =
@@ -821,7 +896,7 @@ export class RecruiterSubmissionsService {
       }
     }
 
-    return this.findOne(id, tenantId);
+    return this.findOne(id, tenantId, user, branchId);
   }
 
   /**
@@ -885,7 +960,10 @@ export class RecruiterSubmissionsService {
       finalStatus: row.final_status || row.finalStatus,
       remarks: row.remarks,
       recruiterComment: row.recruiter_comment || row.recruiterComment,
-      submittedRate: row.submitted_rate || row.submittedRate || null,
+      submittedRate: row.submitted_rate_amount != null ? String(row.submitted_rate_amount) : row.submitted_rate || row.submittedRate || null,
+      submittedRateCurrency: row.submitted_rate_currency || null,
+      submittedRateTerm: row.submitted_rate_term || null,
+      timezone: row.job_timezone || null,
       podLeadRemarks: row.pod_lead_remarks || row.podLeadRemarks || row.review_feedback || row.reviewFeedback || null,
       reviewFeedback: row.review_feedback || row.reviewFeedback || row.pod_lead_remarks || row.podLeadRemarks || null,
       l1Remarks: row.l1_remarks || row.l1Remarks || null,
@@ -916,8 +994,8 @@ export class RecruiterSubmissionsService {
       jobSecondarySkills: row.job_secondary_skills || null,
       jobCode: row.job_code || row.jobCode,
       jobTitle: row.job_title || row.jobTitle,
-      clientName: row.client?.clientName || row.client_id,
-      endClientName: row.end_client?.clientName || row.end_client_id,
+      clientName: row.client_name || row.client?.clientName,
+      endClientName: row.end_client_name || row.end_client?.clientName,
       recruiterName: row.recruiter_name || row.recruiterName,
       podHeadName: row.pod_head_name || row.podHeadName,
       accountManagerName: row.am_name || row.accountManagerName,

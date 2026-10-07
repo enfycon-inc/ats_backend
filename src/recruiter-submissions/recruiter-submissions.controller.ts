@@ -24,6 +24,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { resolveTenantId } from '../auth/utils/tenant-resolver';
 import { resolveBranchId } from '../auth/utils/branch-resolver';
+import type { TrackerBucket } from './tracker-contract';
 
 @ApiTags('ATS Recruiter Submissions & Interview Tracking')
 @Controller('api/recruiter-submissions')
@@ -73,6 +74,8 @@ export class RecruiterSubmissionsController {
     @Query('jobId') jobId?: string,
     @Query('candidateId') candidateId?: string,
     @Query('view') view?: string,
+    @Query('search') search?: string,
+    @Query('bucket') bucket?: TrackerBucket,
   ) {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
@@ -89,6 +92,8 @@ export class RecruiterSubmissionsController {
       candidateId: candidateId ? candidateId : undefined,
       branchId: bid || undefined,
       view,
+      search,
+      bucket,
     });
   }
 
@@ -183,9 +188,10 @@ export class RecruiterSubmissionsController {
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<SubmissionDetails> {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.findOne(id, tid);
+    return this.service.findOne(id, tid, user, resolveBranchId(user, branchHeaderId));
   }
 
   @Patch(':id')
@@ -201,9 +207,10 @@ export class RecruiterSubmissionsController {
     @Body() dto: UpdateSubmissionDto,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<SubmissionDetails> {
     const tid = resolveTenantId(user, tenantId);
-    return this.service.update(id, dto, tid, user);
+    return this.service.update(id, dto, tid, user, resolveBranchId(user, branchHeaderId));
   }
 
   @Delete(':id')
