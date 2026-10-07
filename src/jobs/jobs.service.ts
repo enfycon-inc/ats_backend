@@ -1094,7 +1094,7 @@ export class JobsService {
   /**
    * Get single job by UUID or job code
    */
-  async findOneJob(idOrCode: string, tenantId: string): Promise<JobProfile> {
+  async findOneJob(idOrCode: string, tenantId: string, user?: any): Promise<JobProfile> {
     this.logger.log(`Fetching job: ${idOrCode} for tenant: ${tenantId}`);
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1175,9 +1175,9 @@ export class JobsService {
       if (rows.length === 0) {
         throw new NotFoundException(`Job requisition ${idOrCode} not found.`);
       }
-      return this.mapRowToProfile(rows[0]);
+      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return this.mapRowToProfile(rows[0]);
     } catch (err) {
-      if (err instanceof NotFoundException) throw err;
+      if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
       this.logger.error(`findOneJob failed: ${err.message}`, err.stack);
       throw err;
     }
@@ -1533,6 +1533,16 @@ export class JobsService {
     });
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
+    }
+
+    const _userPermissions = Array.isArray(user?.permissions) ? user.permissions : [];
+    const _isAdmin = _userPermissions.includes('tenant:settings') || _userPermissions.includes('tenant:manage') || _userPermissions.includes('platform:manage') || _userPermissions.includes('*');
+    const _hasEditPerm = _userPermissions.includes('job:edit');
+    const _isOwner = currentJob.accountManagerId === user?.dbId || currentJob.accountManagerId === user?.id || 
+                     currentJob.recruitmentManagerId === user?.dbId || currentJob.recruitmentManagerId === user?.id;
+
+    if (!_isAdmin && !_hasEditPerm && !_isOwner) {
+      throw new ForbiddenException('You do not have permission to edit this job.');
     }
 
     // If attempting to set status to 'Active', ensure client is approved

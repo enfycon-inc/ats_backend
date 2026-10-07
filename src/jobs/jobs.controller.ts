@@ -174,7 +174,6 @@ export class JobsController {
 
   @Get(':id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:view')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get job detail by ID or code',
@@ -189,12 +188,11 @@ export class JobsController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<JobProfile> {
     const tid = resolveTenantId(user, tenantId);
-    return this.jobsService.findOneJob(id, tid);
+    return this.jobsService.findOneJob(id, tid, user);
   }
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:edit')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Update job details and recruiter assignment',
