@@ -32,6 +32,36 @@ describe('job operating unit persistence and reviewer routing', () => {
     await expect(service.createJob(dto, id)).rejects.toMatchObject({ status: 400 });
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
+  it('rejects an empty assignment when the unit disallows assign later', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowUnassigned: false });
+    await expect(service.createJob(dto, id)).rejects.toThrow('Select a pod or at least one recruiter');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
+  it('rejects a pod from another unit before creating a job', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowUnassigned: false });
+    prisma.pod = { findMany: jest.fn().mockResolvedValue([]) };
+    await expect(service.createJob({ ...dto, podId: manager }, id, 'System', id,
+      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] })).rejects.toThrow('outside the job unit');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
+  it('persists an explicit unit pod without searching the tenant for another pod', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowUnassigned: false });
+    prisma.pod = { findMany: jest.fn().mockResolvedValue([{ id: manager }]), findFirst: jest.fn() };
+    prisma.jobPod.upsert = jest.fn();
+    prisma.jobAssignmentLog = { create: jest.fn() };
+    await service.createJob({ ...dto, podId: manager }, id, 'System', id,
+      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] });
+    expect(prisma.jobPod.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: { jobId: id, podId: manager } }));
+    expect(prisma.pod.findFirst).not.toHaveBeenCalled();
+  });
+  it('rejects the retired unit pool sentinel', async () => {
+    const { service, prisma, dto } = setup();
+    await expect(service.createJob({ ...dto, podId: 'all' }, id)).rejects.toThrow('instead of a unit pool');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
   it('persists every validated recruiter once when Account Manager creates a job', async () => {
     const { service, prisma, dto } = setup();
     const second = '44444444-4444-4444-8444-444444444444';

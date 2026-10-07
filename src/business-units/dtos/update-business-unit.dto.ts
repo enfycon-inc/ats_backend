@@ -12,7 +12,6 @@ export class UpdateBusinessUnitDto {
   breakDurationMinutes?: number;
   allowNone?: boolean;
   allowPods?: boolean;
-  allowAll?: boolean;
   allowUnassigned?: boolean;
   podDistributionStrategy?: string;
 }

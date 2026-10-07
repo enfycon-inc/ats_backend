@@ -4,7 +4,7 @@ import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { delegationTargets } from '../business-units/business-units.service';
-import { listJobStaff, validateJobRecruiters } from './job-staffing';
+import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 export interface JobProfile {
@@ -393,6 +393,10 @@ export class JobsService {
     return listJobStaff(this.prisma, actor, tenantId, branchId, unitId);
   }
 
+  async listJobPods(actor: AuthUser, tenantId: string, branchId?: string, unitId?: string) {
+    return listJobPods(this.prisma, actor, tenantId, branchId, unitId);
+  }
+
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
@@ -440,17 +444,31 @@ export class JobsService {
 
     // Use submitted jobCode if provided and unique, otherwise auto-generate
     const businessUnitId = dto.businessUnitId || null;
+    let assignmentPolicy: any = null;
     if (businessUnitId) {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(businessUnitId)) {
         throw new BadRequestException('Select a valid operating unit.');
       }
       const unit = await this.prisma.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
       if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
+      assignmentPolicy = unit;
     }
     const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
     if (submittedRecruiters.length) {
       if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
       await validateJobRecruiters(this.prisma, actor, tenantId, submittedRecruiters, branchId, businessUnitId);
+      if (assignmentPolicy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
+    }
+    if (dto.podId === 'all') throw new BadRequestException('Select individual recruiters instead of a unit pool.');
+    const selectedPod = dto.podId && !['none', 'off'].includes(dto.podId) ? dto.podId : null;
+    if (selectedPod) {
+      if (!actor) throw new ForbiddenException('Pod assignment requires an authenticated context.');
+      if (assignmentPolicy?.allowPods === false) throw new BadRequestException('Pod assignment is disabled for this unit.');
+      const eligiblePods = await listJobPods(this.prisma, actor, tenantId, branchId || undefined, businessUnitId || undefined);
+      if (!eligiblePods.some(p => p.id === selectedPod)) throw new ForbiddenException('The selected pod is outside the job unit.');
+    }
+    if (assignmentPolicy?.allowUnassigned === false && !selectedPod && !submittedRecruiters.length) {
+      throw new BadRequestException('Select a pod or at least one recruiter for this unit.');
     }
     let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
     if (jobCode) {
@@ -712,55 +730,8 @@ export class JobsService {
         data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
       });
 
-      // Fetch branch-level assignment settings if branchId is present
-      let branchSettings: any = null;
-      if (branchId) {
-        branchSettings = await this.prisma.branch.findFirst({
-          where: { id: branchId, tenantId },
-          select: { allowNone: true, allowPods: true, allowAll: true, allowUnassigned: true, podDistributionStrategy: true },
-        });
-      }
-
-      const podSystemEnabled = tenant?.podSystemEnabled !== false;
-      const allowPods = branchSettings ? branchSettings.allowPods !== false && !branchSettings.allowNone : podSystemEnabled;
-      const allowAll = branchSettings ? branchSettings.allowAll !== false && !branchSettings.allowNone : true;
-
-      // Assign Pod (Explicit, Round-Robin, All Recruiters, or None)
-      let assignedPodId: string | null = null;
-      if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
-        await this.prisma.job.update({
-          where: { id: jobId },
-          data: { /* removed assignedTo */ },
-        });
-      } else if (dto.podId && dto.podId !== 'none' && dto.podId !== 'off') {
-        assignedPodId = dto.podId;
-      } else if (dto.podId === 'none' || dto.podId === 'off' || (branchSettings && branchSettings.allowNone)) {
-        await this.prisma.jobPod.deleteMany({ where: { jobId } });
-      } else if (allowPods && podSystemEnabled) {
-        let availablePod = await this.prisma.pod.findFirst({
-          where: { tenantId, isAvailableForAssignment: true },
-          orderBy: { createdAt: 'asc' },
-          select: { id: true },
-        });
-        if (!availablePod) {
-          await this.prisma.pod.updateMany({
-            where: { tenantId },
-            data: { isAvailableForAssignment: true },
-          });
-          availablePod = await this.prisma.pod.findFirst({
-            where: { tenantId, isAvailableForAssignment: true },
-            orderBy: { createdAt: 'asc' },
-            select: { id: true },
-          });
-        }
-        if (availablePod) {
-          assignedPodId = availablePod.id;
-          await this.prisma.pod.update({
-            where: { id: assignedPodId },
-            data: { isAvailableForAssignment: false },
-          });
-        }
-      }
+      // Assignment is explicit; never silently route an unassigned job.
+      const assignedPodId = selectedPod;
 
       if (assignedPodId) {
         await this.prisma.jobPod.upsert({
@@ -880,22 +851,6 @@ export class JobsService {
                 teamUserIds.add(r.id);
               }
             });
-          } else if (dto.podId === 'all' || (!dto.podId && !allowPods && allowAll)) {
-            if (branchId) {
-              const branchUsers = await this.prisma.user.findMany({
-                where: {
-                  tenantId,
-                  isActive: true,
-                  branchId,
-                },
-                select: { id: true },
-              });
-              branchUsers.forEach((r) => {
-                if (r.id !== resolvedPrimaryRecruiterId && r.id !== creatorUserId && !dhTargets.has(r.id)) {
-                  teamUserIds.add(r.id);
-                }
-              });
-            }
           }
 
           if (teamUserIds.size > 0) {
@@ -1547,6 +1502,39 @@ export class JobsService {
     });
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
+    }
+
+    if (dto.podId === 'all' || dto.podIds?.includes('all')) {
+      throw new BadRequestException('Select individual recruiters instead of a unit pool.');
+    }
+    if (dto.podId !== undefined || dto.podIds !== undefined || dto.recruiterId !== undefined || dto.recruiterIds !== undefined || dto.businessUnitId !== undefined || dto.branchId !== undefined) {
+      const unitId = dto.businessUnitId ?? currentJob.businessUnitId;
+      const branchId = dto.branchId ?? currentJob.branchId;
+      const policy = unitId ? await this.prisma.businessUnit.findFirst({ where: { id: unitId, tenantId, branchId } }) : null;
+      if (unitId && !policy) throw new ForbiddenException('The job unit is outside this workspace.');
+      const podChanged = dto.podId !== undefined || dto.podIds !== undefined;
+      const scopeChanged = unitId !== currentJob.businessUnitId || branchId !== currentJob.branchId;
+      const requestedPods: string[] = podChanged ? (dto.podIds || (dto.podId ? [dto.podId] : [])).filter((p: string) => !['none', 'off'].includes(p)) : [];
+      const currentPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
+      const podsToValidate = podChanged ? requestedPods : scopeChanged ? currentPods.map(p => p.podId) : [];
+      if ((podChanged || scopeChanged) && (podsToValidate.length || (podChanged && currentPods.length))) {
+        if (podsToValidate.length && policy?.allowPods === false) throw new BadRequestException('Pod assignment is disabled for this unit.');
+        const eligible = await listJobPods(this.prisma, user, tenantId, branchId || undefined, unitId || undefined);
+        if (podsToValidate.some(p => !eligible.some(option => option.id === p))) throw new ForbiddenException('The selected pod is outside the job unit.');
+      }
+      const recruitersChanged = dto.recruiterId !== undefined || dto.recruiterIds !== undefined;
+      const requestedRecruiters: string[] = recruitersChanged ? (dto.recruiterIds || (dto.recruiterId ? [dto.recruiterId] : [])) : [];
+      if (scopeChanged && !recruitersChanged) {
+        const mappings = await this.prisma.jobRecruiter.findMany({ where: { jobId: id }, select: { recruiterId: true } });
+        requestedRecruiters.push(...mappings.map(mapping => mapping.recruiterId));
+        if (requestedRecruiters.length) await validateJobRecruiters(this.prisma, user, tenantId, requestedRecruiters, branchId, unitId);
+      }
+      if (requestedRecruiters.length && policy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
+      if (policy?.allowUnassigned === false) {
+        const hasPods = podChanged ? requestedPods.length > 0 : currentPods.length > 0;
+        const hasRecruiters = recruitersChanged ? requestedRecruiters.length > 0 : await this.prisma.jobRecruiter.count({ where: { jobId: id } }) > 0;
+        if (!hasPods && !hasRecruiters) throw new BadRequestException('Select a pod or at least one recruiter for this unit.');
+      }
     }
 
     const _userPermissions = Array.isArray(user?.permissions) ? user.permissions : [];

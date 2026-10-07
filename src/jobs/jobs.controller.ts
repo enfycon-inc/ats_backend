@@ -21,6 +21,17 @@ import { resolveBranchId } from '../auth/utils/branch-resolver';
 export class JobsController {
   constructor(private readonly jobsService: JobsService) {}
 
+  @Get('pod-options')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:assign_pod')
+  @ApiBearerAuth()
+  async podOptions(@CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantHeader?: string,
+    @Query('branchId') branchId?: string,
+    @Query('businessUnitId') businessUnitId?: string) {
+    return this.jobsService.listJobPods(user, resolveTenantId(user, tenantHeader), branchId, businessUnitId);
+  }
+
   @Get('staffing-options')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('job:assign_recruiter')

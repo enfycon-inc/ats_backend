@@ -47,7 +47,6 @@ export interface BusinessUnitResponse {
   admins?: { id: string; fullName: string; email: string }[];
   allowNone: boolean;
   allowPods: boolean;
-  allowAll: boolean;
   allowUnassigned: boolean;
   podDistributionStrategy: string;
   usersCount: number;
@@ -103,7 +102,6 @@ export class BusinessUnitsService {
     const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : 60;
     const allowNone = dto.allowNone !== undefined ? dto.allowNone : false;
     const allowPods = dto.allowPods !== undefined ? dto.allowPods : true;
-    const allowAll = dto.allowAll !== undefined ? dto.allowAll : true;
     const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : true;
     const podDistributionStrategy = dto.podDistributionStrategy || 'AUTO';
 
@@ -125,7 +123,6 @@ export class BusinessUnitsService {
         breakDurationMinutes,
         allowNone,
         allowPods,
-        allowAll,
         allowUnassigned,
         podDistributionStrategy,
       },
@@ -184,7 +181,6 @@ export class BusinessUnitsService {
       breakDurationMinutes: bu.breakDurationMinutes ?? 60,
       allowNone: bu.allowNone ?? false,
       allowPods: bu.allowPods ?? true,
-      allowAll: bu.allowAll ?? true,
       allowUnassigned: bu.allowUnassigned ?? true,
       podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
       usersCount: bu._count.users,
@@ -246,7 +242,6 @@ export class BusinessUnitsService {
       breakDurationMinutes: bu.breakDurationMinutes ?? 60,
       allowNone: bu.allowNone ?? false,
       allowPods: bu.allowPods ?? true,
-      allowAll: bu.allowAll ?? true,
       allowUnassigned: bu.allowUnassigned ?? true,
       podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
       usersCount: bu._count.users,
@@ -287,7 +282,6 @@ export class BusinessUnitsService {
     const breakDurationMinutes = dto.breakDurationMinutes !== undefined ? dto.breakDurationMinutes : existing.breakDurationMinutes;
     const allowNone = dto.allowNone !== undefined ? dto.allowNone : existing.allowNone;
     const allowPods = dto.allowPods !== undefined ? dto.allowPods : existing.allowPods;
-    const allowAll = dto.allowAll !== undefined ? dto.allowAll : existing.allowAll;
     const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : existing.allowUnassigned;
     const podDistributionStrategy = dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy;
 
@@ -308,7 +302,6 @@ export class BusinessUnitsService {
         breakDurationMinutes,
         allowNone,
         allowPods,
-        allowAll,
         allowUnassigned,
         podDistributionStrategy,
       },

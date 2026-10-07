@@ -12,10 +12,10 @@ export interface JobStaffOption {
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenantId: string,
-  requestedBranch?: string, requestedUnit?: string): Promise<JobStaffOption[]> {
-  if (!actor.permissions?.includes('job:assign_recruiter')) {
-    throw new ForbiddenException('Recruiter assignment permission is required.');
+export async function resolveJobStaffingScope(prisma: PrismaService, actor: AuthUser, tenantId: string,
+  requestedBranch?: string, requestedUnit?: string, permission = 'job:assign_recruiter') {
+  if (!actor.permissions?.includes(permission)) {
+    throw new ForbiddenException(permission === 'job:assign_recruiter' ? 'Recruiter assignment permission is required.' : 'Pod assignment permission is required.');
   }
   for (const id of [requestedBranch, requestedUnit]) {
     if (id && !uuid.test(id)) throw new BadRequestException('Select a valid branch and unit.');
@@ -33,6 +33,20 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
     });
     if (!unit) throw new ForbiddenException('The selected unit is outside your job staffing scope.');
   }
+  return { branchId, unitId };
+}
+
+export async function listJobPods(prisma: PrismaService, actor: AuthUser, tenantId: string,
+  requestedBranch?: string, requestedUnit?: string) {
+  const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_pod');
+  if (!unitId) throw new BadRequestException('Select an operating unit.');
+  return prisma.pod.findMany({ where: { tenantId, businessUnitId: unitId, ...(branchId ? { branchId } : {}) },
+    select: { id: true, name: true, businessUnitId: true, branchId: true, podHeadId: true }, orderBy: { name: 'asc' } });
+}
+
+export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenantId: string,
+  requestedBranch?: string, requestedUnit?: string): Promise<JobStaffOption[]> {
+  const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit);
   return prisma.$queryRawUnsafe<JobStaffOption[]>(`
     SELECT staff.id, staff.full_name AS "fullName", eligibility."canRecruit", eligibility."canReview"
     FROM ats.users staff
