@@ -4,6 +4,8 @@ import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { delegationTargets } from '../business-units/business-units.service';
+import { listJobStaff, validateJobRecruiters } from './job-staffing';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 export interface JobProfile {
   id: string;
@@ -387,7 +389,11 @@ export class JobsService {
   /**
    * Create a new job requisition
    */
-  async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null): Promise<JobProfile> {
+  async listJobStaff(actor: AuthUser, tenantId: string, branchId?: string, unitId?: string) {
+    return listJobStaff(this.prisma, actor, tenantId, branchId, unitId);
+  }
+
+  async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser): Promise<JobProfile> {
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
     const tenant = await this.prisma.tenant.findUnique({
@@ -440,6 +446,11 @@ export class JobsService {
       }
       const unit = await this.prisma.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
       if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
+    }
+    const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
+    if (submittedRecruiters.length) {
+      if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
+      await validateJobRecruiters(this.prisma, actor, tenantId, submittedRecruiters, branchId, businessUnitId);
     }
     let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
     if (jobCode) {
@@ -602,7 +613,7 @@ export class JobsService {
     if (!workingDays) workingDays = '["Monday","Tuesday","Wednesday","Thursday","Friday"]';
     if (!shiftTiming) shiftTiming = `General Shift (${workStartTime} - ${workEndTime})`;
 
-    const resolvedPrimaryRecruiterId = await this.resolveUserUuid(dto.recruiterId, tenantId);
+    const resolvedPrimaryRecruiterId = submittedRecruiters[0] || null;
     const resolvedRecruitmentManagerId = await this.resolveUserUuid(dto.recruitmentManagerId, tenantId);
     const resolvedAssignedApproverId = await this.resolveUserUuid(assignedApproverId, tenantId);
     const resolvedAccountManagerId = await this.resolveUserUuid(dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), tenantId);
@@ -696,7 +707,10 @@ export class JobsService {
           
         },
       });
-      const jobId = createdJob.id; if (resolvedPrimaryRecruiterId) { await this.prisma.jobRecruiter.create({ data: { jobId, recruiterId: resolvedPrimaryRecruiterId } }); }
+      const jobId = createdJob.id;
+      if (submittedRecruiters.length) await this.prisma.jobRecruiter.createMany({
+        data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
+      });
 
       // Fetch branch-level assignment settings if branchId is present
       let branchSettings: any = null;
@@ -1597,7 +1611,7 @@ export class JobsService {
     // If updating recruiter_id or recruiterIds, apply validation rules
     let targetRecruiterIds: string[] = [];
     if (dto.recruiterIds !== undefined) {
-      targetRecruiterIds = Array.isArray(dto.recruiterIds) ? dto.recruiterIds : [];
+      targetRecruiterIds = Array.isArray(dto.recruiterIds) ? [...new Set<string>(dto.recruiterIds)] : [];
       if (targetRecruiterIds.length > 0) dto.recruiterId = targetRecruiterIds[0];
       else dto.recruiterId = null;
     } else if (dto.recruiterId !== undefined) {
@@ -1605,6 +1619,9 @@ export class JobsService {
     }
 
     if (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) {
+
+      await validateJobRecruiters(this.prisma, user, tenantId, targetRecruiterIds,
+        dto.branchId ?? currentJob.branchId, dto.businessUnitId ?? currentJob.businessUnitId);
 
       const newRecruiterId = dto.recruiterId;
 

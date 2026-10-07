@@ -21,6 +21,17 @@ import { resolveBranchId } from '../auth/utils/branch-resolver';
 export class JobsController {
   constructor(private readonly jobsService: JobsService) {}
 
+  @Get('staffing-options')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:assign_recruiter')
+  @ApiBearerAuth()
+  async staffingOptions(@CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantHeader?: string,
+    @Query('branchId') branchId?: string,
+    @Query('businessUnitId') businessUnitId?: string) {
+    return this.jobsService.listJobStaff(user, resolveTenantId(user, tenantHeader), branchId, businessUnitId);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -40,7 +51,7 @@ export class JobsController {
   ): Promise<JobProfile> {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
-    return this.jobsService.createJob(dto, tid, user?.dbId || user?.email || 'System', bid);
+    return this.jobsService.createJob(dto, tid, user?.dbId || user?.email || 'System', bid, user);
   }
 
   @Post('parse-jd')

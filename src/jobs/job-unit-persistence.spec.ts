@@ -32,6 +32,19 @@ describe('job operating unit persistence and reviewer routing', () => {
     await expect(service.createJob(dto, id)).rejects.toMatchObject({ status: 400 });
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
+  it('persists every validated recruiter once when Account Manager creates a job', async () => {
+    const { service, prisma, dto } = setup();
+    const second = '44444444-4444-4444-8444-444444444444';
+    prisma.jobRecruiter = { createMany: jest.fn().mockResolvedValue({ count: 2 }) };
+    prisma.$queryRawUnsafe.mockImplementation(async (sql: string) => sql.includes('CROSS JOIN LATERAL')
+      ? [manager, second].map(id => ({ id, fullName: 'Recruiter', canRecruit: true, canReview: false }))
+      : [{ id, permissions: ['job:publish_direct'], job_reviewer_id: null, pod_head_id: null }]);
+    await service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager, second, manager] }, id, id, id,
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter'] });
+    expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({ data: [
+      { jobId: id, recruiterId: manager }, { jobId: id, recruiterId: second },
+    ], skipDuplicates: true });
+  });
   it('does not swallow reviewer query failures or create a job', async () => {
     const { service, prisma, dto } = setup();
     prisma.$queryRawUnsafe.mockRejectedValue(new Error('database unavailable'));
