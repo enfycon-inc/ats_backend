@@ -1,6 +1,6 @@
 import { BusinessUnitsController } from './business-units.controller';
 describe('Unit Admin management scope', () => {
-  const service = { findOne: jest.fn(async (id: string) => ({ id, branchId: id === 'foreign' ? 'other' : 'home' })), findAll: jest.fn(), update: jest.fn(), remove: jest.fn(), create: jest.fn() };
+  const service = { findOne: jest.fn(async (id: string) => ({ id, branchId: id === 'foreign' ? 'other' : 'home' })), findAll: jest.fn(), onboardingOptions: jest.fn().mockResolvedValue([]), update: jest.fn(), remove: jest.fn(), create: jest.fn() };
   const controller = new BusinessUnitsController(service as any);
   const user = { tenantId: 'tenant', branchId: 'home', businessUnitId: 'unit', permissions: ['unit_admin:manage'] };
   beforeEach(() => jest.clearAllMocks());
@@ -21,5 +21,15 @@ describe('Unit Admin management scope', () => {
   it('allows editing the assigned unit with the capability', async () => {
     await controller.update('unit', { name: 'Updated' }, { user });
     expect(service.update).toHaveBeenCalledWith('unit', { name: 'Updated' }, 'tenant');
+  });
+  it('does not return a tenant-wide directory when assignments are missing', async () => {
+    expect(await controller.findAll({ user: { ...user, branchId: null } })).toEqual([]);
+    expect(await controller.findAll({ user: { ...user, businessUnitId: null } })).toEqual([]);
+    expect(service.findAll).not.toHaveBeenCalled();
+  });
+  it('restricts the minimal onboarding picker to pending members', async () => {
+    await expect(controller.onboardingOptions({ user })).rejects.toThrow();
+    expect(await controller.onboardingOptions({ user: { ...user, isApproved: false } })).toEqual([]);
+    expect(service.onboardingOptions).toHaveBeenCalledWith('tenant');
   });
 });

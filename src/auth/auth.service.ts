@@ -69,7 +69,14 @@ export class AuthService {
 
   // ─── User Management ─────────────────────────────────────────────────────────
   async getProfile(userId: string, context?: any) {
-    const profile = await this.userService.getProfile(userId);
+    let profile = await this.userService.getProfile(userId);
+    if (context) {
+      const permissions: string[] = context.permissions || [];
+      profile = { ...profile, permissions, roles: context.roles,
+        roleId: context.activeRoleId ?? profile.roleId, roleName: context.roleName ?? profile.roleName,
+        systemRole: context.systemRole, activeRoleId: context.activeRoleId,
+        canReview: permissions.some(p => ['submission:internal_screening', 'job:approve', 'job:reject', 'job:publish_direct'].includes(p)) } as typeof profile;
+    }
     if (!context?.managedTenant) return profile;
     const tenant = context.managedTenant;
     return { ...profile, tenantId: tenant.id, managedTenantId: tenant.id, homeTenantId: context.homeTenantId,

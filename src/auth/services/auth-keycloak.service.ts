@@ -390,7 +390,7 @@ export class AuthKeycloakService {
     if (allRoleIds.length > 0) {
       const dbRolesRes = await this.authQuery.query(
         'SELECT cr.id, cr.name, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[]) AND cr.tenant_id = $2',
-        [allRoleIds, tenantId]
+        [[roleId || existingAssigned[0]].filter(Boolean), tenantId]
       );
       dbRolesRes.rows.forEach((r: any) => {
         if (r.name) dynamicRoles.push(r.name);
@@ -435,7 +435,7 @@ export class AuthKeycloakService {
     }
 
     let permissions: string[] = [];
-    const effectiveRoleIds = Array.from(new Set([dbUser.role_id, ...(dbUser.assigned_role_ids || [])])).filter(Boolean);
+    const effectiveRoleIds = [dbUser.role_id || dbUser.assigned_role_ids?.[0]].filter(Boolean);
       const permsRes = await this.authQuery.query(
         `SELECT cr.permissions 
          FROM custom_roles cr

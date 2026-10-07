@@ -12,6 +12,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { AuthService } from '../auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveActiveRole } from '../utils/active-role';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -241,6 +242,10 @@ export class JwtAuthGuard implements CanActivate {
           ? 'SUPER_ADMIN'
           : (dbUser.system_role || 'RECRUITER'),
       };
+
+      if (!realmRoles.includes('SUPER_ADMIN') || request.headers['x-active-role-id']) {
+        request.user = await resolveActiveRole(this.prisma, request.user, request.headers['x-active-role-id']);
+      }
 
       if (headerTenant) {
         const actor = request.user;

@@ -14,6 +14,7 @@ import {
   HttpStatus,
   Headers,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -199,19 +200,26 @@ Validates email + password and returns a signed JWT access token.
     const tenantId = resolveTenantId(user, tenantHeader);
     // Branch Admins / Unit Admins can only see their own branch/unit users
     const perms = Array.isArray((user as any).permissions) ? (user as any).permissions : [];
-    const isTenantAdmin = perms.includes('tenant:settings');
+    const isTenantAdmin = perms.some((p: string) => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
     
     const isBranchAdmin = perms.includes('branch_admin:manage') && !isTenantAdmin;
     const isUnitAdmin = perms.includes('unit_admin:manage') && !isTenantAdmin;
+    if (!isTenantAdmin && !perms.includes('user:manage')) throw new ForbiddenException('Missing user management permission.');
+    if (!isTenantAdmin && (!user.branchId || (isUnitAdmin && !user.businessUnitId))) return [];
     
-    let scopedBranchId = null;
-    let scopedBusinessUnitId = null;
+    let scopedBranchId: string | null = null;
+    let scopedBusinessUnitId: string | null = null;
     
     if (isBranchAdmin || isUnitAdmin) {
       scopedBranchId = (user as any).branchId || null;
     }
     if (isUnitAdmin) {
       scopedBusinessUnitId = (user as any).businessUnitId || null;
+    }
+    if (!isTenantAdmin && !isBranchAdmin && !isUnitAdmin) {
+      if (!user.businessUnitId) return [];
+      scopedBranchId = user.branchId || null;
+      scopedBusinessUnitId = user.businessUnitId;
     }
     
     let users = await this.authService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId);

@@ -26,6 +26,11 @@ export class BusinessUnitsController {
     return (user?.permissions || []).some((p: string) => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
   }
 
+  private staffScope(user: any) {
+    if (this.tenantAccess(user)) return undefined;
+    return { branchId: user.branchId, ...(user.permissions?.includes('branch_admin:manage') ? {} : { businessUnitId: user.businessUnitId }) };
+  }
+
   private async assertAccess(user: any, id: string, tenantId: string, mutate = false) {
     const unit = await this.buService.findOne(id, tenantId);
     if (this.tenantAccess(user)) return unit;
@@ -52,14 +57,20 @@ export class BusinessUnitsController {
   async findAll(@Req() req: any, @Query('branchId') branchId?: string, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
     if (this.tenantAccess(req.user)) return this.buService.findAll(tenantId, branchId);
-    // Unassigned users (onboarding) need to see business units to select one
-    if (!req.user.branchId) return this.buService.findAll(tenantId, branchId);
+    // Administrative listings never widen access for missing assignments.
+    if (!req.user.branchId) return [];
     if (branchId && branchId !== req.user.branchId) throw new ForbiddenException('You can only access your assigned branch.');
     if (req.user.permissions?.includes('unit_admin:manage') && !req.user.permissions?.includes('branch_admin:manage')) {
       if (!req.user.businessUnitId) return [];
       return [await this.assertAccess(req.user, req.user.businessUnitId, tenantId)];
     }
     return this.buService.findAll(tenantId, req.user.branchId);
+  }
+
+  @Get('onboarding-options')
+  async onboardingOptions(@Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
+    if (req.user.isApproved !== false) throw new ForbiddenException('Onboarding choices are only available to pending members.');
+    return this.buService.onboardingOptions(resolveTenantId(req.user, headerTenantId));
   }
 
   @Get('delegation-targets')
@@ -115,14 +126,14 @@ export class BusinessUnitsController {
   async getCandidateStaff(@Param('id') id: string, @Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
     await this.assertAccess(req.user, id, tenantId, true);
-    return this.buService.getCandidateStaff(id, tenantId);
+    return this.buService.getCandidateStaff(id, tenantId, this.staffScope(req.user));
   }
 
   @Post(':id/assign-members')
   async assignMembers(@Param('id') id: string, @Body() body: { userIds: string[] }, @Req() req: any, @Headers('x-tenant-id') headerTenantId?: string) {
     const tenantId = resolveTenantId(req.user, headerTenantId);
     await this.assertAccess(req.user, id, tenantId, true);
-    return this.buService.assignMembers(id, body?.userIds || [], tenantId);
+    return this.buService.assignMembers(id, body?.userIds || [], tenantId, this.staffScope(req.user));
   }
 
   @Delete(':id/members/:userId')

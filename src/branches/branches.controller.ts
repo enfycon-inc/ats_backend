@@ -32,6 +32,10 @@ export class BranchesController {
     return hasGranularPermission(user, ['tenant:settings', 'tenant:manage', 'platform:manage']);
   }
 
+  private isUnitScoped(user: any) {
+    return !this.canManageTenant(user) && !user.permissions?.includes('branch_admin:manage') && user.permissions?.includes('unit_admin:manage');
+  }
+
   private assertBranchAccess(user: any, id: string) {
     if (!this.canManageTenant(user) && (!user.branchId || user.branchId !== id)) {
       throw new ForbiddenException('You can only access your assigned branch.');
@@ -57,6 +61,12 @@ export class BranchesController {
     // Unapproved / pending users need the full branch list so they can pick a branch
     // during the onboarding role-request flow. Skip branch scoping for them.
     const isPendingUser = req.user.isApproved === false || req.user.is_approved === false;
+    if (!isPendingUser && !this.canManageTenant(req.user) && !req.user.branchId) return [];
+    if (this.isUnitScoped(req.user)) {
+      if (!req.user.branchId || !req.user.businessUnitId) return [];
+      const location = await this.branchesService.findLocation(req.user.branchId, tenantId);
+      return location ? [location] : [];
+    }
     if (!isPendingUser && req.user.branchId && !this.canManageTenant(req.user)) {
       const branch = await this.branchesService.findOne(req.user.branchId, tenantId);
       return branch ? [branch] : [];
@@ -88,6 +98,7 @@ export class BranchesController {
   ) {
     this.assertBranchAccess(req.user, id);
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    if (this.isUnitScoped(req.user)) return this.branchesService.findLocation(id, tenantId);
     return this.branchesService.findOne(id, tenantId);
   }
 
@@ -151,6 +162,10 @@ export class BranchesController {
   ) {
     this.assertBranchAccess(req.user, id);
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    if (this.isUnitScoped(req.user)) {
+      if (!req.user.businessUnitId) return [];
+      return this.branchesService.getMembers(id, tenantId, req.user.businessUnitId);
+    }
     return this.branchesService.getMembers(id, tenantId);
   }
 
@@ -172,6 +187,7 @@ export class BranchesController {
       }
     }
     const tenantId = resolveTenantId(req.user, headerTenantId);
+    if (this.isUnitScoped(req.user)) throw new ForbiddenException('Use unit administration to manage your assigned unit members.');
     return this.branchesService.assignUser(id, userId, tenantId, roles, businessUnitId);
   }
 

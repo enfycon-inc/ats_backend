@@ -86,7 +86,8 @@ export class AuthUserService {
     if (Array.isArray(u.assigned_role_ids)) u.assigned_role_ids.forEach((rid: string) => userRoleIds.add(rid));
 
     const userPerms = new Set<string>();
-    userRoleIds.forEach((rId) => { if (rolePermMap[rId]) rolePermMap[rId].forEach((p) => userPerms.add(p)); });
+    const primaryRoleId = u.role_id || Array.from(userRoleIds)[0];
+    if (rolePermMap[primaryRoleId]) rolePermMap[primaryRoleId].forEach(p => userPerms.add(p));
     const canReview = userPerms.has('submission:internal_screening') || userPerms.has('job:approve') || userPerms.has('job:reject') || userPerms.has('job:publish_direct');
 
     const assignedRoleObjs: any[] = [];
@@ -97,7 +98,6 @@ export class AuthUserService {
     const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || 'RECRUITER';
     const baseRoleId = bestRoleObj?.base_role_id || (u.role_id ? roleById[u.role_id]?.base_role_id : null) || null;
 
-    const cleanRoles = this.deduplicateRoles(assignedRoleObjs);
     // Assigned dashboard perspectives must not depend on the branch-filtered role-management catalog.
     // Keep exact IDs even when multiple branches use the same role display name.
     const assignedRoles = assignedRoleObjs.map(role => ({
@@ -112,7 +112,7 @@ export class AuthUserService {
 
     return {
       id: u.id, email: u.email, firstName: u.first_name || '', lastName: u.last_name || '', fullName: u.full_name,
-      roles: cleanRoles.length > 0 ? cleanRoles : [roleName],
+      roles: bestRoleObj ? [bestRoleObj.system_role || bestRoleObj.name] : [],
       roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds), assignedRoles,
       roleName, systemRole, baseRoleId, permissions: Array.from(userPerms), canReview,
       tenantId: u.tenant_id, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
@@ -711,5 +711,3 @@ async approveTenantUser(
     return clean;
   }
 }
-
-

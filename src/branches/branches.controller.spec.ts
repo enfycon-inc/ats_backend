@@ -4,6 +4,7 @@ describe('branch settings isolation', () => {
   const user = { tenantId: 'tenant', branchId: 'home', roles: [], permissions: ['branch_admin:manage', 'job:delegate'] };
   const service = {
     findOne: jest.fn().mockResolvedValue({ id: 'home' }),
+    findLocation: jest.fn().mockResolvedValue({ id: 'home', name: 'Home' }),
     findAll: jest.fn().mockResolvedValue([]),
     getMembers: jest.fn(), getHierarchy: jest.fn(), update: jest.fn(),
     getDelegationTargets: jest.fn().mockResolvedValue([{ id: 'other', name: 'Other branch' }]),
@@ -36,5 +37,13 @@ describe('branch settings isolation', () => {
   it('keeps delegation target selection separate and capability protected', async () => {
     expect(await controller.delegationTargets({ user })).toEqual([{ id: 'other', name: 'Other branch' }]);
     await expect(controller.delegationTargets({ user: { ...user, permissions: [] } })).rejects.toThrow();
+  });
+  it('returns only location metadata and own-unit members for a unit admin', async () => {
+    const unitUser = { ...user, businessUnitId: 'unit', permissions: ['unit_admin:manage'] };
+    expect(await controller.findAll({ user: unitUser })).toEqual([{ id: 'home', name: 'Home' }]);
+    await controller.findOne('home', { user: unitUser });
+    expect(service.findOne).not.toHaveBeenCalled();
+    await controller.getMembers('home', { user: unitUser });
+    expect(service.getMembers).toHaveBeenCalledWith('home', 'tenant', 'unit');
   });
 });

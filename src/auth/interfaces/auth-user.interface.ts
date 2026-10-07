@@ -20,6 +20,9 @@ export interface AuthUser {
   isActive: boolean;
   /** Granular permission strings for this user's custom role */
   permissions?: string[];
+  /** Exact assigned role selected for this request; other assignments grant no access. */
+  activeRoleId?: string | null;
+  roleName?: string;
   /** Assigned pod ID if user is member of a pod */
   podId?: string;
   /** Assigned branch ID */

@@ -74,6 +74,11 @@ export class BranchesService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  async findLocation(id: string, tenantId: string) {
+    return this.prisma.branch.findFirst({ where: { id, tenantId },
+      select: { id: true, name: true, code: true, city: true, country: true } });
+  }
+
   private parseJsonArray(value: any, defaultValue: string[]): string[] {
     if (!value) return defaultValue;
     if (Array.isArray(value)) return value;
@@ -441,12 +446,13 @@ export class BranchesService {
     return { message: 'Branch deleted successfully.' };
   }
 
-  async getMembers(branchId: string, tenantId: string): Promise<BranchMember[]> {
+  async getMembers(branchId: string, tenantId: string, businessUnitId?: string): Promise<BranchMember[]> {
     const users = await this.prisma.user.findMany({
       where: {
         tenantId,
         isActive: true,
         branchId,
+        ...(businessUnitId ? { businessUnitId } : {}),
       },
       include: {
         customRole: {

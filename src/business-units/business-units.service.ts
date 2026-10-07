@@ -61,6 +61,12 @@ export class BusinessUnitsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  async onboardingOptions(tenantId: string) {
+    return this.prisma.businessUnit.findMany({
+      where: { tenantId }, select: { id: true, name: true, branchId: true }, orderBy: { name: 'asc' },
+    });
+  }
+
   async create(dto: CreateBusinessUnitDto, tenantId: string): Promise<BusinessUnitResponse> {
     this.logger.log(`Creating business unit "${dto.name}" for tenant ${tenantId}`);
 
@@ -164,10 +170,10 @@ export class BusinessUnitsService {
       branchName: bu.branch?.name || null,
       branch: bu.branch
         ? {
-            id: bu.id,
-            name: bu.name,
-            code: bu.code,
-            city: bu.city,
+            id: bu.branch.id,
+            name: bu.branch.name,
+            code: bu.branch.code,
+            city: bu.branch.city,
           }
         : null,
       shiftTiming: bu.shiftTiming || null,
@@ -226,10 +232,10 @@ export class BusinessUnitsService {
       branchName: bu.branch?.name || null,
       branch: bu.branch
         ? {
-            id: bu.id,
-            name: bu.name,
-            code: bu.code,
-            city: bu.city,
+            id: bu.branch.id,
+            name: bu.branch.name,
+            code: bu.branch.code,
+            city: bu.branch.city,
           }
         : null,
       shiftTiming: bu.shiftTiming || null,
@@ -377,13 +383,14 @@ export class BusinessUnitsService {
     }));
   }
 
-  async getCandidateStaff(unitId: string, tenantId: string) {
+  async getCandidateStaff(unitId: string, tenantId: string, scope?: { branchId: string; businessUnitId?: string }) {
     const unit = await this.findOne(unitId, tenantId);
 
     const users = await this.prisma.user.findMany({
       where: {
         tenantId,
         isActive: true,
+        ...scope,
       },
       select: {
         id: true,
@@ -431,7 +438,11 @@ export class BusinessUnitsService {
     }));
   }
 
-  async assignMembers(unitId: string, userIds: string[], tenantId: string) {
+  async assignMembers(unitId: string, userIds: string[], tenantId: string, scope?: { branchId: string; businessUnitId?: string }) {
+    if (scope && userIds.length) {
+      const count = await this.prisma.user.count({ where: { tenantId, ...scope, id: { in: userIds } } });
+      if (count !== new Set(userIds).size) throw new ForbiddenException('You can only assign staff within your administrative scope.');
+    }
     const unit = await this.prisma.businessUnit.findFirst({
       where: { id: unitId, tenantId },
     });
@@ -458,6 +469,7 @@ export class BusinessUnitsService {
         where: {
           tenantId,
           id: { in: userIds },
+          ...scope,
         },
         data: {
           businessUnitId: unit.id,

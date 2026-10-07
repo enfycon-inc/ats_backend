@@ -33,7 +33,7 @@ async function bootstrap() {
       }
     },
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id', 'x-branch-id', 'x-custom-tenant-domain', 'x-tenant-domain'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id', 'x-branch-id', 'x-custom-tenant-domain', 'x-tenant-domain', 'x-active-role-id'],
   });
   
   // Increase payload limit for large CSV uploads (mass mail)
