@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -100,6 +100,35 @@ export class ClientsService {
       select: { id: true, jobReviewerId: true, roleId: true, assignedRoleIds: true },
     });
     if (!creator) throw new ForbiddenException('The authenticated user does not belong to this workspace.');
+
+    // --- Duplicate Client Name Check (Fuzzy Matching) ---
+    if (dto.client_name) {
+      const normalizeName = (name: string) => {
+        if (!name) return "";
+        return name
+          .toLowerCase()
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") // remove punctuation
+          .replace(/\b(inc|llc|corp|corporation|ltd|limited|co|company|pvt|private)\b/g, "") // remove legal suffixes
+          .replace(/\s+/g, "") // remove all spaces for strict similarity (e.g. "Google Inc" -> "google")
+          .trim();
+      };
+
+      const normalizedInput = normalizeName(dto.client_name);
+
+      const existingClients = await this.prisma.client.findMany({
+        where: { tenantId, deletedAt: null },
+        select: { clientName: true },
+      });
+
+      const duplicate = existingClients.find(
+        (c) => normalizeName(c.clientName) === normalizedInput
+      );
+
+      if (duplicate) {
+        throw new ConflictException(`A similar client "${duplicate.clientName}" already exists in the system.`);
+      }
+    }
+    // --------------------------------------------------
 
     // Fetch tenant details first
     const tenant = await this.prisma.tenant.findUnique({
