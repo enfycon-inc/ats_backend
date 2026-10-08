@@ -11,6 +11,16 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  jobDescription?: string | null;
+  jobSkillsRequired?: string[] | null;
+  jobSecondarySkills?: string[] | null;
+  jobExperienceMin?: number | null;
+  jobExperienceMax?: number | null;
+  jobLocation?: string | null;
+  jobWorkMode?: string | null;
+  jobDegree?: string | null;
+  jobNoticePeriod?: string | null;
+  candidateNoticePeriod?: number | null;
   currentRoundKey?: RoundKey | null;
   id: string;
   jobId: string;

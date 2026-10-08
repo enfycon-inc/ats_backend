@@ -11,6 +11,19 @@ function setup() {
   return { prisma, notifications, service };
 }
 describe('submission tracker API', () => {
+  it('loads review requirements through the authorized detail query and preserves zero-day notice', async () => {
+    const { service, prisma } = setup();
+    prisma.$queryRawUnsafe.mockResolvedValueOnce([{ count: 1n }]).mockResolvedValueOnce([{
+      id: 'submission-id', job_description: 'Real job description', job_experience_min: 0,
+      job_experience_max: 5, job_location: 'Actual location', job_degree: 'Actual degree', candidate_notice_period: 0,
+    }]);
+    const result = await service.findOne('submission-id', 'tenant-id', user);
+    expect(result).toMatchObject({ jobDescription: 'Real job description', jobExperienceMin: 0, jobExperienceMax: 5, candidateNoticePeriod: 0 });
+    const [sql, ...params] = prisma.$queryRawUnsafe.mock.calls[1];
+    expect(sql).toContain('j.job_description');
+    expect(sql).toContain('s.tenant_id = $1');
+    expect(params).toContain('submission-id');
+  });
   it('counts all matching records before selecting the page and stage', async () => {
     const { service, prisma } = setup();
     prisma.$queryRawUnsafe.mockResolvedValueOnce([{ count: 2n, all_count: 35n, review_count: 6n, interviews_count: 20n, offers_count: 2n, closed_count: 7n }]).mockResolvedValueOnce([]);
