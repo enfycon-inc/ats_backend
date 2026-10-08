@@ -74,6 +74,8 @@ export interface TrackerResponse {
   counts: Record<TrackerBucket, number>;
 }
 export interface TrackerUpdate {
+  assessmentVersion?: string;
+  reviewOverrides?: Record<string, 'Meets' | 'Does not meet' | 'Needs clarification'>;
   requestId?: string;
   bypassReason?: string;
   expectedUpdatedAt?: string;
@@ -103,10 +105,30 @@ export interface SubmissionHistoryEvent {
   actorName: string | null;
   createdAt: string;
   details: {
+    assessment?: CandidateAssessment;
+    reviewOverrides?: Record<string, string>;
     changes?: Record<string, { before: string | null; after: string | null }>;
     snapshot?: Record<string, string | null>;
     bypassReason?: string;
   };
+}
+
+export interface AssessmentCriterion {
+  key: string;
+  requirement: string;
+  category: string;
+  finding: 'EVIDENCE_FOUND' | 'NO_EVIDENCE' | 'MEETS' | 'DOES_NOT_MEET' | 'NEEDS_CLARIFICATION';
+  evidence: string;
+}
+export interface CandidateAssessment {
+  engine: string;
+  version: string;
+  calculatedAt: string;
+  score: number | null;
+  coverage: number;
+  criteria: AssessmentCriterion[];
+  breakdown: { label: string; weight: number; score: number | null }[];
+  limitations: string[];
 }
 export interface SubmissionHistoryResponse {
   data: SubmissionHistoryEvent[];

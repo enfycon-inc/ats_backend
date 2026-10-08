@@ -188,6 +188,16 @@ export class RecruiterSubmissionsController {
     return this.service.history(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId), page === undefined ? 1 : Number(page));
   }
 
+  @Get(':id/assessment')
+  async assessment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    return this.service.assessment(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId));
+  }
+
   @Get(':id')
   @ApiOperation({
     summary: 'Fetch Single Candidate Submission Details',

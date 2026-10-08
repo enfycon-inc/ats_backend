@@ -4,6 +4,16 @@ import { validateTrackerUpdate } from './validate-tracker-update';
 
 const existing = { finalStatus: 'SUBMITTED', l1Status: 'PENDING', l2Status: null, l3Status: null, l1Date: null };
 describe('submission tracker permissions and transitions', () => {
+  it('limits assessment snapshots and overrides to valid internal review decisions', () => {
+    const pending = { ...existing, finalStatus: 'PENDING_APPROVAL' };
+    const dto = { finalStatus: 'SUBMITTED', assessmentVersion: 'a'.repeat(64), reviewOverrides: { 'primary:python': 'Meets' } };
+    const reviewer = submissionCapabilities(['submission:internal_screening']);
+    expect(() => validateTrackerUpdate(pending, dto, reviewer)).not.toThrow();
+    expect(() => validateTrackerUpdate(pending, dto, submissionCapabilities(['submission:final_status']))).toThrow(ForbiddenException);
+    expect(() => validateTrackerUpdate(existing, dto, reviewer)).toThrow(BadRequestException);
+    expect(() => validateTrackerUpdate(pending, { ...dto, assessmentVersion: 'forged' }, reviewer)).toThrow(BadRequestException);
+    expect(() => validateTrackerUpdate(pending, { ...dto, reviewOverrides: { x: 'Approve' } }, reviewer)).toThrow(BadRequestException);
+  });
   it('uses capabilities without granting permissions from role names', () => {
     expect(submissionCapabilities(['ACCOUNT_MANAGER']).review).toBe(false);
     expect(submissionCapabilities(['submission:internal_screening']).review).toBe(true);

@@ -3,11 +3,18 @@ import type { SubmissionCapabilities } from './tracker-contract';
 
 export function validateTrackerUpdate(existing: Record<string, any>, dto: Record<string, any>, caps: SubmissionCapabilities) {
   const allowed = new Set(['requestId', 'bypassReason', 'expectedUpdatedAt', 'finalStatus', 'remarks', 'reviewFeedback', 'podLeadRemarks', 'recruiterComment', 'submittedRate', 'meetingLink']);
+  allowed.add('assessmentVersion'); allowed.add('reviewOverrides');
   for (const round of ['l1', 'l2', 'l3']) for (const suffix of ['Status', 'Date', 'Remarks', 'Interviewer']) allowed.add(`${round}${suffix}`);
   for (const key of Object.keys(dto)) if (!allowed.has(key)) throw new BadRequestException(`Unsupported submission field: ${key}`);
   if (dto.requestId !== undefined && (typeof dto.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.requestId))) throw new BadRequestException('Invalid save request ID.');
   if (dto.bypassReason !== undefined && (typeof dto.bypassReason !== 'string' || dto.bypassReason.length > 4000)) throw new BadRequestException('Invalid bypass reason.');
   const requirePermission = (allowed: boolean) => { if (!allowed) throw new ForbiddenException('You do not have permission to make this submission change.'); };
+  if (dto.assessmentVersion !== undefined || dto.reviewOverrides !== undefined) {
+    requirePermission(caps.review);
+    if (existing.finalStatus !== 'PENDING_APPROVAL' || !['SUBMITTED', 'REJECTED'].includes(dto.finalStatus)) throw new BadRequestException('Assessment snapshots require an internal review decision.');
+    if (typeof dto.assessmentVersion !== 'string' || !/^[a-f0-9]{64}$/.test(dto.assessmentVersion)) throw new BadRequestException('Invalid assessment version.');
+    if (dto.reviewOverrides !== undefined && (!dto.reviewOverrides || typeof dto.reviewOverrides !== 'object' || Array.isArray(dto.reviewOverrides) || Object.keys(dto.reviewOverrides).length > 200 || Object.entries(dto.reviewOverrides).some(([key, value]) => key.length > 500 || !['Meets', 'Does not meet', 'Needs clarification'].includes(value as string)))) throw new BadRequestException('Invalid reviewer overrides.');
+  }
   const terminal = ['REJECTED', 'JOIN'].includes(existing.finalStatus);
   let changedRound = false;
   for (const round of ['l1', 'l2', 'l3'] as const) {

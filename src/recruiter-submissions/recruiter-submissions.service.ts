@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { assessCandidate } from '../jobs/candidate-assessment';
 import { historySnapshot, historyChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
 import {
@@ -664,6 +665,27 @@ export class RecruiterSubmissionsService {
     return { data, page, total, totalPages: Math.ceil(total / 25) };
   }
 
+  async assessment(id: string, tenantId: string, user: AuthUser, branchId?: string | null) {
+    const submission = await this.findOne(id, tenantId, user, branchId);
+    if (!submission.capabilities?.review) throw new ForbiddenException('Internal review permission is required.');
+    return { submission, assessment: await this.assessSubmission(this.prisma, submission, tenantId) };
+  }
+
+  private async assessSubmission(db: any, submission: { jobId: string; candidateId: string }, tenantId: string) {
+    const [job, candidate] = await Promise.all([
+      db.job.findFirst({ where: { id: submission.jobId, tenantId }, select: {
+        id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, jobDescription: true,
+        expMin: true, expMax: true, city: true, state: true, country: true, workMode: true, degree: true, noticePeriod: true,
+      } }),
+      db.candidate.findFirst({ where: { id: submission.candidateId, tenantId, deletedAt: null }, select: {
+        id: true, updatedAt: true, skills: true, totalExperienceYears: true, rawCurrentLocation: true,
+        preferredLocations: true, noticePeriodDays: true, resumeRecord: { select: { id: true, fileHash: true, rawText: true, parsedJson: true } },
+      } }),
+    ]);
+    if (!job || !candidate) throw new NotFoundException('Assessment sources are unavailable in this tenant.');
+    return assessCandidate(job, { ...candidate, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson });
+  }
+
   async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
     await this.findOne(id, tenantId, user, branchId);
     this.logger.log(`Updating submission ID=${id} for tenant: ${tenantId}`);
@@ -769,6 +791,9 @@ export class RecruiterSubmissionsService {
     const version = existing.updatedAt.getTime();
     data.updatedAt = new Date(Math.max(Date.now(), version + 1));
     await this.prisma.$transaction(async tx => {
+      const assessment = dto.assessmentVersion ? await this.assessSubmission(tx, existing, tenantId) : null;
+      if (assessment && assessment.version !== dto.assessmentVersion) throw new ConflictException('The job or candidate evidence changed. Reload the assessment before deciding.');
+      if (assessment && Object.keys(dto.reviewOverrides || {}).some(key => !assessment.criteria.some(row => row.key === key))) throw new BadRequestException('Reviewer override refers to an unknown requirement.');
       const saved = await tx.recruiterSubmission.updateMany({
         where: { id, tenantId, updatedAt: { gte: new Date(version), lt: new Date(version + 1) } }, data,
       });
@@ -782,7 +807,7 @@ export class RecruiterSubmissionsService {
         tenantId, submissionId: id, actorId: user.dbId || user.email || user.fullName || null,
         actorName: user.fullName || user.email || user.dbId || null,
         kind: 'UPDATE', sequence: (hasHistory?.sequence ?? 0) + 1, requestId: dto.requestId || randomUUID(), requestHash,
-        details: { changes: historyChanges(existing, data), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}) },
+        details: JSON.parse(JSON.stringify({ changes: historyChanges(existing, data), ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}) })),
       } });
     });
 
