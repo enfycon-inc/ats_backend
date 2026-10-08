@@ -47,7 +47,21 @@ describe('submission tracker permissions and transitions', () => {
     expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'OFFER', l3Status: 'CLEARED' }, { finalStatus: 'JOIN' }, caps)).not.toThrow();
   });
   it('lets round auditors reject without requiring final-outcome authority', () => {
-    expect(() => validateTrackerUpdate(existing, { l1Status: 'REJECTED', finalStatus: 'REJECTED' }, submissionCapabilities(['submission:audit_l1']))).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...existing, l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z' }, { l1Status: 'REJECTED', finalStatus: 'REJECTED' }, submissionCapabilities(['submission:audit_l1']))).not.toThrow();
+  });
+  it.each(['l1', 'l2', 'l3'])('requires a saved schedule before recording %s results', round => {
+    const caps = submissionCapabilities(['submission:audit_rounds']);
+    const pending = { ...existing, l1Status: round === 'l1' ? 'PENDING' : 'CLEARED', l2Status: round === 'l3' ? 'CLEARED' : 'PENDING' };
+    for (const result of ['CLEARED', 'REJECTED']) {
+      expect(() => validateTrackerUpdate(pending, { [`${round}Status`]: result }, caps)).toThrow('Schedule this interview');
+      expect(() => validateTrackerUpdate(pending, { [`${round}Status`]: result, [`${round}Date`]: '2026-10-09T05:30:00Z' }, caps)).toThrow('Schedule this interview');
+      const scheduled = { ...pending, [`${round}Status`]: 'SCHEDULED', [`${round}Date`]: '2026-10-09T05:30:00Z' };
+      expect(() => validateTrackerUpdate(scheduled, { [`${round}Status`]: result }, caps)).not.toThrow();
+      expect(() => validateTrackerUpdate({ ...scheduled, [`${round}Date`]: null }, { [`${round}Status`]: result }, caps)).toThrow('Schedule this interview');
+    }
+  });
+  it('allows overall rejection before scheduling with final-status authority', () => {
+    expect(() => validateTrackerUpdate(existing, { finalStatus: 'REJECTED', remarks: 'Client withdrew the requirement' }, submissionCapabilities(['submission:final_status']))).not.toThrow();
   });
   it('allows only approval or rejection during internal review', () => {
     const caps = submissionCapabilities(['submission:internal_screening']);

@@ -28,6 +28,10 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
     if (dto[`${round}Status`] !== undefined && !['PENDING', 'SCHEDULED', 'CLEARED', 'REJECTED', null].includes(dto[`${round}Status`])) throw new BadRequestException('Invalid interview result.');
     const scheduling = status === 'SCHEDULED';
     if (dto[`${round}Status`] !== undefined) requirePermission(scheduling ? caps.schedule || caps.results[round] : caps.results[round]);
+    const recordingResult = ['CLEARED', 'REJECTED'].includes(dto[`${round}Status`]) && dto[`${round}Status`] !== existing[`${round}Status`];
+    if (recordingResult && (existing.finalStatus !== 'SUBMITTED' || existing[`${round}Status`] !== 'SCHEDULED' || !existing[`${round}Date`] || !Number.isFinite(new Date(existing[`${round}Date`]).getTime()))) {
+      throw new BadRequestException('Schedule this interview before recording its result.');
+    }
     if (dto[`${round}Date`] !== undefined || dto[`${round}Interviewer`] !== undefined) requirePermission(caps.schedule || caps.results[round]);
     if (dto[`${round}Remarks`] !== undefined) requirePermission(caps.results[round] || (scheduling && caps.schedule));
     const date = dto[`${round}Date`] !== undefined ? dto[`${round}Date`] : existing[`${round}Date`];
