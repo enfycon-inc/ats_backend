@@ -437,16 +437,18 @@ export class AuthKeycloakService {
     let permissions: string[] = [];
     const effectiveRoleIds = [dbUser.role_id || dbUser.assigned_role_ids?.[0]].filter(Boolean);
       const permsRes = await this.authQuery.query(
-        `SELECT cr.permissions 
+        `SELECT cr.permissions, sr.permissions AS system_permissions
          FROM custom_roles cr
+         LEFT JOIN system_roles sr ON sr.id = cr.system_role_id
          WHERE cr.tenant_id = $1 AND cr.id = ANY($2::uuid[])`,
         [dbUser.tenant_id || DEFAULT_TENANT_ID, effectiveRoleIds]
       );
       
       const permSet = new Set<string>();
       for (const row of permsRes.rows as any[]) {
-        const pList = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
-        pList.forEach((p: string) => permSet.add(p));
+        const rolePermissions = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : (row.permissions || []);
+        const systemPermissions = typeof row.system_permissions === 'string' ? JSON.parse(row.system_permissions) : (row.system_permissions || []);
+        [...rolePermissions, ...systemPermissions].forEach((p: string) => permSet.add(p));
       }
       permissions = Array.from(permSet);
 
