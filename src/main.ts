@@ -1,4 +1,4 @@
-import * as dotenv from 'dotenv';
+﻿import * as dotenv from 'dotenv';
 // Load .env for native (non-Docker) local runs. In Docker, env_file already
 // injects these vars, and dotenv is a harmless no-op if the file is absent.
 dotenv.config();
@@ -25,7 +25,7 @@ async function bootstrap() {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
-      const isAllowed = origin.endsWith('.enfyjobs.com') || origin.endsWith('//enfyjobs.com') || origin.endsWith('.enfycon.com') || origin.endsWith('//enfycon.com') || /localhost:\\d+$/.test(origin) || allowedOrigins.includes(origin);
+      const isAllowed = origin.endsWith('.enfyjobs.com') || origin.endsWith('//enfyjobs.com') || origin.endsWith('.enfycon.com') || origin.endsWith('//enfycon.com') || /localhost:\d+$/.test(origin) || allowedOrigins.includes(origin);
       if (isAllowed) {
         callback(null, true);
       } else {

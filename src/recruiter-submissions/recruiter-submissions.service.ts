@@ -352,6 +352,9 @@ export class RecruiterSubmissionsService {
           WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
             AND ev.details #>> '{changes,finalStatus,after}' = 'REJECTED'
           ORDER BY ev.sequence DESC LIMIT 1) AS rejection_from_status,
+        j.created_at AS job_created_at,
+        j.submission_required AS job_submission_required,
+        j.submission_done AS job_submission_done,
         j.job_code,
         j.job_title,
         ${filters.submissionId ? `j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
@@ -365,7 +368,11 @@ export class RecruiterSubmissionsService {
         r.full_name AS recruiter_name,
         r.job_reviewer_id AS recruiter_job_reviewer_id,
         ph.full_name AS pod_head_name,
-        COALESCE(am.full_name, j.account_manager_id::text) AS am_name
+        COALESCE(am.full_name, am.email) AS am_name,
+        (SELECT string_agg(DISTINCT cr.name, ', ' ORDER BY cr.name)
+         FROM ats.custom_roles cr
+         WHERE cr.tenant_id = s.tenant_id
+           AND (cr.id = ANY(am.assigned_role_ids) OR cr.id = am.role_id)) AS am_role
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -626,6 +633,9 @@ export class RecruiterSubmissionsService {
           WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
             AND ev.details #>> '{changes,finalStatus,after}' = 'REJECTED'
           ORDER BY ev.sequence DESC LIMIT 1) AS rejection_from_status,
+        j.created_at AS job_created_at,
+        j.submission_required AS job_submission_required,
+        j.submission_done AS job_submission_done,
         j.job_code,
         j.job_title,
         j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
@@ -637,7 +647,11 @@ export class RecruiterSubmissionsService {
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
-        COALESCE(am.full_name, j.account_manager_id::text) AS am_name
+        COALESCE(am.full_name, am.email) AS am_name,
+        (SELECT string_agg(DISTINCT cr.name, ', ' ORDER BY cr.name)
+         FROM ats.custom_roles cr
+         WHERE cr.tenant_id = s.tenant_id
+           AND (cr.id = ANY(am.assigned_role_ids) OR cr.id = am.role_id)) AS am_role
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -1083,6 +1097,10 @@ export class RecruiterSubmissionsService {
       jobUrgency: row.job_urgency ?? null,
       jobIsCoSourced: Boolean(row.job_is_co_sourced),
       matchingJobSubmissionCount: Number(row.matching_job_submission_count || 1),
+      jobCreatedAt: row.job_created_at ? new Date(row.job_created_at).toISOString() : null,
+      jobSubmissionRequired: row.job_submission_required ?? null,
+      jobSubmissionDone: row.job_submission_done ?? null,
+      accountManagerRole: row.am_role || null,
       jobCode: row.job_code || row.jobCode,
       jobTitle: row.job_title || row.jobTitle,
       clientName: row.client_name || row.client?.clientName,
