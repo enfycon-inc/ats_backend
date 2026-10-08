@@ -1,3 +1,8 @@
--- Pool routing did not persist a pool marker on jobs. Existing explicit
--- job_recruiters and job_pods mappings are preserved, with no guessed assignments.
-ALTER TABLE ats.business_units DROP COLUMN IF EXISTS allow_all;
+-- ATS: rollback-compatible
+-- Logical pool retirement only. Preserve allow_all for retained backend images.
+-- Production history was checked: this migration has not been applied.
+-- Physical deletion is tracked in prisma/schema-cleanups.json.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SELECT 1;
+COMMIT;

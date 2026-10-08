@@ -212,6 +212,8 @@ model BusinessUnit {
   workStartTime              String?                @default("09:00") @map("work_start_time") @db.VarChar(20)
   breakDurationMinutes       Int?                   @default(60) @map("break_duration_minutes")
   workingDays                String[]               @default(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) @map("working_days")
+  // Deprecated unit pool column: retained for rollback compatibility; see prisma/schema-cleanups.json.
+  allowAll                   Boolean                @default(true) @map("allow_all")
   allowNone                  Boolean                @default(false) @map("allow_none")
   allowPods                  Boolean                @default(true) @map("allow_pods")
   allowUnassigned            Boolean                @default(true) @map("allow_unassigned")

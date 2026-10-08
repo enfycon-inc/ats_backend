@@ -1,0 +1,15 @@
+[
+  {
+    "id": "retire-unit-recruiter-pool",
+    "table": "ats.business_units",
+    "column": "allow_all",
+    "status": "pending",
+    "reason": "Pool routing is retired; retained backend images still expect this column.",
+    "requiredEvidence": [
+      "No application, report, integration, or database dependency uses the column",
+      "Active and all eligible rollback backend images work without the column",
+      "Business-unit and submission tests pass on a database copy after deletion",
+      "Separate deletion migration and schema-drift policy reviewed and approved"
+    ]
+  }
+]
