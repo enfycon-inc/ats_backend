@@ -9,6 +9,7 @@ import {
   Param,
   Headers,
   ParseUUIDPipe,
+  ParseIntPipe,
   HttpStatus,
   HttpCode,
   UseGuards,
@@ -168,7 +169,7 @@ export class RecruiterSubmissionsController {
     description: 'Removes a custom remark template by ID. Global templates can only be deleted by Global Administrators.',
   })
   async deleteCustomRemark(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {

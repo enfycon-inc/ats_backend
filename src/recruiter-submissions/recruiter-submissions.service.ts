@@ -1156,7 +1156,10 @@ export class RecruiterSubmissionsService {
     return results.length === 1 ? results[0] : results;
   }
 
-  async deleteCustomRemark(tenantId: string, id: string, user?: AuthUser) {
+  async deleteCustomRemark(tenantId: string, id: number, user?: AuthUser) {
+    if (!Number.isInteger(id) || id <= 0 || id > 2147483647) {
+      throw new BadRequestException('Template ID must be a positive integer.');
+    }
     const existing: any[] = await this.prisma.$queryRawUnsafe(
       `SELECT id, tenant_id, is_global, branch_id FROM ats.tenant_stage_remarks WHERE id = $1`,
       id,
