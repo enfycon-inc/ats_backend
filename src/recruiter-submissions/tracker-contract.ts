@@ -11,6 +11,9 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  jobUrgency?: string | null;
+  jobIsCoSourced?: boolean;
+  matchingJobSubmissionCount?: number;
   jobDescription?: string | null;
   jobSkillsRequired?: string[] | null;
   jobSecondarySkills?: string[] | null;
