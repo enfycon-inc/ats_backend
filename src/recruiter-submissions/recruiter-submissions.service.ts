@@ -347,6 +347,11 @@ export class RecruiterSubmissionsService {
         j.urgency AS job_urgency,
         j.is_co_sourced AS job_is_co_sourced,
         COUNT(*) OVER (PARTITION BY s.job_id) AS matching_job_submission_count,
+        (SELECT ev.details #>> '{changes,finalStatus,before}'
+          FROM ats.submission_events ev
+          WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
+            AND ev.details #>> '{changes,finalStatus,after}' = 'REJECTED'
+          ORDER BY ev.sequence DESC LIMIT 1) AS rejection_from_status,
         j.job_code,
         j.job_title,
         ${filters.submissionId ? `j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
@@ -616,6 +621,11 @@ export class RecruiterSubmissionsService {
         c.skills AS candidate_skills,
         j.skills_required AS job_skills_required,
         j.secondary_skills AS job_secondary_skills,
+        (SELECT ev.details #>> '{changes,finalStatus,before}'
+          FROM ats.submission_events ev
+          WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
+            AND ev.details #>> '{changes,finalStatus,after}' = 'REJECTED'
+          ORDER BY ev.sequence DESC LIMIT 1) AS rejection_from_status,
         j.job_code,
         j.job_title,
         j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
@@ -1014,6 +1024,7 @@ export class RecruiterSubmissionsService {
    */
   private mapRowToDetails(row: any): SubmissionDetails {
     return {
+      rejectionFromStatus: row.rejection_from_status ?? null,
       currentRoundKey: currentTrackerRound(row),
       id: row.id,
       tenantId: row.tenant_id || row.tenantId,

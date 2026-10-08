@@ -79,7 +79,8 @@ describe('submission tracker API', () => {
     expect(result.total).toBe(2);
     const [countSql, ...countParams] = prisma.$queryRawUnsafe.mock.calls[0];
     expect(countSql).toContain('s.tenant_id = $1');
-    expect(countSql).not.toContain('LIMIT');
+    // The history projection may limit its latest event; record counts must not use page limits.
+    expect(countSql).not.toMatch(/LIMIT\s+\$\d+/);
     expect(countParams).toEqual(['tenant-id', '%Name\\%%']);
     const [retrieveSql, ...retrieveParams] = prisma.$queryRawUnsafe.mock.calls[1];
     expect(retrieveSql).toContain("AND s.final_status = 'OFFER'");

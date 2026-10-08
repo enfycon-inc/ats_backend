@@ -11,6 +11,7 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  rejectionFromStatus?: string | null;
   jobUrgency?: string | null;
   jobIsCoSourced?: boolean;
   matchingJobSubmissionCount?: number;
