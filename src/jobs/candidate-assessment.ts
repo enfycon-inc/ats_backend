@@ -35,7 +35,7 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
       const profile = skillSet.has(normalizeTerm(skill));
       criteria.push({ key: `${group}:${normalizeTerm(skill)}`, requirement: skill, category: group,
         finding: excerpt || profile ? 'EVIDENCE_FOUND' : text || skills.length ? 'NO_EVIDENCE' : 'NEEDS_CLARIFICATION',
-        evidence: excerpt ? `Résumé: “${excerpt}”` : profile ? `Listed in candidate profile or parsed résumé: ${skill}` : 'No supporting evidence found. This is not a confirmed failure.' });
+        evidence: excerpt ? `Resume: “${excerpt}”` : profile ? `Listed in candidate profile or parsed resume: ${skill}` : 'No supporting evidence found. This is not a confirmed failure.' });
     }
     if (values.length) {
       const found = criteria.filter(row => row.category === group && row.finding === 'EVIDENCE_FOUND').length;
