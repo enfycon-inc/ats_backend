@@ -26,11 +26,17 @@ describe('branch remark ownership', () => {
   it('requires an edit capability even for the assigned branch', async () => {
     await expect(service.createCustomRemark('tenant', 'review', 'Good fit', 'ACCEPT', 'home', 'member', false, { ...user, permissions: [] })).rejects.toThrow();
   });
-  it('rejects a read of another branch remarks before querying', async () => {
-    const getCustomRemarks = jest.fn();
+  it('preserves co-sourced cross-branch template reads within the active tenant', async () => {
+    const getCustomRemarks = jest.fn().mockResolvedValue([]);
     const controller = new RecruiterSubmissionsController({ getCustomRemarks } as any);
-    await expect(controller.getCustomRemarks('other', 'false', { ...user, tenantId: 'tenant' })).rejects.toThrow();
-    expect(getCustomRemarks).not.toHaveBeenCalled();
+    await controller.getCustomRemarks('other', 'false', { ...user, tenantId: 'tenant' });
+    expect(getCustomRemarks).toHaveBeenCalledWith('tenant', 'other', false);
+  });
+  it('keeps a cross-branch local template read constrained to tenant and branch', async () => {
+    await service.getCustomRemarks('tenant', 'home', false);
+    const [query, ...params] = prisma.$queryRawUnsafe.mock.calls[0];
+    expect(query).toContain('WHERE tenant_id = $1 AND branch_id = $2');
+    expect(params).toEqual(['tenant', 'home']);
   });
   it('defaults an unscoped remarks read to the assigned branch', async () => {
     const getCustomRemarks = jest.fn().mockResolvedValue([]);

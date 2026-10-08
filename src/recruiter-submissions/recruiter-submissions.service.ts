@@ -1,3 +1,4 @@
+import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
 import {
   Injectable,
   Logger,
@@ -488,13 +489,7 @@ export class RecruiterSubmissionsService {
     const limit = Math.min(Math.max(1, filters.limit || 20), 100);
     const offset = (page - 1) * limit;
 
-    const bucketConditions: Record<TrackerBucket, string> = {
-      all: 'TRUE',
-      review: "final_status = 'PENDING_APPROVAL'",
-      interviews: "final_status = 'SUBMITTED'",
-      offers: "final_status = 'OFFER'",
-      closed: "final_status IN ('REJECTED', 'JOIN')",
-    };
+    const bucketConditions = trackerBucketConditions();
     const bucket = filters.bucket || 'all';
     if (!Object.prototype.hasOwnProperty.call(bucketConditions, bucket)) throw new BadRequestException('Invalid tracker filter.');
     const countSql = `SELECT COUNT(*) FILTER (WHERE ${bucketConditions[bucket]}) as count,
@@ -507,7 +502,7 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
       COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
       FROM (${baseSql}) AS counted`;
-    const retrieveSql = `${baseSql} AND ${bucketConditions[bucket].replace(/final_status/g, 's.final_status')} ORDER BY s.created_at DESC, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.')[bucket]} ORDER BY s.created_at DESC, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
 
     try {
@@ -945,6 +940,7 @@ export class RecruiterSubmissionsService {
    */
   private mapRowToDetails(row: any): SubmissionDetails {
     return {
+      currentRoundKey: currentTrackerRound(row),
       id: row.id,
       tenantId: row.tenant_id || row.tenantId,
       jobId: row.job_id || row.jobId,

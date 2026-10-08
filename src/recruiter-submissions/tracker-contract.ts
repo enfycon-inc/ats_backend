@@ -11,6 +11,7 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  currentRoundKey?: RoundKey | null;
   id: string;
   jobId: string;
   candidateId: string;
