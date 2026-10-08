@@ -734,6 +734,8 @@ model RecruiterSubmission {
   job              Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
   tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
+  events SubmissionEvent[]
+
   @@map("recruiter_submissions")
   @@schema("ats")
 }
@@ -1155,5 +1157,25 @@ model skill_categories {
   id   Int    @id @default(autoincrement())
   name String @unique @db.VarChar
 
+  @@schema("ats")
+}
+
+model SubmissionEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  submissionId String @map("submission_id") @db.Uuid
+  actorId String? @map("actor_id") @db.VarChar(255)
+  actorName String? @map("actor_name") @db.VarChar(255)
+  kind String @db.VarChar(50)
+  sequence Int
+  requestId String @map("request_id") @db.VarChar(100)
+  requestHash String @map("request_hash") @db.VarChar(64)
+  details Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  submission RecruiterSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  @@unique([submissionId, requestId])
+  @@unique([submissionId, sequence])
+  @@index([tenantId, submissionId, sequence])
+  @@map("submission_events")
   @@schema("ats")
 }

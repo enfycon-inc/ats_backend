@@ -64,6 +64,8 @@ export interface TrackerResponse {
   counts: Record<TrackerBucket, number>;
 }
 export interface TrackerUpdate {
+  requestId?: string;
+  bypassReason?: string;
   expectedUpdatedAt?: string;
   l1Status?: string | null;
   l2Status?: string | null;
@@ -83,4 +85,22 @@ export interface TrackerUpdate {
   recruiterComment?: string | null;
   submittedRate?: string;
   meetingLink?: string | null;
+}
+
+export interface SubmissionHistoryEvent {
+  id: string;
+  kind: 'BASELINE' | 'CREATED' | 'UPDATE';
+  actorName: string | null;
+  createdAt: string;
+  details: {
+    changes?: Record<string, { before: string | null; after: string | null }>;
+    snapshot?: Record<string, string | null>;
+    bypassReason?: string;
+  };
+}
+export interface SubmissionHistoryResponse {
+  data: SubmissionHistoryEvent[];
+  page: number;
+  total: number;
+  totalPages: number;
 }

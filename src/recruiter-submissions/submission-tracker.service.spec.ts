@@ -4,7 +4,8 @@ import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 const user = { dbId: 'user-id', permissions: ['submission:view', 'submission:edit'], roles: [], tenantId: 'tenant-id' } as unknown as AuthUser;
 function setup() {
-  const prisma = { $queryRawUnsafe: jest.fn(), recruiterSubmission: { findFirst: jest.fn(), updateMany: jest.fn() } };
+  const prisma: any = { submissionEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }, $queryRawUnsafe: jest.fn(), recruiterSubmission: { findFirst: jest.fn(), updateMany: jest.fn() } };
+  prisma.$transaction = jest.fn(callback => callback(prisma));
   const notifications = { create: jest.fn() };
   const service = new RecruiterSubmissionsService(prisma as any, notifications as any);
   return { prisma, notifications, service };
@@ -49,5 +50,11 @@ describe('submission tracker API', () => {
     await expect(service.update('submission-id', { recruiterComment: 'Changed' }, 'tenant-id', user)).rejects.toThrow(ConflictException);
     expect(prisma.recruiterSubmission.updateMany.mock.calls[0][0].where).toMatchObject({ id: 'submission-id', tenantId: 'tenant-id' });
     expect(notifications.create).not.toHaveBeenCalled();
+  });
+  it('checks submission visibility before reading any history', async () => {
+    const { service, prisma } = setup();
+    jest.spyOn(service, 'findOne').mockRejectedValue(new Error('Not visible'));
+    await expect(service.history('submission-id', 'tenant-id', user)).rejects.toThrow('Not visible');
+    expect(prisma.submissionEvent.findFirst).not.toHaveBeenCalled();
   });
 });

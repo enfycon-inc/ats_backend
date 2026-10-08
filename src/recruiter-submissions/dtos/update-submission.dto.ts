@@ -2,6 +2,8 @@ import type { TrackerUpdate } from '../tracker-contract';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateSubmissionDto implements TrackerUpdate {
+  requestId?: string;
+  bypassReason?: string;
   @ApiPropertyOptional({ description: 'Version read by the editor; rejects stale writes.' })
   expectedUpdatedAt?: string;
 

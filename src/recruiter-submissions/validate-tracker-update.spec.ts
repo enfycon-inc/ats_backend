@@ -29,12 +29,12 @@ describe('submission tracker permissions and transitions', () => {
     expect(() => validateTrackerUpdate(existing, { recruiterComment: 'Note' }, submissionCapabilities([]))).toThrow(ForbiddenException);
     expect(() => validateTrackerUpdate(existing, { candidateId: 'another-candidate' }, submissionCapabilities(['*']))).toThrow(BadRequestException);
   });
-  it('does not turn final clearance into an offer or skip directly to joining', () => {
+  it('requires a bypass reason when departing from the normal outcome sequence', () => {
     const caps = submissionCapabilities(['submission:final_status']);
     expect(() => validateTrackerUpdate(existing, { finalStatus: 'OFFER' }, caps)).toThrow(BadRequestException);
     expect(() => validateTrackerUpdate(existing, { finalStatus: 'JOIN' }, caps)).toThrow(BadRequestException);
     expect(() => validateTrackerUpdate({ ...existing, l3Status: 'CLEARED' }, { finalStatus: 'OFFER' }, caps)).not.toThrow();
-    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'OFFER' }, { finalStatus: 'JOIN' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'OFFER', l3Status: 'CLEARED' }, { finalStatus: 'JOIN' }, caps)).not.toThrow();
   });
   it('lets round auditors reject without requiring final-outcome authority', () => {
     expect(() => validateTrackerUpdate(existing, { l1Status: 'REJECTED', finalStatus: 'REJECTED' }, submissionCapabilities(['submission:audit_l1']))).not.toThrow();
@@ -44,4 +44,12 @@ describe('submission tracker permissions and transitions', () => {
     expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'PENDING_APPROVAL' }, { finalStatus: 'SUBMITTED' }, caps)).not.toThrow();
     expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'PENDING_APPROVAL' }, { finalStatus: 'JOIN' }, caps)).toThrow(BadRequestException);
   });
+  it('allows early joining only with authority, internal approval, and a reason', () => {
+    const dto = { finalStatus: 'JOIN', bypassReason: 'Client hired after L1' };
+    expect(() => validateTrackerUpdate(existing, dto, submissionCapabilities(['submission:final_status']))).not.toThrow();
+    expect(() => validateTrackerUpdate(existing, dto, submissionCapabilities([]))).toThrow(ForbiddenException);
+    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'PENDING_APPROVAL' }, dto, submissionCapabilities(['*']))).toThrow(BadRequestException);
+    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'REJECTED' }, dto, submissionCapabilities(['*']))).toThrow(BadRequestException);
+  });
+
 });

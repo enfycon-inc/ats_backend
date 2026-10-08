@@ -2,9 +2,11 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import type { SubmissionCapabilities } from './tracker-contract';
 
 export function validateTrackerUpdate(existing: Record<string, any>, dto: Record<string, any>, caps: SubmissionCapabilities) {
-  const allowed = new Set(['expectedUpdatedAt', 'finalStatus', 'remarks', 'reviewFeedback', 'podLeadRemarks', 'recruiterComment', 'submittedRate', 'meetingLink']);
+  const allowed = new Set(['requestId', 'bypassReason', 'expectedUpdatedAt', 'finalStatus', 'remarks', 'reviewFeedback', 'podLeadRemarks', 'recruiterComment', 'submittedRate', 'meetingLink']);
   for (const round of ['l1', 'l2', 'l3']) for (const suffix of ['Status', 'Date', 'Remarks', 'Interviewer']) allowed.add(`${round}${suffix}`);
   for (const key of Object.keys(dto)) if (!allowed.has(key)) throw new BadRequestException(`Unsupported submission field: ${key}`);
+  if (dto.requestId !== undefined && (typeof dto.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.requestId))) throw new BadRequestException('Invalid save request ID.');
+  if (dto.bypassReason !== undefined && (typeof dto.bypassReason !== 'string' || dto.bypassReason.length > 4000)) throw new BadRequestException('Invalid bypass reason.');
   const requirePermission = (allowed: boolean) => { if (!allowed) throw new ForbiddenException('You do not have permission to make this submission change.'); };
   const terminal = ['REJECTED', 'JOIN'].includes(existing.finalStatus);
   let changedRound = false;
@@ -46,11 +48,13 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
       if (existing.finalStatus === 'PENDING_APPROVAL' && !['SUBMITTED', 'REJECTED'].includes(dto.finalStatus)) throw new BadRequestException('Approve or reject internal review first.');
       if (existing.finalStatus !== 'PENDING_APPROVAL' && ['SUBMITTED', 'PENDING_APPROVAL'].includes(dto.finalStatus) && dto.finalStatus !== existing.finalStatus) throw new BadRequestException('This action cannot reopen a submission.');
       if (terminal && dto.finalStatus !== existing.finalStatus) throw new BadRequestException('This submission is closed.');
-      if (dto.finalStatus === 'OFFER' && (dto.l3Status ?? existing.l3Status) !== 'CLEARED') throw new BadRequestException('Clear the final interview round before issuing an offer.');
-      if (dto.finalStatus === 'JOIN' && existing.finalStatus !== 'OFFER' && existing.finalStatus !== 'JOIN') throw new BadRequestException('Record the offer before confirming joining.');
+      const bypass = dto.finalStatus !== existing.finalStatus && (
+        (dto.finalStatus === 'OFFER' && (dto.l3Status ?? existing.l3Status) !== 'CLEARED') ||
+        (dto.finalStatus === 'JOIN' && (existing.finalStatus !== 'OFFER' || existing.l3Status !== 'CLEARED')));
+      if (bypass && (typeof dto.bypassReason !== 'string' || !dto.bypassReason.trim())) throw new BadRequestException('Record a reason for bypassing the normal hiring sequence.');
     }
   }
   if (dto.remarks !== undefined) requirePermission(caps.notes || (dto.finalStatus !== undefined && (caps.review || caps.outcome)));
   if (dto.expectedUpdatedAt !== undefined && !Number.isFinite(new Date(dto.expectedUpdatedAt).getTime())) throw new BadRequestException('Invalid submission version.');
-  if (!changedRound && Object.keys(dto).every(key => key === 'expectedUpdatedAt')) throw new BadRequestException('No changes to save.');
+  if (!changedRound && Object.keys(dto).every(key => ['expectedUpdatedAt', 'requestId', 'bypassReason'].includes(key))) throw new BadRequestException('No changes to save.');
 }

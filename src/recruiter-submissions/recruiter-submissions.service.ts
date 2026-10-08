@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { historySnapshot, historyChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
 import {
   Injectable,
@@ -188,6 +190,11 @@ export class RecruiterSubmissionsService {
         data: { submissionDone: { increment: 1 } },
       });
 
+      await tx.submissionEvent.create({ data: {
+        tenantId, submissionId: sub.id, actorId: user?.dbId || user?.email || user?.fullName || null,
+        actorName: user?.fullName || user?.email || user?.dbId || null, kind: 'CREATED', sequence: 0,
+        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub) },
+      } });
       return sub;
     }, { maxWait: 15000, timeout: 30000 });
 
@@ -640,6 +647,17 @@ export class RecruiterSubmissionsService {
   /**
    * Update submission statuses with auto-rejection logic
    */
+  async history(id: string, tenantId: string, user: AuthUser, branchId?: string | null, page = 1) {
+    const current = await this.findOne(id, tenantId, user, branchId);
+    if (!Number.isInteger(page) || page < 1) throw new BadRequestException('Invalid history page.');
+    const where = { submissionId: id, tenantId };
+    const total = await this.prisma.submissionEvent.count({ where });
+    if (!total) return { data: [{ id: 'legacy-baseline', kind: 'BASELINE', actorName: null, createdAt: current.updatedAt,
+      details: { snapshot: historySnapshot(current) } }], page: 1, total: 1, totalPages: 1 };
+    const data = await this.prisma.submissionEvent.findMany({ where, orderBy: { sequence: 'asc' }, skip: (page - 1) * 25, take: 25 });
+    return { data, page, total, totalPages: Math.ceil(total / 25) };
+  }
+
   async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
     await this.findOne(id, tenantId, user, branchId);
     this.logger.log(`Updating submission ID=${id} for tenant: ${tenantId}`);
@@ -656,6 +674,14 @@ export class RecruiterSubmissionsService {
       throw new NotFoundException(`Recruiter submission with ID ${id} was not found.`);
     }
 
+    const requestHash = saveRequestHash(dto);
+    if (dto.requestId) {
+      const prior = await this.prisma.submissionEvent.findFirst({ where: { submissionId: id, tenantId, requestId: dto.requestId } });
+      if (prior) {
+        if (prior.requestHash !== requestHash || prior.actorId !== (user.dbId || user.email || user.fullName || null)) throw new ConflictException('This request ID has already been used for another save.');
+        return this.findOne(id, tenantId, user, branchId);
+      }
+    }
     const caps = submissionCapabilities(user.permissions);
     validateTrackerUpdate(existing, dto, caps);
     if (dto.expectedUpdatedAt && new Date(dto.expectedUpdatedAt).getTime() !== existing.updatedAt.getTime()) {
@@ -730,15 +756,29 @@ export class RecruiterSubmissionsService {
       data.l3Remarks = null; data.l3Interviewer = null;
     }
 
+    if (!Object.keys(historyChanges(existing, data)).length && !dto.bypassReason?.trim()) return this.findOne(id, tenantId, user, branchId);
+
     // Atomic compare-and-set, including legacy callers without an explicit version.
     // PostgreSQL default timestamps can have microseconds; compare the read millisecond.
     const version = existing.updatedAt.getTime();
     data.updatedAt = new Date(Math.max(Date.now(), version + 1));
-    const saved = await this.prisma.recruiterSubmission.updateMany({
-      where: { id, tenantId, updatedAt: { gte: new Date(version), lt: new Date(version + 1) } },
-      data,
+    await this.prisma.$transaction(async tx => {
+      const saved = await tx.recruiterSubmission.updateMany({
+        where: { id, tenantId, updatedAt: { gte: new Date(version), lt: new Date(version + 1) } }, data,
+      });
+      if (saved.count !== 1) throw new ConflictException('This submission changed while saving. Reload it and try again.');
+      const hasHistory = await tx.submissionEvent.findFirst({ where: { submissionId: id, tenantId }, select: { sequence: true }, orderBy: { sequence: 'desc' } });
+      if (!hasHistory) await tx.submissionEvent.create({ data: {
+        tenantId, submissionId: id, kind: 'BASELINE', sequence: 0, requestId: 'baseline', requestHash: '',
+        details: { snapshot: historySnapshot(existing) },
+      } });
+      await tx.submissionEvent.create({ data: {
+        tenantId, submissionId: id, actorId: user.dbId || user.email || user.fullName || null,
+        actorName: user.fullName || user.email || user.dbId || null,
+        kind: 'UPDATE', sequence: (hasHistory?.sequence ?? 0) + 1, requestId: dto.requestId || randomUUID(), requestHash,
+        details: { changes: historyChanges(existing, data), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}) },
+      } });
     });
-    if (saved.count !== 1) throw new ConflictException('This submission changed while saving. Reload it and try again.');
 
     // ── Candidate Submission Notification Dispatch ──────────────────────────────
     const candName =

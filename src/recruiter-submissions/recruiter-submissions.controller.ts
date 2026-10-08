@@ -177,6 +177,17 @@ export class RecruiterSubmissionsController {
     return this.service.deleteCustomRemark(tid, id, user);
   }
 
+  @Get(':id/history')
+  async history(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('page') page?: string,
+  ) {
+    return this.service.history(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId), page === undefined ? 1 : Number(page));
+  }
+
   @Get(':id')
   @ApiOperation({
     summary: 'Fetch Single Candidate Submission Details',
