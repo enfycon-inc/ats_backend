@@ -28,9 +28,14 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
     if (dto[`${round}Status`] !== undefined && !['PENDING', 'SCHEDULED', 'CLEARED', 'REJECTED', null].includes(dto[`${round}Status`])) throw new BadRequestException('Invalid interview result.');
     const scheduling = status === 'SCHEDULED';
     if (dto[`${round}Status`] !== undefined) requirePermission(scheduling ? caps.schedule || caps.results[round] : caps.results[round]);
-    const recordingResult = ['CLEARED', 'REJECTED'].includes(dto[`${round}Status`]) && dto[`${round}Status`] !== existing[`${round}Status`];
+    const recordingResult = dto[`${round}Status`] === 'CLEARED' && dto[`${round}Status`] !== existing[`${round}Status`];
     if (recordingResult && (existing.finalStatus !== 'SUBMITTED' || existing[`${round}Status`] !== 'SCHEDULED' || !existing[`${round}Date`] || !Number.isFinite(new Date(existing[`${round}Date`]).getTime()))) {
       throw new BadRequestException('Schedule this interview before recording its result.');
+    }
+    if (dto[`${round}Status`] === 'REJECTED' && existing[`${round}Status`] !== 'REJECTED') {
+      const activeRound = ['l1', 'l2', 'l3'].find(key => existing[`${key}Status`] !== 'CLEARED');
+      if (existing.finalStatus !== 'SUBMITTED' || activeRound !== round || ![null, undefined, 'PENDING', 'SCHEDULED'].includes(existing[`${round}Status`])) throw new BadRequestException('Only the current active round can be rejected.');
+      if (typeof dto[`${round}Remarks`] !== 'string' || !dto[`${round}Remarks`].trim()) throw new BadRequestException('Add remarks for the stage rejection.');
     }
     if (dto[`${round}Date`] !== undefined || dto[`${round}Interviewer`] !== undefined) requirePermission(caps.schedule || caps.results[round]);
     if (dto[`${round}Remarks`] !== undefined) requirePermission(caps.results[round] || (scheduling && caps.schedule));

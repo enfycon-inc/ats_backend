@@ -47,18 +47,27 @@ describe('submission tracker permissions and transitions', () => {
     expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'OFFER', l3Status: 'CLEARED' }, { finalStatus: 'JOIN' }, caps)).not.toThrow();
   });
   it('lets round auditors reject without requiring final-outcome authority', () => {
-    expect(() => validateTrackerUpdate({ ...existing, l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z' }, { l1Status: 'REJECTED', finalStatus: 'REJECTED' }, submissionCapabilities(['submission:audit_l1']))).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...existing, l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z' }, { l1Status: 'REJECTED', l1Remarks: 'Client declined', finalStatus: 'REJECTED' }, submissionCapabilities(['submission:audit_l1']))).not.toThrow();
   });
   it.each(['l1', 'l2', 'l3'])('requires a saved schedule before recording %s results', round => {
     const caps = submissionCapabilities(['submission:audit_rounds']);
     const pending = { ...existing, l1Status: round === 'l1' ? 'PENDING' : 'CLEARED', l2Status: round === 'l3' ? 'CLEARED' : 'PENDING' };
-    for (const result of ['CLEARED', 'REJECTED']) {
+    for (const result of ['CLEARED']) {
       expect(() => validateTrackerUpdate(pending, { [`${round}Status`]: result }, caps)).toThrow('Schedule this interview');
       expect(() => validateTrackerUpdate(pending, { [`${round}Status`]: result, [`${round}Date`]: '2026-10-09T05:30:00Z' }, caps)).toThrow('Schedule this interview');
       const scheduled = { ...pending, [`${round}Status`]: 'SCHEDULED', [`${round}Date`]: '2026-10-09T05:30:00Z' };
       expect(() => validateTrackerUpdate(scheduled, { [`${round}Status`]: result }, caps)).not.toThrow();
       expect(() => validateTrackerUpdate({ ...scheduled, [`${round}Date`]: null }, { [`${round}Status`]: result }, caps)).toThrow('Schedule this interview');
     }
+  });
+  it.each(['l1', 'l2', 'l3'])('allows rejection at pending %s with remarks and round authority', round => {
+    const caps = submissionCapabilities(['submission:audit_rounds']);
+    const pending = { ...existing, l1Status: round === 'l1' ? 'PENDING' : 'CLEARED', l2Status: round === 'l3' ? 'CLEARED' : 'PENDING' };
+    const dto = { [`${round}Status`]: 'REJECTED', [`${round}Remarks`]: 'Client declined at this stage' };
+    expect(() => validateTrackerUpdate(pending, dto, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate(pending, { ...dto, [`${round}Remarks`]: ' ' }, caps)).toThrow('Add remarks');
+    expect(() => validateTrackerUpdate(pending, dto, submissionCapabilities(['submission:schedule_interview']))).toThrow(ForbiddenException);
+    expect(() => validateTrackerUpdate({ ...pending, [`${round}Status`]: 'CLEARED' }, dto, caps)).toThrow('current active round');
   });
   it('allows overall rejection before scheduling with final-status authority', () => {
     expect(() => validateTrackerUpdate(existing, { finalStatus: 'REJECTED', remarks: 'Client withdrew the requirement' }, submissionCapabilities(['submission:final_status']))).not.toThrow();
