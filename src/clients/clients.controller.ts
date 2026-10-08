@@ -23,11 +23,29 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { resolveTenantId } from '../auth/utils/tenant-resolver';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
 
 @ApiTags('Clients')
 @Controller('api/clients')
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
+
+  @Get('visibility-policy')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
+  @ApiBearerAuth()
+  getVisibilityPolicy(@CurrentUser() user: AuthUser) {
+    return this.clientsService.getVisibilityPolicy(user);
+  }
+
+  @Patch('visibility-policy')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
+  @ApiBearerAuth()
+  setVisibilityPolicy(@CurrentUser() user: AuthUser, @Body() body: { clientsVisibleAcrossUnits: boolean }) {
+    return this.clientsService.setVisibilityPolicy(user, body.clientsVisibleAcrossUnits);
+  }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -66,7 +84,7 @@ export class ClientsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.clientsService.findOneClient(id, tid);
+    return this.clientsService.findOneClient(id, tid, user);
   }
 
   @Patch(':id/restore')

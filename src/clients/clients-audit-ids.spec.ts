@@ -14,6 +14,7 @@ describe('client audit user IDs', () => {
       customRole: { findMany: jest.fn().mockResolvedValue([{ permissions: direct ? ['client:direct_add'] : ['client:create'] }]) },
       systemRole: { findMany: jest.fn().mockResolvedValue([]) },
       client: {
+        findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn().mockResolvedValue({ id: clientId }),
         create: jest.fn(async ({ data }) => {
           for (const field of ['createdBy', 'approvedBy', 'assignedApproverId']) {

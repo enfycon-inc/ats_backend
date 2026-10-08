@@ -1,11 +1,36 @@
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { clientReadWhere, clientJobReadWhere } from './client-visibility';
 
 @Injectable()
 export class ClientsService {
   private readonly logger = new Logger(ClientsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  async getVisibilityPolicy(actor: AuthUser) {
+    if (!actor.permissions?.includes('tenant:settings')) throw new ForbiddenException('Tenant settings permission is required.');
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: actor.tenantId }, select: { clientsVisibleAcrossUnits: true } });
+    if (!tenant) throw new NotFoundException('Workspace not found.');
+    return tenant;
+  }
+
+  async setVisibilityPolicy(actor: AuthUser, enabled: unknown) {
+    if (!actor.permissions?.includes('tenant:settings')) throw new ForbiddenException('Tenant settings permission is required.');
+    if (typeof enabled !== 'boolean') throw new BadRequestException('Client visibility must be enabled or disabled.');
+    return this.prisma.$transaction(async tx => {
+      const previous = await tx.tenant.findUnique({ where: { id: actor.tenantId }, select: { clientsVisibleAcrossUnits: true } });
+      if (!previous) throw new NotFoundException('Workspace not found.');
+      const saved = await tx.tenant.update({ where: { id: actor.tenantId }, data: { clientsVisibleAcrossUnits: enabled }, select: { clientsVisibleAcrossUnits: true } });
+      if (previous.clientsVisibleAcrossUnits !== enabled) await tx.auditLog.create({ data: {
+        tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email,
+        action: 'CLIENT_VISIBILITY_CHANGED', targetType: 'Tenant', targetId: actor.tenantId,
+        details: { previous: previous.clientsVisibleAcrossUnits, enabled },
+      } });
+      return saved;
+    });
+  }
 
   private validateActorId(actorId: string): string {
     if (typeof actorId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actorId)) {
@@ -300,8 +325,8 @@ export class ClientsService {
     return this.formatClient(created);
   }
 
-  async findAllClients(tenantId: string, user?: any, includeDeleted = false) {
-    const where: any = { tenantId };
+  async findAllClients(tenantId: string, user: AuthUser, includeDeleted = false) {
+    const where: any = await clientReadWhere(this.prisma, tenantId, user);
     if (!includeDeleted) {
       where.deletedAt = null;
     }
@@ -312,7 +337,7 @@ export class ClientsService {
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.job.findMany({
-        where: { tenantId, deletedAt: null },
+        where: { ...clientJobReadWhere(tenantId, user), deletedAt: null },
         select: {
           clientId: true,
           endClientId: true,
@@ -365,9 +390,14 @@ export class ClientsService {
     });
   }
 
-  async findOneClient(id: string, tenantId: string) {
+  async findOneClient(id: string, tenantId: string, actor: AuthUser) {
+    const access = await clientReadWhere(this.prisma, tenantId, actor);
+    return this.loadClientProfile(id, tenantId, access, actor);
+  }
+
+  private async loadClientProfile(id: string, tenantId: string, access: any, actor?: AuthUser) {
     const client = await this.prisma.client.findFirst({
-      where: { id, tenantId, deletedAt: null },
+      where: { ...access, id, deletedAt: null },
       include: {
         branch: { select: { name: true } },
       },
@@ -393,7 +423,7 @@ export class ClientsService {
     // Fetch associated jobs
     const jobs = await this.prisma.job.findMany({
       where: {
-        tenantId,
+        ...(actor ? clientJobReadWhere(tenantId, actor) : { tenantId }),
         OR: [
           { clientId: id },
           { endClientId: id },
@@ -580,7 +610,7 @@ export class ClientsService {
     }
 
     if (!hasUpdates) {
-      return this.findOneClient(id, tenantId);
+      return this.loadClientProfile(id, tenantId, { tenantId }, user);
     }
 
     await this.prisma.client.update({
@@ -588,7 +618,7 @@ export class ClientsService {
       data,
     });
 
-    return this.findOneClient(id, tenantId);
+    return this.loadClientProfile(id, tenantId, { tenantId }, user);
   }
 
   async deleteClient(id: string, tenantId: string, modifiedBy?: string) {

@@ -1,6 +1,8 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientContactDto } from './dtos/create-client-contact.dto';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { clientReadWhere } from '../clients/client-visibility';
 
 @Injectable()
 export class ClientContactsService {
@@ -38,8 +40,9 @@ export class ClientContactsService {
     return this.formatContact(contact, createdById);
   }
 
-  async findAllForClient(clientId: string, tenantId: string, requestingUserId: string) {
-    const client = await this.prisma.client.findFirst({ where: { id: clientId, tenantId } });
+  async findAllForClient(clientId: string, tenantId: string, requestingUserId: string, actor: AuthUser) {
+    const access = await clientReadWhere(this.prisma, tenantId, actor);
+    const client = await this.prisma.client.findFirst({ where: { ...access, id: clientId, deletedAt: null } });
     if (!client) throw new NotFoundException('Client not found.');
 
     const contacts = await this.prisma.clientContact.findMany({

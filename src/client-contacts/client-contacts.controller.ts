@@ -14,7 +14,7 @@ export class ClientContactsController {
   @ApiOperation({ summary: 'List all contacts for a client (mine first, then others)' })
   @Get()
   list(@Param('clientId') clientId: string, @Req() req: any) {
-    return this.service.findAllForClient(clientId, req.user.tenantId, req.user.dbId);
+    return this.service.findAllForClient(clientId, req.user.tenantId, req.user.dbId, req.user);
   }
 
   @ApiOperation({ summary: 'Create a new contact for a client' })

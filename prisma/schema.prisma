@@ -19,6 +19,7 @@ model Tenant {
   userLimit                 Int                    @default(5) @map("user_limit")
   prefixCode                String?                @unique @map("prefix_code") @db.VarChar(10)
   podSystemEnabled          Boolean                @default(true) @map("pod_system_enabled")
+  clientsVisibleAcrossUnits Boolean                @default(false) @map("clients_visible_across_units")
   maxBranches               Int                    @default(5) @map("max_branches")
   candidatePoolMode         String                 @default("COMBINED_MARKET") @map("candidate_pool_mode") @db.VarChar(50)
   emailDispatchMode         String                 @default("DEFAULT_SUBDOMAIN") @map("email_dispatch_mode") @db.VarChar(50)
