@@ -11,7 +11,7 @@ describe('submission visibility and statistics', () => {
       const placeholders = [...sql.matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
       expect(Math.max(...placeholders)).toBe(params.length);
       if (sql.startsWith('SELECT COUNT')) return [{ count: 1n, l1_pending: 1n, l2_pending: 0n, l3_pending: 0n }];
-      return [{ id: 'submission-a', recruiter_id: 'recruiter-a' }];
+      return [{ id: 'submission-a', recruiter_id: 'recruiter-a', recruiter_email: 'recruiter@example.com' }];
     });
     service = new RecruiterSubmissionsService({ $queryRawUnsafe: query } as any, {} as any);
   });
@@ -39,6 +39,8 @@ describe('submission visibility and statistics', () => {
     expect(query.mock.calls[0][0]).toContain('s.recruiter_id = $2');
     expect(query.mock.calls[0].slice(1)).toEqual(['tenant-a', 'recruiter-a']);
     expect(result.data[0].recruiterId).toBe('recruiter-a');
+    expect(result.data[0].recruiterEmail).toBe('recruiter@example.com');
+    expect(query.mock.calls[1][0]).toContain('r.email AS recruiter_email');
     expect(result.stats).toEqual({ total: 1, l1Pending: 1, l2Pending: 0, l3Pending: 0 });
   });
 

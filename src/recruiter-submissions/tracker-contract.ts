@@ -62,6 +62,7 @@ export interface TrackerSubmission {
   clientName?: string;
   endClientName?: string;
   recruiterName?: string;
+  recruiterEmail?: string | null;
   accountManagerName?: string;
   accountManagerRole?: string | null;
   accountManagerEmail?: string | null;

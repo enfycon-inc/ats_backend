@@ -366,6 +366,7 @@ export class RecruiterSubmissionsService {
         j.job_timezone AS job_timezone,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
+        r.email AS recruiter_email,
         r.job_reviewer_id AS recruiter_job_reviewer_id,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
@@ -654,6 +655,7 @@ export class RecruiterSubmissionsService {
         j.market,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
+        r.email AS recruiter_email,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
         am.email AS am_email,
@@ -1120,6 +1122,7 @@ export class RecruiterSubmissionsService {
       clientName: row.client_name || row.client?.clientName,
       endClientName: row.end_client_name || row.end_client?.clientName,
       recruiterName: row.recruiter_name || row.recruiterName,
+      recruiterEmail: row.recruiter_email || row.recruiterEmail || null,
       podHeadName: row.pod_head_name || row.podHeadName,
       accountManagerName: row.am_name || row.accountManagerName,
       
