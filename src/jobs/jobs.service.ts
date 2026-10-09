@@ -1491,7 +1491,7 @@ export class JobsService {
   /**
    * Update job details (including recruiter assignments with permissions validation)
    */
-  async changeStatus(id: string, dto: { status: string; expectedStatus: string; reason: string }, tenantId: string, user: AuthUser) {
+  async changeStatus(id: string, dto: { status: string; expectedStatus: string; reason?: string }, tenantId: string, user: AuthUser) {
     const permissions = user.permissions || [];
     const global = permissions.some(p => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(p));
     if (!global && !permissions.includes('job:edit')) throw new ForbiddenException('Missing job:edit permission.');
@@ -1499,14 +1499,14 @@ export class JobsService {
     if (!job) throw new NotFoundException('Job not found.');
     if (!global && job.branchId && user.branchId !== job.branchId) throw new ForbiddenException('Job is outside your branch scope.');
     if (!global && user.businessUnitId && job.businessUnitId !== user.businessUnitId) throw new ForbiddenException('Job is outside your unit scope.');
-    if (typeof dto.status !== 'string' || typeof dto.expectedStatus !== 'string' || typeof dto.reason !== 'string') throw new BadRequestException('Status, previous status and reason are required.');
+    if (typeof dto.status !== 'string' || typeof dto.expectedStatus !== 'string') throw new BadRequestException('Status and previous status are required.');
     const status = normalizeJobStatus(dto.status);
     if (!status || status === 'Pending Approval') throw new BadRequestException('Select an operational job status.');
     if (job.approvalStatus && job.approvalStatus !== 'APPROVED') throw new BadRequestException('Use the approval workflow before changing this job status.');
     if (normalizeJobStatus(job.status) === 'Pending Approval') throw new BadRequestException('Use the approval workflow for this job.');
     if (dto.expectedStatus !== job.status) throw new BadRequestException('Job status changed. Refresh and try again.');
+    if (dto.reason !== undefined && (typeof dto.reason !== 'string' || dto.reason.length > 2000)) throw new BadRequestException('Reason must be text of up to 2000 characters.');
     const reason = dto.reason?.trim();
-    if (!reason || reason.length > 2000) throw new BadRequestException('Provide a reason of up to 2000 characters.');
     if (status === 'Active' && job.clientId) {
       const client = await this.prisma.client.findFirst({ where: { id: job.clientId, tenantId, deletedAt: null } });
       if (!client || ['PENDING_APPROVAL', 'REJECTED'].includes(client.approvalStatus || '') || ['pending approval', 'rejected'].includes((client.status || '').toLowerCase())) throw new BadRequestException('The client must be approved before activating this job.');
@@ -1514,7 +1514,7 @@ export class JobsService {
     await this.prisma.$transaction(async tx => {
       const updated = await tx.job.updateMany({ where: { id, tenantId, status: job.status, updatedAt: job.updatedAt }, data: { status } });
       if (!updated.count) throw new BadRequestException('Job changed. Refresh and try again.');
-      await tx.auditLog.create({ data: { tenantId, actorId: user.dbId || user.email, actorEmail: user.email, action: 'JOB_STATUS_CHANGED', targetType: 'job', targetId: id, details: { before: job.status, after: status, reason } } });
+      await tx.auditLog.create({ data: { tenantId, actorId: user.dbId || user.email, actorEmail: user.email, action: 'JOB_STATUS_CHANGED', targetType: 'job', targetId: id, details: { before: job.status, after: status, ...(reason ? { reason } : {}) } } });
     });
     return { status };
   }
