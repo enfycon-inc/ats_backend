@@ -1,3 +1,4 @@
+import { normalizeJobStatus } from './job-status-contract';
 import { assessCandidate } from './candidate-assessment';
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -1490,6 +1491,34 @@ export class JobsService {
   /**
    * Update job details (including recruiter assignments with permissions validation)
    */
+  async changeStatus(id: string, dto: { status: string; expectedStatus: string; reason: string }, tenantId: string, user: AuthUser) {
+    const permissions = user.permissions || [];
+    const global = permissions.some(p => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(p));
+    if (!global && !permissions.includes('job:edit')) throw new ForbiddenException('Missing job:edit permission.');
+    const job = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
+    if (!job) throw new NotFoundException('Job not found.');
+    if (!global && job.branchId && user.branchId !== job.branchId) throw new ForbiddenException('Job is outside your branch scope.');
+    if (!global && user.businessUnitId && job.businessUnitId !== user.businessUnitId) throw new ForbiddenException('Job is outside your unit scope.');
+    if (typeof dto.status !== 'string' || typeof dto.expectedStatus !== 'string' || typeof dto.reason !== 'string') throw new BadRequestException('Status, previous status and reason are required.');
+    const status = normalizeJobStatus(dto.status);
+    if (!status || status === 'Pending Approval') throw new BadRequestException('Select an operational job status.');
+    if (job.approvalStatus && job.approvalStatus !== 'APPROVED') throw new BadRequestException('Use the approval workflow before changing this job status.');
+    if (normalizeJobStatus(job.status) === 'Pending Approval') throw new BadRequestException('Use the approval workflow for this job.');
+    if (dto.expectedStatus !== job.status) throw new BadRequestException('Job status changed. Refresh and try again.');
+    const reason = dto.reason?.trim();
+    if (!reason || reason.length > 2000) throw new BadRequestException('Provide a reason of up to 2000 characters.');
+    if (status === 'Active' && job.clientId) {
+      const client = await this.prisma.client.findFirst({ where: { id: job.clientId, tenantId, deletedAt: null } });
+      if (!client || ['PENDING_APPROVAL', 'REJECTED'].includes(client.approvalStatus || '') || ['pending approval', 'rejected'].includes((client.status || '').toLowerCase())) throw new BadRequestException('The client must be approved before activating this job.');
+    }
+    await this.prisma.$transaction(async tx => {
+      const updated = await tx.job.updateMany({ where: { id, tenantId, status: job.status, updatedAt: job.updatedAt }, data: { status } });
+      if (!updated.count) throw new BadRequestException('Job changed. Refresh and try again.');
+      await tx.auditLog.create({ data: { tenantId, actorId: user.dbId || user.email, actorEmail: user.email, action: 'JOB_STATUS_CHANGED', targetType: 'job', targetId: id, details: { before: job.status, after: status, reason } } });
+    });
+    return { status };
+  }
+
   async updateJob(
     id: string,
     dto: any,
@@ -1498,6 +1527,18 @@ export class JobsService {
   ): Promise<JobProfile> {
     this.logger.log(`Updating job: ${id} for tenant: ${tenantId}`);
 
+    if (dto.status !== undefined) {
+      if (typeof dto.status !== 'string') throw new BadRequestException('Invalid job status.');
+      const original = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
+      if (!original) throw new NotFoundException('Job not found.');
+      const statusChanged = dto.status !== original.status && (!normalizeJobStatus(dto.status) || normalizeJobStatus(dto.status) !== normalizeJobStatus(original.status));
+      if (statusChanged) {
+        if (!Object.keys(dto).every(key => ['status', 'reason', 'expectedStatus'].includes(key))) throw new BadRequestException('Use Change status to update job status separately from other fields.');
+        await this.changeStatus(id, { status: dto.status, expectedStatus: dto.expectedStatus ?? original.status, reason: dto.reason || 'Updated through job editor' }, tenantId, user);
+      }
+      if (Object.keys(dto).every(key => ['status', 'reason', 'expectedStatus'].includes(key))) return this.findOneJob(id, tenantId, user);
+      dto = { ...dto }; delete dto.status;
+    }
     // Fetch the job first to verify existence
     const currentJob = await this.prisma.job.findFirst({
       where: { id, tenantId },
