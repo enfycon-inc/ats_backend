@@ -14,6 +14,7 @@ export interface TrackerSubmission {
   rejectionFromStatus?: string | null;
   jobUrgency?: string | null;
   jobIsCoSourced?: boolean;
+  submissionNumber?: number | null;
   matchingJobSubmissionCount?: number;
   jobDescription?: string | null;
   jobSkillsRequired?: string[] | null;

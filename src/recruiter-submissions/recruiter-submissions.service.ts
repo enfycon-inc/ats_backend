@@ -346,6 +346,7 @@ export class RecruiterSubmissionsService {
         j.secondary_skills AS job_secondary_skills,
         j.urgency AS job_urgency,
         j.is_co_sourced AS job_is_co_sourced,
+        s.submission_number,
         COUNT(*) OVER (PARTITION BY s.job_id) AS matching_job_submission_count,
         (SELECT ev.details #>> '{changes,finalStatus,before}'
           FROM ats.submission_events ev
@@ -379,7 +380,8 @@ export class RecruiterSubmissionsService {
            AND cr.business_unit_id = j.business_unit_id
            AND sr.system_key = 'ACCOUNT_MANAGER'
          ORDER BY cr.is_system ASC, cr.created_at ASC, cr.id ASC LIMIT 1) AS am_role
-      FROM ats.recruiter_submissions s
+      FROM (SELECT rs.*, ROW_NUMBER() OVER (PARTITION BY rs.job_id ORDER BY rs.created_at ASC, rs.id ASC) AS submission_number
+            FROM ats.recruiter_submissions rs WHERE rs.tenant_id = $1) s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
       LEFT JOIN ats.clients cl ON cl.id = j.client_id
@@ -1111,6 +1113,7 @@ export class RecruiterSubmissionsService {
       jobSecondarySkills: row.job_secondary_skills || null,
       jobUrgency: row.job_urgency ?? null,
       jobIsCoSourced: Boolean(row.job_is_co_sourced),
+      submissionNumber: row.submission_number ? Number(row.submission_number) : null,
       matchingJobSubmissionCount: Number(row.matching_job_submission_count || 1),
       jobCreatedAt: row.job_created_at ? new Date(row.job_created_at).toISOString() : null,
       jobSubmissionRequired: row.job_submission_required ?? null,

@@ -61,13 +61,15 @@ describe('submission tracker API', () => {
   it('loads review requirements through the authorized detail query and preserves zero-day notice', async () => {
     const { service, prisma } = setup();
     prisma.$queryRawUnsafe.mockResolvedValueOnce([{ count: 1n }]).mockResolvedValueOnce([{
-      id: 'submission-id', job_description: 'Real job description', job_experience_min: 0,
+      id: 'submission-id', submission_number: 12n, job_description: 'Real job description', job_experience_min: 0,
       job_experience_max: 5, job_location: 'Actual location', job_degree: 'Actual degree', candidate_notice_period: 0,
     }]);
     const result = await service.findOne('submission-id', 'tenant-id', user);
-    expect(result).toMatchObject({ jobDescription: 'Real job description', jobExperienceMin: 0, jobExperienceMax: 5, candidateNoticePeriod: 0 });
+    expect(result).toMatchObject({ submissionNumber: 12, jobDescription: 'Real job description', jobExperienceMin: 0, jobExperienceMax: 5, candidateNoticePeriod: 0 });
     const [sql, ...params] = prisma.$queryRawUnsafe.mock.calls[1];
     expect(sql).toContain('j.job_description');
+    expect(sql).toContain('PARTITION BY rs.job_id ORDER BY rs.created_at ASC, rs.id ASC');
+    expect(sql).toContain('FROM ats.recruiter_submissions rs WHERE rs.tenant_id = $1');
     expect(sql).toContain('s.tenant_id = $1');
     expect(params).toContain('submission-id');
   });
