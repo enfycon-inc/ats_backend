@@ -64,6 +64,7 @@ export interface TrackerSubmission {
   recruiterName?: string;
   accountManagerName?: string;
   accountManagerRole?: string | null;
+  accountManagerEmail?: string | null;
   jobCreatedAt?: string | null;
   jobSubmissionRequired?: number | null;
   jobSubmissionDone?: number | null;
@@ -74,6 +75,7 @@ export interface TrackerSubmission {
   capabilities?: SubmissionCapabilities;
 }
 export interface TrackerResponse {
+  accountManagerLabel?: string;
   data: TrackerSubmission[];
   total: number;
   page: number;

@@ -369,10 +369,15 @@ export class RecruiterSubmissionsService {
         r.job_reviewer_id AS recruiter_job_reviewer_id,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
-        (SELECT string_agg(DISTINCT cr.name, ', ' ORDER BY cr.name)
+        am.email AS am_email,
+        (SELECT cr.name
          FROM ats.custom_roles cr
+         LEFT JOIN ats.custom_roles base ON base.id = cr.base_role_id AND base.tenant_id = cr.tenant_id
+         LEFT JOIN ats.system_roles sr ON sr.id = COALESCE(cr.system_role_id, base.system_role_id)
          WHERE cr.tenant_id = s.tenant_id
-           AND (cr.id = ANY(am.assigned_role_ids) OR cr.id = am.role_id)) AS am_role
+           AND cr.business_unit_id = j.business_unit_id
+           AND sr.system_key = 'ACCOUNT_MANAGER'
+         ORDER BY cr.is_system ASC, cr.created_at ASC, cr.id ASC LIMIT 1) AS am_role
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -524,6 +529,8 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE ${bucketConditions.interviews}) as interviews_count,
       COUNT(*) FILTER (WHERE ${bucketConditions.offers}) as offers_count,
       COUNT(*) FILTER (WHERE ${bucketConditions.closed}) as closed_count,
+      MIN(am_role) AS min_am_role, MAX(am_role) AS max_am_role,
+      COUNT(*) FILTER (WHERE am_role IS NULL) AS missing_am_role_count,
       COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
       COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
       COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
@@ -542,6 +549,7 @@ export class RecruiterSubmissionsService {
 
       return {
         data,
+        accountManagerLabel: Number(countRes[0]?.missing_am_role_count || 0) === 0 && countRes[0]?.min_am_role === countRes[0]?.max_am_role ? countRes[0]?.min_am_role || 'Created by' : 'Created by',
         total,
         page,
         limit,
@@ -648,10 +656,15 @@ export class RecruiterSubmissionsService {
         r.full_name AS recruiter_name,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
-        (SELECT string_agg(DISTINCT cr.name, ', ' ORDER BY cr.name)
+        am.email AS am_email,
+        (SELECT cr.name
          FROM ats.custom_roles cr
+         LEFT JOIN ats.custom_roles base ON base.id = cr.base_role_id AND base.tenant_id = cr.tenant_id
+         LEFT JOIN ats.system_roles sr ON sr.id = COALESCE(cr.system_role_id, base.system_role_id)
          WHERE cr.tenant_id = s.tenant_id
-           AND (cr.id = ANY(am.assigned_role_ids) OR cr.id = am.role_id)) AS am_role
+           AND cr.business_unit_id = j.business_unit_id
+           AND sr.system_key = 'ACCOUNT_MANAGER'
+         ORDER BY cr.is_system ASC, cr.created_at ASC, cr.id ASC LIMIT 1) AS am_role
       FROM ats.recruiter_submissions s
       LEFT JOIN ats.candidates c ON s.candidate_id = c.id
       LEFT JOIN ats.jobs j ON s.job_id = j.id
@@ -1101,6 +1114,7 @@ export class RecruiterSubmissionsService {
       jobSubmissionRequired: row.job_submission_required ?? null,
       jobSubmissionDone: row.job_submission_done ?? null,
       accountManagerRole: row.am_role || null,
+      accountManagerEmail: row.am_email || null,
       jobCode: row.job_code || row.jobCode,
       jobTitle: row.job_title || row.jobTitle,
       clientName: row.client_name || row.client?.clientName,

@@ -16,6 +16,24 @@ describe('submission visibility and statistics', () => {
     service = new RecruiterSubmissionsService({ $queryRawUnsafe: query } as any, {} as any);
   });
 
+
+  it.each([
+    ['BDM', 'BDM', 0n, 'BDM'],
+    ['Client Partner', 'Client Partner', 0n, 'Client Partner'],
+    ['BDM', 'Account Manager', 0n, 'Created by'],
+    ['BDM', 'BDM', 1n, 'Created by'],
+    [null, null, 0n, 'Created by'],
+  ])('uses a consistent unit role heading or creator fallback', async (minRole, maxRole, missing, expected) => {
+    query.mockImplementation(async (sql: string) => sql.startsWith('SELECT COUNT')
+      ? [{ count: 1n, min_am_role: minRole, max_am_role: maxRole, missing_am_role_count: missing }]
+      : [{ id: 'submission-a', am_email: 'poster@example.com', am_role: minRole }]);
+    const result = await service.findAll('tenant-a', user, { view: 'all' });
+    expect(result.accountManagerLabel).toBe(expected);
+    expect(result.data[0].accountManagerEmail).toBe('poster@example.com');
+    expect(query.mock.calls[0][0]).toContain('cr.business_unit_id = j.business_unit_id');
+    expect(query.mock.calls[0][0]).toContain('cr.tenant_id = s.tenant_id');
+  });
+
   it('binds the authenticated owner for My even with broad viewing permissions', async () => {
     const result = await service.findAll('tenant-a', user, { view: 'my' });
     expect(query.mock.calls[0][0]).toContain('s.recruiter_id = $2');
