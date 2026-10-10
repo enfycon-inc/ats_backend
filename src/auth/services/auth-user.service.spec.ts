@@ -53,6 +53,42 @@ describe('member role replacement', () => {
     expect(writes()[0][1].slice(7, 9)).toEqual([admin, [admin, head, bdm]]);
     expect(protection).not.toHaveBeenCalled();
   });
+
+  it('assigns tenant, branch and unit administration together while preserving staffing scope', async () => {
+    const unitId = 'cc920277-98c9-4b0f-a69b-22e8029a2100';
+    query.mockReset();
+    query.mockResolvedValueOnce({ rows: [{ id: userId, tenant_id: tenantId, branch_id: branchId,
+      business_unit_id: unitId, email: 'member@example.com', role_id: bdm, assigned_role_ids: [bdm] }] });
+    query.mockImplementation(async (sql, params) => {
+      if (sql.includes('FROM custom_roles')) return { rows: params[3] === branchId ? [
+        { id: bdm, name: 'BDM', permissions: [], branch_id: branchId },
+        { id: admin, name: 'Tenant Admin', permissions: ['tenant:settings'] },
+        { id: head, name: 'Branch and Unit Admin', permissions: ['branch_admin:manage', 'unit_admin:manage'] },
+      ] : [] };
+      return { rows: [] };
+    });
+    await service.updateUserDetails(userId, { branchId, businessUnitId: unitId, assignedRoleIds: [bdm, admin, head] },
+      { ...requester, permissions: ['user:manage', 'tenant:settings'] });
+    expect(writes()[0][1].slice(4, 6)).toEqual([branchId, unitId]);
+    expect(writes()[0][1].slice(7, 9)).toEqual([bdm, [bdm, admin, head]]);
+    expect(protection).not.toHaveBeenCalled();
+  });
+
+  it('rejects moving an existing member while assigning branch administration', async () => {
+    query.mockResolvedValueOnce({ rows: [{ id: admin, name: 'Branch Admin', permissions: ['branch_admin:manage'] }] });
+    await expect(service.updateUserDetails(userId, { branchId: tenantId, assignedRoleIds: [admin] },
+      { ...requester, permissions: ['tenant:settings'] })).rejects.toThrow('existing branch');
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('rejects clearing an existing unit while assigning unit administration', async () => {
+    query.mockReset();
+    query.mockResolvedValueOnce({ rows: [{ id: userId, tenant_id: tenantId, branch_id: branchId, business_unit_id: branchId }] });
+    query.mockResolvedValueOnce({ rows: [{ id: admin, name: 'Unit Admin', permissions: ['unit_admin:manage'] }] });
+    await expect(service.updateUserDetails(userId, { businessUnitId: '', assignedRoleIds: [admin] }, requester))
+      .rejects.toThrow('existing branch unit');
+    expect(writes()).toHaveLength(0);
+  });
 });
 
 describe('assigned member role metadata', () => {

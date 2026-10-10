@@ -445,6 +445,20 @@ export class AuthUserService {
           const selected = matches[0];
           const requesterPermissions: string[] = requester.permissions || [];
           const selectedPermissions: string[] = typeof selected.permissions === 'string' ? JSON.parse(selected.permissions) : selected.permissions || [];
+          if (selectedPermissions.some(p => ['branch_admin:manage', 'unit_admin:manage'].includes(p)) &&
+              user.branch_id && branchId !== user.branch_id) {
+            throw new BadRequestException('Assign administrative access in this member\'s existing branch.');
+          }
+          if (selectedPermissions.includes('unit_admin:manage') &&
+              user.business_unit_id && businessUnitId !== user.business_unit_id) {
+            throw new BadRequestException('Assign unit administration in this member\'s existing branch unit.');
+          }
+          if (selectedPermissions.includes('branch_admin:manage') && !branchId) {
+            throw new BadRequestException('A branch is required for branch administration.');
+          }
+          if (selectedPermissions.includes('unit_admin:manage') && (!branchId || !businessUnitId)) {
+            throw new BadRequestException('A branch and branch unit are required for unit administration.');
+          }
           if (selectedPermissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p))) {
             retainsTenantAdministration = true;
           }
