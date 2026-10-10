@@ -1,5 +1,11 @@
 import { assessCandidate } from './candidate-assessment';
 describe('shared evidence assessment', () => {
+  it('records candidate comparison facts without losing zeros or copying private parser data', () => {
+    const saved = assessCandidate({}, { totalExperienceYears: 0, noticePeriodDays: 0, rawCurrentLocation: ' India ', parsedJson: { email: 'private@example.com' } });
+    expect(saved.candidateSnapshot).toEqual({ experienceYears: 0, noticePeriodDays: 0, currentLocation: 'India' });
+    expect(JSON.stringify(saved)).not.toContain('private@example.com');
+    expect(assessCandidate({}, {}).candidateSnapshot).toEqual({ experienceYears: null, noticePeriodDays: null, currentLocation: null });
+  });
   it('returns only qualification labels without inventing equivalence or exposing parsed resume fields', () => {
     const result = assessCandidate({ degree: 'Computer Science' }, { parsedJson: JSON.stringify({
       education_detailed: [{ degree: 'MCA', institution: 'Private institution' }, { degree: 'MCA' }, { degree: 4 }, null],

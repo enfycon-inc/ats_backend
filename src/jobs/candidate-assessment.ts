@@ -86,6 +86,11 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
     engine: ASSESSMENT_ENGINE, version: createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate })).digest('hex'),
     calculatedAt: new Date().toISOString(), score: measuredWeight ? Math.round(measured.reduce((sum, part) => sum + part.score! * part.weight, 0) / measuredWeight) : null,
     coverage: possibleWeight ? Math.round(measuredWeight / possibleWeight * 100) : 0, criteria, breakdown: parts, candidateQualifications,
+    candidateSnapshot: {
+      experienceYears: years != null && Number.isFinite(years) && years >= 0 ? years : null,
+      noticePeriodDays: candidate.noticePeriodDays != null && Number.isFinite(candidate.noticePeriodDays) && candidate.noticePeriodDays >= 0 ? candidate.noticePeriodDays : null,
+      currentLocation: candidate.rawCurrentLocation?.trim() || null,
+    },
     limitations: ['Evidence score is not a hiring recommendation.', 'Missing evidence is not a confirmed failure.', 'Salary is excluded because candidate CTC currency and pay period are not established.', 'Semantic scoring is unavailable until parser search supports tenant isolation.'],
   };
   return result;

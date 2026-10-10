@@ -133,6 +133,11 @@ export interface AssessmentCriterion {
   evidence: string;
 }
 export interface CandidateAssessment {
+  candidateSnapshot?: {
+    experienceYears: number | null;
+    noticePeriodDays: number | null;
+    currentLocation: string | null;
+  };
   candidateQualifications?: string[];
   engine: string;
   version: string;

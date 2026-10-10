@@ -184,8 +184,9 @@ export class RecruiterSubmissionsController {
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchHeaderId?: string,
     @Query('page') page?: string,
+    @Query('order') order?: 'asc' | 'desc',
   ) {
-    return this.service.history(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId), page === undefined ? 1 : Number(page));
+    return this.service.history(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId), page === undefined ? 1 : Number(page), order);
   }
 
   @Get(':id/assessment')

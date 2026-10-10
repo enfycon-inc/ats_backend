@@ -120,4 +120,20 @@ describe('submission tracker API', () => {
     await expect(service.history('submission-id', 'tenant-id', user)).rejects.toThrow('Not visible');
     expect(prisma.submissionEvent.findFirst).not.toHaveBeenCalled();
   });
+  it.each(['asc', 'desc'] as const)('paginates history in %s sequence order within the tenant', async order => {
+    const { service, prisma } = setup();
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 'submission-id' } as any);
+    prisma.submissionEvent.count = jest.fn().mockResolvedValue(60);
+    prisma.submissionEvent.findMany = jest.fn().mockResolvedValue([]);
+    const result = await service.history('submission-id', 'tenant-id', user, null, 2, order);
+    expect(prisma.submissionEvent.findMany).toHaveBeenCalledWith({ where: { submissionId: 'submission-id', tenantId: 'tenant-id' }, orderBy: { sequence: order }, skip: 25, take: 25 });
+    expect(result.totalPages).toBe(3);
+  });
+  it('rejects invalid history ordering before querying events', async () => {
+    const { service, prisma } = setup();
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 'submission-id' } as any);
+    prisma.submissionEvent.count = jest.fn();
+    await expect(service.history('submission-id', 'tenant-id', user, null, 1, 'invalid' as any)).rejects.toThrow('Invalid history order');
+    expect(prisma.submissionEvent.count).not.toHaveBeenCalled();
+  });
 });

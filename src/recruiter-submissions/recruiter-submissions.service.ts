@@ -698,14 +698,15 @@ export class RecruiterSubmissionsService {
   /**
    * Update submission statuses with auto-rejection logic
    */
-  async history(id: string, tenantId: string, user: AuthUser, branchId?: string | null, page = 1) {
+  async history(id: string, tenantId: string, user: AuthUser, branchId?: string | null, page = 1, order: 'asc' | 'desc' = 'asc') {
     const current = await this.findOne(id, tenantId, user, branchId);
     if (!Number.isInteger(page) || page < 1) throw new BadRequestException('Invalid history page.');
+    if (!['asc', 'desc'].includes(order)) throw new BadRequestException('Invalid history order.');
     const where = { submissionId: id, tenantId };
     const total = await this.prisma.submissionEvent.count({ where });
     if (!total) return { data: [{ id: 'legacy-baseline', kind: 'BASELINE', actorName: null, createdAt: current.updatedAt,
       details: { snapshot: historySnapshot(current) } }], page: 1, total: 1, totalPages: 1 };
-    const data = await this.prisma.submissionEvent.findMany({ where, orderBy: { sequence: 'asc' }, skip: (page - 1) * 25, take: 25 });
+    const data = await this.prisma.submissionEvent.findMany({ where, orderBy: { sequence: order }, skip: (page - 1) * 25, take: 25 });
     return { data, page, total, totalPages: Math.ceil(total / 25) };
   }
 
