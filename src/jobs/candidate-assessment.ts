@@ -23,6 +23,12 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   let parsed: any = candidate.parsedJson;
   if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch { parsed = null; } }
   const skills = unique([...strings(candidate.skills), ...strings(parsed?.skills)]);
+  const candidateQualifications = unique([
+    ...strings(parsed?.education?.degrees),
+    ...(Array.isArray(parsed?.education_detailed) ? parsed.education_detailed : [])
+      .flatMap((entry: unknown) => entry && typeof entry === 'object' &&
+        typeof (entry as { degree?: unknown }).degree === 'string' ? [(entry as { degree: string }).degree.trim()] : []),
+  ]).filter(value => value.length <= 300);
   const skillSet = new Set(skills.map(normalizeTerm));
   const text = typeof candidate.rawText === 'string' ? candidate.rawText : '';
   const primary = unique(strings(job.skillsRequired));
@@ -79,7 +85,7 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   const result: CandidateAssessment = {
     engine: ASSESSMENT_ENGINE, version: createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate })).digest('hex'),
     calculatedAt: new Date().toISOString(), score: measuredWeight ? Math.round(measured.reduce((sum, part) => sum + part.score! * part.weight, 0) / measuredWeight) : null,
-    coverage: possibleWeight ? Math.round(measuredWeight / possibleWeight * 100) : 0, criteria, breakdown: parts,
+    coverage: possibleWeight ? Math.round(measuredWeight / possibleWeight * 100) : 0, criteria, breakdown: parts, candidateQualifications,
     limitations: ['Evidence score is not a hiring recommendation.', 'Missing evidence is not a confirmed failure.', 'Salary is excluded because candidate CTC currency and pay period are not established.', 'Semantic scoring is unavailable until parser search supports tenant isolation.'],
   };
   return result;

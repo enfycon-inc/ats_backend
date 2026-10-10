@@ -1,5 +1,16 @@
 import { assessCandidate } from './candidate-assessment';
 describe('shared evidence assessment', () => {
+  it('returns only qualification labels without inventing equivalence or exposing parsed resume fields', () => {
+    const result = assessCandidate({ degree: 'Computer Science' }, { parsedJson: JSON.stringify({
+      education_detailed: [{ degree: 'MCA', institution: 'Private institution' }, { degree: 'MCA' }, { degree: 4 }, null],
+      email: 'private@example.com',
+    }) });
+    expect(result.candidateQualifications).toEqual(['MCA']);
+    expect(result.criteria[0].finding).toBe('NEEDS_CLARIFICATION');
+    expect(result.score).toBeNull();
+    expect(JSON.stringify(result)).not.toContain('private@example.com');
+    expect(assessCandidate({}, { parsedJson: '{broken' }).candidateQualifications).toEqual([]);
+  });
   it('finds profile skills and résumé excerpts without substring false positives', () => {
     const result = assessCandidate({ skillsRequired: ['Java', 'Go', 'Python'] }, { skills: ['Python'], rawText: 'Built JavaScript services. Django projects.' });
     expect(result.criteria.map(row => row.finding)).toEqual(['NO_EVIDENCE', 'NO_EVIDENCE', 'EVIDENCE_FOUND']);

@@ -1092,7 +1092,7 @@ export class RecruiterSubmissionsService {
       candidateEmail: row.candidate_email || row.candidateEmail,
       candidatePhone: row.candidate_phone || row.candidatePhone,
       candidateCurrentLocation: row.candidate_current_location || row.candidateCurrentLocation,
-      candidateExperience: row.candidate_experience || row.candidateExperience,
+      candidateExperience: row.candidate_experience ?? row.candidateExperience,
       candidateDesignation: row.candidate_designation || row.candidateDesignation,
       candidateWorkAuth: row.candidate_work_auth || row.candidateWorkAuth,
       candidateSource: row.candidate_source || row.candidateSource,
