@@ -234,6 +234,8 @@ export class CandidatesController {
     @CurrentUser() user: AuthUser,
     @Body('source') source?: string,
     @Body('fullName') fullName?: string,
+    @Body('firstName') firstName?: string,
+    @Body('lastName') lastName?: string,
     @Body('email') email?: string,
     @Body('phone') phone?: string,
     @Body('relevantExperienceYears') relevantExperienceYears?: string,
@@ -253,6 +255,8 @@ export class CandidatesController {
     return this.candidatesService.saveUploadedCv(file, activeTenantId, { 
       source,
       fullName,
+      firstName,
+      lastName,
       email,
       phone,
       relevantExperienceYears,

@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import * as crypto from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
@@ -404,10 +405,18 @@ export class CandidatesService {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { source?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
+    meta: { source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
     user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
+    if (meta.phone) {
+      const phone = parsePhoneNumberFromString(meta.phone);
+      if (!phone?.isValid() || (phone.country === 'IN' && phone.nationalNumber.length !== 10)) throw new BadRequestException('Invalid mobile number for selected country.');
+    }
+    if (meta.noticePeriodDays != null && meta.noticePeriodDays !== '' && (!/^\d+$/.test(meta.noticePeriodDays) || Number(meta.noticePeriodDays) < 0)) throw new BadRequestException('Notice period must be a nonnegative whole number.');
+    for (const amount of [meta.currentCtc, meta.expectedCtc]) {
+      if (amount != null && amount !== '' && !/^\d+(?:\.\d{1,2})?$/.test(amount)) throw new BadRequestException('Invalid compensation amount.');
+    }
 
     const uploaderId = user?.dbId || null;
     const uploaderName = user?.fullName || user?.email || (meta.source === 'Bulk Upload Benchmark' ? 'System Benchmark' : 'System');
@@ -441,9 +450,11 @@ export class CandidatesService {
         if (existing.parsedJson) {
           parsed = existing.parsedJson;
         }
-      } else {
+      } else if (!Object.entries(meta).some(([key, value]) => ['firstName', 'lastName', 'location', 'currentCtc', 'expectedCtc', 'noticePeriodDays', 'relevantExperienceYears', 'preferredLocations', 'currentCompany'].includes(key) && value != null && value !== '')) {
         this.logger.log(`CV already imported (hash ${fileHash.slice(0, 12)}…) → returning existing candidate.`);
         return { candidate: existing, duplicate: true, parsed: false };
+      } else {
+        parsed = existing.parsedJson || null;
       }
     }
 
@@ -467,7 +478,7 @@ export class CandidatesService {
     const normalizedLoc = typeof locObj === 'object' && locObj !== null && !Array.isArray(locObj)
       ? (locObj.raw || locObj.canonical)
       : (Array.isArray(locObj) && locObj.length > 0 ? (locObj[0]?.raw || locObj[0]?.canonical) : '');
-    const location = parsed?.location || normalizedLoc || '';
+    const location = meta.location?.trim() || parsed?.location || normalizedLoc || '';
     const designation =
       parsed?.experience_detailed?.[0]?.role && parsed.experience_detailed[0].role !== 'Role'
         ? parsed.experience_detailed[0].role
@@ -513,6 +524,8 @@ export class CandidatesService {
           where: { id: existingCand.id },
           data: {
             fullName,
+            firstName: meta.firstName?.trim() || undefined,
+            lastName: meta.lastName?.trim() || undefined,
             phone,
             rawCurrentLocation: location,
             totalExperienceYears: expYears ? Number(expYears) : 0,
@@ -563,6 +576,8 @@ export class CandidatesService {
           const cand = await tx.candidate.create({
             data: {
               fullName,
+              firstName: meta.firstName?.trim() || undefined,
+              lastName: meta.lastName?.trim() || undefined,
               email,
               phone,
               rawCurrentLocation: location,
