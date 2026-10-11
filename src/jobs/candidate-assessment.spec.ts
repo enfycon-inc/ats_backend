@@ -1,5 +1,31 @@
 import { assessCandidate } from './candidate-assessment';
 describe('shared evidence assessment', () => {
+  const dictionary = [
+    { id: 1, canonicalName: 'Node.js', aliases: [{ aliasName: 'nodejs' }, { aliasName: 'node js' }] },
+    { id: 2, canonicalName: 'AWS', aliases: [{ aliasName: 'amazon web services' }] },
+    { id: 3, canonicalName: 'Python', aliases: [{ aliasName: 'python3' }] },
+  ];
+  it('uses database aliases and structured skill names, preserving proficiency decorators', () => {
+    const result = assessCandidate({ skillsRequired: ['Node.js', 'AWS', 'Python'], secondarySkills: ['nodejs'] }, {
+      skills: ['Backend: NodeJS (Basics)', 'Amazon Web Services', 'Teamwork'], parsedJson: { skills_detailed: [{ name: 'python3' }, null, { name: 42 }] },
+    }, dictionary);
+    expect(result.criteria.map(row => row.finding)).toEqual(['EVIDENCE_FOUND', 'EVIDENCE_FOUND', 'EVIDENCE_FOUND']);
+    expect(result.score).toBe(100);
+    expect(result.additionalCandidateSkills).toEqual(['Teamwork']);
+  });
+  it('checks dictionary aliases in multiline resume text without conflating related skills', () => {
+    const result = assessCandidate({ skillsRequired: ['AWS', 'Java', 'C', 'Python', 'Docker'] }, { rawText: 'Amazon\nWeb Services; JavaScript; C++; Django; Kubernetes.' }, dictionary);
+    expect(result.criteria.map(row => row.finding)).toEqual(['EVIDENCE_FOUND', 'NO_EVIDENCE', 'NO_EVIDENCE', 'NO_EVIDENCE', 'NO_EVIDENCE']);
+  });
+  it('does not resolve an ambiguous dictionary alias to either skill', () => {
+    const conflicting = [{ id: 1, canonicalName: 'Alpha', aliases: [{ aliasName: 'shared' }] }, { id: 2, canonicalName: 'Beta', aliases: [{ aliasName: 'shared' }] }];
+    expect(assessCandidate({ skillsRequired: ['Alpha', 'Beta'] }, { skills: ['shared'], rawText: 'shared' }, conflicting).criteria.map(row => row.finding)).toEqual(['NO_EVIDENCE', 'NO_EVIDENCE']);
+  });
+  it('changes the decision version on dictionary edits and ignores dictionary ordering', () => {
+    const job = { skillsRequired: ['AWS'] }; const candidate = { skills: ['Amazon Web Services'] };
+    expect(assessCandidate(job, candidate, dictionary).version).not.toBe(assessCandidate(job, candidate).version);
+    expect(assessCandidate(job, candidate, dictionary).version).toBe(assessCandidate(job, candidate, [...dictionary].reverse()).version);
+  });
   it('records candidate comparison facts without losing zeros or copying private parser data', () => {
     const saved = assessCandidate({}, { totalExperienceYears: 0, noticePeriodDays: 0, rawCurrentLocation: ' India ', parsedJson: { email: 'private@example.com' } });
     expect(saved.candidateSnapshot).toEqual({ experienceYears: 0, noticePeriodDays: 0, currentLocation: 'India' });

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { CandidateAssessment, AssessmentCriterion } from '../recruiter-submissions/tracker-contract';
+import { AssessmentSkill, skillResolver } from './assessment-skill-dictionary';
 
-export const ASSESSMENT_ENGINE = 'evidence-v1';
+export const ASSESSMENT_ENGINE = 'dictionary-v2';
 export interface AssessmentJob {
   skillsRequired?: string[]; secondarySkills?: string[]; expMin?: number | null; expMax?: number | null;
   city?: string | null; state?: string | null; country?: string | null; workMode?: string | null;
@@ -15,30 +16,34 @@ export function normalizeTerm(value: string) { return value.toLowerCase().replac
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item.trim()) : []; }
 function unique(values: string[]) { return [...new Map(values.map(value => [normalizeTerm(value), value])).values()].filter(value => normalizeTerm(value)); }
 function textEvidence(term: string, text: string) {
-  const escaped = normalizeTerm(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i').exec(text);
+  const escaped = term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  const match = new RegExp(`(^|[^a-z0-9+#])${escaped}([^a-z0-9+#]|$)`, 'i').exec(text);
   return match ? text.slice(Math.max(0, match.index - 65), match.index + match[0].length + 100).replace(/\s+/g, ' ').trim() : null;
 }
-export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandidate): CandidateAssessment {
+export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandidate, dictionary: AssessmentSkill[] = []): CandidateAssessment {
   let parsed: any = candidate.parsedJson;
   if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch { parsed = null; } }
-  const skills = unique([...strings(candidate.skills), ...strings(parsed?.skills)]);
+  const skills = unique([...strings(candidate.skills), ...strings(parsed?.skills),
+    ...(Array.isArray(parsed?.skills_detailed) ? parsed.skills_detailed : []).flatMap((entry: unknown) => entry && typeof entry === 'object' && typeof (entry as { name?: unknown }).name === 'string' ? [(entry as { name: string }).name] : []),
+  ]);
+  const resolver = skillResolver(dictionary);
   const candidateQualifications = unique([
     ...strings(parsed?.education?.degrees),
     ...(Array.isArray(parsed?.education_detailed) ? parsed.education_detailed : [])
       .flatMap((entry: unknown) => entry && typeof entry === 'object' &&
         typeof (entry as { degree?: unknown }).degree === 'string' ? [(entry as { degree: string }).degree.trim()] : []),
   ]).filter(value => value.length <= 300);
-  const skillSet = new Set(skills.map(normalizeTerm));
+  const skillSet = new Set(skills.map(resolver.resolve));
   const text = typeof candidate.rawText === 'string' ? candidate.rawText : '';
-  const primary = unique(strings(job.skillsRequired));
-  const secondary = unique(strings(job.secondarySkills)).filter(skill => !primary.some(required => normalizeTerm(required) === normalizeTerm(skill)));
+  const canonicalUnique = (values: string[]) => [...new Map(values.map(value => [resolver.resolve(value), value])).values()];
+  const primary = canonicalUnique(unique(strings(job.skillsRequired)));
+  const secondary = canonicalUnique(unique(strings(job.secondarySkills))).filter(skill => !primary.some(required => resolver.resolve(required) === resolver.resolve(skill)));
   const criteria: AssessmentCriterion[] = [];
   const parts: CandidateAssessment['breakdown'] = [];
   for (const [group, values] of [['primary', primary], ['secondary', secondary]] as const) {
     for (const skill of values) {
-      const excerpt = textEvidence(skill, text);
-      const profile = skillSet.has(normalizeTerm(skill));
+      const excerpt = resolver.terms(skill).map(term => textEvidence(term, text)).find(Boolean);
+      const profile = skillSet.has(resolver.resolve(skill));
       criteria.push({ key: `${group}:${normalizeTerm(skill)}`, requirement: skill, category: group,
         finding: excerpt || profile ? 'EVIDENCE_FOUND' : text || skills.length ? 'NO_EVIDENCE' : 'NEEDS_CLARIFICATION',
         evidence: excerpt ? `Resume: “${excerpt}”` : profile ? `Listed in candidate profile or parsed resume: ${skill}` : 'No supporting evidence found. This is not a confirmed failure.' });
@@ -83,9 +88,10 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   const measuredWeight = measured.reduce((sum, part) => sum + part.weight, 0);
   const possibleWeight = parts.reduce((sum, part) => sum + part.weight, 0);
   const result: CandidateAssessment = {
-    engine: ASSESSMENT_ENGINE, version: createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate })).digest('hex'),
+    engine: ASSESSMENT_ENGINE, version: createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate, dictionary: dictionary.map(row => ({ ...row, aliases: [...row.aliases].sort((a, b) => a.aliasName.localeCompare(b.aliasName)) })).sort((a, b) => a.id - b.id) })).digest('hex'),
     calculatedAt: new Date().toISOString(), score: measuredWeight ? Math.round(measured.reduce((sum, part) => sum + part.score! * part.weight, 0) / measuredWeight) : null,
     coverage: possibleWeight ? Math.round(measuredWeight / possibleWeight * 100) : 0, criteria, breakdown: parts, candidateQualifications,
+    additionalCandidateSkills: skills.filter(skill => ![...primary, ...secondary].some(required => resolver.resolve(required) === resolver.resolve(skill))),
     candidateSnapshot: {
       experienceYears: years != null && Number.isFinite(years) && years >= 0 ? years : null,
       noticePeriodDays: candidate.noticePeriodDays != null && Number.isFinite(candidate.noticePeriodDays) && candidate.noticePeriodDays >= 0 ? candidate.noticePeriodDays : null,

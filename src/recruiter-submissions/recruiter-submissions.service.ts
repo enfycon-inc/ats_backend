@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { assessCandidate } from '../jobs/candidate-assessment';
+import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
 import { historySnapshot, historyChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
 import {
@@ -728,7 +729,8 @@ export class RecruiterSubmissionsService {
       } }),
     ]);
     if (!job || !candidate) throw new NotFoundException('Assessment sources are unavailable in this tenant.');
-    return assessCandidate(job, { ...candidate, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson });
+    const dictionary = await loadAssessmentSkills(db);
+    return assessCandidate(job, { ...candidate, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson }, dictionary);
   }
 
   async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {

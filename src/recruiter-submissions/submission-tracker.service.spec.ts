@@ -5,7 +5,7 @@ import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 const user = { dbId: 'user-id', permissions: ['submission:view', 'submission:edit'], roles: [], tenantId: 'tenant-id' } as unknown as AuthUser;
 function setup() {
-  const prisma: any = { submissionEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }, $queryRawUnsafe: jest.fn(), recruiterSubmission: { findFirst: jest.fn(), updateMany: jest.fn() } };
+  const prisma: any = { skillMaster: { findMany: jest.fn().mockResolvedValue([]) }, submissionEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }, $queryRawUnsafe: jest.fn(), recruiterSubmission: { findFirst: jest.fn(), updateMany: jest.fn() } };
   prisma.$transaction = jest.fn(callback => callback(prisma));
   const notifications = { create: jest.fn() };
   const service = new RecruiterSubmissionsService(prisma as any, notifications as any);
@@ -29,6 +29,17 @@ describe('submission tracker API', () => {
     expect(result.assessment.score).toBe(100);
     expect(prisma.job.findFirst.mock.calls[0][0].where).toEqual({ id: 'job-id', tenantId: 'tenant-id' });
     expect(prisma.candidate.findFirst.mock.calls[0][0].where).toEqual({ id: 'candidate-id', tenantId: 'tenant-id', deletedAt: null });
+  });
+  it('loads the existing dictionary for submission assessment rather than hardcoding aliases', async () => {
+    const { service, prisma } = setup();
+    prisma.skillMaster.findMany.mockResolvedValue([{ id: 9, canonicalName: 'AWS', aliases: [{ aliasName: 'amazon web services' }] }]);
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ skillsRequired: ['AWS'] }) };
+    prisma.candidate = { findFirst: jest.fn().mockResolvedValue({ skills: ['Amazon Web Services'] }) };
+    jest.spyOn(service, 'findOne').mockResolvedValue({ jobId: 'job-id', candidateId: 'candidate-id', capabilities: { review: true } } as any);
+    const result = await service.assessment('submission-id', 'tenant-id', user);
+    expect(result.assessment.criteria[0].finding).toBe('EVIDENCE_FOUND');
+    expect(prisma.skillMaster.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.skillMaster.findMany.mock.calls[0][0].select).toEqual({ id: true, canonicalName: true, aliases: { select: { aliasName: true } } });
   });
   it('rejects changed assessment sources before writing the decision or its history', async () => {
     const { service, prisma } = setup();

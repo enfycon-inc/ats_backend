@@ -1,5 +1,6 @@
 import { normalizeJobStatus } from './job-status-contract';
 import { assessCandidate } from './candidate-assessment';
+import { loadAssessmentSkills, skillResolver } from './assessment-skill-dictionary';
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateJobDto } from './dtos/create-job.dto';
@@ -1873,7 +1874,9 @@ export class JobsService {
 
     const primarySkills = (job.skillsRequired || []).filter(Boolean);
     const secondarySkills = (job.secondarySkills || []).filter(Boolean);
-    const allSkills = [...primarySkills, ...secondarySkills];
+    const dictionary = await loadAssessmentSkills(this.prisma);
+    const resolver = skillResolver(dictionary);
+    const allSkills = [...new Set([...primarySkills, ...secondarySkills, ...[...primarySkills, ...secondarySkills].flatMap(resolver.terms)])];
 
     // Review and ranking use the same tenant-scoped evidence assessment.
     const parserOnline = false; // Semantic search does not yet enforce tenant isolation.
@@ -1935,7 +1938,7 @@ export class JobsService {
         skills: row.skills, rawText: row.raw_text, parsedJson: row.parsed_json,
         totalExperienceYears: row.total_experience_years, rawCurrentLocation: row.raw_current_location,
         preferredLocations: row.preferred_locations, noticePeriodDays: row.notice_period_days,
-      });
+      }, dictionary);
       const matchedPrimary = assessment.criteria.filter(item => item.category === 'primary' && item.finding === 'EVIDENCE_FOUND').map(item => item.requirement);
       const missingPrimary = assessment.criteria.filter(item => item.category === 'primary' && item.finding !== 'EVIDENCE_FOUND').map(item => item.requirement);
       const matchedSecondary = assessment.criteria.filter(item => item.category === 'secondary' && item.finding === 'EVIDENCE_FOUND');

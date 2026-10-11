@@ -133,6 +133,7 @@ export interface AssessmentCriterion {
   evidence: string;
 }
 export interface CandidateAssessment {
+  additionalCandidateSkills?: string[];
   candidateSnapshot?: {
     experienceYears: number | null;
     noticePeriodDays: number | null;

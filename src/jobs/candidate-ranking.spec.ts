@@ -4,7 +4,7 @@ describe('ranking assessment reuse', () => {
   it('uses the shared engine, tenant filters and no unscoped semantic request', async () => {
     const job = { skillsRequired: ['Python', 'AWS'], secondarySkills: [], expMin: 3, city: 'Pune', workMode: 'Hybrid', jobCode: 'test' };
     const row = { id: 'candidate-id', full_name: 'Test candidate', skills: ['Python'], total_experience_years: 4, raw_current_location: 'Delhi', raw_text: 'Python developer' };
-    const prisma = { $queryRawUnsafe: jest.fn().mockResolvedValue([row]) };
+    const prisma = { skillMaster: { findMany: jest.fn().mockResolvedValue([]) }, $queryRawUnsafe: jest.fn().mockResolvedValue([row]) };
     const service = new JobsService(prisma as any, {} as any);
     jest.spyOn(service, 'findOneJob').mockResolvedValue(job as any);
     const network = jest.spyOn(global, 'fetch').mockRejectedValue(new Error('Must not query unscoped search'));
