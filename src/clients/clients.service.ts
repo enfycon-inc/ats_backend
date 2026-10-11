@@ -1,3 +1,4 @@
+import { clientAccessSelect, loadPocPolicy, protectClientContactFields } from './poc-access';
 import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -11,25 +12,38 @@ export class ClientsService {
 
   async getVisibilityPolicy(actor: AuthUser) {
     if (!actor.permissions?.includes('tenant:settings')) throw new ForbiddenException('Tenant settings permission is required.');
-    const tenant = await this.prisma.tenant.findUnique({ where: { id: actor.tenantId }, select: { clientsVisibleAcrossUnits: true } });
+    const tenant = await this.prisma.tenant.findUnique({ where: { id: actor.tenantId }, select: clientAccessSelect });
     if (!tenant) throw new NotFoundException('Workspace not found.');
     return tenant;
   }
 
-  async setVisibilityPolicy(actor: AuthUser, enabled: unknown) {
+  async setVisibilityPolicy(actor: AuthUser, input: unknown) {
     if (!actor.permissions?.includes('tenant:settings')) throw new ForbiddenException('Tenant settings permission is required.');
-    if (typeof enabled !== 'boolean') throw new BadRequestException('Client visibility must be enabled or disabled.');
+    const changes: Record<string, boolean> = {};
+    if (typeof input === 'boolean') changes.clientsVisibleAcrossUnits = input;
+    else if (input && typeof input === 'object' && !Array.isArray(input)) {
+      for (const [key, value] of Object.entries(input)) {
+        if (!(key in clientAccessSelect) || typeof value !== 'boolean') throw new BadRequestException('Client access settings must be enabled or disabled.');
+        changes[key] = value;
+      }
+    } else throw new BadRequestException('Client visibility must be enabled or disabled.');
+    if (!Object.keys(changes).length) throw new BadRequestException('Select at least one client access setting.');
     return this.prisma.$transaction(async tx => {
-      const previous = await tx.tenant.findUnique({ where: { id: actor.tenantId }, select: { clientsVisibleAcrossUnits: true } });
+      const previous = await tx.tenant.findUnique({ where: { id: actor.tenantId }, select: clientAccessSelect });
       if (!previous) throw new NotFoundException('Workspace not found.');
-      const saved = await tx.tenant.update({ where: { id: actor.tenantId }, data: { clientsVisibleAcrossUnits: enabled }, select: { clientsVisibleAcrossUnits: true } });
-      if (previous.clientsVisibleAcrossUnits !== enabled) await tx.auditLog.create({ data: {
+      const saved = await tx.tenant.update({ where: { id: actor.tenantId }, data: changes, select: clientAccessSelect });
+      if (Object.entries(changes).some(([key, value]) => previous[key] !== value)) await tx.auditLog.create({ data: {
         tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email,
         action: 'CLIENT_VISIBILITY_CHANGED', targetType: 'Tenant', targetId: actor.tenantId,
-        details: { previous: previous.clientsVisibleAcrossUnits, enabled },
+        details: { previous, changes },
       } });
       return saved;
     });
+  }
+
+  async protectResponse(client: Record<string, any>, actor: AuthUser) {
+    const policy = await loadPocPolicy(this.prisma, actor.tenantId);
+    return protectClientContactFields(client, actor, policy);
   }
 
   private validateActorId(actorId: string): string {
@@ -52,6 +66,7 @@ export class ClientsService {
 
     return {
       ...client,
+      primaryOwnerId: client.primaryOwner,
       primaryOwner: extra?.primaryOwnerName || client.primaryOwner || 'N/A',
       tenant_id: client.tenantId,
       client_code: client.clientCode,
@@ -370,6 +385,7 @@ export class ClientsService {
       ownerMap.set(u.email, u.fullName);
     });
 
+    const policy = await loadPocPolicy(this.prisma, tenantId);
     return clients.map((c) => {
       const primaryOwnerName = c.primaryOwner ? ownerMap.get(c.primaryOwner) : undefined;
       const cNameLower = c.clientName.toLowerCase();
@@ -383,7 +399,7 @@ export class ClientsService {
         );
       }).length;
 
-      return this.formatClient(c, {
+      return this.formatClient(protectClientContactFields(c, user, policy), {
         primaryOwnerName,
         activeJobsCount,
       });
@@ -454,7 +470,8 @@ export class ClientsService {
       created_at: j.createdAt,
     }));
 
-    return this.formatClient(client, {
+    const policy = actor ? await loadPocPolicy(this.prisma, tenantId) : null;
+    return this.formatClient(actor ? protectClientContactFields(client, actor, policy) : client, {
       primaryOwnerName,
       branchName: client.branch?.name,
       activeJobsCount: formattedJobs.length,

@@ -1,6 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateJobDto {
+  @ApiPropertyOptional({ description: 'Stable request identifier for a new draft' })
+  draftId?: string;
+
+  @ApiPropertyOptional({ description: 'Selected existing client UUID' })
+  clientId?: string;
+
+  @ApiPropertyOptional({ description: 'Selected existing end client UUID' })
+  endClientId?: string;
   // ─── Core Required Fields ───────────────────────────────────
   @ApiProperty({ example: 'Senior Java Developer (Spring Boot)', description: 'The official title of the job opening' })
   title: string;
@@ -66,7 +74,7 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 1, description: 'Number of open positions' })
   noOfPositions?: number;
 
-  @ApiPropertyOptional({ example: 5, description: 'Number of submissions required' })
+  @ApiPropertyOptional({ example: 1, description: 'Maximum allowed submissions; positive integer, defaults to 1' })
   submissionRequired?: number;
 
   @ApiPropertyOptional({ example: 'High', enum: ['High', 'Medium', 'Low'], description: 'Job priority level' })

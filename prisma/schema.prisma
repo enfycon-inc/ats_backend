@@ -20,6 +20,9 @@ model Tenant {
   prefixCode                String?                @unique @map("prefix_code") @db.VarChar(10)
   podSystemEnabled          Boolean                @default(true) @map("pod_system_enabled")
   clientsVisibleAcrossUnits Boolean                @default(false) @map("clients_visible_across_units")
+  bdmClientsTenantWide      Boolean                @default(true) @map("bdm_clients_tenant_wide")
+  otherOwnerPocsVisible     Boolean                @default(true) @map("other_owner_pocs_visible")
+  maskOtherOwnerPocDetails  Boolean                @default(true) @map("mask_other_owner_poc_details")
   maxBranches               Int                    @default(5) @map("max_branches")
   candidatePoolMode         String                 @default("COMBINED_MARKET") @map("candidate_pool_mode") @db.VarChar(50)
   emailDispatchMode         String                 @default("DEFAULT_SUBDOMAIN") @map("email_dispatch_mode") @db.VarChar(50)
@@ -569,7 +572,7 @@ model Job {
   endClientId          String?                @map("end_client_id") @db.Uuid
   endClientPocId       String?                @map("end_client_poc_id") @db.Uuid
   noOfPositions        Int                    @default(1) @map("no_of_positions")
-  submissionRequired   Int                    @default(5) @map("submission_required")
+  submissionRequired   Int                    @default(1) @map("submission_required")
   submissionDone       Int                    @default(0) @map("submission_done")
   urgency              String                 @default("WARM") @db.VarChar(50)
   status               String                 @default("ACTIVE") @db.VarChar(50)
@@ -691,6 +694,7 @@ model ClientContact {
   jobs        Job[]    @relation("JobPoc")
   endClientJobs Job[]  @relation("JobEndClientPoc")
 
+  @@index([tenantId, clientId, createdBy])
   @@map("client_contacts")
   @@schema("ats")
 }

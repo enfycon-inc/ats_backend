@@ -9,6 +9,7 @@ export enum Permission {
   CANDIDATE_VIEW = 'candidate:view',
   SUBMISSION_CREATE = 'submission:create',
   SUBMISSION_EDIT = 'submission:edit',
+  CLIENT_BDM_ACCESS = 'client:bdm_access',
   CLIENT_VIEW = 'client:view',
   CLIENT_CREATE = 'client:create',
   CLIENT_DIRECT_ADD = 'client:direct_add',

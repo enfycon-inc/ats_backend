@@ -1,3 +1,4 @@
+import { loadPocPolicy } from '../clients/poc-access';
 import { normalizeJobStatus } from './job-status-contract';
 import { assessCandidate } from './candidate-assessment';
 import { loadAssessmentSkills, skillResolver } from './assessment-skill-dictionary';
@@ -9,8 +10,15 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { delegationTargets } from '../business-units/business-units.service';
 import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { clientReadWhere } from '../clients/client-visibility';
+import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
+  clientId?: string | null;
+  endClientId?: string | null;
+  pocId?: string | null;
+  endClientPocId?: string | null;
+  endClientName?: string | null;
   id: string;
   jobCode: string;
   jobTitle: string;
@@ -401,7 +409,88 @@ export class JobsService {
     return listJobPods(this.prisma, actor, tenantId, branchId, unitId);
   }
 
-  async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser): Promise<JobProfile> {
+  private assertDraftScope(tenantId: string, actor: AuthUser, branchId: string | null | undefined, unitId: string | null | undefined) {
+    const perms = actor.permissions || [];
+    if (actor.tenantId !== tenantId) throw new ForbiddenException('Workspace unavailable.');
+    if (perms.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p))) return;
+    if (!branchId || branchId !== actor.branchId || (!perms.includes('branch_admin:manage') && (!unitId || unitId !== actor.businessUnitId))) {
+      throw new ForbiddenException('The draft is outside your assigned workspace.');
+    }
+  }
+
+  private assertDraftAccess(job: any, tenantId: string, actor: AuthUser) {
+    if (job.tenantId !== tenantId) throw new ForbiddenException('Draft unavailable in this workspace.');
+    this.assertDraftScope(tenantId, actor, job.branchId, job.businessUnitId);
+    if (job.deletedAt || job.status !== 'Draft') throw new BadRequestException('Only draft jobs can be saved or published through this action.');
+    const perms = actor.permissions || [];
+    if (job.accountManagerId !== actor.dbId && !perms.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage', '*', 'branch_admin:manage', 'unit_admin:manage'].includes(p))) {
+      throw new ForbiddenException('You can only change your own drafts.');
+    }
+  }
+
+  private async resolveSelectedClients(dto: CreateJobDto, tenantId: string, actor: AuthUser) {
+    if (!dto.client && !dto.clientId && !dto.endClientName && !dto.endClientId && !dto.pocId && !dto.endClientPocId) return;
+    const scope = await clientReadWhere(this.prisma, tenantId, actor);
+    for (const [nameKey, idKey] of [['client', 'clientId'], ['endClientName', 'endClientId']] as const) {
+      const id = dto[idKey];
+      const name = dto[nameKey];
+      if (!id && !name) { dto[idKey] = undefined; continue; }
+      if (id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) throw new BadRequestException('Select a valid client.');
+      const client = await this.prisma.client.findFirst({
+        where: { AND: [scope, { deletedAt: null }, id ? { id } : { clientName: { equals: name!.trim(), mode: 'insensitive' } }] },
+        select: { id: true, clientName: true },
+      });
+      if (!client) throw new ForbiddenException('The selected client is unavailable in this workspace. Select an existing client or add one through the client form.');
+      dto[idKey] = client.id;
+      dto[nameKey] = client.clientName;
+    }
+    const pocPolicy = await loadPocPolicy(this.prisma, tenantId);
+    for (const [contactId, clientId] of [[dto.pocId, dto.clientId], [dto.endClientPocId, dto.endClientId]]) {
+      if (!contactId) continue;
+      const contact = clientId && await this.prisma.clientContact.findFirst({ where: { id: contactId, clientId, tenantId, ...(!pocPolicy?.otherOwnerPocsVisible ? { createdBy: actor.dbId } : {}) }, select: { id: true } });
+      if (!contact) throw new BadRequestException('The selected contact does not belong to this client.');
+    }
+  }
+
+  async saveDraft(dto: CreateJobDto, tenantId: string, actor: AuthUser, branchId?: string | null, id?: string) {
+    const draftId = id || dto.draftId;
+    if (!draftId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(draftId)) {
+      throw new BadRequestException('A valid draft request identifier is required.');
+    }
+    const existing = await this.prisma.job.findFirst({ where: { id: draftId } });
+    if (existing) {
+      this.assertDraftAccess(existing, tenantId, actor);
+      this.assertDraftScope(tenantId, actor, dto.branchId ?? existing.branchId, dto.businessUnitId ?? existing.businessUnitId);
+    } else if (id) throw new NotFoundException('Draft not found.');
+    else this.assertDraftScope(tenantId, actor, dto.branchId || branchId, dto.businessUnitId);
+    await this.resolveSelectedClients(dto, tenantId, actor);
+    const payload = { ...dto, draftId, status: 'Draft', title: dto.title || '', type: dto.type || 'Full Time', description: dto.description || '', skillsRequired: dto.skillsRequired || [] };
+    return existing
+      ? this.updateJob(draftId, payload, tenantId, actor, 'draft')
+      : this.createJob(payload, tenantId, actor.dbId, branchId, actor, true);
+  }
+
+  async publishDraft(id: string, dto: CreateJobDto, tenantId: string, actor: AuthUser) {
+    const job = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
+    if (!job) throw new NotFoundException('Draft not found.');
+    this.assertDraftAccess(job, tenantId, actor);
+    this.assertDraftScope(tenantId, actor, dto.branchId ?? job.branchId, dto.businessUnitId ?? job.businessUnitId);
+    if ((dto.title || '').trim().length < 3 || (dto.description || '').trim().length < 10 || !dto.client || !dto.payRate || !dto.clientBillRate) {
+      throw new BadRequestException('Complete the required job fields before publishing.');
+    }
+    await this.resolveSelectedClients(dto, tenantId, actor);
+    const clients = await this.prisma.client.findMany({ where: { tenantId, id: { in: [dto.clientId, dto.endClientId].filter((value): value is string => !!value) } }, select: { status: true, approvalStatus: true } });
+    const creator = await this.prisma.user.findUnique({ where: { id: job.accountManagerId || actor.dbId }, select: { jobReviewerId: true } });
+    const direct = (actor.permissions || []).some(p => ['job:publish_direct', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
+    const pending = !direct || clients.some(c => ['Pending Approval', 'Rejected'].includes(c.status) || ['PENDING_APPROVAL', 'REJECTED'].includes(c.approvalStatus || ''));
+    const assignedApproverId = creator?.jobReviewerId || job.assignedApproverId;
+    return this.updateJob(id, { ...dto, status: pending ? 'Pending Approval' : 'Active', approvalStatus: pending ? 'PENDING_APPROVAL' : 'APPROVED', assignedApproverId }, tenantId, actor, 'publish');
+  }
+
+  async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser, draft = false): Promise<JobProfile> {
+    positiveInteger(dto.submissionRequired, 'Maximum allowed submissions');
+    positiveInteger(dto.noOfPositions, 'Number of positions');
+    if ((dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId) && actor && !draft) await this.resolveSelectedClients(dto, tenantId, actor);
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
     const tenant = await this.prisma.tenant.findUnique({
@@ -453,9 +542,9 @@ export class JobsService {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(businessUnitId)) {
         throw new BadRequestException('Select a valid operating unit.');
       }
-      const unit = await this.prisma.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
+      const unit = await this.prisma.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId }, include: { marketSegment: { select: { code: true } } } });
       if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
-      assignmentPolicy = unit;
+      assignmentPolicy = { ...unit, market: unit.marketSegment?.code };
     }
     const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
     if (submittedRecruiters.length) {
@@ -471,7 +560,7 @@ export class JobsService {
       const eligiblePods = await listJobPods(this.prisma, actor, tenantId, branchId || undefined, businessUnitId || undefined);
       if (!eligiblePods.some(p => p.id === selectedPod)) throw new ForbiddenException('The selected pod is outside the job unit.');
     }
-    if (assignmentPolicy?.allowUnassigned === false && !selectedPod && !submittedRecruiters.length) {
+    if (!draft && assignmentPolicy?.allowUnassigned === false && !selectedPod && !submittedRecruiters.length) {
       throw new BadRequestException('Select a pod or at least one recruiter for this unit.');
     }
     let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
@@ -480,7 +569,7 @@ export class JobsService {
         where: { jobCode },
         select: { id: true },
       });
-      if (check) {
+      if (check && !draft) {
         jobCode = ''; // Code already taken, regenerate
       }
     }
@@ -553,8 +642,8 @@ export class JobsService {
     }
 
     // Auto-create client & end client if not present
-    await this.ensureClientExists(dto.client, tenantId, createdByEmail || 'System');
-    if (dto.endClientName && dto.endClientName !== dto.client) {
+    if (!draft && !dto.clientId) await this.ensureClientExists(dto.client, tenantId, createdByEmail || 'System');
+    if (!draft && !dto.endClientId && dto.endClientName && dto.endClientName !== dto.client) {
       await this.ensureClientExists(dto.endClientName, tenantId, createdByEmail || 'System');
     }
 
@@ -602,8 +691,8 @@ export class JobsService {
 
     // A job cannot be Active (Live) if the client is not approved
     const isApprovalRequested = (dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval') || requiresApprovalGate || !clientApproved;
-    const initialApprovalStatus = isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
-    const initialJobStatus = isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
+    const initialApprovalStatus = draft ? null : isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
+    const initialJobStatus = draft ? 'Draft' : isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
 
     // ── Branch Timing Snapshot ────────────────────────────────────────────────
     let jobTimezone = (dto as any)?.jobTimezone || (dto as any)?.timezone || null;
@@ -641,28 +730,28 @@ export class JobsService {
     const resolvedAccountManagerId = await this.resolveUserUuid(dto.accountManagerId || ((createdByEmail && createdByEmail !== 'System') ? createdByEmail : null), tenantId);
     
       // Client Resolution
-      let resolvedClientId: string | null = null;
-      let resolvedEndClientId: string | null = null;
+      let resolvedClientId: string | null = dto.clientId || null;
+      let resolvedEndClientId: string | null = dto.endClientId || null;
 
-      if (dto.client && dto.client.trim() !== '') {
+      if (!resolvedClientId && dto.client && dto.client.trim() !== '') {
         let cName = dto.client.trim();
         const existingC = await this.prisma.client.findFirst({
           where: { clientName: { equals: cName, mode: 'insensitive' }, tenantId }
         });
         if (existingC) resolvedClientId = existingC.id;
-        else {
+        else if (!draft) {
           const newC = await this.prisma.client.create({ data: { clientName: cName, tenantId } });
           resolvedClientId = newC.id;
         }
       }
 
-      if (dto.endClientName && dto.endClientName.trim() !== '') {
+      if (!resolvedEndClientId && dto.endClientName && dto.endClientName.trim() !== '') {
         let ecName = dto.endClientName.trim();
         const existingEc = await this.prisma.client.findFirst({
           where: { clientName: { equals: ecName, mode: 'insensitive' }, tenantId }
         });
         if (existingEc) resolvedEndClientId = existingEc.id;
-        else {
+        else if (!draft) {
           const newEc = await this.prisma.client.create({ data: { clientName: ecName, tenantId } });
           resolvedEndClientId = newEc.id;
         }
@@ -670,8 +759,8 @@ export class JobsService {
 
 
     try {
-      const createdJob = await this.prisma.job.create({
-        data: {
+      const data = {
+          ...(draft && dto.draftId ? { id: dto.draftId } : {}),
           tenantId,
           jobCode,
           jobTitle: dto.title,
@@ -686,15 +775,12 @@ export class JobsService {
           country: dto.country || null,
           clientJobId: dto.clientJobId || 'N/A',
           visaType: dto.visaType || null,
-          clientBillRateMin: typeof dto.clientBillRate === 'string' ? parseFloat(dto.clientBillRate) : dto.clientBillRate || null,
-          clientBillRateMax: typeof dto.clientBillRate === 'string' ? parseFloat(dto.clientBillRate) : dto.clientBillRate || null,
-          payRateMin: typeof dto.payRate === 'string' ? parseFloat(dto.payRate) : dto.payRate || null,
-          payRateMax: typeof dto.payRate === 'string' ? parseFloat(dto.payRate) : dto.payRate || null,
+          ...commercialFields(dto, ['IN', 'IND', 'INDIA'].includes((assignmentPolicy?.market || dto.market || '').toUpperCase())),
           taxTerms: dto.taxTerms || null,
           
           
           noOfPositions: dto.noOfPositions || 1,
-          submissionRequired: dto.submissionRequired || 5,
+          submissionRequired: dto.submissionRequired ?? 1,
           submissionDone: 0,
           urgency: dto.priority || 'Medium',
           workMode: dto.workMode || (dto as any).remoteJob || 'In Office',
@@ -702,7 +788,7 @@ export class JobsService {
           endDate: dto.endDate ? new Date(dto.endDate) : null,
           hoursPerWeek: dto.hoursPerWeek || 40,
           duration: dto.duration || '',
-          accountManagerId: resolvedAccountManagerId || null,
+          accountManagerId: draft ? actor!.dbId : resolvedAccountManagerId || null,
           recruitmentManagerId: resolvedRecruitmentManagerId || null,
 
           
@@ -712,7 +798,7 @@ export class JobsService {
           expMax: dto.expMax ?? 10,
                     respondBy: dto.respondBy ? new Date(dto.respondBy) : null,
           noticePeriod: dto.noticePeriod || '',
-          market: (dto.market === 'IN' ? 'IND' : dto.market) || 'US',
+          market: (assignmentPolicy?.market || dto.market) === 'IN' ? 'IND' : (assignmentPolicy?.market || dto.market || 'US'),
             clientId: resolvedClientId,
             endClientId: resolvedEndClientId,
             pocId: dto.pocId || undefined,
@@ -727,8 +813,13 @@ export class JobsService {
           
           shiftTiming,
           
-        },
-      });
+        };
+      const createdJob = draft && dto.draftId
+        ? await this.prisma.job.upsert({ where: { id: dto.draftId }, create: data, update: {} })
+        : await this.prisma.job.create({ data });
+      if (draft) {
+        this.assertDraftAccess(createdJob, tenantId, actor!);
+      }
       const jobId = createdJob.id;
       if (submittedRecruiters.length) await this.prisma.jobRecruiter.createMany({
         data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
@@ -752,6 +843,8 @@ export class JobsService {
           },
         });
       }
+
+      if (draft) return this.findOneJob(jobId, tenantId, actor);
 
       // ─────────────────────────────────────────────────────────────
       // Live Real-Time Role & Reviewer Notification Dispatch
@@ -1178,8 +1271,13 @@ export class JobsService {
       jobCode: row.job_code ?? row.jobCode,
       jobTitle: row.job_title ?? row.jobTitle,
       businessUnit: row.mapped_business_unit_name || row.business_unit_id || '',
-      businessUnitId: row.business_unit_id || null,
+      businessUnitId: row.business_unit_id ?? row.businessUnitId ?? null,
       client: row.mapped_client_name || row.client_id,
+      clientId: row.client_id ?? row.clientId ?? null,
+      endClientId: row.end_client_id ?? row.endClientId ?? null,
+      endClientName: row.mapped_end_client_name || null,
+      pocId: row.poc_id ?? row.pocId ?? null,
+      endClientPocId: row.end_client_poc_id ?? row.endClientPocId ?? null,
       clientJobId: row.client_job_id ?? row.clientJobId ?? 'N/A',
       state: row.state || '',
       city: row.city || null,
@@ -1203,14 +1301,14 @@ export class JobsService {
       marginSplitRecPct: row.margin_split_rec_pct ?? null,
 
       visaType: row.visa_type ?? row.visaType ?? '',
-      clientBillRate: row.client_bill_rate ?? row.clientBillRate ?? 'N/A',
-      payRate: row.pay_rate ?? row.payRate ?? 'N/A',
+      clientBillRate: row.client_bill_rate ?? row.clientBillRate ?? displayCommercialRate(row, 'clientBill'),
+      payRate: row.pay_rate ?? row.payRate ?? displayCommercialRate(row, 'pay'),
       taxTerms: row.tax_terms ?? row.taxTerms ?? 'C2C',
 
       
 
       noOfPositions: row.no_of_positions ?? row.noOfPositions ?? 1,
-      submissionRequired: row.submission_required ?? row.submissionRequired ?? 5,
+      submissionRequired: row.submission_required ?? row.submissionRequired ?? 1,
       submissionDone: row.submission_done ?? row.submissionDone ?? 0,
       priority: row.urgency || 'Medium',
 
@@ -1524,11 +1622,14 @@ export class JobsService {
     id: string,
     dto: any,
     tenantId: string,
-    user: any
+    user: any,
+    mode?: 'draft' | 'publish'
   ): Promise<JobProfile> {
     this.logger.log(`Updating job: ${id} for tenant: ${tenantId}`);
+    positiveInteger(dto.submissionRequired, 'Maximum allowed submissions');
+    positiveInteger(dto.noOfPositions, 'Number of positions');
 
-    if (dto.status !== undefined) {
+    if (!mode && dto.status !== undefined) {
       if (typeof dto.status !== 'string') throw new BadRequestException('Invalid job status.');
       const original = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
       if (!original) throw new NotFoundException('Job not found.');
@@ -1547,6 +1648,8 @@ export class JobsService {
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
     }
+    if (mode) this.assertDraftAccess(currentJob, tenantId, user);
+    if (!mode && (dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId)) await this.resolveSelectedClients(dto, tenantId, user);
 
     if (dto.podId === 'all' || dto.podIds?.includes('all')) {
       throw new BadRequestException('Select individual recruiters instead of a unit pool.');
@@ -1574,7 +1677,7 @@ export class JobsService {
         if (requestedRecruiters.length) await validateJobRecruiters(this.prisma, user, tenantId, requestedRecruiters, branchId, unitId);
       }
       if (requestedRecruiters.length && policy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
-      if (policy?.allowUnassigned === false) {
+      if (mode !== 'draft' && policy?.allowUnassigned === false) {
         const hasPods = podChanged ? requestedPods.length > 0 : currentPods.length > 0;
         const hasRecruiters = recruitersChanged ? requestedRecruiters.length > 0 : await this.prisma.jobRecruiter.count({ where: { jobId: id } }) > 0;
         if (!hasPods && !hasRecruiters) throw new BadRequestException('Select a pod or at least one recruiter for this unit.');
@@ -1703,14 +1806,16 @@ export class JobsService {
 
     // Auto-create client & end client if not present
     const creatorId = user?.dbId || 'System';
-    if (dto.client !== undefined) {
+    if (!mode && !dto.clientId && dto.client !== undefined) {
       await this.ensureClientExists(dto.client, tenantId, creatorId);
     }
-    if (dto.endClientName !== undefined) {
+    if (!mode && !dto.endClientId && dto.endClientName !== undefined) {
       await this.ensureClientExists(dto.endClientName, tenantId, creatorId);
     }
 
     const dataToUpdate: any = {};
+    if (mode && dto.branchId !== undefined) dataToUpdate.branchId = dto.branchId;
+    if (mode && dto.businessUnitId !== undefined) dataToUpdate.businessUnitId = dto.businessUnitId;
     if (dto.title !== undefined) dataToUpdate.jobTitle = dto.title;
     if (dto.type !== undefined) dataToUpdate.jobType = dto.type;
     if (dto.description !== undefined) dataToUpdate.jobDescription = dto.description;
@@ -1725,20 +1830,25 @@ export class JobsService {
     if (dto.pocId !== undefined) dataToUpdate.pocId = dto.pocId;
     if (dto.endClientPocId !== undefined) dataToUpdate.endClientPocId = dto.endClientPocId;
     if (dto.visaType !== undefined) dataToUpdate.visaType = dto.visaType;
-    if (dto.clientBillRate !== undefined) { dataToUpdate.clientBillRateMin = typeof dto.clientBillRate === 'string' ? parseFloat(dto.clientBillRate) : dto.clientBillRate; dataToUpdate.clientBillRateMax = dataToUpdate.clientBillRateMin; }
-    if (dto.payRate !== undefined) { dataToUpdate.payRateMin = typeof dto.payRate === 'string' ? parseFloat(dto.payRate) : dto.payRate; dataToUpdate.payRateMax = dataToUpdate.payRateMin; }
+    Object.assign(dataToUpdate, commercialFields(dto, ['IN', 'IND', 'INDIA'].includes((currentJob.market || '').toUpperCase())));
+    if (dto.clientId !== undefined || mode === 'draft') dataToUpdate.clientId = dto.clientId || null;
+    if (dto.endClientId !== undefined || mode === 'draft') dataToUpdate.endClientId = dto.endClientId || null;
+    if (mode === 'publish') {
+      dataToUpdate.approvalStatus = dto.approvalStatus;
+      dataToUpdate.assignedApproverId = dto.assignedApproverId;
+    }
     if (dto.taxTerms !== undefined) dataToUpdate.taxTerms = dto.taxTerms;
     
     
     if (dto.noOfPositions !== undefined) dataToUpdate.noOfPositions = dto.noOfPositions;
     if (dto.submissionRequired !== undefined) dataToUpdate.submissionRequired = dto.submissionRequired;
     if (dto.priority !== undefined) dataToUpdate.urgency = dto.priority;
-    if (dto.remoteJob !== undefined) dataToUpdate.remoteJob = dto.remoteJob;
+    if (dto.remoteJob !== undefined) dataToUpdate.workMode = dto.remoteJob;
     if (dto.startDate !== undefined) dataToUpdate.startDate = dto.startDate ? new Date(dto.startDate) : null;
     if (dto.endDate !== undefined) dataToUpdate.endDate = dto.endDate ? new Date(dto.endDate) : null;
     if (dto.hoursPerWeek !== undefined) dataToUpdate.hoursPerWeek = dto.hoursPerWeek;
     if (dto.duration !== undefined) dataToUpdate.duration = dto.duration;
-    if (dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = await this.resolveUserUuid(dto.accountManagerId, tenantId);
+    if (!mode && dto.accountManagerId !== undefined) dataToUpdate.accountManagerId = await this.resolveUserUuid(dto.accountManagerId, tenantId);
     if (dto.recruitmentManagerId !== undefined) dataToUpdate.recruitmentManagerId = dto.recruitmentManagerId;
 
     
@@ -1754,7 +1864,13 @@ export class JobsService {
     
     if (dto.shiftTiming !== undefined) dataToUpdate.shiftTiming = dto.shiftTiming;
 
-    if (Object.keys(dataToUpdate).length > 0) {
+    if (Object.keys(dataToUpdate).length > 0 && mode) {
+      const updated = await this.prisma.job.updateMany({
+        where: { id, tenantId, status: 'Draft', updatedAt: currentJob.updatedAt },
+        data: dataToUpdate,
+      });
+      if (!updated.count) throw new BadRequestException('The draft changed. Refresh and try again.');
+    } else if (Object.keys(dataToUpdate).length > 0) {
       await this.prisma.job.update({
         where: { id },
         data: dataToUpdate,
@@ -1817,7 +1933,14 @@ export class JobsService {
 
     // Dispatch live notification if primary recruiter was assigned or changed
     try {
-      if (dto.recruiterId !== undefined && dto.recruiterId) {
+      if (mode === 'publish' && dto.status === 'Pending Approval' && dto.assignedApproverId && dto.assignedApproverId !== user.dbId) {
+        await this.notifications.create(tenantId, dto.assignedApproverId, {
+          type: 'JOB_PENDING_APPROVAL', title: 'Job Requisition Pending Approval',
+          message: `Job requisition "${currentJob.jobCode} - ${dto.title}" was submitted for review.`,
+          data: { jobId: id, jobCode: currentJob.jobCode, branchId: currentJob.branchId }, initiatorId: user.dbId,
+        });
+      }
+      if (mode !== 'draft' && dto.status !== 'Pending Approval' && dto.recruiterId !== undefined && dto.recruiterId) {
         const resolvedRecruiterId = await this.resolveUserUuid(dto.recruiterId, tenantId);
         if (resolvedRecruiterId) {
           await this.notifications.create(tenantId, resolvedRecruiterId, {
@@ -2426,7 +2549,7 @@ export class JobsService {
       payRate: original.payRate,
       taxTerms: original.taxTerms,
       noOfPositions: original.noOfPositions || 1,
-      submissionRequired: original.submissionRequired || 5,
+      submissionRequired: original.submissionRequired ?? 1,
       priority: original.priority || 'Medium',
       workMode: (original as any).workMode || (original as any).remoteJob || 'In Office',
       duration: original.duration || '',

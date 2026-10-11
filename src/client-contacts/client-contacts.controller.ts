@@ -20,7 +20,7 @@ export class ClientContactsController {
   @ApiOperation({ summary: 'Create a new contact for a client' })
   @Post()
   create(@Param('clientId') clientId: string, @Body() dto: CreateClientContactDto, @Req() req: any) {
-    return this.service.create(clientId, req.user.tenantId, req.user.dbId, dto);
+    return this.service.create(clientId, req.user.tenantId, req.user.dbId, dto, req.user);
   }
 
   @ApiOperation({ summary: 'Update a contact (only creator or admin)' })

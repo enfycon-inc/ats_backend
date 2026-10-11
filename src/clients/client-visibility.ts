@@ -7,10 +7,10 @@ export async function clientReadWhere(prisma: PrismaService, tenantId: string, a
   if (actor?.tenantId !== tenantId || !permissions.includes('client:view')) {
     throw new ForbiddenException('Client viewing permission is required in this workspace.');
   }
-  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { clientsVisibleAcrossUnits: true } });
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { clientsVisibleAcrossUnits: true, bdmClientsTenantWide: true } });
   if (!tenant) throw new ForbiddenException('Workspace unavailable.');
   const tenantAdmin = permissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
-  if (tenant.clientsVisibleAcrossUnits || tenantAdmin) return { tenantId };
+  if (tenantAdmin || (permissions.includes('client:bdm_access') ? tenant.bdmClientsTenantWide : tenant.clientsVisibleAcrossUnits)) return { tenantId };
   if (!actor.branchId) throw new ForbiddenException('A branch assignment is required to view clients.');
   const branchAdmin = permissions.includes('branch_admin:manage');
   const unitAdmin = permissions.includes('unit_admin:manage');
@@ -19,17 +19,16 @@ export async function clientReadWhere(prisma: PrismaService, tenantId: string, a
     where: { tenantId, branchId: actor.branchId, ...(!branchAdmin ? { businessUnitId: actor.businessUnitId } : {}) },
     select: { id: true, email: true },
   });
-  const identities = users.flatMap(user => [user.id, user.email]).filter(Boolean);
-  const ownedBy = (ids: string[]) => ({ OR: [
-    { primaryOwner: { in: ids } },
-    { AND: [{ OR: [{ primaryOwner: null }, { primaryOwner: '' }] }, { createdBy: { in: ids } }] },
+  const ownedBy = (userIds: string[], emails: string[]) => ({ OR: [
+    { primaryOwner: { in: [...userIds, ...emails] } },
+    // createdBy is a UUID column; legacy email ownership only belongs in primaryOwner.
+    { AND: [{ OR: [{ primaryOwner: null }, { primaryOwner: '' }] }, { createdBy: { in: userIds } }] },
   ] });
-  const ownerScope = ownedBy(identities);
+  const ownerScope = ownedBy(users.map(user => user.id).filter(Boolean), users.map(user => user.email).filter(Boolean));
   const branchScope = { OR: [{ branchId: actor.branchId }, { AND: [{ branchId: null }, ownerScope] }] };
   if (branchAdmin) return { tenantId, AND: [branchScope] };
   if (unitAdmin) return { tenantId, AND: [branchScope, ownerScope] };
-  const own = [actor.dbId, actor.email].filter(Boolean);
-  return { tenantId, AND: [branchScope, ownedBy(own)] };
+  return { tenantId, AND: [branchScope, ownedBy([actor.dbId].filter(Boolean), [actor.email].filter(Boolean))] };
 }
 
 export function clientJobReadWhere(tenantId: string, actor: AuthUser) {

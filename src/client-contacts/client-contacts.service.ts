@@ -1,3 +1,4 @@
+import { loadPocPolicy, protectPoc } from '../clients/poc-access';
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientContactDto } from './dtos/create-client-contact.dto';
@@ -8,9 +9,10 @@ import { clientReadWhere } from '../clients/client-visibility';
 export class ClientContactsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(clientId: string, tenantId: string, createdById: string, dto: CreateClientContactDto) {
-    // Verify client belongs to tenant
-    const client = await this.prisma.client.findFirst({ where: { id: clientId, tenantId } });
+  async create(clientId: string, tenantId: string, createdById: string, dto: CreateClientContactDto, actor: AuthUser) {
+    const access = await clientReadWhere(this.prisma, tenantId, actor);
+    if (!actor.permissions?.includes("client:create") && !actor.permissions?.includes("client:edit")) throw new ForbiddenException("Client contact creation permission is required.");
+    const client = await this.prisma.client.findFirst({ where: { ...access, id: clientId, deletedAt: null } });
     if (!client) throw new NotFoundException('Client not found.');
 
     // If marking as primary, unset existing primary
@@ -45,8 +47,9 @@ export class ClientContactsService {
     const client = await this.prisma.client.findFirst({ where: { ...access, id: clientId, deletedAt: null } });
     if (!client) throw new NotFoundException('Client not found.');
 
+    const policy = await loadPocPolicy(this.prisma, tenantId);
     const contacts = await this.prisma.clientContact.findMany({
-      where: { clientId, tenantId },
+      where: { clientId, tenantId, ...(!policy?.otherOwnerPocsVisible ? { createdBy: requestingUserId } : {}) },
       include: { creator: { select: { id: true, fullName: true, email: true } } },
       orderBy: [
         { isPrimary: 'desc' },
@@ -60,7 +63,7 @@ export class ClientContactsService {
 
     return {
       myContacts: mine.map(c => this.formatContact(c, requestingUserId)),
-      otherContacts: others.map(c => this.formatContact(c, requestingUserId)),
+      otherContacts: others.map(c => protectPoc(this.formatContact(c, requestingUserId), c.createdBy, actor, policy)).filter(Boolean),
     };
   }
 
@@ -71,6 +74,9 @@ export class ClientContactsService {
     const isOwner = contact.createdBy === requestingUserId;
     const isAdmin = userPermissions?.some(p => ['client:manage', 'tenant:manage', 'platform:manage'].includes(p));
     if (!isOwner && !isAdmin) throw new ForbiddenException('You can only edit contacts you created.');
+    const policy = await loadPocPolicy(this.prisma, tenantId);
+    if (!isOwner && (!policy?.otherOwnerPocsVisible || policy.maskOtherOwnerPocDetails)) throw new ForbiddenException("Private contact details can only be edited by their owner.");
+
 
     if (dto.isPrimary) {
       await this.prisma.clientContact.updateMany({
@@ -81,7 +87,7 @@ export class ClientContactsService {
 
     return this.prisma.clientContact.update({
       where: { id: contactId },
-      data: { ...dto },
+      data: { name: dto.name, designation: dto.designation, email: dto.email, phone: dto.phone, linkedinUrl: dto.linkedinUrl, isPrimary: dto.isPrimary, notes: dto.notes },
       include: { creator: { select: { id: true, fullName: true, email: true } } },
     });
   }

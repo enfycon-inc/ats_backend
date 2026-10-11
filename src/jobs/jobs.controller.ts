@@ -65,6 +65,33 @@ export class JobsController {
     return this.jobsService.createJob(dto, tid, user?.dbId || user?.email || 'System', bid, user);
   }
 
+  @Post('drafts')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:create')
+  @ApiBearerAuth()
+  async createDraft(@Body() dto: CreateJobDto, @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string, @Headers('x-branch-id') branchId?: string) {
+    return this.jobsService.saveDraft(dto, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchId));
+  }
+
+  @Patch(':id/draft')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:edit')
+  @ApiBearerAuth()
+  async updateDraft(@Param('id') id: string, @Body() dto: CreateJobDto, @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string) {
+    return this.jobsService.saveDraft(dto, resolveTenantId(user, tenantId), user, undefined, id);
+  }
+
+  @Post(':id/publish')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:create')
+  @ApiBearerAuth()
+  async publishDraft(@Param('id') id: string, @Body() dto: CreateJobDto, @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string) {
+    return this.jobsService.publishDraft(id, dto, resolveTenantId(user, tenantId), user);
+  }
+
   @Post('parse-jd')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

@@ -688,6 +688,7 @@ export class AuthRbacService {
       { id: 'submission:schedule_interview', name: 'Schedule Client & Internal Interviews', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
       { id: 'submission:final_status', name: 'Final Placement Status (Offer & Join Outcome)', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
       { id: 'submission:approve_client', name: 'Approve Client Submission', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
+      { id: 'client:bdm_access', name: 'Use BDM Client Access Policy', group: 'Clients & Placements' },
       { id: 'client:view', name: 'View Clients Directory', group: 'Clients & Placements' },
       { id: 'client:create', name: 'Create New Clients (Pending Approval)', group: 'Clients & Placements' },
       { id: 'client:direct_add', name: 'Direct Add Clients (Bypass Approval Gate)', group: 'Clients & Placements' },

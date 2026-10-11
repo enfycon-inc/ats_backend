@@ -12,7 +12,7 @@ describe('tenant client visibility policy', () => {
   });
   it('disabled restricts Account Manager to own clients and branch', async () => {
     const scope = await clientReadWhere(prisma, actor.tenantId, actor);
-    expect(scope).toMatchObject({ tenantId: actor.tenantId, AND: [expect.anything(), { OR: [{ primaryOwner: { in: [actor.dbId, actor.email] } }, { AND: [expect.anything(), { createdBy: { in: [actor.dbId, actor.email] } }] }] }] });
+    expect(scope).toMatchObject({ tenantId: actor.tenantId, AND: [expect.anything(), { OR: [{ primaryOwner: { in: [actor.dbId, actor.email] } }, { AND: [expect.anything(), { createdBy: { in: [actor.dbId] } }] }] }] });
     expect(JSON.stringify(scope)).toContain('branch');
     expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit' } }));
   });
@@ -39,6 +39,27 @@ describe('tenant client visibility policy', () => {
     expect(scope.AND).toHaveLength(2);
     expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit' } }));
   });
+  it.each(['branch_admin:manage', 'unit_admin:manage', undefined])('keeps emails out of every UUID creator filter for %s', async permission => {
+    const colleagueId = 'f1320972-f361-4d14-9ed1-aa909cc37963';
+    prisma.user.findMany.mockResolvedValue([{ id: actor.dbId, email: actor.email }, { id: colleagueId, email: 'colleague@example.test' }]);
+    const scope = await clientReadWhere(prisma, actor.tenantId, { ...actor, permissions: [...actor.permissions, ...(permission ? [permission] : [])] });
+    const creatorLists: string[][] = [];
+    const visit = (value: any) => {
+      if (!value || typeof value !== 'object') return;
+      if (value.createdBy) creatorLists.push(value.createdBy.in);
+      Object.values(value).forEach(visit);
+    };
+    visit(scope);
+    expect(creatorLists).toContainEqual([actor.dbId, colleagueId]);
+    expect(creatorLists.flat().every(id => !id.includes('@'))).toBe(true);
+    expect(JSON.stringify(scope)).toContain('colleague@example.test');
+    if (!permission) expect(creatorLists).toContainEqual([actor.dbId]);
+  });
+  it('empty unit membership produces empty ownership filters without widening access', async () => {
+    prisma.user.findMany.mockResolvedValue([]);
+    const scope = await clientReadWhere(prisma, actor.tenantId, { ...actor, permissions: ['client:view', 'unit_admin:manage'] });
+    expect(scope).toMatchObject({ tenantId: actor.tenantId, AND: [expect.anything(), { OR: [{ primaryOwner: { in: [] } }, { AND: [expect.anything(), { createdBy: { in: [] } }] }] }] });
+  });
   it('does not guess a global scope for unassigned staff', async () => {
     await expect(clientReadWhere(prisma, 'tenant', { ...actor, branchId: undefined })).rejects.toThrow('branch');
     await expect(clientReadWhere(prisma, 'tenant', { ...actor, businessUnitId: undefined })).rejects.toThrow('unit');
@@ -64,6 +85,6 @@ describe('tenant client visibility policy', () => {
     prisma.$transaction = jest.fn(callback => callback(tx));
     expect(await new ClientsService(prisma).setVisibilityPolicy(admin, true)).toEqual({ clientsVisibleAcrossUnits: true });
     expect(tx.tenant.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'tenant' } }));
-    expect(tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ actorId: 'am', tenantId: 'tenant', details: { previous: false, enabled: true } }) }));
+    expect(tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ actorId: 'am', tenantId: 'tenant', details: { previous: { clientsVisibleAcrossUnits: false }, changes: { clientsVisibleAcrossUnits: true } } }) }));
   });
 });

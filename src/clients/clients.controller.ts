@@ -43,8 +43,8 @@ export class ClientsController {
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
   @ApiBearerAuth()
-  setVisibilityPolicy(@CurrentUser() user: AuthUser, @Body() body: { clientsVisibleAcrossUnits: boolean }) {
-    return this.clientsService.setVisibilityPolicy(user, body.clientsVisibleAcrossUnits);
+  setVisibilityPolicy(@CurrentUser() user: AuthUser, @Body() body: Record<string, boolean>) {
+    return this.clientsService.setVisibilityPolicy(user, body);
   }
 
   @Post()
@@ -97,7 +97,7 @@ export class ClientsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.clientsService.restoreClient(id, tid, user?.dbId || user?.email || 'System');
+    return this.clientsService.protectResponse(await this.clientsService.restoreClient(id, tid, user?.dbId || user?.email || 'System'), user);
   }
 
   @Patch(':id/approve')
@@ -121,7 +121,7 @@ export class ClientsController {
     }
 
     const approvedBy = user?.dbId;
-    return this.clientsService.approveClient(id, tid, approvedBy);
+    return this.clientsService.protectResponse(await this.clientsService.approveClient(id, tid, approvedBy), user);
   }
 
   @Patch(':id/reject')
@@ -147,7 +147,7 @@ export class ClientsController {
     }
 
     const rejectedBy = user?.dbId;
-    return this.clientsService.rejectClient(id, tid, rejectedBy, body?.reason);
+    return this.clientsService.protectResponse(await this.clientsService.rejectClient(id, tid, rejectedBy, body?.reason), user);
   }
 
   @Patch(':id')
@@ -161,7 +161,7 @@ export class ClientsController {
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.clientsService.updateClient(id, dto, tid, user?.dbId || 'System', user);
+    return this.clientsService.protectResponse(await this.clientsService.updateClient(id, dto, tid, user?.dbId || 'System', user), user);
   }
 
 
