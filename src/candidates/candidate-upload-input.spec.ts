@@ -20,4 +20,22 @@ describe('candidate upload recruiter overrides', () => {
     await expect(service.saveUploadedCv(file, 'tenant', { phone: '+9196920040666' })).rejects.toThrow('Invalid mobile');
     expect(candidate.update).not.toHaveBeenCalled();
   });
+  it('persists names from the parser when upload clients omit separate names', async () => {
+    const { service, candidate } = setup();
+    await service.saveUploadedCv(file, 'tenant', { email: 'a@example.com', location: 'Kolkata, West Bengal' });
+    expect(candidate.update.mock.calls[0][0].data).toMatchObject({ firstName: 'Parser', lastName: 'Name' });
+  });
+  it('repairs missing names on unchanged duplicate uploads without creating a resume', async () => {
+    const { service, candidate } = setup();
+    candidate.findFirst.mockResolvedValue({ id: 'candidate', firstName: null, lastName: null, fullName: 'Sruti Swagatika Sarangi' });
+    await service.saveUploadedCv(file, 'tenant');
+    expect(candidate.update.mock.calls[0][0].data).toEqual({ firstName: 'Sruti', lastName: 'Swagatika Sarangi' });
+    expect(candidate.findFirst.mock.calls[0][0].where.tenantId).toBe('tenant');
+  });
+  it('does not overwrite saved name parts during parser-based updates', async () => {
+    const { service, candidate } = setup();
+    candidate.findFirst.mockResolvedValue({ id: 'candidate', firstName: 'Sruti Swagatika', lastName: 'Sarangi', fullName: 'Sruti Swagatika Sarangi' });
+    await service.saveUploadedCv(file, 'tenant', { email: 'a@example.com', location: 'Kolkata, West Bengal' });
+    expect(candidate.update.mock.calls[0][0].data).toMatchObject({ firstName: 'Sruti Swagatika', lastName: 'Sarangi' });
+  });
 });

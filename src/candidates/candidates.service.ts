@@ -1,4 +1,5 @@
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
+import { resolveCandidateName } from './candidate-name';
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import * as crypto from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -451,6 +452,16 @@ export class CandidatesService {
           parsed = existing.parsedJson;
         }
       } else if (!Object.entries(meta).some(([key, value]) => ['firstName', 'lastName', 'location', 'currentCtc', 'expectedCtc', 'noticePeriodDays', 'relevantExperienceYears', 'preferredLocations', 'currentCompany'].includes(key) && value != null && value !== '')) {
+        const stored = await this.prisma.candidate.findFirst({
+          where: { id: String(existing.dbId || existing.id), tenantId, deletedAt: null },
+          select: { id: true, firstName: true, lastName: true, fullName: true },
+        });
+        if (stored) {
+          const names = resolveCandidateName(stored, existing.parsedJson, stored.fullName);
+          if ((!stored.firstName && names.firstName) || (!stored.lastName && names.lastName)) {
+            await this.prisma.candidate.update({ where: { id: stored.id }, data: names });
+          }
+        }
         this.logger.log(`CV already imported (hash ${fileHash.slice(0, 12)}…) → returning existing candidate.`);
         return { candidate: existing, duplicate: true, parsed: false };
       } else {
@@ -470,6 +481,7 @@ export class CandidatesService {
     const contact = parsed?.contact || {};
     const fallbackName = file.originalname.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
     const fullName = meta.fullName || parsed?.candidate_name || fallbackName || 'Unnamed Candidate';
+    const resolvedNames = resolveCandidateName(meta, parsed, meta.fullName || parsed?.candidate_name);
     const email = meta.email || (contact.emails && contact.emails[0]) || `no-email-${fileHash.slice(0, 8)}@import.local`;
     const phone = meta.phone || (contact.phones && contact.phones[0]) || '';
     const skills: string[] = parsed?.skills || [];
@@ -524,8 +536,7 @@ export class CandidatesService {
           where: { id: existingCand.id },
           data: {
             fullName,
-            firstName: meta.firstName?.trim() || undefined,
-            lastName: meta.lastName?.trim() || undefined,
+            ...resolveCandidateName({ firstName: meta.firstName || existingCand.firstName, lastName: meta.lastName || existingCand.lastName }, parsed, meta.fullName || parsed?.candidate_name || existingCand.fullName),
             phone,
             rawCurrentLocation: location,
             totalExperienceYears: expYears ? Number(expYears) : 0,
@@ -576,8 +587,7 @@ export class CandidatesService {
           const cand = await tx.candidate.create({
             data: {
               fullName,
-              firstName: meta.firstName?.trim() || undefined,
-              lastName: meta.lastName?.trim() || undefined,
+              ...resolvedNames,
               email,
               phone,
               rawCurrentLocation: location,
