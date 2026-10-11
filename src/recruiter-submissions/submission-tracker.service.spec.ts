@@ -12,6 +12,11 @@ function setup() {
   return { prisma, notifications, service };
 }
 describe('submission tracker API', () => {
+  it('projects submitted candidate details without losing zero compensation or missing experience', () => {
+    const { service } = setup();
+    const result = (service as any).mapRowToDetails({ candidate_first_name: 'Alex', candidate_last_name: 'Morgan', candidate_current_company: 'Example', candidate_current_ctc: 0, candidate_expected_ctc: 12, candidate_ctc_currency: 'INR', candidate_ctc_term: 'LPA', candidate_relevant_experience: null, recruiter_avatar: '/avatar.png', recruiter_email: 'riya@example.com', job_type: 'Full-time' });
+    expect(result).toMatchObject({ candidateFirstName: 'Alex', candidateLastName: 'Morgan', candidateCurrentCompany: 'Example', candidateCurrentCtc: '0', candidateExpectedCtc: '12', candidateCtcCurrency: 'INR', candidateCtcTerm: 'LPA', candidateRelevantExperience: null, recruiterAvatar: '/avatar.png', recruiterEmail: 'riya@example.com', jobType: 'Full-time' });
+  });
   it('checks workspace visibility and review capability before loading assessment sources', async () => {
     const { service, prisma } = setup();
     prisma.job = { findFirst: jest.fn() }; prisma.candidate = { findFirst: jest.fn() };

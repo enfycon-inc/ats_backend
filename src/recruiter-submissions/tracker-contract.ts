@@ -11,6 +11,17 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  candidateFirstName?: string | null;
+  candidateLastName?: string | null;
+  candidateCurrentCompany?: string | null;
+  candidateRelevantExperience?: number | null;
+  candidatePreferredLocations?: string[] | null;
+  candidateCurrentCtc?: string | null;
+  candidateExpectedCtc?: string | null;
+  candidateCtcCurrency?: string | null;
+  candidateCtcTerm?: string | null;
+  jobType?: string | null;
+  recruiterAvatar?: string | null;
   rejectionFromStatus?: string | null;
   jobUrgency?: string | null;
   jobIsCoSourced?: boolean;
