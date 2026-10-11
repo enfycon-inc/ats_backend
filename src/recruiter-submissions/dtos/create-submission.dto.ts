@@ -1,6 +1,15 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateSubmissionDto {
+  @ApiPropertyOptional() currentCompensation?: string;
+  @ApiPropertyOptional() expectedCompensation?: string;
+  @ApiPropertyOptional() compensationCurrency?: string;
+  @ApiPropertyOptional() compensationInputUnit?: string;
+  @ApiPropertyOptional() sourceCategory?: string;
+  @ApiPropertyOptional() sourceChannel?: string;
+  @ApiPropertyOptional() sourceDetail?: string;
+  @ApiPropertyOptional() availabilityToStart?: string;
+
   @ApiProperty({
     example: '550e8400-e29b-41d4-a716-446655440000',
     description: 'The UUID of the Job Requisition',

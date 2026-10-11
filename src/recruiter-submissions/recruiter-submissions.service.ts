@@ -1,3 +1,4 @@
+import { submissionCompensation, submissionSource, isContractJob } from './submission-compensation';
 import { randomUUID } from 'node:crypto';
 import { assessCandidate } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
@@ -105,7 +106,7 @@ export class RecruiterSubmissionsService {
     // 1. Verify job exists and belongs to the tenant, and check if it is active
     const job = await this.prisma.job.findFirst({
       where: { id: dto.jobId, tenantId },
-      select: { id: true, jobCode: true, status: true, jobTitle: true },
+      select: { id: true, jobCode: true, status: true, jobTitle: true, jobType: true },
     });
 
     if (!job) {
@@ -118,6 +119,11 @@ export class RecruiterSubmissionsService {
       );
     }
 
+    const compensation = submissionCompensation(dto, job.jobType);
+    const source = submissionSource(dto);
+    if (dto.compensationInputUnit !== undefined && !dto.sourceCategory) throw new BadRequestException('Select the candidate source.');
+    if (dto.availabilityToStart !== undefined && (typeof dto.availabilityToStart !== 'string' || dto.availabilityToStart.length > 100)) throw new BadRequestException('Enter valid availability to start.');
+    if (dto.compensationInputUnit !== undefined && isContractJob(job.jobType) && !dto.availabilityToStart?.trim()) throw new BadRequestException('Enter availability to start.');
     // 2. Verify candidate exists and belongs to the tenant
     const candidate = await this.prisma.candidate.findFirst({
       where: { id: dto.candidateId, tenantId },
@@ -177,9 +183,12 @@ export class RecruiterSubmissionsService {
           finalStatus,
           remarks: dto.remarks || null,
           recruiterComment: dto.recruiterComment || null,
+          ...compensation,
+          ...source,
+          availabilityToStart: dto.availabilityToStart?.trim() || null,
           submittedRateAmount: typeof dto.submittedRate === 'string' ? parseFloat(dto.submittedRate) : dto.submittedRate || null,
-          candidateCurrentCtc: dto.candidateCurrentCtc ?? candidate.currentCtc,
-          candidateExpectedCtc: dto.candidateExpectedCtc ?? candidate.expectedCtc,
+          candidateCurrentCtc: dto.compensationInputUnit !== undefined ? null : dto.candidateCurrentCtc ?? candidate.currentCtc,
+          candidateExpectedCtc: dto.compensationInputUnit !== undefined ? null : dto.candidateExpectedCtc ?? candidate.expectedCtc,
           candidateNoticePeriod: dto.candidateNoticePeriod ?? candidate.noticePeriodDays,
           candidateRelevantExperience: dto.candidateRelevantExperience ?? candidate.relevantExperienceYears,
           candidatePreferredLocations: candidate.preferredLocations || [],
@@ -320,6 +329,9 @@ export class RecruiterSubmissionsService {
         s.submitted_rate_amount,
         s.submitted_rate_currency,
         s.submitted_rate_term, s.candidate_ctc_currency, s.candidate_ctc_term,
+        s.current_compensation_amount, s.expected_compensation_amount,
+        s.compensation_currency, s.compensation_period, s.compensation_input_unit,
+        s.source_category, s.source_channel, s.source_detail, s.availability_to_start,
         s.candidate_current_ctc,
         s.candidate_expected_ctc,
         s.candidate_notice_period,
@@ -617,6 +629,9 @@ export class RecruiterSubmissionsService {
         s.submitted_rate_amount,
         s.submitted_rate_currency,
         s.submitted_rate_term, s.candidate_ctc_currency, s.candidate_ctc_term,
+        s.current_compensation_amount, s.expected_compensation_amount,
+        s.compensation_currency, s.compensation_period, s.compensation_input_unit,
+        s.source_category, s.source_channel, s.source_detail, s.availability_to_start,
         s.candidate_current_ctc,
         s.candidate_expected_ctc,
         s.candidate_notice_period,
@@ -1075,6 +1090,15 @@ export class RecruiterSubmissionsService {
       finalStatus: row.final_status || row.finalStatus,
       remarks: row.remarks,
       recruiterComment: row.recruiter_comment || row.recruiterComment,
+      currentCompensationAmount: row.current_compensation_amount != null ? String(row.current_compensation_amount) : row.currentCompensationAmount != null ? String(row.currentCompensationAmount) : null,
+      expectedCompensationAmount: row.expected_compensation_amount != null ? String(row.expected_compensation_amount) : row.expectedCompensationAmount != null ? String(row.expectedCompensationAmount) : null,
+      compensationCurrency: row.compensation_currency ?? row.compensationCurrency ?? null,
+      compensationPeriod: row.compensation_period ?? row.compensationPeriod ?? null,
+      compensationInputUnit: row.compensation_input_unit ?? row.compensationInputUnit ?? null,
+      sourceCategory: row.source_category ?? row.sourceCategory ?? null,
+      sourceChannel: row.source_channel ?? row.sourceChannel ?? null,
+      sourceDetail: row.source_detail ?? row.sourceDetail ?? null,
+      availabilityToStart: row.availability_to_start ?? row.availabilityToStart ?? null,
       submittedRate: row.submitted_rate_amount != null ? String(row.submitted_rate_amount) : row.submitted_rate || row.submittedRate || null,
       submittedRateCurrency: row.submitted_rate_currency || null,
       submittedRateTerm: row.submitted_rate_term || null,

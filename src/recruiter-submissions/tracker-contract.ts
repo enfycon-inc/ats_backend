@@ -11,6 +11,17 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  currentCompensationAmount?: string | null;
+  expectedCompensationAmount?: string | null;
+  compensationCurrency?: string | null;
+  compensationPeriod?: string | null;
+  compensationInputUnit?: string | null;
+  candidateSource?: string | null;
+  sourceCategory?: string | null;
+  sourceChannel?: string | null;
+  sourceDetail?: string | null;
+  availabilityToStart?: string | null;
+
   candidateFirstName?: string | null;
   candidateLastName?: string | null;
   candidateCurrentCompany?: string | null;

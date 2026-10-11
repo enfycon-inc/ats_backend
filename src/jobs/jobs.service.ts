@@ -1,3 +1,4 @@
+import { validateJobDates } from './job-dates';
 import { loadPocPolicy } from '../clients/poc-access';
 import { normalizeJobStatus } from './job-status-contract';
 import { assessCandidate } from './candidate-assessment';
@@ -453,6 +454,7 @@ export class JobsService {
   }
 
   async saveDraft(dto: CreateJobDto, tenantId: string, actor: AuthUser, branchId?: string | null, id?: string) {
+    validateJobDates(dto.startDate, dto.endDate);
     const draftId = id || dto.draftId;
     if (!draftId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(draftId)) {
       throw new BadRequestException('A valid draft request identifier is required.');
@@ -488,6 +490,7 @@ export class JobsService {
   }
 
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser, draft = false): Promise<JobProfile> {
+    validateJobDates(dto.startDate, dto.endDate);
     positiveInteger(dto.submissionRequired, 'Maximum allowed submissions');
     positiveInteger(dto.noOfPositions, 'Number of positions');
     if ((dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId) && actor && !draft) await this.resolveSelectedClients(dto, tenantId, actor);
@@ -1648,6 +1651,10 @@ export class JobsService {
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
     }
+    if (dto.startDate !== undefined || dto.endDate !== undefined) validateJobDates(
+      dto.startDate !== undefined ? dto.startDate : currentJob.startDate,
+      dto.endDate !== undefined ? dto.endDate : currentJob.endDate,
+    );
     if (mode) this.assertDraftAccess(currentJob, tenantId, user);
     if (!mode && (dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId)) await this.resolveSelectedClients(dto, tenantId, user);
 

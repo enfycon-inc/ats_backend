@@ -406,7 +406,7 @@ export class CandidatesService {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
+    meta: { totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
     user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
@@ -415,6 +415,7 @@ export class CandidatesService {
       if (!phone?.isValid() || (phone.country === 'IN' && phone.nationalNumber.length !== 10)) throw new BadRequestException('Invalid mobile number for selected country.');
     }
     if (meta.noticePeriodDays != null && meta.noticePeriodDays !== '' && (!/^\d+$/.test(meta.noticePeriodDays) || Number(meta.noticePeriodDays) < 0)) throw new BadRequestException('Notice period must be a nonnegative whole number.');
+    if (meta.totalExperienceYears !== undefined && (!/^\d+(?:\.\d{1,2})?$/.test(meta.totalExperienceYears) || Number(meta.totalExperienceYears) > 99.99)) throw new BadRequestException('Enter valid total experience years.');
     for (const amount of [meta.currentCtc, meta.expectedCtc]) {
       if (amount != null && amount !== '' && !/^\d+(?:\.\d{1,2})?$/.test(amount)) throw new BadRequestException('Invalid compensation amount.');
     }
@@ -451,7 +452,7 @@ export class CandidatesService {
         if (existing.parsedJson) {
           parsed = existing.parsedJson;
         }
-      } else if (!Object.entries(meta).some(([key, value]) => ['firstName', 'lastName', 'location', 'currentCtc', 'expectedCtc', 'noticePeriodDays', 'relevantExperienceYears', 'preferredLocations', 'currentCompany'].includes(key) && value != null && value !== '')) {
+      } else if (!Object.entries(meta).some(([key, value]) => ['firstName', 'lastName', 'location', 'currentCtc', 'expectedCtc', 'noticePeriodDays', 'relevantExperienceYears', 'totalExperienceYears', 'preferredLocations', 'currentCompany'].includes(key) && value != null && value !== '')) {
         const stored = await this.prisma.candidate.findFirst({
           where: { id: String(existing.dbId || existing.id), tenantId, deletedAt: null },
           select: { id: true, firstName: true, lastName: true, fullName: true },
@@ -539,7 +540,7 @@ export class CandidatesService {
             ...resolveCandidateName({ firstName: meta.firstName || existingCand.firstName, lastName: meta.lastName || existingCand.lastName }, parsed, meta.fullName || parsed?.candidate_name || existingCand.fullName),
             phone,
             rawCurrentLocation: location,
-            totalExperienceYears: expYears ? Number(expYears) : 0,
+            totalExperienceYears: meta.totalExperienceYears !== undefined ? Number(meta.totalExperienceYears) : expYears ? Number(expYears) : 0,
               currentCompany: currentCompany || undefined,
               relevantExperienceYears: meta.relevantExperienceYears ? Number(meta.relevantExperienceYears) : undefined,
               currentCtc: meta.currentCtc ? Number(meta.currentCtc) : undefined,
@@ -591,7 +592,7 @@ export class CandidatesService {
               email,
               phone,
               rawCurrentLocation: location,
-              totalExperienceYears: expYears ? Number(expYears) : 0,
+              totalExperienceYears: meta.totalExperienceYears !== undefined ? Number(meta.totalExperienceYears) : expYears ? Number(expYears) : 0,
               currentCompany: currentCompany || undefined,
               relevantExperienceYears: meta.relevantExperienceYears ? Number(meta.relevantExperienceYears) : undefined,
               currentCtc: meta.currentCtc ? Number(meta.currentCtc) : undefined,
