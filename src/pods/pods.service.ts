@@ -454,6 +454,9 @@ export class PodsService {
       throw new NotFoundException('Operating unit not found.');
     }
     effectiveBranchId = bu.branchId || effectiveBranchId;
+    if (!effectiveBranchId) {
+      throw new BadRequestException('Recruitment pods must be assigned to a branch office.');
+    }
 
     return await this.prisma.$transaction(async (tx) => {
       // 1. Name uniqueness within operating unit
@@ -654,7 +657,14 @@ export class PodsService {
     };
 
     if (businessUnitId && businessUnitId !== 'all') {
-      where.businessUnitId = businessUnitId;
+      if (branchId && branchId !== 'all') {
+        where.AND = [
+          { OR: [{ businessUnitId }, { businessUnitId: null }] },
+          { branchId },
+        ];
+      } else {
+        where.businessUnitId = businessUnitId;
+      }
     } else if (branchId && branchId !== 'all') {
       where.branchId = branchId;
     }
@@ -727,6 +737,9 @@ export class PodsService {
         throw new NotFoundException('Operating unit not found.');
       }
       branchId = bu.branchId || branchId;
+    }
+    if (!branchId) {
+      throw new BadRequestException('Recruitment pods must belong to a branch office.');
     }
 
     return await this.prisma.$transaction(async (tx) => {
