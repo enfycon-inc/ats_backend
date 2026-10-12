@@ -21,6 +21,35 @@ describe('job recruiter staffing permissions and scope', () => {
     await expect(listJobPods(prisma, { ...actor, permissions: ['job:assign_pod'] }, tenant, branch, unit)).resolves.toEqual([]);
     expect(prisma.pod.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { tenantId: tenant, businessUnitId: unit, branchId: branch } }));
   });
+  it('returns the pod member count and lead name for job assignment options', async () => {
+    prisma.pod = { findMany: jest.fn().mockResolvedValue([
+      {
+        id: 'pod-1', name: 'POD 1', businessUnitId: unit, branchId: branch, podHeadId: other,
+        podHead: { fullName: 'Pod Lead' }, _count: { users: 3 },
+      },
+      {
+        id: 'pod-2', name: 'POD 2', businessUnitId: unit, branchId: branch, podHeadId: null,
+        podHead: null, _count: { users: 0 },
+      },
+    ]) };
+
+    await expect(listJobPods(prisma, { ...actor, permissions: ['job:assign_pod'] }, tenant, branch, unit)).resolves.toEqual([
+      {
+        id: 'pod-1', name: 'POD 1', businessUnitId: unit, branchId: branch, podHeadId: other,
+        podHeadName: 'Pod Lead', memberCount: 3,
+      },
+      {
+        id: 'pod-2', name: 'POD 2', businessUnitId: unit, branchId: branch, podHeadId: null,
+        podHeadName: null, memberCount: 0,
+      },
+    ]);
+    expect(prisma.pod.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({
+        podHead: { select: { fullName: true } },
+        _count: { select: { users: true } },
+      }),
+    }));
+  });
   it('does not combine recruiter and pod assignment permissions', async () => {
     await expect(listJobPods(prisma, actor, tenant, branch, unit)).rejects.toThrow('Pod assignment permission');
   });

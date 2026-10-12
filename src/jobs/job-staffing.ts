@@ -11,6 +11,16 @@ export interface JobStaffOption {
   canReview: boolean;
 }
 
+export interface JobPodOption {
+  id: string;
+  name: string;
+  businessUnitId: string;
+  branchId: string | null;
+  podHeadId: string | null;
+  podHeadName: string | null;
+  memberCount: number;
+}
+
 const normalizedRoles = (actor: AuthUser) => [
   ...(actor.roles || []),
   actor.systemRole || '',
@@ -104,8 +114,28 @@ export async function listJobPods(prisma: PrismaService, actor: AuthUser, tenant
   requestedBranch?: string, requestedUnit?: string) {
   const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_pod');
   if (!unitId) throw new BadRequestException('Select an operating unit.');
-  return prisma.pod.findMany({ where: { tenantId, businessUnitId: unitId, ...(branchId ? { branchId } : {}) },
-    select: { id: true, name: true, businessUnitId: true, branchId: true, podHeadId: true }, orderBy: { name: 'asc' } });
+  const pods = await prisma.pod.findMany({
+    where: { tenantId, businessUnitId: unitId, ...(branchId ? { branchId } : {}) },
+    select: {
+      id: true,
+      name: true,
+      businessUnitId: true,
+      branchId: true,
+      podHeadId: true,
+      podHead: { select: { fullName: true } },
+      _count: { select: { users: true } },
+    },
+    orderBy: { name: 'asc' },
+  });
+  return pods.map(pod => ({
+    id: pod.id,
+    name: pod.name,
+    businessUnitId: pod.businessUnitId,
+    branchId: pod.branchId,
+    podHeadId: pod.podHeadId,
+    podHeadName: pod.podHead?.fullName || null,
+    memberCount: pod._count.users,
+  }));
 }
 
 export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenantId: string,
