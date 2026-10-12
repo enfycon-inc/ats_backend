@@ -96,14 +96,22 @@ export class AuthInviteService {
     const systemRoleId = sysRoleRes.rows.length > 0 ? (sysRoleRes.rows[0] as any).id : null;
 
     let roleId = dto.roleId || null;
+    let roleName: string | undefined;
     if (!roleId) {
       const defaultRoleRes = await this.authQuery.query(
-        `SELECT cr.id FROM custom_roles cr
+        `SELECT cr.id, cr.name FROM custom_roles cr
          LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
          WHERE cr.tenant_id = $1 AND (sr.system_key = $2 OR cr.name = $2) LIMIT 1`,
         [tenantId, systemRole]
       );
-      if (defaultRoleRes.rows.length > 0) roleId = (defaultRoleRes.rows[0] as any).id;
+      if (defaultRoleRes.rows.length > 0) {
+        roleId = (defaultRoleRes.rows[0] as any).id;
+        roleName = (defaultRoleRes.rows[0] as any).name;
+      }
+    } else {
+      const selectedRole = await this.authQuery.query('SELECT id, name FROM custom_roles WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1', [roleId, tenantId]);
+      if (!selectedRole.rows.length) throw new BadRequestException('Select a valid role in this workspace.');
+      roleName = (selectedRole.rows[0] as any).name;
     }
 
     const firstName = fullName.split(/\s+/)[0] || '';
@@ -138,7 +146,7 @@ export class AuthInviteService {
     if (dto.sendEmailInvite !== false) {
       try {
         await this.emailService.sendWelcomeEmail({ tenantId, to: cleanEmail, fullName, tenantName,
-          subdomain: tenantDomain, invitationToken, roleName: systemRole });
+          subdomain: tenantDomain, invitationToken, roleName });
         emailNotification = { status: 'accepted' };
       } catch {
         this.logger.warn('Invitation saved, but invitation email was not accepted.');

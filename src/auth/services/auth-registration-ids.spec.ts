@@ -26,6 +26,33 @@ describe('account creation IDs', () => {
     expect(insert[1].slice(6)).toEqual([id, [id], branch, id]);
     expect(insert[0]).toContain('$10::uuid');
   });
+  it.each([id, 'BDM'])('uses the database display name for selected role %s', async role => {
+    const { service, dto, requester } = setup();
+    const result = await service.register({ ...dto, roles: [role] }, requester);
+    expect(result.user.roles).toEqual(['BDM']);
+  });
+  it('keeps the selected primary role when query results arrive in reverse order', async () => {
+    const { service, dto, requester, query } = setup();
+    const original = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params) => sql.includes('FROM custom_roles')
+      ? { rows: [{ id: branch, name: 'Recruiter' }, { id, name: 'Business Development Manager' }] }
+      : original(sql, params));
+    const result = await service.register({ ...dto, roles: [id, branch] }, requester);
+    expect(result.user.roles).toEqual(['Business Development Manager']);
+    const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO users'))!;
+    expect(insert[1][6]).toBe(id);
+    expect(insert[1][7]).toEqual([id, branch]);
+  });
+  it('rejects an unresolved role before creating or provisioning the account', async () => {
+    const { service, dto, requester, query, provisionUserInKeycloak } = setup();
+    await expect(service.register({ ...dto, roles: [branch] }, requester)).rejects.toMatchObject({ status: 400 });
+    expect(query.mock.calls.some(([sql]) => sql.includes('INSERT INTO users'))).toBe(false);
+    expect(provisionUserInKeycloak).not.toHaveBeenCalled();
+  });
+  it('does not fabricate a role when none was selected', async () => {
+    const { service, dto, requester } = setup();
+    expect((await service.register({ ...dto, roles: [] }, requester)).user.roles).toEqual([]);
+  });
   it('rejects a unit outside the selected tenant/branch before provisioning', async () => {
     const { service, query, dto, requester, provisionUserInKeycloak } = setup(false);
     await expect(service.register(dto, requester)).rejects.toMatchObject({ status: 400 });

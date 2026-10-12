@@ -517,16 +517,22 @@ export class AuthCoreService {
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const resolvedRoleIds = new Set<string>();
-    let primaryRoleName = rawRolesList[0];
 
     const rolesRes = await this.authQuery.query(
       `SELECT cr.id, cr.name, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.tenant_id = $1 AND (cr.id::text = ANY($2) OR UPPER(cr.name) = ANY($3) OR sr.system_key = ANY($3))`,
       [tenantId, rawRolesList, rawRolesList.map(r => r.toUpperCase())]
     );
-    (rolesRes.rows as any[]).forEach((r) => {
-      resolvedRoleIds.add(r.id);
-      if (!primaryRoleName) primaryRoleName = r.name;
+    // Preserve the selected order; SQL result order is not the primary-role order.
+    const selectedRoles = rawRolesList.flatMap(value => {
+      const matches = (rolesRes.rows as any[]).filter(r =>
+        r.id.toLowerCase() === value.toLowerCase() ||
+        r.name.toUpperCase() === value.toUpperCase() ||
+        r.system_role?.toUpperCase() === value.toUpperCase());
+      if (!matches.length) throw new BadRequestException('Select a valid role in this workspace.');
+      return matches.sort((a, b) => a.id.localeCompare(b.id));
     });
+    selectedRoles.forEach(r => resolvedRoleIds.add(r.id));
+    const primaryRoleName: string | undefined = selectedRoles[0]?.name;
 
     const assignedRoleIds: string[] = Array.from(resolvedRoleIds);
     const roleId: string | null = assignedRoleIds[0] || null;
@@ -562,7 +568,7 @@ export class AuthCoreService {
     return {
       emailNotification,
       message: isApproved ? 'User registered and approved successfully.' : 'User registered successfully. Pending administrator approval.',
-      user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, roles: [primaryRoleName], tenantId: user.tenant_id, createdAt: user.created_at },
+      user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, roles: primaryRoleName ? [primaryRoleName] : [], tenantId: user.tenant_id, createdAt: user.created_at },
     };
   }
 
