@@ -6,6 +6,7 @@ import type { PrismaService } from '../prisma/prisma.service';
 export interface JobStaffOption {
   id: string;
   fullName: string;
+  email?: string;
   canRecruit: boolean;
   canReview: boolean;
 }
@@ -49,7 +50,7 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
   requestedBranch?: string, requestedUnit?: string): Promise<JobStaffOption[]> {
   const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit);
   return prisma.$queryRawUnsafe<JobStaffOption[]>(`
-    SELECT staff.id, staff.full_name AS "fullName", eligibility."canRecruit", eligibility."canReview"
+    SELECT staff.id, staff.full_name AS "fullName", staff.email AS "email", eligibility."canRecruit", eligibility."canReview"
     FROM ats.users staff
     CROSS JOIN LATERAL (
       SELECT COALESCE(BOOL_OR(role.permissions::jsonb ? 'submission:create'), false) AS "canRecruit",
