@@ -1,5 +1,7 @@
 -- Allow Account Managers to assign a pod to jobs, and backfill existing roles
 -- based on the Account Manager role archetype.
+-- ATS: rollback-compatible
+-- ATS: permission-grant ACCOUNT_MANAGER job:assign_pod
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 
