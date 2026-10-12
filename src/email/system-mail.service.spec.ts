@@ -1,0 +1,315 @@
+import axios from 'axios';
+import * as nodemailer from 'nodemailer';
+import { resolveTxt } from 'node:dns/promises';
+import { SystemMailService } from './system-mail.service';
+
+jest.mock('node:dns/promises', () => ({ resolveTxt: jest.fn() }));
+jest.mock('nodemailer', () => ({ createTransport: jest.fn() }));
+
+describe('tenant system email routing', () => {
+  const env = { ...process.env };
+  const request = {
+    tenantId: 'tenant-a',
+    to: 'member@example.com',
+    subject: 'Account created',
+    html: '<p>Welcome</p>',
+  };
+  let prisma: any;
+  let mail: SystemMailService;
+  let brevo: any;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.BREVO_APIKEY = 'test-only-secret';
+    process.env.SYSTEM_EMAIL_FROM = 'no-reply@enfyjobs.com';
+    process.env.SYSTEM_EMAIL_FROM_NAME = 'EnfySync';
+    prisma = {
+      tenant: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({
+            id: 'tenant-a',
+            name: 'Company A',
+            emailDispatchMode: 'DEFAULT_SUBDOMAIN',
+            customEmailDomain: null,
+            customEmailDomainVerified: false,
+          }),
+        findFirst: jest.fn().mockResolvedValue(null),
+        update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      emailAccount: {
+        findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn(),
+      },
+    };
+    mail = new SystemMailService(prisma);
+    brevo = (mail as any).brevo;
+    jest
+      .spyOn(brevo, 'post')
+      .mockResolvedValue({ data: { messageId: 'accepted-id' } });
+    jest
+      .spyOn(brevo, 'get')
+      .mockResolvedValue({
+        data: { verified: true, authenticated: true, dns_records: {} },
+      });
+    jest.spyOn(brevo, 'put').mockResolvedValue({ data: {} });
+  });
+  afterEach(() => {
+    process.env = { ...env };
+    jest.restoreAllMocks();
+  });
+
+  it('sends unconfigured tenant messages through the shared Brevo sender without loading accounts', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({
+      id: 'tenant-a',
+      name: 'Company A',
+      emailDispatchMode: null,
+    });
+    await expect(mail.send(request)).resolves.toMatchObject({
+      provider: 'brevo',
+      from: 'no-reply@enfyjobs.com',
+      status: 'accepted',
+      messageId: 'accepted-id',
+    });
+    expect(brevo.post).toHaveBeenCalledWith(
+      '/smtp/email',
+      {
+        sender: { email: 'no-reply@enfyjobs.com', name: 'EnfySync' },
+        to: [{ email: request.to }],
+        subject: request.subject,
+        htmlContent: request.html,
+      },
+      {
+        headers: { 'api-key': 'test-only-secret', accept: 'application/json' },
+      },
+    );
+    expect(prisma.emailAccount.findFirst).not.toHaveBeenCalled();
+  });
+  it('uses the same default for another tenant', async () => {
+    await mail.send({ ...request, tenantId: 'tenant-b' });
+    expect(prisma.tenant.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'tenant-b' } }),
+    );
+    expect(brevo.post.mock.calls[0][1].sender.email).toBe(
+      'no-reply@enfyjobs.com',
+    );
+  });
+  it('rejects missing or nonexistent tenant identity without sending', async () => {
+    await expect(mail.send({ ...request, tenantId: '' })).rejects.toMatchObject(
+      { status: 400 },
+    );
+    prisma.tenant.findUnique.mockResolvedValue(null);
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 404 });
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it('rejects invalid recipients before calling the provider', async () => {
+    await expect(
+      mail.send({ ...request, to: 'invalid\r\nBcc:other@example.com' }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it.each(['BREVO_APIKEY', 'SYSTEM_EMAIL_FROM'])(
+    'does not simulate delivery when %s is missing',
+    async (setting) => {
+      delete process.env[setting];
+      await expect(mail.send(request)).rejects.toThrow();
+      expect(brevo.post).not.toHaveBeenCalled();
+    },
+  );
+  it.each([429, 401, 500])(
+    'sanitizes provider rejection %s without fallback or duplicate send',
+    async (status) => {
+      brevo.post.mockRejectedValue({
+        isAxiosError: true,
+        response: { status },
+        config: { headers: { 'api-key': 'secret' } },
+        message: 'sensitive provider error',
+      });
+      await expect(mail.send(request)).rejects.toMatchObject({ status: 503 });
+      expect(brevo.post).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('does not retry ambiguous timeouts', async () => {
+    brevo.post.mockRejectedValue({ isAxiosError: true, code: 'ECONNABORTED' });
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 503 });
+    expect(brevo.post).toHaveBeenCalledTimes(1);
+  });
+  it('requires provider acceptance rather than treating an empty response as sent', async () => {
+    brevo.post.mockResolvedValue({ data: {} });
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 503 });
+  });
+  function direct(provider = 'microsoft') {
+    prisma.tenant.findUnique.mockResolvedValue({
+      id: 'tenant-a',
+      name: 'Company A',
+      emailDispatchMode: 'DIRECT_ACCOUNT',
+    });
+    prisma.emailAccount.findFirst.mockResolvedValue({
+      id: 'account-a',
+      provider,
+      emailAddress: 'hr@company-a.com',
+      accessToken: 'token',
+      smtpHost: 'smtp.example.com',
+      smtpPort: 587,
+      password: 'test',
+    });
+  }
+  it('uses the selected default Microsoft account scoped to this tenant', async () => {
+    direct();
+    const graph = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} });
+    await expect(mail.send(request)).resolves.toMatchObject({
+      provider: 'microsoft',
+      from: 'hr@company-a.com',
+    });
+    expect(prisma.emailAccount.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: 'tenant-a', isActive: true, isDefault: true },
+      }),
+    );
+    expect(graph).toHaveBeenCalledWith(
+      'https://graph.microsoft.com/v1.0/me/sendMail',
+      expect.any(Object),
+      expect.objectContaining({ timeout: 15000 }),
+    );
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it('refreshes an expired Microsoft token and retains the selected mailbox', async () => {
+    direct();
+    prisma.emailAccount.findFirst.mockResolvedValue({
+      id: 'account-a',
+      provider: 'microsoft',
+      emailAddress: 'hr@company-a.com',
+      accessToken: 'old',
+      refreshToken: 'refresh',
+    });
+    process.env.MICROSOFT_CLIENT_ID = 'client';
+    process.env.MICROSOFT_CLIENT_SECRET = 'test-secret';
+    const graph = jest
+      .spyOn(axios, 'post')
+      .mockRejectedValueOnce({ isAxiosError: true, response: { status: 401 } })
+      .mockResolvedValueOnce({
+        data: { access_token: 'new', refresh_token: 'new-refresh' },
+      })
+      .mockResolvedValueOnce({ data: {} });
+    await expect(mail.send(request)).resolves.toMatchObject({
+      provider: 'microsoft',
+    });
+    expect(graph).toHaveBeenCalledTimes(3);
+    expect(prisma.emailAccount.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'account-a', tenantId: 'tenant-a' },
+      }),
+    );
+  });
+  it('never falls back when the selected mailbox fails', async () => {
+    direct();
+    jest.spyOn(axios, 'post').mockRejectedValue(new Error('mailbox failed'));
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 503 });
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it('requires an explicit default mailbox instead of choosing the latest account', async () => {
+    direct();
+    prisma.emailAccount.findFirst.mockResolvedValue(null);
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 400 });
+    await expect(
+      mail.setMode('tenant-a', 'DIRECT_ACCOUNT'),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(prisma.tenant.update).not.toHaveBeenCalled();
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it('sends SMTP mail with TLS and validates acceptance', async () => {
+    direct('smtp');
+    const sendMail = jest
+      .fn()
+      .mockResolvedValue({
+        accepted: [request.to],
+        rejected: [],
+        messageId: 'smtp-id',
+      });
+    (nodemailer.createTransport as jest.Mock).mockReturnValue({ sendMail });
+    await expect(mail.send(request)).resolves.toMatchObject({
+      provider: 'smtp',
+      from: 'hr@company-a.com',
+    });
+    expect(nodemailer.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ secure: false, requireTLS: true }),
+    );
+    sendMail.mockResolvedValue({ accepted: [], rejected: [request.to] });
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 503 });
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  function custom(verified = true) {
+    prisma.tenant.findUnique.mockResolvedValue({
+      id: 'tenant-a',
+      name: 'Company A',
+      emailDispatchMode: 'CUSTOM_DOMAIN',
+      customEmailDomain: 'company-a.com',
+      customEmailDomainVerified: verified,
+    });
+    const record = (mail as any).ownership('tenant-a', 'company-a.com');
+    (resolveTxt as jest.Mock).mockResolvedValue([[record.value]]);
+  }
+  it('uses an authenticated custom sender after verifying workspace ownership', async () => {
+    custom();
+    await expect(mail.send(request)).resolves.toMatchObject({
+      provider: 'custom_domain_brevo',
+      from: 'no-reply@company-a.com',
+    });
+  });
+  it('rejects a previously flagged domain whose workspace ownership proof is absent', async () => {
+    custom();
+    (resolveTxt as jest.Mock).mockResolvedValue([['wrong-tenant-proof']]);
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 400 });
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it('rejects unverified custom mode without fallback', async () => {
+    custom(false);
+    await expect(mail.send(request)).rejects.toMatchObject({ status: 400 });
+    await expect(
+      mail.setMode('tenant-a', 'CUSTOM_DOMAIN'),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(brevo.post).not.toHaveBeenCalled();
+  });
+  it('persists real provider verification and prevents in-flight domain replacement races', async () => {
+    custom();
+    await expect(mail.verifyDomain('tenant-a')).resolves.toMatchObject({
+      verified: true,
+    });
+    expect(prisma.tenant.updateMany).toHaveBeenCalledWith({
+      where: { id: 'tenant-a', customEmailDomain: 'company-a.com' },
+      data: { customEmailDomainVerified: true },
+    });
+    prisma.tenant.updateMany.mockResolvedValue({ count: 0 });
+    await expect(mail.verifyDomain('tenant-a')).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+  it('keeps an unauthenticated domain pending instead of falsely verifying it', async () => {
+    custom();
+    brevo.get.mockResolvedValue({
+      data: { verified: true, authenticated: false },
+    });
+    await expect(mail.verifyDomain('tenant-a')).resolves.toMatchObject({
+      verified: false,
+    });
+    expect(prisma.tenant.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { customEmailDomainVerified: false } }),
+    );
+  });
+  it('rejects invalid strategies rather than resetting the tenant to platform mode', async () => {
+    await expect(mail.setMode('tenant-a', 'typo')).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(prisma.tenant.update).not.toHaveBeenCalled();
+  });
+  it('returns safe settings with the shared sender and no implicit default account', async () => {
+    const settings = await mail.settings('tenant-a');
+    expect(settings).toMatchObject({
+      defaultSubdomainSender: 'no-reply@enfyjobs.com',
+      defaultAccount: null,
+      readiness: 'ready',
+    });
+    expect(JSON.stringify(settings)).not.toContain('test-only-secret');
+  });
+});

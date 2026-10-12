@@ -134,20 +134,19 @@ export class AuthInviteService {
     const tenantName = (tenantRes.rows[0] as any)?.name || 'Enfycon Workspace';
     const tenantDomain = (tenantRes.rows[0] as any)?.domain || '';
 
+    let emailNotification: { status: 'accepted' | 'failed' | 'disabled'; message?: string } = { status: 'disabled' };
     if (dto.sendEmailInvite !== false) {
-      this.emailService.sendWelcomeEmail({
-        to: cleanEmail,
-        fullName,
-        tenantName,
-        subdomain: tenantDomain,
-        invitationToken,
-        roleName: systemRole,
-      }).catch((err: any) => {
-        this.logger.warn(`Failed to dispatch welcome email to ${cleanEmail}: ${err.message}`);
-      });
+      try {
+        await this.emailService.sendWelcomeEmail({ tenantId, to: cleanEmail, fullName, tenantName,
+          subdomain: tenantDomain, invitationToken, roleName: systemRole });
+        emailNotification = { status: 'accepted' };
+      } catch {
+        this.logger.warn('Invitation saved, but invitation email was not accepted.');
+        emailNotification = { status: 'failed', message: 'Invitation saved, but email was not accepted. Check workspace email settings.' };
+      }
     }
 
-    return { success: true, message: 'User invited successfully.', user: newUser, invitationToken, expiresAt };
+    return { success: true, emailNotification, message: 'User invited successfully.', user: newUser, invitationToken, expiresAt };
   }
 
   async getInvitationDetails(token: string) {

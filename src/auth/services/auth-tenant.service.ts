@@ -10,6 +10,7 @@ import * as dns from 'dns/promises';
 import { AuthQueryService } from './auth-query.service';
 import { AuthRbacService } from './auth-rbac.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
+import { AuthEmailService } from './auth-email.service';
 import { storeTenantLogo } from '../utils/logo-storage';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
@@ -26,7 +27,20 @@ export class AuthTenantService {
     private readonly authQuery: AuthQueryService,
     private readonly rbacService: AuthRbacService,
     private readonly keycloakService: AuthKeycloakService,
+    private readonly emailService?: AuthEmailService,
   ) {}
+
+  private async notifyTenant(options: Parameters<AuthEmailService['sendTenantStatusEmail']>[0]) {
+    try {
+      if (!this.emailService) throw new Error('Onboarding email service unavailable');
+      await this.emailService.sendTenantStatusEmail(options);
+      return { status: 'accepted' as const };
+    } catch {
+      // Account changes remain committed; do not encourage duplicate account creation on mail failure.
+      this.logger.warn('Tenant onboarding email was not accepted.');
+      return { status: 'failed' as const, message: 'Workspace saved, but onboarding email was not accepted. Check email settings.' };
+    }
+  }
 
   async registerTenant(dto: {
     companyName: string;
@@ -108,8 +122,10 @@ export class AuthTenantService {
 
     await this.keycloakService.provisionUserInKeycloak({ email: user.email, password, fullName: user.full_name, tenantId: tenant.id });
 
+    const emailNotification = await this.notifyTenant({ tenantId: tenant.id, to: user.email, fullName: user.full_name, tenantName: tenant.name, subdomain: tenant.domain, pending: true });
     const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
     return {
+      emailNotification,
       message: 'Company registered successfully! Your account is pending platform administrator approval.',
       tenant: { id: tenant.id, name: tenant.name, subdomain: tenant.domain, workspaceUrl: `${tenant.domain}.${baseDomain}`, status: tenant.status },
       user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, roles: ['TENANT_ADMIN'], tenantId: user.tenant_id, createdAt: user.created_at },
@@ -147,7 +163,7 @@ export class AuthTenantService {
     if (userResult.rows.length === 0) throw new NotFoundException(`User with ID ${userId} was not found.`);
     const tenantId = (userResult.rows[0] as any).tenant_id;
 
-    await this.authQuery.query('UPDATE users SET is_approved = true, is_active = true WHERE id = $1', [userId]);
+    const approval = await this.authQuery.query('UPDATE users SET is_approved = true, is_active = true WHERE id = $1 AND is_approved IS DISTINCT FROM true RETURNING id', [userId]);
     await this.authQuery.query("UPDATE tenants SET status = 'ACTIVE' WHERE id = $1", [tenantId]);
 
     if (market && (market === 'US' || market === 'IN')) {
@@ -163,7 +179,14 @@ export class AuthTenantService {
       await this.updateTenantSubdomain(tenantId, subdomain.trim());
     }
 
-    return { message: 'User approved and tenant activated successfully.', tenantId };
+    let emailNotification: { status: 'accepted' | 'failed' | 'disabled'; message?: string } = { status: 'disabled' };
+    if (approval.rows.length > 0) {
+      const context = await this.authQuery.query(
+        'SELECT u.email, u.full_name, t.name, t.domain FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1 AND u.tenant_id = $2 LIMIT 1', [userId, tenantId]);
+      const recipient = context.rows[0] as any;
+      emailNotification = recipient ? await this.notifyTenant({ tenantId, to: recipient.email, fullName: recipient.full_name, tenantName: recipient.name, subdomain: recipient.domain, pending: false }) : { status: 'failed', message: 'Workspace activated, but the onboarding recipient was unavailable.' };
+    }
+    return { message: 'User approved and tenant activated successfully.', tenantId, emailNotification };
   }
 
   async createManualTenant(dto: {
@@ -238,7 +261,9 @@ export class AuthTenantService {
 
     await this.keycloakService.provisionUserInKeycloak({ email: user.email, password, fullName: user.full_name, tenantId: tenant.id });
 
+    const emailNotification = await this.notifyTenant({ tenantId: tenant.id, to: user.email, fullName: user.full_name, tenantName: tenant.name, subdomain: tenant.domain, pending: false });
     return {
+      emailNotification,
       message: `Tenant "${companyName}" created and activated successfully!`,
       tenant,
       adminUser: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, temporaryPassword: password },

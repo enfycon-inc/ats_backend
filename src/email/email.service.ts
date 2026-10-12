@@ -1,9 +1,12 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { randomBytes, createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import * as nodemailer from 'nodemailer';
 import axios from 'axios';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { SystemMailService } from './system-mail.service';
+import type { SystemEmailRequest, EmailDispatchResult, TenantEmailSettings } from './system-email.types';
 
 @Injectable()
 export class EmailService {
@@ -13,6 +16,7 @@ export class EmailService {
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue('mass_mail') private emailQueue: Queue,
+    private readonly systemMail: SystemMailService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.ethereal.email',
@@ -267,7 +271,45 @@ export class EmailService {
     await this.saveEmailAccount('google', email, access_token, tenantId, userId, refresh_token);
   }
 
-  async handleMicrosoftCallback(code: string, tenantId: string = process.env.DEFAULT_TENANT_ID as string, userId: string | null = null) {
+  async beginMicrosoftConnection(tenantId: string, userId: string, returnTo?: string) {
+    await this.systemMail.tenant(tenantId);
+    const clientId = process.env.MICROSOFT_CLIENT_ID;
+    const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+    const frontend = process.env.FRONTEND_URL;
+    if (!clientId || !process.env.MICROSOFT_CLIENT_SECRET || !redirectUri || !frontend) {
+      throw new ServiceUnavailableException('Microsoft mailbox connection is not configured. Contact your platform administrator.');
+    }
+    if (!userId) throw new BadRequestException('Authenticated user identity is required.');
+    const destination = new URL(returnTo || '/company?tab=email', frontend);
+    const frontendUrl = new URL(frontend);
+    const domain = process.env.BASE_DOMAIN;
+    const tenantDestination = destination.protocol === 'https:' && domain && destination.hostname.endsWith(`.${domain}`);
+    if (destination.username || destination.password || (destination.origin !== frontendUrl.origin && !tenantDestination)) {
+      throw new BadRequestException('Invalid mailbox connection return URL.');
+    }
+    const state = randomBytes(32).toString('hex');
+    const codeVerifier = randomBytes(32).toString('base64url');
+    const redis = await this.emailQueue.client;
+    const stored = await redis.set(`email:microsoft:state:${state}`, JSON.stringify({ tenantId, userId, returnTo: destination.toString(), codeVerifier }), { EX: 600 });
+    if (stored !== 'OK') throw new ServiceUnavailableException('Could not start a mailbox connection. Try again later.');
+    const url = new URL('https://login.microsoftonline.com/common/oauth2/v2.0/authorize');
+    url.search = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code',
+      scope: 'offline_access Mail.Send User.Read', state, code_challenge_method: 'S256', code_challenge: createHash('sha256').update(codeVerifier).digest('base64url') }).toString();
+    return { url: url.toString() };
+  }
+
+  async consumeMicrosoftConnection(state: string): Promise<{ tenantId: string; userId: string; returnTo: string; codeVerifier: string }> {
+    if (!/^[a-f0-9]{64}$/.test(state || '')) throw new BadRequestException('Invalid mailbox connection state.');
+    const redis = await this.emailQueue.client;
+    redis.defineCommand('consumeMailOAuthState', { numberOfKeys: 1,
+      lua: "local value = redis.call('GET', KEYS[1]); if value then redis.call('DEL', KEYS[1]); end; return value" });
+    const stored = await redis.runCommand('consumeMailOAuthState', [`email:microsoft:state:${state}`]);
+    if (typeof stored !== 'string') throw new BadRequestException('Mailbox connection expired or already completed.');
+    return JSON.parse(stored);
+  }
+
+  async handleMicrosoftCallback(code: string, tenantId: string, userId: string, codeVerifier: string) {
+    await this.systemMail.tenant(tenantId);
     const clientId = process.env.MICROSOFT_CLIENT_ID;
     const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
     const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
@@ -276,10 +318,12 @@ export class EmailService {
     params.append('client_id', clientId!);
     params.append('client_secret', clientSecret!);
     params.append('code', code);
+    params.append('code_verifier', codeVerifier);
     params.append('grant_type', 'authorization_code');
     params.append('redirect_uri', redirectUri!);
 
     const tokenResponse = await axios.post('https://login.microsoftonline.com/common/oauth2/v2.0/token', params.toString(), {
+      timeout: 15000,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       httpsAgent: new (require('https').Agent)({ family: 4 })
     });
@@ -287,6 +331,7 @@ export class EmailService {
     const { access_token, refresh_token } = tokenResponse.data;
 
     const userInfoResponse = await axios.get('https://graph.microsoft.com/v1.0/me', {
+      timeout: 15000,
       headers: { Authorization: `Bearer ${access_token}` },
       httpsAgent: new (require('https').Agent)({ family: 4 })
     });
@@ -434,13 +479,14 @@ export class EmailService {
   }
 
   async setDefaultAccount(id: string, tenantId: string) {
-    await this.prisma.emailAccount.updateMany({
-      where: { tenantId },
-      data: { isDefault: false },
-    });
-    await this.prisma.emailAccount.updateMany({
-      where: { id, tenantId },
-      data: { isDefault: true },
+    await this.systemMail.tenant(tenantId);
+    const account = await this.prisma.emailAccount.findFirst({ where: { id, tenantId, isActive: true }, select: { id: true } });
+    if (!account) throw new BadRequestException('Active mailbox not found in this workspace.');
+    await this.prisma.$transaction(async tx => {
+      await tx.tenant.update({ where: { id: tenantId }, data: { updatedAt: new Date() } });
+      await tx.emailAccount.updateMany({ where: { tenantId }, data: { isDefault: false } });
+      const selected = await tx.emailAccount.updateMany({ where: { id, tenantId, isActive: true }, data: { isDefault: true } });
+      if (selected.count !== 1) throw new BadRequestException('Mailbox changed while selecting it. Try again.');
     });
     return { success: true };
   }
@@ -643,216 +689,24 @@ export class EmailService {
     });
   }
 
-  /**
-   * Unified multi-tenant email dispatcher for all system & transactional communications.
-   * Resolves the tenant's chosen strategy:
-   * 1. DIRECT_ACCOUNT (Microsoft 365, Google, Tenant SMTP)
-   * 2. CUSTOM_DOMAIN (Platform Relay with from: no-reply@<custom_domain>)
-   * 3. DEFAULT_SUBDOMAIN (Platform Relay with from: no-reply@<subdomain>.enfyjobs.com)
-   */
-  async sendTenantEmail(options: {
-    tenantId: string;
-    to: string;
-    subject: string;
-    html: string;
-    replyTo?: string;
-    category?: string;
-  }): Promise<{ success: boolean; provider: string; from: string }> {
-    const { tenantId, to, subject, html, replyTo } = options;
-
-    // Fetch tenant configuration
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: {
-        id: true,
-        name: true,
-        domain: true,
-        emailDispatchMode: true,
-        customEmailDomain: true,
-        customEmailDomainVerified: true,
-      },
-    });
-    
-    const tenantName = tenant?.name || 'Enfycon Workspace';
-    const tenantDomain = tenant?.domain || 'enfy';
-    const dispatchMode = tenant?.emailDispatchMode || 'DEFAULT_SUBDOMAIN';
-
-    const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
-
-    // ─────────────────────────────────────────────────────────────
-    // STRATEGY 1: DIRECT ACCOUNT (BYOE - Microsoft 365, Google, SMTP)
-    // ─────────────────────────────────────────────────────────────
-    if (dispatchMode === 'DIRECT_ACCOUNT' || dispatchMode === 'BYOE') {
-      const account = await this.prisma.emailAccount.findFirst({
-        where: { tenantId, isActive: true },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
-      });
-
-      if (account) {
-        try {
-          if (account.provider === 'microsoft') {
-            await this.sendMicrosoftEmail(account.id, subject, html, to);
-            this.logger.log(`[TENANT_MAILER] Dispatched via Tenant Microsoft 365 (${account.emailAddress}) to ${to}`);
-            return { success: true, provider: 'microsoft', from: account.emailAddress };
-          } else if (account.provider === 'smtp') {
-            await this.sendSmtpEmail(account.id, subject, html, to);
-            this.logger.log(`[TENANT_MAILER] Dispatched via Tenant Custom SMTP (${account.emailAddress}) to ${to}`);
-            return { success: true, provider: 'smtp', from: account.emailAddress };
-          }
-        } catch (err: any) {
-          this.logger.warn(`[TENANT_MAILER] Direct account dispatch failed (${err.message}). Falling back to platform relay.`);
-        }
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // STRATEGY 2: CUSTOM DOMAIN DELEGATION
-    // ─────────────────────────────────────────────────────────────
-    if (dispatchMode === 'CUSTOM_DOMAIN' && tenant?.customEmailDomain) {
-      const fromCustom = `"${tenantName}" <no-reply@${tenant.customEmailDomain}>`;
-      if (process.env.SMTP_HOST) {
-        await this.transporter.sendMail({
-          from: fromCustom,
-          replyTo: replyTo || `admin@${tenant.customEmailDomain}`,
-          to,
-          subject,
-          html,
-        });
-        this.logger.log(`[TENANT_MAILER] Dispatched via Custom Domain (${fromCustom}) to ${to}`);
-        return { success: true, provider: 'custom_domain_relay', from: fromCustom };
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────
-    // STRATEGY 3: DEFAULT PLATFORM SUBDOMAIN (Zero-Config)
-    // ─────────────────────────────────────────────────────────────
-    const isMaster = !tenantDomain || tenantDomain === 'enfy' || tenantDomain === 'www';
-    const dynamicFrom = isMaster
-      ? `"${tenantName}" <no-reply@${baseDomain}>`
-      : `"${tenantName}" <no-reply@${tenantDomain}.${baseDomain}>`;
-
-    if (process.env.SMTP_HOST) {
-      await this.transporter.sendMail({
-        from: process.env.SMTP_FROM || dynamicFrom,
-        replyTo: replyTo || `admin@${tenantDomain}.${baseDomain}`,
-        to,
-        subject,
-        html,
-      });
-      this.logger.log(`[TENANT_MAILER] Dispatched via Default Subdomain Relay (${dynamicFrom}) to ${to}`);
-      return { success: true, provider: 'platform_subdomain_relay', from: dynamicFrom };
-    } else {
-      this.logger.log(`[TENANT_MAILER] Generated email for ${to} from ${dynamicFrom} (SMTP_HOST not set, simulated delivery)`);
-      return { success: true, provider: 'simulated_relay', from: dynamicFrom };
-    }
+  /** Shared tenant-aware dispatcher for system messages and delivery tests. */
+  async sendTenantEmail(options: SystemEmailRequest): Promise<EmailDispatchResult> {
+    return this.systemMail.send(options);
   }
 
-  /**
-   * Retrieves full tenant email settings, active strategy, and DNS delegation records
-   */
-  async getTenantEmailSettings(tenantId: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: {
-        name: true,
-        domain: true,
-        emailDispatchMode: true,
-        customEmailDomain: true,
-        customEmailDomainVerified: true,
-      },
-    });
-
-    const baseDomain = process.env.BASE_DOMAIN || 'enfyjobs.com';
-    const sub = tenant?.domain || 'workspace';
-    const defaultSubdomainSender = sub === 'enfy' ? `no-reply@${baseDomain}` : `no-reply@${sub}.${baseDomain}`;
-
-    const accounts = await this.prisma.emailAccount.findMany({
-      where: { tenantId, isActive: true },
-      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
-      select: {
-        id: true,
-        provider: true,
-        emailAddress: true,
-        profileName: true,
-        isDefault: true,
-        isActive: true,
-        createdAt: true,
-      },
-    });
-
-    const formattedAccounts = accounts.map((a) => ({
-      id: a.id,
-      provider: a.provider,
-      email: a.emailAddress,
-      profileName: a.profileName,
-      isDefault: a.isDefault,
-      isActive: a.isActive,
-      createdAt: a.createdAt,
-    }));
-
-    const customDomain = tenant?.customEmailDomain || '';
-    const dnsRecords = customDomain ? [
-      {
-        type: 'TXT',
-        host: customDomain,
-        value: `v=spf1 include:spf.${baseDomain} ~all`,
-        purpose: 'SPF Sender Authorization',
-        status: tenant?.customEmailDomainVerified ? 'verified' : 'pending'
-      },
-      {
-        type: 'CNAME',
-        host: `enfy._domainkey.${customDomain}`,
-        value: `dkim.${baseDomain}`,
-        purpose: 'DKIM Cryptographic Signature',
-        status: tenant?.customEmailDomainVerified ? 'verified' : 'pending'
-      },
-      {
-        type: 'CNAME',
-        host: `_dmarc.${customDomain}`,
-        value: `dmarc.${baseDomain}`,
-        purpose: 'DMARC Security Policy',
-        status: tenant?.customEmailDomainVerified ? 'verified' : 'pending'
-      }
-    ] : [];
-
-    return {
-      dispatchMode: tenant?.emailDispatchMode || 'DEFAULT_SUBDOMAIN',
-      defaultSubdomainSender,
-      customDomain,
-      customDomainVerified: !!tenant?.customEmailDomainVerified,
-      dnsRecords,
-      connectedAccounts: formattedAccounts,
-      defaultAccount: formattedAccounts.find((a: any) => a.isDefault) || formattedAccounts[0] || null,
-    };
+  async getTenantEmailSettings(tenantId: string): Promise<TenantEmailSettings> {
+    return this.systemMail.settings(tenantId);
   }
 
   async setTenantEmailMode(tenantId: string, mode: string) {
-    const validModes = ['DEFAULT_SUBDOMAIN', 'DIRECT_ACCOUNT', 'CUSTOM_DOMAIN'];
-    const chosen = validModes.includes(mode) ? mode : 'DEFAULT_SUBDOMAIN';
-    await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { emailDispatchMode: chosen },
-    });
-    return { success: true, mode: chosen };
+    return this.systemMail.setMode(tenantId, mode);
   }
 
   async setTenantCustomDomain(tenantId: string, customDomain: string) {
-    const clean = (customDomain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-    await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: {
-        customEmailDomain: clean || null,
-        customEmailDomainVerified: false,
-      },
-    });
-    return { success: true, customDomain: clean };
+    return this.systemMail.saveDomain(tenantId, customDomain);
   }
 
   async verifyTenantCustomDomain(tenantId: string) {
-    await this.prisma.tenant.update({
-      where: { id: tenantId },
-      data: { customEmailDomainVerified: true },
-    });
-    return { success: true, verified: true, message: 'Custom domain DNS records verified successfully!' };
+    return this.systemMail.verifyDomain(tenantId);
   }
 }

@@ -545,17 +545,22 @@ export class AuthCoreService {
       throw new InternalServerErrorException('Failed to provision user in authentication server. Registration aborted.');
     }
 
+    let emailNotification: { status: 'accepted' | 'failed' | 'disabled'; message?: string } = { status: 'disabled' };
     if (dto.sendEmailInvite !== false) {
-      this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId])
-        .then((tRes) => {
-          const tenantName = (tRes.rows[0] as any)?.name || 'Enfycon Workspace';
-          const tenantDomain = (tRes.rows[0] as any)?.domain || '';
-          return this.emailService.sendMemberCredentialsEmail({ to: email, fullName, tenantName, subdomain: tenantDomain, tenantId, temporaryPassword: password, roleName: primaryRoleName });
-        })
-        .catch((err) => { this.logger.warn(`Failed to dispatch member credentials email to ${email}: ${err.message}`); });
+      try {
+        const tRes = await this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+        const tenant = tRes.rows[0] as any;
+        if (!tenant) throw new Error('Workspace not found');
+        await this.emailService.sendMemberCredentialsEmail({ to: email, fullName, tenantName: tenant.name, subdomain: tenant.domain, tenantId, temporaryPassword: password, roleName: primaryRoleName });
+        emailNotification = { status: 'accepted' };
+      } catch {
+        this.logger.warn('Member account saved, but account email was not accepted.');
+        emailNotification = { status: 'failed', message: 'Account saved, but email was not accepted. Check workspace email settings.' };
+      }
     }
 
     return {
+      emailNotification,
       message: isApproved ? 'User registered and approved successfully.' : 'User registered successfully. Pending administrator approval.',
       user: { id: user.id, email: user.email, firstName: user.first_name, lastName: user.last_name, fullName: user.full_name, roles: [primaryRoleName], tenantId: user.tenant_id, createdAt: user.created_at },
     };

@@ -3,6 +3,7 @@ import { EmailController } from './email.controller';
 import { EmailAuthController } from './email-auth.controller';
 import { EmailService } from './email.service';
 import { EmailProcessor } from './email.processor';
+import { SystemMailModule } from './system-mail.module';
 import { AuthModule } from '../auth/auth.module';
 
 import { BullModule } from '@nestjs/bullmq';
@@ -10,6 +11,7 @@ import { BullModule } from '@nestjs/bullmq';
 @Module({
   imports: [
     AuthModule,
+    SystemMailModule,
     BullModule.registerQueue({ name: 'mass_mail' }),
   ],
   controllers: [EmailController, EmailAuthController],

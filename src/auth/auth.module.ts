@@ -3,6 +3,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { SystemMailModule } from '../email/system-mail.module';
 import { EventsModule } from '../events/events.module';
 
 // Sub-services
@@ -30,7 +31,7 @@ const AUTH_SUB_SERVICES = [
 
 @Global()
 @Module({
-  imports: [EventsModule],
+  imports: [EventsModule, SystemMailModule],
   controllers: [AuthController],
   providers: [AuthService, JwtAuthGuard, RolesGuard, ...AUTH_SUB_SERVICES],
   exports: [AuthService, JwtAuthGuard, RolesGuard, ...AUTH_SUB_SERVICES],

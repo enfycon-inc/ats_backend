@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Param, Headers, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Headers, UseGuards, ForbiddenException } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { EmailService } from './email.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -12,6 +12,17 @@ import { resolveTenantId } from '../auth/utils/tenant-resolver';
 @ApiBearerAuth()
 export class EmailController {
   constructor(private readonly emailService: EmailService) {}
+
+  private settingsTenant(user: AuthUser, tenantId?: string): string {
+    const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+    if (!['tenant:settings', 'tenant:manage', 'platform:manage', '*'].some(p => permissions.includes(p))) {
+      throw new ForbiddenException('Workspace email settings permission is required.');
+    }
+    if (!user.tenantId && !((permissions.includes('platform:manage') || permissions.includes('*')) && tenantId?.trim())) {
+      throw new ForbiddenException('An explicit workspace is required.');
+    }
+    return resolveTenantId(user, tenantId);
+  }
 
   @Post('campaigns')
   async createCampaign(
@@ -70,6 +81,18 @@ export class EmailController {
     return this.emailService.addCustomAccount(dto, tid, user.dbId);
   }
 
+  @Post('accounts/microsoft/connect')
+  async connectMicrosoft(
+    @Body() dto: { returnTo?: string },
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    // Personal mailbox connections are allowed for authenticated users, bound to their own identity.
+    // Selecting a workspace default sender requires settingsTenant permissions separately.
+    if (!user.tenantId) throw new ForbiddenException('An authenticated workspace is required.');
+    return this.emailService.beginMicrosoftConnection(resolveTenantId(user, tenantId), user.dbId, dto.returnTo);
+  }
+
   @Post('accounts/:id/delete')
   async deleteAccount(
     @Param('id') id: string,
@@ -97,7 +120,7 @@ export class EmailController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = resolveTenantId(user, tenantId);
+    const tid = this.settingsTenant(user, tenantId);
     return this.emailService.setDefaultAccount(id, tid);
   }
 
@@ -145,7 +168,7 @@ export class EmailController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = resolveTenantId(user, tenantId);
+    const tid = this.settingsTenant(user, tenantId);
     return this.emailService.getTenantEmailSettings(tid);
   }
 
@@ -155,7 +178,7 @@ export class EmailController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = resolveTenantId(user, tenantId);
+    const tid = this.settingsTenant(user, tenantId);
     return this.emailService.setTenantEmailMode(tid, dto.mode);
   }
 
@@ -165,7 +188,7 @@ export class EmailController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = resolveTenantId(user, tenantId);
+    const tid = this.settingsTenant(user, tenantId);
     return this.emailService.setTenantCustomDomain(tid, dto.customDomain);
   }
 
@@ -174,7 +197,7 @@ export class EmailController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = resolveTenantId(user, tenantId);
+    const tid = this.settingsTenant(user, tenantId);
     return this.emailService.verifyTenantCustomDomain(tid);
   }
 
@@ -184,7 +207,7 @@ export class EmailController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
-    const tid = resolveTenantId(user, tenantId);
+    const tid = this.settingsTenant(user, tenantId);
     const targetEmail = dto.recipientEmail || user.email;
     return this.emailService.sendTenantEmail({
       tenantId: tid,
@@ -192,9 +215,9 @@ export class EmailController {
       subject: `EnfySync ATS — Test Email Configuration Verification`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 550px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-          <h3 style="color: #4f46e5; margin-top: 0;">✅ Email Strategy Verified</h3>
+          <h3 style="color: #4f46e5; margin-top: 0;">Email delivery test</h3>
           <p style="color: #334155; font-size: 14px;">
-            This test email confirms that your workspace email dispatch strategy is configured and working properly!
+            This message tests your selected workspace system email sender.
           </p>
           <p style="color: #64748b; font-size: 12px; margin-top: 20px;">
             Sent by EnfySync ATS Multi-Tenant Delivery Engine.
