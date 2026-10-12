@@ -1118,7 +1118,22 @@ export class JobsService {
     }
 
     // ── Sub-view Filter Parameters (direct, pod, unassigned) ─────────────────
-    if (filter === 'my' && user?.dbId) {
+    if (filter === 'sourcing') {
+      if (!user?.dbId) return [];
+      sql += ` AND UPPER(j.status) = 'ACTIVE'
+        AND (j.approval_status = 'APPROVED' OR j.approval_status IS NULL)
+        AND (
+          EXISTS (SELECT 1 FROM ats.job_recruiters jr_s WHERE jr_s.job_id = j.id AND jr_s.recruiter_id = $${paramIndex}::uuid)
+          OR EXISTS (
+            SELECT 1 FROM ats.job_pods jp_s
+            JOIN ats.pods p_s ON p_s.id = jp_s.pod_id AND p_s.tenant_id = $1
+            JOIN ats.users u_s ON u_s.pod_id = p_s.id AND u_s.tenant_id = $1
+            WHERE jp_s.job_id = j.id AND u_s.id = $${paramIndex}::uuid AND u_s.is_active = true
+          )
+        )`;
+      params.push(user.dbId);
+      paramIndex++;
+    } else if (filter === 'my' && user?.dbId) {
       if (isAccountManager) {
         sql += ` AND (j.account_manager_id = $${paramIndex}::uuid OR j.recruitment_manager_id = $${paramIndex}::uuid)`;
       } else {

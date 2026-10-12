@@ -99,6 +99,7 @@ export interface TrackerSubmission {
   capabilities?: SubmissionCapabilities;
 }
 export interface TrackerResponse {
+  dashboardMetrics: { submissions: number; interviews: number; selections: number };
   accountManagerLabel?: string;
   data: TrackerSubmission[];
   total: number;

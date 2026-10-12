@@ -549,7 +549,9 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE am_role IS NULL) AS missing_am_role_count,
       COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
       COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
-      COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending
+      COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending,
+      COUNT(*) FILTER (WHERE l1_status IN ('SCHEDULED', 'CLEARED', 'PASSED') OR l2_status IN ('SCHEDULED', 'CLEARED', 'PASSED') OR l3_status IN ('SCHEDULED', 'CLEARED', 'PASSED')) as dashboard_interviews,
+      COUNT(*) FILTER (WHERE final_status IN ('OFFER', 'JOIN', 'PLACED')) as dashboard_selections
       FROM (${baseSql}) AS counted`;
     const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.')[bucket]} ORDER BY s.created_at DESC, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
@@ -570,6 +572,11 @@ export class RecruiterSubmissionsService {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+        dashboardMetrics: {
+          submissions: Number(countRes[0]?.all_count || 0),
+          interviews: Number(countRes[0]?.dashboard_interviews || 0),
+          selections: Number(countRes[0]?.dashboard_selections || 0),
+        },
         counts: {
           all: Number(countRes[0]?.all_count || 0),
           review: Number(countRes[0]?.review_count || 0),

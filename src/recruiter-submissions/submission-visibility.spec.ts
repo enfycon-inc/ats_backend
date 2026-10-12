@@ -49,6 +49,18 @@ describe('submission visibility and statistics', () => {
     expect(query.mock.calls[0].slice(1)).toEqual(['tenant-b', 'recruiter-b']);
   });
 
+  it('returns personal dashboard totals across all pages rather than the recent feed size', async () => {
+    query.mockImplementation(async (sql: string) => sql.startsWith('SELECT COUNT')
+      ? [{ count: 37n, all_count: 37n, dashboard_interviews: 12n, dashboard_selections: 4n }]
+      : [{ id: 'recent', recruiter_id: 'recruiter-a' }]);
+    const result = await service.findAll('tenant-a', user, { view: 'my', limit: 10 });
+    expect(result.data).toHaveLength(1);
+    expect(result.dashboardMetrics).toEqual({ submissions: 37, interviews: 12, selections: 4 });
+    expect(query.mock.calls[0][0]).toContain('s.recruiter_id = $2');
+    expect(query.mock.calls[0][0]).toContain('as dashboard_interviews');
+    expect(query.mock.calls[1].slice(-2)).toEqual([10, 0]);
+  });
+
   it('preserves All access granted by submission:view without requiring a named role', async () => {
     await service.findAll('tenant-a', user, { view: 'all' });
     expect(query.mock.calls[0][0]).not.toContain('s.recruiter_id = $2');
