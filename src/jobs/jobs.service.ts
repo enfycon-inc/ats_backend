@@ -1743,23 +1743,32 @@ export class JobsService {
       }
     }
 
-    // Define Tenant Admin, Branch Admin, Delivery Head, or Delegated Permission clearance
+    // Define Tenant Admin, Branch Admin, Unit Admin, Delivery Head, or Job Owner clearance
     const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
-    const isTenantAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage');
+    const userRoles: string[] = Array.isArray(user?.roles) ? user.roles : [];
+    const isTenantAdmin = userPermissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
     const isBranchAdmin = 
       userPermissions.includes('branch_admin:manage') ||
       (currentJob.branchId && user?.branchRoles?.[currentJob.branchId]?.some((r: string) => ['TENANT_ADMIN', 'BRANCH_ADMIN'].includes(r)));
+    const isUnitAdmin = userPermissions.includes('unit_admin:manage');
+    const isDeliveryHead = userRoles.some(r => ['DELIVERY_HEAD', 'DELIVERYHEAD'].includes(r.toUpperCase().replace(/[\s-_]+/g, ''))) ||
+      userPermissions.includes('job:assign');
 
-    const hasDelegatedAssignPermission = 
-      userPermissions.includes('job:assign') ||
-      userPermissions.includes('job:assign_recruiter') ||
-      userPermissions.includes('job:assign_pod') ||
-      userPermissions.includes('job:edit') ||
-      userPermissions.includes('job:approve') ||
-      userPermissions.includes('pod:edit') ||
-      userPermissions.includes('pod:overlap');
+    const isSupervisoryAssigner = isTenantAdmin || isBranchAdmin || isUnitAdmin || isDeliveryHead;
+    const isJobCreator = Boolean(
+      (currentJob.accountManagerId && (user?.dbId === currentJob.accountManagerId || user?.id === currentJob.accountManagerId)) ||
+      (currentJob.recruitmentManagerId && (user?.dbId === currentJob.recruitmentManagerId || user?.id === currentJob.recruitmentManagerId))
+    );
 
-    const canAssignAny = isTenantAdmin || isBranchAdmin || hasDelegatedAssignPermission || (currentJob.accountManagerId === user.dbId);
+    const isAccountManager = userRoles.some(r => ['ACCOUNT_MANAGER', 'ACCOUNTMANAGER', 'BDM'].includes(r.toUpperCase().replace(/[\s-_]+/g, ''))) ||
+      (!isSupervisoryAssigner && userPermissions.includes('job:assign_recruiter'));
+
+    // Account Managers can only assign recruiters on their own created jobs
+    if (isAccountManager && !isSupervisoryAssigner && !isJobCreator && (dto.recruiterIds !== undefined || dto.recruiterId !== undefined)) {
+      throw new ForbiddenException('Account Managers can only assign recruiters to their own created jobs.');
+    }
+
+    const canAssignAny = isSupervisoryAssigner || isJobCreator;
 
     // Fetch the job's current pod mappings
     const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });

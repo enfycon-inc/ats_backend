@@ -22,7 +22,8 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
   }
   const branchId = resolveBranchId(actor, requestedBranch);
   const tenantManager = actor.permissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
-  const branchManager = tenantManager || actor.permissions.includes('branch_admin:manage');
+  const deliveryHead = (actor.roles || []).some((r: string) => ['DELIVERY_HEAD', 'DELIVERYHEAD'].includes(r.toUpperCase().replace(/[\s-_]+/g, ''))) || actor.permissions.includes('job:assign');
+  const branchManager = tenantManager || actor.permissions.includes('branch_admin:manage') || deliveryHead;
   if (!branchManager && (!actor.businessUnitId || (requestedUnit && requestedUnit !== actor.businessUnitId))) {
     throw new ForbiddenException('You can only select recruiters from your assigned unit.');
   }

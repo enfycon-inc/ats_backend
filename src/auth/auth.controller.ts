@@ -1,4 +1,4 @@
-import {
+﻿import {
   Controller,
   ParseUUIDPipe,
   Post,
@@ -50,11 +50,11 @@ export class AuthController {
     private readonly auditService: AuditService,
   ) {}
 
-  // ─── POST /api/auth/login ───────────────────────────────────
+  // â”€â”€â”€ POST /api/auth/login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Login — get access token',
+    summary: 'Login â€” get access token',
     description: `
 Validates email + password and returns a signed JWT access token.
 
@@ -66,13 +66,13 @@ Validates email + password and returns a signed JWT access token.
 - Authenticates against Keycloak OIDC server via Direct Access Grant / Password grant.
     `.trim(),
   })
-  @ApiResponse({ status: 200, description: 'Login successful — returns JWT access token.' })
+  @ApiResponse({ status: 200, description: 'Login successful â€” returns JWT access token.' })
   @ApiResponse({ status: 401, description: 'Invalid credentials.' })
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
 
-  // ─── POST /api/auth/refresh ────────────────────────────────
+  // â”€â”€â”€ POST /api/auth/refresh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -91,14 +91,14 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.logoutKeycloakSession(refreshToken);
   }
 
-  // ─── GET /api/auth/diagnostic ──────────────────────────────
+  // â”€â”€â”€ GET /api/auth/diagnostic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('diagnostic')
   @UseGuards(JwtAuthGuard)
   async diagnostic() {
     return this.authService.diagnostic();
   }
 
-  // ─── POST /api/auth/register ────────────────────────────────
+  // â”€â”€â”€ POST /api/auth/register â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(OptionalJwtAuthGuard)
@@ -116,7 +116,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.register(dto, user);
   }
 
-  // ─── POST /api/auth/register-tenant ─────────────────────────
+  // â”€â”€â”€ POST /api/auth/register-tenant â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('check-email')
   @ApiOperation({
     summary: 'Check if an email is already registered globally (Public)',
@@ -143,13 +143,13 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.registerTenant(dto);
   }
 
-  // ─── GET /api/auth/me ───────────────────────────────────────
+  // â”€â”€â”€ GET /api/auth/me â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('me')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiHeader({
     name: 'x-tenant-id',
-    description: 'Tenant UUID (optional in dev — defaults to primary tenant)',
+    description: 'Tenant UUID (optional in dev â€” defaults to primary tenant)',
     required: false,
   })
   @ApiOperation({
@@ -164,8 +164,8 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getProfile(user.dbId, user);
   }
 
-  // ─── GET /api/auth/profile/:id ──────────────────────────────
-  // Alias route — frontend calls /api/auth/profile/{userId} to fetch the
+  // â”€â”€â”€ GET /api/auth/profile/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Alias route â€” frontend calls /api/auth/profile/{userId} to fetch the
   // authenticated user's own profile. The :id param is accepted but we
   // always return the CALLER's profile (enforced by JwtAuthGuard) to prevent
   // privilege escalation. Admins wishing to query other users use /api/auth/users.
@@ -183,7 +183,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getProfile(user.dbId, user);
   }
 
-  // ─── GET /api/auth/users ────────────────────────────────────
+  // â”€â”€â”€ GET /api/auth/users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('users')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -198,49 +198,59 @@ Validates email + password and returns a signed JWT access token.
     @Headers('x-tenant-id') tenantHeader?: string,
   ) {
     const tenantId = resolveTenantId(user, tenantHeader);
-    // Branch Admins / Unit Admins can only see their own branch/unit users
+    // Branch Admins / Unit Admins / Delivery Heads can only see scoped users
     const perms = Array.isArray((user as any).permissions) ? (user as any).permissions : [];
     const isTenantAdmin = perms.some((p: string) => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
-    
+
     const isBranchAdmin = perms.includes('branch_admin:manage') && !isTenantAdmin;
-    const isUnitAdmin = perms.includes('unit_admin:manage') && !isTenantAdmin;
+    // Delivery Head shares unit_admin:manage but must be branch-scoped (not unit-scoped).
+    // Identify by systemRole so permission edits don't accidentally re-collapse them into unit scope.
+    const isDeliveryHead = (user as any).systemRole === 'DELIVERY_HEAD' && !isTenantAdmin && !isBranchAdmin;
+    const isUnitAdmin = perms.includes('unit_admin:manage') && !isTenantAdmin && !isBranchAdmin && !isDeliveryHead;
+
     if (!isTenantAdmin && !perms.includes('user:manage')) throw new ForbiddenException('Missing user management permission.');
-    if (!isTenantAdmin && (!user.branchId || (isUnitAdmin && !user.businessUnitId))) return [];
-    
+    if (!isTenantAdmin && !user.branchId) return [];
+    if (isUnitAdmin && !user.businessUnitId) return [];
+
     let scopedBranchId: string | null = null;
     let scopedBusinessUnitId: string | null = null;
-    
-    if (isBranchAdmin || isUnitAdmin) {
+
+    if (isBranchAdmin || isUnitAdmin || isDeliveryHead) {
+      // All three are scoped to their branch
       scopedBranchId = (user as any).branchId || null;
     }
     if (isUnitAdmin) {
+      // Unit Admin is strictly scoped to their own business unit
       scopedBusinessUnitId = (user as any).businessUnitId || null;
     }
-    if (!isTenantAdmin && !isBranchAdmin && !isUnitAdmin) {
+    // Delivery Head: branch-scoped but NOT unit-scoped — can assign any recruiter in the branch.
+    // Branch Admin: same — branch-scoped, not unit-scoped.
+    if (!isTenantAdmin && !isBranchAdmin && !isUnitAdmin && !isDeliveryHead) {
+      // Any other role with user:manage (future-proofing) — scope to their own unit if available
       if (!user.businessUnitId) return [];
       scopedBranchId = user.branchId || null;
       scopedBusinessUnitId = user.businessUnitId;
     }
-    
+
     let users = await this.authService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId);
-    
-    if (isUnitAdmin || isBranchAdmin) {
+
+    if (isUnitAdmin || isBranchAdmin || isDeliveryHead) {
       users = users.filter((u: any) => {
         const p = Array.isArray(u.permissions) ? u.permissions : [];
         if (isUnitAdmin && (p.includes('tenant:settings') || p.includes('branch_admin:manage'))) {
-          return false; // Unit admin cannot see tenant admins or branch admins
+          return false; // Unit Admin cannot see Tenant Admins or Branch Admins
         }
-        if (isBranchAdmin && p.includes('tenant:settings')) {
-          return false; // Branch admin cannot see tenant admins
+        if ((isBranchAdmin || isDeliveryHead) && p.includes('tenant:settings')) {
+          return false; // Branch Admin / Delivery Head cannot see Tenant Admins
         }
         return true;
       });
     }
-    
+
     return users;
   }
 
-  // ─── GET /api/auth/tenant-policy ───────────────────────────
+  // â”€â”€â”€ GET /api/auth/tenant-policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('tenant-policy')
   @ApiOperation({
     summary: 'Get tenant authentication policy (Public/Dynamic)',
@@ -254,7 +264,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getTenantAuthPolicy(target);
   }
 
-  // ─── PATCH /api/auth/tenant-policy ──────────────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenant-policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenant-policy')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -272,7 +282,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantAuthPolicy(tenantId, body);
   }
 
-  // ─── PATCH /api/auth/users/:id/status ───────────────────────
+  // â”€â”€â”€ PATCH /api/auth/users/:id/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('users/:id/status')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -290,7 +300,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.setUserActive(userId, body.isActive, currentUser.dbId, currentUser);
   }
 
-  // ─── DELETE /api/auth/users/:id ─────────────────────────────
+  // â”€â”€â”€ DELETE /api/auth/users/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Delete('users/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -307,7 +317,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.deleteUser(userId, currentUser);
   }
 
-  // ─── PATCH /api/auth/users/:id ──────────────────────────────
+  // â”€â”€â”€ PATCH /api/auth/users/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('users/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -323,7 +333,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateUserDetails(userId, body, currentUser);
   }
 
-  // ─── POST /api/auth/users/bulk-reviewer ─────────────────────
+  // â”€â”€â”€ POST /api/auth/users/bulk-reviewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('users/bulk-reviewer')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -339,7 +349,7 @@ Validates email + password and returns a signed JWT access token.
   }
 
 
-  // ─── POST /api/auth/request-role ────────────────────────────
+  // â”€â”€â”€ POST /api/auth/request-role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('request-role')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -355,7 +365,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.requestRole(currentUser.dbId, body.role, body.branchId, body.businessUnitId);
   }
 
-  // ─── PATCH /api/auth/users/:id/approve ──────────────────────
+  // â”€â”€â”€ PATCH /api/auth/users/:id/approve â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('users/:id/approve')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -372,7 +382,7 @@ Validates email + password and returns a signed JWT access token.
   }
 
 
-  // ─── PATCH /api/auth/users/:id/reject ───────────────────────
+  // â”€â”€â”€ PATCH /api/auth/users/:id/reject â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('users/:id/reject')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -387,7 +397,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.rejectTenantUser(userId, currentUser);
   }
 
-  // ─── GET /api/auth/approvals/pending ────────────────────────
+  // â”€â”€â”€ GET /api/auth/approvals/pending â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('approvals/pending')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('platform:manage')
@@ -400,7 +410,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.listPendingApprovals();
   }
 
-  // ─── POST /api/auth/approvals/approve/:id ───────────────────
+  // â”€â”€â”€ POST /api/auth/approvals/approve/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('approvals/approve/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('platform:manage')
@@ -440,7 +450,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.createManualTenant(body);
   }
 
-  // ─── GET /api/auth/tenants ──────────────────────────────────
+  // â”€â”€â”€ GET /api/auth/tenants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('tenants')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('platform:manage')
@@ -475,7 +485,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getTenantDetails(tenantId);
   }
 
-  // ─── PATCH /api/auth/tenants/:id/status ─────────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenants/:id/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenants/:id/status')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('platform:manage')
@@ -491,7 +501,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantStatus(tenantId, body.status);
   }
 
-  // ─── PATCH /api/auth/tenants/:id/user-limit ─────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenants/:id/user-limit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenants/:id/user-limit')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('platform:manage')
@@ -522,7 +532,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantBranchLimit(tenantId, body.limit);
   }
 
-  // ─── PATCH /api/auth/tenants/:id/market ─────────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenants/:id/market â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenants/:id/market')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('platform:manage')
@@ -538,7 +548,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantMarket(tenantId, body.market);
   }
 
-  // ─── PATCH /api/auth/tenants/my-subdomain ───────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenants/my-subdomain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenants/my-subdomain')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -554,7 +564,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantSubdomain(user.tenantId, body.subdomain);
   }
 
-  // ─── PATCH /api/auth/tenants/my-settings ────────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenants/my-settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenants/my-settings')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -580,7 +590,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateTenantSettings(user.tenantId, body);
   }
 
-  // ─── GET /api/auth/rbac/permissions ──────────────────────────
+  // â”€â”€â”€ GET /api/auth/rbac/permissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('rbac/permissions')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -591,7 +601,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.listAllPermissions();
   }
 
-  // ─── GET /api/auth/rbac/roles ────────────────────────────────
+  // â”€â”€â”€ GET /api/auth/rbac/roles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('rbac/roles')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -637,7 +647,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getAssignableRolePool(user.tenantId, bid);
   }
 
-  // ─── POST /api/auth/rbac/roles ───────────────────────────────
+  // â”€â”€â”€ POST /api/auth/rbac/roles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('rbac/roles')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -655,7 +665,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.createCustomRole(user.tenantId, body.name, body.description, body.permissions, body.systemRole, bid, body.businessUnitId, user.dbId, body.baseRoleId, user);
   }
 
-  // ─── PUT /api/auth/rbac/roles/:id ───────────────────────────
+  // â”€â”€â”€ PUT /api/auth/rbac/roles/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Put('rbac/roles/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -671,7 +681,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId, user);
   }
 
-  // ─── PATCH /api/auth/rbac/roles/:id ─────────────────────────
+  // â”€â”€â”€ PATCH /api/auth/rbac/roles/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('rbac/roles/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -687,7 +697,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateCustomRole(user.tenantId, roleId, body, user.dbId, user);
   }
 
-  // ─── PATCH /api/auth/rbac/roles/:id/permissions ──────────────
+  // â”€â”€â”€ PATCH /api/auth/rbac/roles/:id/permissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('rbac/roles/:id/permissions')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -703,7 +713,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.updateRolePermissions(user.tenantId, roleId, body.permissions, user);
   }
 
-  // ─── DELETE /api/auth/rbac/roles/:id ──────────────────────────
+  // â”€â”€â”€ DELETE /api/auth/rbac/roles/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Delete('rbac/roles/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -722,7 +732,7 @@ Validates email + password and returns a signed JWT access token.
   }
 
 
-  // ─── POST /api/auth/rbac/users/:id/roles ─────────────────────
+  // â”€â”€â”€ POST /api/auth/rbac/users/:id/roles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('rbac/users/:id/roles')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -738,7 +748,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.assignUserRoles(user.tenantId, targetUserId, body.roleIds, user.roles, body.append, user);
   }
 
-  // ─── POST /api/auth/rbac/roles/:id/assign-users ───────────────
+  // â”€â”€â”€ POST /api/auth/rbac/roles/:id/assign-users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('rbac/roles/:id/assign-users')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -752,7 +762,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.batchAssignUsersToRole(user.tenantId, roleId, body.userIds, user.roles, user);
   }
 
-  // ─── POST /api/auth/rbac/roles/:id/unassign-user ─────────────
+  // â”€â”€â”€ POST /api/auth/rbac/roles/:id/unassign-user â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('rbac/roles/:id/unassign-user')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -766,7 +776,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.unassignUserFromRole(user.tenantId, roleId, body.userId, user);
   }
 
-  // ─── GET /api/auth/check-ssl-domain ─────────────────
+  // â”€â”€â”€ GET /api/auth/check-ssl-domain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Called by Caddy on_demand TLS before issuing any SSL certificate.
   // SECURITY: Only issue certs for platform subdomains or DB-registered tenant workspaces.
   @Get('check-ssl-domain')
@@ -781,11 +791,11 @@ Validates email + password and returns a signed JWT access token.
       return 'OK';
     }
 
-    // 2. For *.enfyjobs.com subdomains — enforce DB verification
+    // 2. For *.enfyjobs.com subdomains â€” enforce DB verification
     if (cleanDomain.endsWith('.enfyjobs.com')) {
       const subdomain = cleanDomain.slice(0, cleanDomain.length - '.enfyjobs.com'.length);
 
-      // 2a. Hardcoded platform subdomains always get a cert — no DB lookup needed
+      // 2a. Hardcoded platform subdomains always get a cert â€” no DB lookup needed
       const PLATFORM_SUBDOMAINS = new Set(['api', 'auth', 'db', 'www', 'admin', 'mail', 'status', 'app']);
       if (PLATFORM_SUBDOMAINS.has(subdomain)) return 'OK';
 
@@ -793,11 +803,11 @@ Validates email + password and returns a signed JWT access token.
       const isRegistered = await this.authService.isDomainRegistered(cleanDomain);
       if (isRegistered) return 'OK';
 
-      // Deny — prevents cert exhaustion attacks against Let's Encrypt quota
+      // Deny â€” prevents cert exhaustion attacks against Let's Encrypt quota
       throw new BadRequestException(`Subdomain "${subdomain}" is not a registered workspace.`);
     }
 
-    // 3. Custom domains (e.g. recruitmentsolutions.io) — check tenant_domains table
+    // 3. Custom domains (e.g. recruitmentsolutions.io) â€” check tenant_domains table
     const isRegistered = await this.authService.isDomainRegistered(cleanDomain);
     if (isRegistered) return 'OK';
 
@@ -805,7 +815,7 @@ Validates email + password and returns a signed JWT access token.
   }
 
 
-  // ─── GET /api/auth/tenants/my-domains ───────────────────────
+  // â”€â”€â”€ GET /api/auth/tenants/my-domains â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('tenants/my-domains')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -814,7 +824,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getTenantDomains(user.tenantId);
   }
 
-  // ─── POST /api/auth/tenants/my-domains ──────────────────────
+  // â”€â”€â”€ POST /api/auth/tenants/my-domains â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('tenants/my-domains')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -827,7 +837,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.addTenantDomain(user.tenantId, body.domainName);
   }
 
-  // ─── DELETE /api/auth/tenants/my-domains/:id ─────────────────
+  // â”€â”€â”€ DELETE /api/auth/tenants/my-domains/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Delete('tenants/my-domains/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -840,7 +850,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.deleteTenantDomain(user.tenantId, domainId);
   }
 
-  // ─── POST /api/auth/tenants/my-domains/verify ───────────────
+  // â”€â”€â”€ POST /api/auth/tenants/my-domains/verify â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('tenants/my-domains/verify')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
@@ -853,20 +863,20 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.verifyCustomDomain(user.tenantId, body.domainName);
   }
 
-  // ─── POST /api/auth/sso-login ───────────────────────────────
+  // â”€â”€â”€ POST /api/auth/sso-login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('sso-login')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Single Sign-On (Google & Microsoft) — Zero-Trust Invite-Only Gate',
+    summary: 'Single Sign-On (Google & Microsoft) â€” Zero-Trust Invite-Only Gate',
     description: 'Validates verified OAuth email identity against tenant user invitation list and issues signed ATS JWT.',
   })
-  @ApiResponse({ status: 200, description: 'SSO Login successful — returns ATS JWT access token.' })
+  @ApiResponse({ status: 200, description: 'SSO Login successful â€” returns ATS JWT access token.' })
   @ApiResponse({ status: 401, description: 'Access denied: user is not invited or account is deactivated.' })
   async ssoLogin(@Body() dto: SsoLoginDto) {
     return this.authService.ssoLogin(dto);
   }
 
-  // ─── POST /api/auth/invite ──────────────────────────────────
+  // â”€â”€â”€ POST /api/auth/invite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('invite')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -884,7 +894,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.inviteUser(dto, authHeader);
   }
 
-  // ─── GET /api/auth/invitation/:token ────────────────────────
+  // â”€â”€â”€ GET /api/auth/invitation/:token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('invitation/:token')
   @ApiOperation({
     summary: 'Get invitation metadata for password setup screen [Public]',
@@ -896,7 +906,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getInvitationDetails(token);
   }
 
-  // ─── POST /api/auth/accept-invite ───────────────────────────
+  // â”€â”€â”€ POST /api/auth/accept-invite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('accept-invite')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -909,7 +919,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.acceptInvite(dto);
   }
 
-  // ─── GET /api/auth/tenant-auth-policy ───────────────────────
+  // â”€â”€â”€ GET /api/auth/tenant-auth-policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Get('tenant-auth-policy')
   @ApiOperation({
     summary: 'Get tenant SSO & authentication policy [Public / Tenant User]',
@@ -922,7 +932,7 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.getTenantAuthPolicy(context);
   }
 
-  // ─── PATCH /api/auth/tenant-auth-policy ──────────────────────
+  // â”€â”€â”€ PATCH /api/auth/tenant-auth-policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Patch('tenant-auth-policy')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('tenant:settings')
