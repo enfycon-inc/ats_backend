@@ -25,7 +25,7 @@ export interface DiceCandidateResult {
   experienceYears: number;
   lastActive: string;
   isAlreadyInDb: boolean;
-  localCandidateId?: number;
+  localCandidateId?: string;
   summary: string;
 }
 

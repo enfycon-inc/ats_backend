@@ -349,6 +349,8 @@ export class CandidatesService {
     return {
       id: `INT-${row.source ? row.source.toUpperCase() : 'DB'}-${row.id}`,
       dbId: row.id,
+      resumeFilename: resume?.filename || null,
+      resumeUploadedAt: resume?.createdAt ? new Date(resume.createdAt).toISOString() : null,
       candidateCode,
       uploadedByUserId: row.uploadedByUserId || null,
       uploadedByName,
@@ -641,7 +643,7 @@ export class CandidatesService {
    */
   async getResumeFile(candidateId: string, tenantId: string): Promise<StoredResumeFile> {
     const candidate = await this.prisma.candidate.findFirst({
-      where: { id: candidateId, tenantId },
+      where: { id: candidateId, tenantId, deletedAt: null },
       include: { resumeRecord: true },
     });
 

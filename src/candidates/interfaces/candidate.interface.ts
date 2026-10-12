@@ -3,7 +3,9 @@
  */
 export interface CandidateProfile {
   id: string;
-  dbId?: number;
+  dbId?: string;
+  resumeFilename?: string | null;
+  resumeUploadedAt?: string | null;
   candidateCode?: string;
   uploadedByUserId?: string | null;
   uploadedByName?: string | null;
