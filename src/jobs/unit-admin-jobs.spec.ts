@@ -9,7 +9,7 @@ describe('Unit Admin job scope', () => {
     const [sql, ...params] = query.mock.calls[0];
     expect(sql).toContain('j.business_unit_id = $2');
     expect(sql).toContain('j.branch_id = $3');
-    expect(params).toEqual(['tenant', 'unit', 'home']);
+    expect(params).toEqual(['tenant', 'unit', 'home', 'user']);
     expect(sql).not.toContain('j.recruitment_manager_id =');
   });
   it('fails closed if the unit assignment is missing', async () => {

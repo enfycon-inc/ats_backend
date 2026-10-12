@@ -14,21 +14,47 @@ export interface JobStaffOption {
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function resolveJobStaffingScope(prisma: PrismaService, actor: AuthUser, tenantId: string,
-  requestedBranch?: string, requestedUnit?: string, permission = 'job:assign_recruiter') {
+  requestedBranch?: string, requestedUnit?: string, permission = 'job:assign_recruiter', jobId?: string) {
   if (!actor.permissions?.includes(permission)) {
     throw new ForbiddenException(permission === 'job:assign_recruiter' ? 'Recruiter assignment permission is required.' : 'Pod assignment permission is required.');
   }
-  for (const id of [requestedBranch, requestedUnit]) {
-    if (id && !uuid.test(id)) throw new BadRequestException('Select a valid branch and unit.');
+  for (const id of [requestedBranch, requestedUnit, jobId]) {
+    if (id && !uuid.test(id)) throw new BadRequestException('Select a valid branch, unit, or job.');
   }
-  const branchId = resolveBranchId(actor, requestedBranch);
+  let branchId = resolveBranchId(actor, requestedBranch);
   const tenantManager = actor.permissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
   const deliveryHead = (actor.roles || []).some((r: string) => ['DELIVERY_HEAD', 'DELIVERYHEAD'].includes(r.toUpperCase().replace(/[\s-_]+/g, ''))) || actor.permissions.includes('job:assign');
   const branchManager = tenantManager || actor.permissions.includes('branch_admin:manage') || deliveryHead;
-  if (!branchManager && (!actor.businessUnitId || (requestedUnit && requestedUnit !== actor.businessUnitId))) {
+
+  let isJobOwner = false;
+  let jobResolvedUnit: string | null = null;
+  let jobResolvedBranch: string | null = null;
+
+  if (jobId) {
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId, deletedAt: null },
+      select: { accountManagerId: true, recruitmentManagerId: true, branchId: true, businessUnitId: true },
+    });
+    if (job) {
+      isJobOwner = Boolean(
+        (job.accountManagerId && (actor.dbId === job.accountManagerId || (actor as any).id === job.accountManagerId)) ||
+        (job.recruitmentManagerId && (actor.dbId === job.recruitmentManagerId || (actor as any).id === job.recruitmentManagerId))
+      );
+      if (!branchManager && !isJobOwner) {
+        throw new ForbiddenException('Account Managers can only assign recruiters to their own created jobs.');
+      }
+      jobResolvedBranch = job.branchId;
+      jobResolvedUnit = job.businessUnitId;
+      if (!branchId && jobResolvedBranch) branchId = jobResolvedBranch;
+    }
+  }
+
+  const effectiveUnit = requestedUnit || jobResolvedUnit || actor.businessUnitId || null;
+
+  if (!branchManager && !isJobOwner && (!actor.businessUnitId || (requestedUnit && requestedUnit !== actor.businessUnitId))) {
     throw new ForbiddenException('You can only select recruiters from your assigned unit.');
   }
-  const unitId = requestedUnit || actor.businessUnitId || null;
+  const unitId = effectiveUnit;
   if (unitId) {
     const unit = await prisma.businessUnit.findFirst({
       where: { id: unitId, tenantId, ...(branchId ? { branchId } : {}) }, select: { id: true },
@@ -47,8 +73,8 @@ export async function listJobPods(prisma: PrismaService, actor: AuthUser, tenant
 }
 
 export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenantId: string,
-  requestedBranch?: string, requestedUnit?: string): Promise<JobStaffOption[]> {
-  const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit);
+  requestedBranch?: string, requestedUnit?: string, jobId?: string): Promise<JobStaffOption[]> {
+  const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_recruiter', jobId);
   return prisma.$queryRawUnsafe<JobStaffOption[]>(`
     SELECT staff.id, staff.full_name AS "fullName", staff.email AS "email", eligibility."canRecruit", eligibility."canReview"
     FROM ats.users staff

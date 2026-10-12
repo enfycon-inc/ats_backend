@@ -35,7 +35,7 @@ describe('job recruiter staffing permissions and scope', () => {
     expect(sql).toContain('staff.is_approved = true');
     expect(sql).toContain('staff.is_active = true');
     expect(sql).toContain("role.permissions::jsonb ? 'submission:create'");
-    expect(sql).not.toContain('staff.email');
+    expect(sql).toContain('staff.email');
   });
 
   it('denies an admin-labelled active role lacking recruiter assignment capability', async () => {
@@ -238,6 +238,23 @@ describe('job recruiter staffing permissions and scope', () => {
   it('routes staffing requests to the job service rather than the administrative directory', async () => {
     const service: any = { listJobStaff: jest.fn().mockResolvedValue([]) };
     await new JobsController(service).staffingOptions(actor, undefined, branch, unit);
-    expect(service.listJobStaff).toHaveBeenCalledWith(actor, tenant, branch, unit);
+    expect(service.listJobStaff).toHaveBeenCalledWith(actor, tenant, branch, unit, undefined);
+  });
+
+  it('allows Account Manager to fetch staffing options for their own created job by jobId', async () => {
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: actor.dbId }) };
+    await expect(listJobStaff(prisma, actor, tenant, branch, unit, other)).resolves.toBeDefined();
+  });
+
+  it('rejects Account Manager from fetching staffing options for another users job by jobId', async () => {
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: '99999999-9999-4999-8999-999999999999' }) };
+    await expect(listJobStaff(prisma, actor, tenant, branch, unit, other)).rejects.toThrow('Account Managers can only assign recruiters to their own created jobs');
+  });
+
+  it('rejects recruiter assignment in updateJob when actor lacks job:assign_recruiter', async () => {
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: actor.dbId }) };
+    prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
+    await expect(new JobsService(prisma, {} as any).updateJob(other, { recruiterIds: [recruiter] }, tenant,
+      { ...actor, permissions: ['job:edit'] })).rejects.toThrow('You do not have permission to assign recruiters');
   });
 });

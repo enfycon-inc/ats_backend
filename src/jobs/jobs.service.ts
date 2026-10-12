@@ -402,8 +402,8 @@ export class JobsService {
   /**
    * Create a new job requisition
    */
-  async listJobStaff(actor: AuthUser, tenantId: string, branchId?: string, unitId?: string) {
-    return listJobStaff(this.prisma, actor, tenantId, branchId, unitId);
+  async listJobStaff(actor: AuthUser, tenantId: string, branchId?: string, unitId?: string, jobId?: string) {
+    return listJobStaff(this.prisma, actor, tenantId, branchId, unitId, jobId);
   }
 
   async listJobPods(actor: AuthUser, tenantId: string, branchId?: string, unitId?: string) {
@@ -1763,9 +1763,14 @@ export class JobsService {
     const isAccountManager = userRoles.some(r => ['ACCOUNT_MANAGER', 'ACCOUNTMANAGER', 'BDM'].includes(r.toUpperCase().replace(/[\s-_]+/g, ''))) ||
       (!isSupervisoryAssigner && userPermissions.includes('job:assign_recruiter'));
 
-    // Account Managers can only assign recruiters on their own created jobs
-    if (isAccountManager && !isSupervisoryAssigner && !isJobCreator && (dto.recruiterIds !== undefined || dto.recruiterId !== undefined)) {
-      throw new ForbiddenException('Account Managers can only assign recruiters to their own created jobs.');
+    // Account Managers / non-supervisory users can only assign recruiters on their own created jobs if enabled by tenant admin
+    if (!isSupervisoryAssigner && (dto.recruiterIds !== undefined || dto.recruiterId !== undefined)) {
+      if (!userPermissions.includes('job:assign_recruiter')) {
+        throw new ForbiddenException('You do not have permission to assign recruiters.');
+      }
+      if (isAccountManager && !isJobCreator) {
+        throw new ForbiddenException('Account Managers can only assign recruiters to their own created jobs.');
+      }
     }
 
     const canAssignAny = isSupervisoryAssigner || isJobCreator;

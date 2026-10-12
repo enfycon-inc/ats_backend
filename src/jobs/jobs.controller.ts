@@ -39,8 +39,9 @@ export class JobsController {
   async staffingOptions(@CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantHeader?: string,
     @Query('branchId') branchId?: string,
-    @Query('businessUnitId') businessUnitId?: string) {
-    return this.jobsService.listJobStaff(user, resolveTenantId(user, tenantHeader), branchId, businessUnitId);
+    @Query('businessUnitId') businessUnitId?: string,
+    @Query('jobId') jobId?: string) {
+    return this.jobsService.listJobStaff(user, resolveTenantId(user, tenantHeader), branchId, businessUnitId, jobId);
   }
 
   @Post()
