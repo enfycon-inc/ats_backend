@@ -52,7 +52,7 @@ export class PodsService {
     if (!effectiveBranchId) {
       const user = await db.user.findFirst({
         where: { id: userId },
-        select: { branchId: true },
+        select: { branchId: true, assignedRoleIds: true },
       });
       effectiveBranchId = user?.branchId || null;
     }
@@ -80,11 +80,18 @@ export class PodsService {
       return;
     }
 
+    const userForRoles = await db.user.findFirst({
+      where: { id: userId },
+      select: { assignedRoleIds: true },
+    });
+    const currentRoles = Array.isArray(userForRoles?.assignedRoleIds) ? userForRoles.assignedRoleIds : [];
+    const newAssignedRoleIds = Array.from(new Set([...currentRoles, role.id]));
+
     await db.user.update({
       where: { id: userId },
       data: {
         roleId: role.id,
-        assignedRoleIds: [role.id],
+        assignedRoleIds: newAssignedRoleIds,
       },
     });
 
@@ -109,7 +116,7 @@ export class PodsService {
 
     const user = await db.user.findFirst({
       where: { id: userId },
-      select: { branchId: true },
+      select: { branchId: true, assignedRoleIds: true },
     });
     const branchId = user?.branchId || null;
 
@@ -136,11 +143,14 @@ export class PodsService {
       return;
     }
 
+    const currentRoles = Array.isArray(user?.assignedRoleIds) ? user.assignedRoleIds : [];
+    const newAssignedRoleIds = Array.from(new Set([...currentRoles, role.id]));
+
     await db.user.update({
       where: { id: userId },
       data: {
         roleId: role.id,
-        assignedRoleIds: [role.id],
+        assignedRoleIds: newAssignedRoleIds,
       },
     });
 
@@ -183,6 +193,25 @@ export class PodsService {
       throw new NotFoundException(`User with ID ${missingId} not found in this organization.`);
     }
 
+    // Collect all role IDs from users (both roleId and assignedRoleIds)
+    const allRoleIds = new Set<string>();
+    users.forEach((u: any) => {
+      if (u.roleId) allRoleIds.add(u.roleId);
+      if (Array.isArray(u.assignedRoleIds)) {
+        u.assignedRoleIds.forEach((rid: string) => allRoleIds.add(rid));
+      }
+    });
+
+    const customRoles = await tx.customRole.findMany({
+      where: { id: { in: Array.from(allRoleIds) } },
+      select: {
+        id: true,
+        name: true,
+        systemRole: { select: { systemKey: true } },
+      },
+    });
+    const roleMap = new Map<string, any>(customRoles.map((r: any) => [r.id, r]));
+
     for (const u of users) {
       if (!u.isActive || !u.isApproved) {
         throw new BadRequestException(`User "${u.fullName}" is not an active, approved staff member.`);
@@ -194,23 +223,24 @@ export class PodsService {
         );
       }
 
-      const sysKey = (u.customRole?.systemRole?.systemKey || '').toUpperCase();
-      const roleName = (u.customRole?.name || '').toUpperCase();
+      const userRoleIds = [
+        u.roleId,
+        ...(Array.isArray(u.assignedRoleIds) ? u.assignedRoleIds : []),
+      ].filter(Boolean);
+      const userRoles = userRoleIds.map((rid: string) => roleMap.get(rid)).filter(Boolean);
 
-      const isExcludedRole =
-        ['TENANT_ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'DELIVERY_HEAD', 'ACCOUNT_MANAGER'].includes(sysKey) ||
-        ['TENANT ADMIN', 'SUPER ADMIN', 'BRANCH ADMIN', 'DELIVERY HEAD', 'ACCOUNT MANAGER'].some((r) =>
-          roleName.includes(r),
-        );
-
-      const isRecruiterRole =
-        !isExcludedRole &&
-        (sysKey === 'RECRUITER' ||
+      const isRecruiterRole = userRoles.some((r: any) => {
+        const sysKey = (r.systemRole?.systemKey || '').toUpperCase();
+        const roleName = (r.name || '').toUpperCase();
+        return (
+          sysKey === 'RECRUITER' ||
           sysKey === 'POD_LEAD' ||
           roleName === 'RECRUITER' ||
           roleName.includes('RECRUITER') ||
           roleName.includes('POD LEAD') ||
-          roleName.includes('TEAM LEAD'));
+          roleName.includes('TEAM LEAD')
+        );
+      });
 
       if (!isRecruiterRole) {
         throw new BadRequestException(
@@ -672,41 +702,81 @@ export class PodsService {
     const users = await this.prisma.user.findMany({
       where,
       include: {
-        customRole: { select: { name: true, systemRole: { select: { systemKey: true } } } },
+        customRole: { select: { id: true, name: true, systemRole: { select: { systemKey: true } } } },
       },
       orderBy: { fullName: 'asc' },
     });
 
-    const eligible = users.filter((u) => {
-      const sysKey = (u.customRole?.systemRole?.systemKey || '').toUpperCase();
-      const roleName = (u.customRole?.name || '').toUpperCase();
+    // Collect all role IDs across users (both roleId and assignedRoleIds)
+    const allRoleIds = new Set<string>();
+    users.forEach((u: any) => {
+      if (u.roleId) allRoleIds.add(u.roleId);
+      if (Array.isArray(u.assignedRoleIds)) {
+        u.assignedRoleIds.forEach((rid: string) => allRoleIds.add(rid));
+      }
+    });
 
-      const isExcludedRole =
-        ['TENANT_ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'DELIVERY_HEAD', 'ACCOUNT_MANAGER'].includes(sysKey) ||
-        ['TENANT ADMIN', 'SUPER ADMIN', 'BRANCH ADMIN', 'DELIVERY HEAD', 'ACCOUNT MANAGER'].some((r) =>
-          roleName.includes(r),
-        );
+    const customRoles = await this.prisma.customRole.findMany({
+      where: { id: { in: Array.from(allRoleIds) } },
+      select: {
+        id: true,
+        name: true,
+        systemRole: { select: { systemKey: true } },
+      },
+    });
+    const roleMap = new Map<string, any>(customRoles.map((r: any) => [r.id, r]));
 
-      return (
-        !isExcludedRole &&
-        (sysKey === 'RECRUITER' ||
+    const eligible = users.filter((u: any) => {
+      const userRoleIds = [
+        u.roleId,
+        ...(Array.isArray(u.assignedRoleIds) ? u.assignedRoleIds : []),
+      ].filter(Boolean);
+      const userRoles = userRoleIds.map((rid: string) => roleMap.get(rid)).filter(Boolean);
+
+      return userRoles.some((r: any) => {
+        const sysKey = (r.systemRole?.systemKey || '').toUpperCase();
+        const roleName = (r.name || '').toUpperCase();
+        return (
+          sysKey === 'RECRUITER' ||
           sysKey === 'POD_LEAD' ||
           roleName === 'RECRUITER' ||
           roleName.includes('RECRUITER') ||
           roleName.includes('POD LEAD') ||
-          roleName.includes('TEAM LEAD'))
-      );
+          roleName.includes('TEAM LEAD')
+        );
+      });
     });
 
-    return eligible.map((u) => ({
-      id: u.id,
-      fullName: u.fullName,
-      email: u.email,
-      roleName: u.customRole?.name || 'Recruiter',
-      systemRole: u.customRole?.systemRole?.systemKey || 'RECRUITER',
-      businessUnitId: u.businessUnitId || null,
-      branchId: u.branchId || null,
-    }));
+    return eligible.map((u: any) => {
+      const userRoleIds = [
+        u.roleId,
+        ...(Array.isArray(u.assignedRoleIds) ? u.assignedRoleIds : []),
+      ].filter(Boolean);
+      const userRoles = userRoleIds.map((rid: string) => roleMap.get(rid)).filter(Boolean);
+
+      const recruiterRole = userRoles.find((r: any) => {
+        const sysKey = (r.systemRole?.systemKey || '').toUpperCase();
+        const roleName = (r.name || '').toUpperCase();
+        return (
+          sysKey === 'RECRUITER' ||
+          sysKey === 'POD_LEAD' ||
+          roleName === 'RECRUITER' ||
+          roleName.includes('RECRUITER') ||
+          roleName.includes('POD LEAD') ||
+          roleName.includes('TEAM LEAD')
+        );
+      });
+
+      return {
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        roleName: recruiterRole?.name || u.customRole?.name || 'Recruiter',
+        systemRole: recruiterRole?.systemRole?.systemKey || u.customRole?.systemRole?.systemKey || 'RECRUITER',
+        businessUnitId: u.businessUnitId || null,
+        branchId: u.branchId || null,
+      };
+    });
   }
 
   /**
