@@ -30,7 +30,7 @@ describe('job recruiter staffing permissions and scope', () => {
     expect(await listJobStaff(prisma, actor, tenant, branch, unit)).toEqual([
       { id: recruiter, fullName: 'Recruiter', canRecruit: true, canReview: false },
     ]);
-    expect(prisma.$queryRawUnsafe.mock.calls[0].slice(1)).toEqual([tenant, branch, unit]);
+    expect(prisma.$queryRawUnsafe.mock.calls[0].slice(1)).toEqual([tenant, branch, unit, null]);
     const sql = prisma.$queryRawUnsafe.mock.calls[0][0];
     expect(sql).toContain('staff.is_approved = true');
     expect(sql).toContain('staff.is_active = true');
@@ -40,6 +40,12 @@ describe('job recruiter staffing permissions and scope', () => {
 
   it('denies an admin-labelled active role lacking recruiter assignment capability', async () => {
     await expect(listJobStaff(prisma, { ...actor, roles: ['TENANT_ADMIN'], permissions: ['user:manage'] }, tenant)).rejects.toThrow('Recruiter assignment permission');
+    expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+  });
+
+  it('denies recruiter-role users even if recruiter assignment permission is accidentally present', async () => {
+    await expect(listJobStaff(prisma, { ...actor, roles: ['RECRUITER'], permissions: ['job:assign_recruiter'] }, tenant))
+      .rejects.toThrow('Recruiters cannot assign recruiters');
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });
 
@@ -249,6 +255,38 @@ describe('job recruiter staffing permissions and scope', () => {
   it('rejects Account Manager from fetching staffing options for another users job by jobId', async () => {
     prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: '99999999-9999-4999-8999-999999999999' }) };
     await expect(listJobStaff(prisma, actor, tenant, branch, unit, other)).rejects.toThrow('Account Managers can only assign recruiters to their own created jobs');
+  });
+
+  it('lets a Pod Lead list eligible recruiters only for a job mapped to their pod', async () => {
+    const podId = '66666666-6666-4666-8666-666666666666';
+    prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId, branchId: branch, businessUnitId: unit }) };
+    prisma.jobPod = { findUnique: jest.fn().mockResolvedValue({ jobId: other }) };
+    const podLead = { ...actor, roles: ['POD_LEAD'], permissions: [] };
+
+    await expect(listJobStaff(prisma, podLead, tenant, branch, unit, other)).resolves.toBeDefined();
+    expect(prisma.$queryRawUnsafe.mock.calls[0].slice(1)).toEqual([tenant, branch, unit, podId]);
+    expect(prisma.$queryRawUnsafe.mock.calls[0][0]).toContain('staff.pod_id = $4::uuid');
+  });
+
+  it('denies a Pod Lead staffing list for a job outside their pod', async () => {
+    const podId = '66666666-6666-4666-8666-666666666666';
+    prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId, branchId: branch, businessUnitId: unit }) };
+    prisma.jobPod = { findUnique: jest.fn().mockResolvedValue(null) };
+    await expect(listJobStaff(prisma, { ...actor, roles: ['POD_LEAD'], permissions: [] }, tenant, branch, unit, other))
+      .rejects.toThrow('mapped to your pod');
+    expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Pod Lead recruiter update when the job is not mapped to their pod', async () => {
+    const podId = '66666666-6666-4666-8666-666666666666';
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, tenantId: tenant, branchId: branch, businessUnitId: unit }), update: jest.fn() };
+    prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
+    prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId }) };
+    const podLead = { ...actor, roles: ['POD_LEAD'], permissions: [] };
+
+    await expect(new JobsService(prisma, {} as any).updateJob(other, { recruiterIds: [recruiter] }, tenant, podLead))
+      .rejects.toThrow('mapped to your pod');
+    expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
   it('rejects recruiter assignment in updateJob when actor lacks job:assign_recruiter', async () => {

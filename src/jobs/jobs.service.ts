@@ -9,7 +9,7 @@ import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { delegationTargets } from '../business-units/business-units.service';
-import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
+import { listJobStaff, listJobPods, validateJobRecruiters, isPodLeadActor } from './job-staffing';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere } from '../clients/client-visibility';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
@@ -75,6 +75,7 @@ export interface JobProfile {
   recruitmentManager: string;
   recruiterId?: string;
   recruiterIds?: string[];
+  recruiterDetails?: AssignedRecruiterProfile[];
   recruiter: string;
   createdBy: string;
 
@@ -110,6 +111,13 @@ export interface JobProfile {
   jobTimezone?: string;
   shiftTiming?: string;
   timingSnapshotAt?: string | null;
+}
+
+export interface AssignedRecruiterProfile {
+  id: string;
+  fullName: string;
+  email?: string | null;
+  avatar?: string | null;
 }
 
 /** A single candidate ranked against a job requisition. */
@@ -995,6 +1003,7 @@ export class JobsService {
              COALESCE(pod_info.pod_name, '') AS pod_name,
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
                COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
+               COALESCE(recruiter_info.recruiter_details, '[]'::json) AS recruiter_details,
              uc.full_name AS creator_name,
              uc.email AS creator_email,
              b.name AS branch_name,
@@ -1010,7 +1019,8 @@ export class JobsService {
           SELECT 
             jr.job_id,
             STRING_AGG(u.id::text, ',') AS recruiter_ids,
-            STRING_AGG(u.full_name, ', ') AS recruiter_names
+            STRING_AGG(u.full_name, ', ') AS recruiter_names,
+            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
           GROUP BY jr.job_id
@@ -1190,6 +1200,7 @@ export class JobsService {
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
                COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
+               COALESCE(recruiter_info.recruiter_details, '[]'::json) AS recruiter_details,
                 uc.full_name AS creator_name, uc.email AS creator_email,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
@@ -1200,7 +1211,8 @@ export class JobsService {
           SELECT 
             jr.job_id,
             STRING_AGG(u.id::text, ',') AS recruiter_ids,
-            STRING_AGG(u.full_name, ', ') AS recruiter_names
+            STRING_AGG(u.full_name, ', ') AS recruiter_names,
+            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
           GROUP BY jr.job_id
@@ -1224,6 +1236,7 @@ export class JobsService {
                 COALESCE(pod_info.pod_id, '') AS pod_id, COALESCE(pod_info.pod_name, '') AS pod_name,
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
                COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
+               COALESCE(recruiter_info.recruiter_details, '[]'::json) AS recruiter_details,
                 uc.full_name AS creator_name, uc.email AS creator_email,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
@@ -1234,7 +1247,8 @@ export class JobsService {
           SELECT 
             jr.job_id,
             STRING_AGG(u.id::text, ',') AS recruiter_ids,
-            STRING_AGG(u.full_name, ', ') AS recruiter_names
+            STRING_AGG(u.full_name, ', ') AS recruiter_names,
+            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
           GROUP BY jr.job_id
@@ -1282,6 +1296,24 @@ export class JobsService {
     const rawEndDate = row.end_date ?? row.endDate;
     const rawRespondBy = row.respond_by ?? row.respondBy;
     const rawApprovedAt = row.approved_at ?? row.approvedAt;
+    let rawRecruiterDetails = row.recruiter_details ?? row.recruiterDetails ?? [];
+    if (typeof rawRecruiterDetails === 'string') {
+      try {
+        rawRecruiterDetails = JSON.parse(rawRecruiterDetails);
+      } catch {
+        rawRecruiterDetails = [];
+      }
+    }
+    const recruiterDetails: AssignedRecruiterProfile[] = Array.isArray(rawRecruiterDetails)
+      ? rawRecruiterDetails
+          .filter((recruiter: any) => recruiter && recruiter.id)
+          .map((recruiter: any) => ({
+            id: String(recruiter.id),
+            fullName: String(recruiter.fullName || recruiter.full_name || 'Recruiter'),
+            email: recruiter.email || null,
+            avatar: recruiter.avatar || recruiter.profilePicture || recruiter.profile_picture || null,
+          }))
+      : [];
 
 
     return {
@@ -1341,6 +1373,7 @@ export class JobsService {
       recruitmentManager: row.recruitment_manager_name ?? row.recruitmentManagerName ?? 'N/A',
               recruiter: row.multi_recruiter_names || row.recruiter_name || row.recruiterName || 'N/A',
         recruiterIds: row.recruiter_ids ? String(row.recruiter_ids).split(',').filter(Boolean) : [],
+        recruiterDetails,
       createdBy: row.creator_name ?? row.creatorName ?? 'System',
       creatorEmail: row.creator_email ?? row.creatorEmail ?? null,
 
@@ -1711,8 +1744,13 @@ export class JobsService {
     const _hasEditPerm = _userPermissions.includes('job:edit');
     const _isOwner = currentJob.accountManagerId === user?.dbId || currentJob.accountManagerId === user?.id || 
                      currentJob.recruitmentManagerId === user?.dbId || currentJob.recruitmentManagerId === user?.id;
+    const isScopedPodLead = isPodLeadActor(user);
 
-    if (!_isAdmin && !_hasEditPerm && !_isOwner) {
+    const assignmentOnlyFields = new Set(['recruiterId', 'recruiterIds', 'recruiter', 'assignedTo']);
+    const isPodLeadAssignmentOnly = isScopedPodLead &&
+      (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) &&
+      Object.keys(dto).every(key => assignmentOnlyFields.has(key));
+    if (!_isAdmin && !_hasEditPerm && !_isOwner && !isPodLeadAssignmentOnly) {
       throw new ForbiddenException('You do not have permission to edit this job.');
     }
 
@@ -1755,6 +1793,12 @@ export class JobsService {
       userPermissions.includes('job:assign');
 
     const isSupervisoryAssigner = isTenantAdmin || isBranchAdmin || isUnitAdmin || isDeliveryHead;
+    const normalizedActorRoles = [...userRoles, user?.systemRole || ''].map(r => r.toUpperCase().replace(/[\s-_]+/g, ''));
+    const isRecruiterOnly = normalizedActorRoles.includes('RECRUITER') &&
+      !normalizedActorRoles.some(r => ['PODLEAD', 'PODHEAD', 'ACCOUNTMANAGER', 'BDM', 'DELIVERYHEAD', 'BRANCHADMIN', 'UNITADMIN', 'TENANTADMIN', 'SUPERADMIN'].includes(r));
+    if (isRecruiterOnly && !isSupervisoryAssigner) {
+      throw new ForbiddenException('Recruiters cannot assign recruiters.');
+    }
     const isJobCreator = Boolean(
       (currentJob.accountManagerId && (user?.dbId === currentJob.accountManagerId || user?.id === currentJob.accountManagerId)) ||
       (currentJob.recruitmentManagerId && (user?.dbId === currentJob.recruitmentManagerId || user?.id === currentJob.recruitmentManagerId))
@@ -1764,7 +1808,7 @@ export class JobsService {
       (!isSupervisoryAssigner && userPermissions.includes('job:assign_recruiter'));
 
     // Account Managers / non-supervisory users can only assign recruiters on their own created jobs if enabled by tenant admin
-    if (!isSupervisoryAssigner && (dto.recruiterIds !== undefined || dto.recruiterId !== undefined)) {
+    if (!isSupervisoryAssigner && !isScopedPodLead && (dto.recruiterIds !== undefined || dto.recruiterId !== undefined)) {
       if (!userPermissions.includes('job:assign_recruiter')) {
         throw new ForbiddenException('You do not have permission to assign recruiters.');
       }
@@ -1779,6 +1823,18 @@ export class JobsService {
     const jobPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
     const isUnassignedJob = jobPods.length === 0;
 
+    let podLeadPodId: string | null = null;
+    if (isScopedPodLead && !isSupervisoryAssigner) {
+      const pod = await this.prisma.pod.findFirst({
+        where: { tenantId, podHeadId: user.dbId },
+        select: { id: true },
+      });
+      podLeadPodId = pod?.id || null;
+      if (!podLeadPodId || !jobPods.some(mapping => mapping.podId === podLeadPodId)) {
+        throw new ForbiddenException('You can only assign recruiters to jobs mapped to your pod.');
+      }
+    }
+
     // If updating recruiter_id or recruiterIds, apply validation rules
     let targetRecruiterIds: string[] = [];
     if (dto.recruiterIds !== undefined) {
@@ -1792,7 +1848,7 @@ export class JobsService {
     if (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) {
 
       await validateJobRecruiters(this.prisma, user, tenantId, targetRecruiterIds,
-        dto.branchId ?? currentJob.branchId, dto.businessUnitId ?? currentJob.businessUnitId);
+        dto.branchId ?? currentJob.branchId, dto.businessUnitId ?? currentJob.businessUnitId, isScopedPodLead ? id : undefined);
 
       const newRecruiterId = dto.recruiterId;
 
@@ -1800,7 +1856,15 @@ export class JobsService {
         throw new BadRequestException("Unassigned jobs can only be assigned by a Tenant Admin, Branch Admin, or an authorized staff member.");
       }
 
-      if (canAssignAny) {
+      if (isScopedPodLead && !isSupervisoryAssigner) {
+        if (newRecruiterId) {
+          const recruiter = await this.prisma.user.findFirst({
+            where: { id: newRecruiterId, tenantId, podId: podLeadPodId },
+            select: { id: true },
+          });
+          if (!recruiter) throw new ForbiddenException('You can only assign recruiters belonging to your own pod.');
+        }
+      } else if (canAssignAny) {
         if (newRecruiterId) {
           const recruiter = await this.prisma.user.findFirst({
             where: { id: newRecruiterId, tenantId },

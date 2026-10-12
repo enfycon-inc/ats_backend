@@ -33,8 +33,7 @@ export class JobsController {
   }
 
   @Get('staffing-options')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:assign_recruiter')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   async staffingOptions(@CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantHeader?: string,
