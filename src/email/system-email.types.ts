@@ -9,6 +9,8 @@ export interface SystemEmailRequest {
   to: string;
   subject: string;
   html: string;
+  text?: string;
+  systemGenerated?: boolean;
   replyTo?: string;
   category?: string;
 }

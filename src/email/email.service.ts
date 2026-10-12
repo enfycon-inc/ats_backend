@@ -6,6 +6,7 @@ import axios from 'axios';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SystemMailService } from './system-mail.service';
+import { renderSystemEmail } from './system-email-template';
 import type { SystemEmailRequest, EmailDispatchResult, TenantEmailSettings } from './system-email.types';
 
 @Injectable()
@@ -690,6 +691,11 @@ export class EmailService {
   }
 
   /** Shared tenant-aware dispatcher for system messages and delivery tests. */
+  async sendSystemTestEmail(tenantId: string, to: string): Promise<EmailDispatchResult> {
+    const tenant = await this.systemMail.tenant(tenantId);
+    return this.systemMail.send({ tenantId, to, ...renderSystemEmail({ event: 'delivery_test', workspace: tenant.name, recipient: to }) });
+  }
+
   async sendTenantEmail(options: SystemEmailRequest): Promise<EmailDispatchResult> {
     return this.systemMail.send(options);
   }

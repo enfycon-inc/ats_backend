@@ -209,21 +209,6 @@ export class EmailController {
   ) {
     const tid = this.settingsTenant(user, tenantId);
     const targetEmail = dto.recipientEmail || user.email;
-    return this.emailService.sendTenantEmail({
-      tenantId: tid,
-      to: targetEmail,
-      subject: `EnfySync ATS — Test Email Configuration Verification`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 550px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-          <h3 style="color: #4f46e5; margin-top: 0;">Email delivery test</h3>
-          <p style="color: #334155; font-size: 14px;">
-            This message tests your selected workspace system email sender.
-          </p>
-          <p style="color: #64748b; font-size: 12px; margin-top: 20px;">
-            Sent by EnfySync ATS Multi-Tenant Delivery Engine.
-          </p>
-        </div>
-      `,
-    });
+    return this.emailService.sendSystemTestEmail(tid, targetEmail);
   }
 }

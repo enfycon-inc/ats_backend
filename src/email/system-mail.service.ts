@@ -10,6 +10,7 @@ import * as nodemailer from 'nodemailer';
 import { createHash } from 'node:crypto';
 import { resolveTxt } from 'node:dns/promises';
 import { PrismaService } from '../prisma/prisma.service';
+import { applySystemEmailReplyPolicy } from './system-email-template';
 import type {
   EmailDispatchMode,
   EmailDispatchResult,
@@ -31,6 +32,7 @@ interface BrevoMessage {
   to: { email: string }[];
   subject: string;
   htmlContent: string;
+  textContent?: string;
   replyTo?: { email: string };
 }
 
@@ -416,6 +418,7 @@ export class SystemMailService {
     const mode = this.mode(tenant.emailDispatchMode);
     if (mode === 'DIRECT_ACCOUNT') {
       const account = await this.defaultAccount(request.tenantId);
+      request = applySystemEmailReplyPolicy(request, account.emailAddress);
       try {
         if (account.provider === 'microsoft') {
           const payload = {
@@ -498,6 +501,7 @@ export class SystemMailService {
           to: request.to,
           subject: request.subject,
           html: request.html,
+          ...(request.text ? { text: request.text } : {}),
           ...(request.replyTo ? { replyTo: request.replyTo } : {}),
         });
         if (!result.accepted?.length || result.rejected?.length)
@@ -529,12 +533,14 @@ export class SystemMailService {
         ),
       };
     } else sender = this.platformSender();
+    request = applySystemEmailReplyPolicy(request, sender.email);
     const options = this.brevoOptions();
     const payload: BrevoMessage = {
       sender,
       to: [{ email: request.to }],
       subject: request.subject,
       htmlContent: request.html,
+      ...(request.text ? { textContent: request.text } : {}),
       ...(request.replyTo ? { replyTo: { email: request.replyTo } } : {}),
     };
     try {
