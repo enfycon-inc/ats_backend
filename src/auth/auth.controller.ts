@@ -359,10 +359,10 @@ Validates email + password and returns a signed JWT access token.
   })
   async requestRole(
     @CurrentUser() currentUser: AuthUser,
-    @Body() body: { role: string; branchId?: string; businessUnitId?: string },
+    @Body() body: { role: string; branchId?: string; businessUnitId?: string; city?: import('./user-city-contract').UserCity | null },
   ) {
     if (!body?.role) throw new BadRequestException('Role is required');
-    return this.authService.requestRole(currentUser.dbId, body.role, body.branchId, body.businessUnitId);
+    return this.authService.requestRole(currentUser.dbId, body.role, body.branchId, body.businessUnitId, body.city);
   }
 
   // â”€â”€â”€ PATCH /api/auth/users/:id/approve â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

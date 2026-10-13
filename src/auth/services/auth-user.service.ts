@@ -16,6 +16,7 @@ import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
 import { EventsGateway } from '../../events/events.gateway';
 import type { StaffProfile } from '../profile-contract';
+import { USER_CITY_VALUES, type UserCity } from '../user-city-contract';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -443,7 +444,7 @@ export class AuthUserService {
     if (dto.businessUnitId !== undefined) businessUnitId = dto.businessUnitId?.trim() || null;
     if (dto.jobReviewerId !== undefined) jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
 
-    const allowedCities = ['BBSR', 'PUNE', 'BENGALURU', 'VIZAG', 'HYDERABAD'];
+    const allowedCities = USER_CITY_VALUES;
     if (dto.city !== undefined && dto.city !== null && !allowedCities.includes(dto.city)) {
       throw new BadRequestException(`city must be one of: ${allowedCities.join(', ')} or null.`);
     }
@@ -571,17 +572,27 @@ export class AuthUserService {
     return this.getProfile(userId);
   }
 
-    async requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string) {
+    async requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string, city?: UserCity | null) {
+      if (city !== undefined && city !== null && !USER_CITY_VALUES.includes(city)) {
+        throw new BadRequestException('Select a valid city or leave it unspecified.');
+      }
       const userRes = await this.authQuery.query(
         'SELECT id, email, full_name, tenant_id FROM users WHERE id = $1 LIMIT 1',
         [userId]
       );
       if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
 
-      await this.authQuery.query(
-        'UPDATE users SET requested_role = $1, branch_id = $2::uuid, business_unit_id = $3::uuid, updated_at = NOW() WHERE id = $4::uuid',
-        [role, branchId || null, businessUnitId || null, userId]
-      );
+      if (city === undefined) {
+        await this.authQuery.query(
+          'UPDATE users SET requested_role = $1, branch_id = $2::uuid, business_unit_id = $3::uuid, updated_at = NOW() WHERE id = $4::uuid',
+          [role, branchId || null, businessUnitId || null, userId]
+        );
+      } else {
+        await this.authQuery.query(
+          'UPDATE users SET requested_role = $1, branch_id = $2::uuid, business_unit_id = $3::uuid, city = $4::ats."UserCity", updated_at = NOW() WHERE id = $5::uuid AND tenant_id = $6::uuid',
+          [role, branchId || null, businessUnitId || null, city, userId, userRes.rows[0].tenant_id]
+        );
+      }
 
       try {
         const adminsRes = await this.authQuery.query(

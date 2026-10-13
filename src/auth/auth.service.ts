@@ -97,7 +97,7 @@ export class AuthService {
   updateUserRoles(userId: string, roles: string[], requesterRoles: string[]) { return this.userService.updateUserRoles(userId, roles, requesterRoles); }
   updateUserDetails(userId: string, dto: any, requester: any) { return this.userService.updateUserDetails(userId, dto, requester); }
   bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) { return this.userService.bulkSetJobReviewer(tenantId, userIds, reviewerId); }
-  requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string) { return this.userService.requestRole(userId, role, branchId, businessUnitId); }
+  requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string, city?: import('./user-city-contract').UserCity | null) { return this.userService.requestRole(userId, role, branchId, businessUnitId, city); }
   approveTenantUser(userId: string, dto: any, requester: any) { return this.userService.approveTenantUser(userId, dto, requester); }
   rejectTenantUser(userId: string, requester: any) { return this.userService.rejectTenantUser(userId, requester); }
 
