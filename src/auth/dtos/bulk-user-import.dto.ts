@@ -1,8 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 export class BulkUserImportRowDto {
-  @ApiProperty({ example: 'Priya Sharma' })
-  fullName: string;
+  @ApiProperty({ example: 'Priya' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Sharma' })
+  lastName: string;
+
+  @ApiProperty({ example: 'Priya Sharma', required: false, deprecated: true })
+  fullName?: string;
 
   @ApiProperty({ example: 'priya@example.com' })
   email: string;
@@ -18,6 +24,9 @@ export class BulkUserImportRowDto {
 
   @ApiProperty({ example: 'PUNE', required: false })
   city?: string;
+
+  @ApiProperty({ example: 'YES', required: false, description: 'Example rows marked YES are ignored by the importer.' })
+  example?: string;
 }
 
 export class BulkUserImportDto {

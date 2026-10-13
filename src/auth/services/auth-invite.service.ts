@@ -55,6 +55,8 @@ export class AuthInviteService {
   async inviteUser(dto: {
     email: string;
     fullName: string;
+    firstName?: string;
+    lastName?: string;
     systemRole?: string;
     roleId?: string;
     roleIds?: string[];
@@ -74,7 +76,7 @@ export class AuthInviteService {
       if (value && (typeof value !== 'string' || !validId.test(value))) throw new BadRequestException(`${field} must be a valid ID.`);
     }
     const cleanEmail = (dto.email || '').trim().toLowerCase();
-    const fullName = (dto.fullName || '').trim();
+    const fullName = (dto.fullName || `${dto.firstName || ''} ${dto.lastName || ''}`).trim().replace(/\s+/g, ' ');
 
     if (!cleanEmail || !fullName) throw new BadRequestException('Email and full name are required.');
 
@@ -154,8 +156,8 @@ export class AuthInviteService {
       systemRoleId = byId.get(roleId)?.system_role_id || null;
     }
 
-    const firstName = fullName.split(/\s+/)[0] || '';
-    const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
+    const firstName = (dto.firstName || fullName.split(/\s+/)[0] || '').trim();
+    const lastName = (dto.lastName || fullName.split(/\s+/).slice(1).join(' ') || '').trim();
     const assignedRoleIds = requestedRoleIds.length ? requestedRoleIds : roleId ? [roleId] : [];
     const insertUserRes = await this.authQuery.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, business_unit_id, city, pod_id, is_active, is_approved)
@@ -219,8 +221,11 @@ export class AuthInviteService {
 
   async validateBulkUsers(rows: any[], requester: AuthUser) {
     const scope = this.assertBulkImportScope(requester);
+    rows = Array.isArray(rows)
+      ? rows.filter((row) => String(row?.example || '').trim().toUpperCase() !== 'YES')
+      : rows;
     if (!Array.isArray(rows) || rows.length < 1 || rows.length > 100) {
-      throw new BadRequestException('Upload between 1 and 100 user rows per import.');
+      throw new BadRequestException('Upload between 1 and 100 user rows per import. Example rows marked YES are ignored.');
     }
     const tenantId = requester.tenantId;
     const policy = await this.tenantService.getTenantAuthPolicy(tenantId);
@@ -259,12 +264,17 @@ export class AuthInviteService {
       const suggestions = near.length && (near.length === 1 || near[0].distance < near[1].distance) ? [near[0].candidate] : [];
       return { match: null, error: exact.length > 1 ? `${field} name is ambiguous; use a more specific value.` : `${field} was not found.`, suggestions };
     };
-    return rows.map((input, index) => {
+    return rows.map((rawInput, index) => {
+      const input = rawInput || {};
       const errors: string[] = [];
       const suggestions: Record<string, string[]> = {};
-      const fullName = String(input.fullName || input.name || '').trim().replace(/\s+/g, ' ');
+      const legacyName = String(input.fullName || input.name || '').trim().replace(/\s+/g, ' ');
+      const firstName = String(input.firstName || legacyName.split(/\s+/)[0] || '').trim().replace(/\s+/g, ' ');
+      const lastName = String(input.lastName || legacyName.split(/\s+/).slice(1).join(' ') || '').trim().replace(/\s+/g, ' ');
+      const fullName = `${firstName} ${lastName}`.trim();
       const email = String(input.email || '').trim().toLowerCase();
-      if (fullName.length < 2) errors.push('Full name is required.');
+      if (!firstName) errors.push('First name is required.');
+      if (!lastName) errors.push('Last name is required.');
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Enter a valid email address.');
       if (email) {
         if (seenEmails.has(email)) errors.push('This email appears more than once in the file.');
@@ -310,7 +320,7 @@ export class AuthInviteService {
       return {
         row: index + 2,
         input,
-        normalized: { fullName, email, branchId, businessUnitId: unitMatch.match?.id || null,
+        normalized: { firstName, lastName, fullName, email, branchId, businessUnitId: unitMatch.match?.id || null,
           city: city as UserCity | null, roleIds: resolvedRoles.map((role) => role.id), roleNames: resolvedRoles.map((role) => role.name) },
         status: errors.length ? 'invalid' : 'ready',
         errors: Array.from(new Set(errors)),
@@ -329,6 +339,7 @@ export class AuthInviteService {
       }
       try {
         const created = await this.inviteUser({ email: row.normalized.email, fullName: row.normalized.fullName,
+          firstName: row.normalized.firstName, lastName: row.normalized.lastName,
           roleIds: row.normalized.roleIds, branchId: row.normalized.branchId,
           businessUnitId: row.normalized.businessUnitId, city: row.normalized.city, sendEmailInvite: true },
         { ...requester, isAdmin: true });
