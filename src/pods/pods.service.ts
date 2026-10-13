@@ -965,9 +965,15 @@ export class PodsService {
       where.branchId = branchId;
     }
 
-    await this.prisma.pod.updateMany({
-      where,
-      data: { isAvailableForAssignment: true },
+    const unitScope = businessUnitId && businessUnitId !== 'all' ? businessUnitId : null;
+    const branchScope = !unitScope && branchId && branchId !== 'all' ? branchId : null;
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM ats.business_units
+        WHERE tenant_id = ${tenantId}::uuid
+          AND (${unitScope}::uuid IS NULL OR id = ${unitScope}::uuid)
+          AND (${branchScope}::uuid IS NULL OR branch_id = ${branchScope}::uuid)
+        ORDER BY id FOR UPDATE`;
+      await tx.pod.updateMany({ where, data: { isAvailableForAssignment: true } });
     });
 
     return { message: 'Round-robin cycle reset successfully.' };

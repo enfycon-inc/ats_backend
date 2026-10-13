@@ -3,6 +3,7 @@ export class UpdateBusinessUnitDto {
   branchId?: string;
   code?: string;
   market?: string;
+  marketSegmentId?: string | null;
   currency?: string;
   shiftTiming?: string;
   workStartTime?: string;

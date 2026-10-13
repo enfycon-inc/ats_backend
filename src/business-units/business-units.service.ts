@@ -1,3 +1,4 @@
+import { normalizePodStrategy } from './pod-strategy';
 import { Injectable, Logger, NotFoundException, ConflictException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBusinessUnitDto } from './dtos/create-business-unit.dto';
@@ -28,7 +29,8 @@ export interface BusinessUnitResponse {
   name: string;
   code: string | null;
   market: string;
-  currency: string;
+  marketSegmentId?: string | null;
+  currency: string | null;
   branchId: string | null;
   branchName: string | null;
   branch?: {
@@ -91,9 +93,20 @@ export class BusinessUnitsService {
       throw new ConflictException(`A business unit with the name "${dto.name}" already exists in this branch.`);
     }
 
+    const marketSegmentId = dto.marketSegmentId;
+    const marketSegment = marketSegmentId
+      ? await this.prisma.marketSegment.findFirst({
+          where: { id: marketSegmentId, OR: [{ tenantId: null }, { tenantId }] },
+          select: { defaultCurrency: true },
+        })
+      : null;
+    if (marketSegmentId && !marketSegment) {
+      throw new BadRequestException('Selected market segment was not found.');
+    }
+
     const code = dto.code ? dto.code.trim().toUpperCase() : dto.name.substring(0, 4).toUpperCase();
     const market = dto.market ? dto.market.trim().toUpperCase() : (branch?.market || 'US');
-    const currency = dto.currency ? dto.currency.trim().toUpperCase() : (market === 'INDIA' ? 'INR' : 'USD');
+    const currency = dto.currency?.trim().toUpperCase() || marketSegment?.defaultCurrency || null;
     const shiftTiming = dto.shiftTiming || branch?.shiftTiming || (market === 'US' ? 'US Shift' : 'General Shift');
     const workStartTime = dto.workStartTime || branch?.workStartTime || '09:00';
     const workEndTime = dto.workEndTime || branch?.workEndTime || '18:00';
@@ -103,7 +116,7 @@ export class BusinessUnitsService {
     const allowNone = dto.allowNone !== undefined ? dto.allowNone : false;
     const allowPods = dto.allowPods !== undefined ? dto.allowPods : true;
     const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : true;
-    const podDistributionStrategy = dto.podDistributionStrategy || 'AUTO';
+    const podDistributionStrategy = normalizePodStrategy(dto.podDistributionStrategy);
 
     const bu = await this.prisma.businessUnit.create({ // @ts-ignore
 
@@ -113,7 +126,8 @@ export class BusinessUnitsService {
           name: dto.name.trim(),
           code,
 
-          ...((dto as any).marketSegmentId ? { marketSegmentId: (dto as any).marketSegmentId } : {}),
+        ...(marketSegmentId ? { marketSegmentId } : {}),
+        currency,
         jobCodePattern: (dto as any).jobCodePattern || null,
         shiftTiming,
         workStartTime,
@@ -142,7 +156,7 @@ export class BusinessUnitsService {
           select: { id: true, name: true, code: true, city: true, country: true },
         },
         marketSegment: {
-          select: { id: true, name: true, code: true },
+          select: { id: true, name: true, code: true, defaultCurrency: true },
         },
         _count: {
           select: {
@@ -162,7 +176,7 @@ export class BusinessUnitsService {
       marketSegmentId: bu.marketSegmentId || null,
       marketSegment: (bu as any).marketSegment || null,
       jobCodePattern: bu.jobCodePattern || null,
-      currency: (bu as any).marketSegment?.defaultCurrency || 'USD',
+      currency: bu.currency || (bu as any).marketSegment?.defaultCurrency || null,
       branchId: bu.branchId || null,
       branchName: bu.branch?.name || null,
       branch: bu.branch
@@ -182,7 +196,7 @@ export class BusinessUnitsService {
       allowNone: bu.allowNone ?? false,
       allowPods: bu.allowPods ?? true,
       allowUnassigned: bu.allowUnassigned ?? true,
-      podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
+      podDistributionStrategy: normalizePodStrategy(bu.podDistributionStrategy),
       usersCount: bu._count.users,
       podsCount: bu._count.pods,
       createdAt: bu.createdAt.toISOString(),
@@ -197,7 +211,7 @@ export class BusinessUnitsService {
           select: { id: true, name: true, code: true, city: true, country: true },
         },
         marketSegment: {
-          select: { id: true, name: true, code: true },
+          select: { id: true, name: true, code: true, defaultCurrency: true },
         },
         admins: {
           select: { id: true, fullName: true, email: true },
@@ -223,7 +237,7 @@ export class BusinessUnitsService {
       marketSegmentId: bu.marketSegmentId || null,
       marketSegment: (bu as any).marketSegment || null,
       jobCodePattern: bu.jobCodePattern || null,
-      currency: (bu as any).marketSegment?.defaultCurrency || 'USD',
+      currency: bu.currency || (bu as any).marketSegment?.defaultCurrency || null,
       branchId: bu.branchId || null,
       branchName: bu.branch?.name || null,
       branch: bu.branch
@@ -243,7 +257,7 @@ export class BusinessUnitsService {
       allowNone: bu.allowNone ?? false,
       allowPods: bu.allowPods ?? true,
       allowUnassigned: bu.allowUnassigned ?? true,
-      podDistributionStrategy: bu.podDistributionStrategy || 'AUTO',
+      podDistributionStrategy: normalizePodStrategy(bu.podDistributionStrategy),
       usersCount: bu._count.users,
       podsCount: bu._count.pods,
       admins: (bu as any).admins || [],
@@ -272,8 +286,22 @@ export class BusinessUnitsService {
 
     const name = dto.name !== undefined ? dto.name.trim() : existing.name;
     const code = dto.code !== undefined ? dto.code.trim().toUpperCase() : existing.code;
-    const market = dto.market !== undefined ? dto.market.trim().toUpperCase() : ((existing as any).marketSegment?.code || 'US');
-    const currency = dto.currency !== undefined ? dto.currency.trim().toUpperCase() : ((existing as any).marketSegment?.defaultCurrency || 'USD');
+    const marketSegmentId = dto.marketSegmentId !== undefined ? dto.marketSegmentId : existing.marketSegmentId;
+    const marketSegment = marketSegmentId
+      ? await this.prisma.marketSegment.findFirst({
+          where: { id: marketSegmentId, OR: [{ tenantId: null }, { tenantId }] },
+          select: { defaultCurrency: true },
+        })
+      : null;
+    if (marketSegmentId && !marketSegment) {
+      throw new BadRequestException('Selected market segment was not found.');
+    }
+    const segmentChanged = dto.marketSegmentId !== undefined && dto.marketSegmentId !== existing.marketSegmentId;
+    const currency = dto.currency !== undefined
+      ? dto.currency.trim().toUpperCase() || marketSegment?.defaultCurrency || null
+      : segmentChanged
+        ? marketSegment?.defaultCurrency || null
+        : existing.currency || marketSegment?.defaultCurrency || null;
     const shiftTiming = dto.shiftTiming !== undefined ? dto.shiftTiming : existing.shiftTiming;
     const workStartTime = dto.workStartTime !== undefined ? dto.workStartTime : existing.workStartTime;
     const workEndTime = dto.workEndTime !== undefined ? dto.workEndTime : existing.workEndTime;
@@ -283,14 +311,15 @@ export class BusinessUnitsService {
     const allowNone = dto.allowNone !== undefined ? dto.allowNone : existing.allowNone;
     const allowPods = dto.allowPods !== undefined ? dto.allowPods : existing.allowPods;
     const allowUnassigned = dto.allowUnassigned !== undefined ? dto.allowUnassigned : existing.allowUnassigned;
-    const podDistributionStrategy = dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy;
+    const podDistributionStrategy = normalizePodStrategy(dto.podDistributionStrategy !== undefined ? dto.podDistributionStrategy : existing.podDistributionStrategy);
 
     await this.prisma.businessUnit.update({ // @ts-ignore
 
       where: { id },
       data: {
         ...(dto.branchId !== undefined ? { branchId: dto.branchId || null } : {}),
-          ...((dto as any).marketSegmentId !== undefined ? { marketSegmentId: (dto as any).marketSegmentId || null } : {}),
+          ...(dto.marketSegmentId !== undefined ? { marketSegmentId: dto.marketSegmentId || null } : {}),
+        currency,
         ...((dto as any).jobCodePattern !== undefined ? { jobCodePattern: (dto as any).jobCodePattern || null } : {}),
         name,
         code,

@@ -7,6 +7,7 @@ export class CreateBusinessUnitDto {
   state?: string;
   zipCode?: string;
   market?: string;
+  marketSegmentId?: string;
   currency?: string;
   shiftTiming?: string;
   workStartTime?: string;

@@ -1,4 +1,6 @@
 import { validateJobDates } from './job-dates';
+import { usesAutomaticPods } from '../business-units/pod-strategy';
+import { allocateAutomaticPod } from './automatic-pod';
 import { loadPocPolicy } from '../clients/poc-access';
 import { normalizeJobStatus } from './job-status-contract';
 import { assessCandidate } from './candidate-assessment';
@@ -557,6 +559,14 @@ export class JobsService {
       if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
       assignmentPolicy = { ...unit, market: unit.marketSegment?.code };
     }
+    const automaticPods = usesAutomaticPods(assignmentPolicy);
+    if (!draft && automaticPods) {
+      if (!actor) throw new ForbiddenException('Automatic assignment requires an authenticated context.');
+      await listJobPods(this.prisma, actor, tenantId, branchId || undefined, businessUnitId || undefined);
+      if ((dto.podId && !['none', 'off'].includes(dto.podId)) || dto.recruiterId || dto.recruiterIds?.length) {
+        throw new BadRequestException('This unit assigns pods automatically. Remove manual assignments and publish again.');
+      }
+    }
     const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
     if (submittedRecruiters.length) {
       if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
@@ -571,7 +581,7 @@ export class JobsService {
       const eligiblePods = await listJobPods(this.prisma, actor, tenantId, branchId || undefined, businessUnitId || undefined);
       if (!eligiblePods.some(p => p.id === selectedPod)) throw new ForbiddenException('The selected pod is outside the job unit.');
     }
-    if (!draft && assignmentPolicy?.allowUnassigned === false && !selectedPod && !submittedRecruiters.length) {
+    if (!draft && !automaticPods && assignmentPolicy?.allowUnassigned === false && !selectedPod && !submittedRecruiters.length) {
       throw new BadRequestException('Select a pod or at least one recruiter for this unit.');
     }
     let jobCode = dto.jobCode ? dto.jobCode.trim().toUpperCase() : '';
@@ -825,35 +835,31 @@ export class JobsService {
           shiftTiming,
           
         };
-      const createdJob = draft && dto.draftId
-        ? await this.prisma.job.upsert({ where: { id: dto.draftId }, create: data, update: {} })
-        : await this.prisma.job.create({ data });
-      if (draft) {
-        this.assertDraftAccess(createdJob, tenantId, actor!);
-      }
+      const { createdJob, assignedPodId } = await this.prisma.$transaction(async tx => {
+        if (!draft && businessUnitId && !automaticPods) {
+          await tx.$queryRaw`SELECT id FROM ats.business_units WHERE id = ${businessUnitId}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
+          const currentPolicy = await tx.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
+          if (!currentPolicy || usesAutomaticPods(currentPolicy) !== automaticPods || currentPolicy.allowPods !== assignmentPolicy.allowPods || currentPolicy.allowNone !== assignmentPolicy.allowNone || currentPolicy.allowUnassigned !== assignmentPolicy.allowUnassigned) {
+            throw new BadRequestException('The assignment policy changed. Refresh the job form.');
+          }
+        }
+        const assignedPodId = !draft && automaticPods
+          ? await allocateAutomaticPod(tx, tenantId, branchId, businessUnitId!) : selectedPod;
+        const createdJob = draft && dto.draftId
+          ? await tx.job.upsert({ where: { id: dto.draftId }, create: data, update: {} })
+          : await tx.job.create({ data });
+        if (draft) this.assertDraftAccess(createdJob, tenantId, actor!);
+        const jobId = createdJob.id;
+        if (submittedRecruiters.length) await tx.jobRecruiter.createMany({
+          data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
+        });
+        if (assignedPodId) {
+          await tx.jobPod.upsert({ where: { jobId_podId: { jobId, podId: assignedPodId } }, create: { jobId, podId: assignedPodId }, update: {} });
+          await tx.jobAssignmentLog.create({ data: { tenantId, jobId, podId: assignedPodId, assignedBy: createdByEmail || 'System' } });
+        }
+        return { createdJob, assignedPodId };
+      }, { maxWait: 10000, timeout: 15000 });
       const jobId = createdJob.id;
-      if (submittedRecruiters.length) await this.prisma.jobRecruiter.createMany({
-        data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
-      });
-
-      // Assignment is explicit; never silently route an unassigned job.
-      const assignedPodId = selectedPod;
-
-      if (assignedPodId) {
-        await this.prisma.jobPod.upsert({
-          where: { jobId_podId: { jobId, podId: assignedPodId } },
-          create: { jobId, podId: assignedPodId },
-          update: {},
-        });
-        await this.prisma.jobAssignmentLog.create({
-          data: {
-            tenantId,
-            jobId,
-            podId: assignedPodId,
-            assignedBy: createdByEmail || 'System',
-          },
-        });
-      }
 
       if (draft) return this.findOneJob(jobId, tenantId, actor);
 
@@ -1706,6 +1712,19 @@ export class JobsService {
     if (mode) this.assertDraftAccess(currentJob, tenantId, user);
     if (!mode && (dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId)) await this.resolveSelectedClients(dto, tenantId, user);
 
+    const publishUnitId = dto.businessUnitId ?? currentJob.businessUnitId;
+    const publishBranchId = dto.branchId ?? currentJob.branchId;
+    const publishPolicy = mode === 'publish' && publishUnitId
+      ? await this.prisma.businessUnit.findFirst({ where: { id: publishUnitId, tenantId, branchId: publishBranchId } }) : null;
+    const automaticPublish = mode === 'publish' && usesAutomaticPods(publishPolicy);
+    let automaticallyAssignedPodId: string | null = null;
+    if (automaticPublish) {
+      await listJobPods(this.prisma, user, tenantId, publishBranchId || undefined, publishUnitId || undefined);
+      // Draft selections may belong to an older unit policy. Route under current policy.
+      dto = { ...dto };
+      for (const key of ['podId', 'podIds', 'recruiterId', 'recruiterIds']) delete dto[key];
+    }
+
     if (dto.podId === 'all' || dto.podIds?.includes('all')) {
       throw new BadRequestException('Select individual recruiters instead of a unit pool.');
     }
@@ -1718,7 +1737,7 @@ export class JobsService {
       const scopeChanged = unitId !== currentJob.businessUnitId || branchId !== currentJob.branchId;
       const requestedPods: string[] = podChanged ? (dto.podIds || (dto.podId ? [dto.podId] : [])).filter((p: string) => !['none', 'off'].includes(p)) : [];
       const currentPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
-      const podsToValidate = podChanged ? requestedPods : scopeChanged ? currentPods.map(p => p.podId) : [];
+      const podsToValidate = automaticPublish ? [] : podChanged ? requestedPods : scopeChanged ? currentPods.map(p => p.podId) : [];
       if ((podChanged || scopeChanged) && (podsToValidate.length || (podChanged && currentPods.length))) {
         if (podsToValidate.length && policy?.allowPods === false) throw new BadRequestException('Pod assignment is disabled for this unit.');
         const eligible = await listJobPods(this.prisma, user, tenantId, branchId || undefined, unitId || undefined);
@@ -1726,13 +1745,13 @@ export class JobsService {
       }
       const recruitersChanged = dto.recruiterId !== undefined || dto.recruiterIds !== undefined;
       const requestedRecruiters: string[] = recruitersChanged ? (dto.recruiterIds || (dto.recruiterId ? [dto.recruiterId] : [])) : [];
-      if (scopeChanged && !recruitersChanged) {
+      if (scopeChanged && !recruitersChanged && !automaticPublish) {
         const mappings = await this.prisma.jobRecruiter.findMany({ where: { jobId: id }, select: { recruiterId: true } });
         requestedRecruiters.push(...mappings.map(mapping => mapping.recruiterId));
         if (requestedRecruiters.length) await validateJobRecruiters(this.prisma, user, tenantId, requestedRecruiters, branchId, unitId);
       }
       if (requestedRecruiters.length && policy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
-      if (mode !== 'draft' && policy?.allowUnassigned === false) {
+      if (mode !== 'draft' && !automaticPublish && policy?.allowUnassigned === false) {
         const hasPods = podChanged ? requestedPods.length > 0 : currentPods.length > 0;
         const hasRecruiters = recruitersChanged ? requestedRecruiters.length > 0 : await this.prisma.jobRecruiter.count({ where: { jobId: id } }) > 0;
         if (!hasPods && !hasRecruiters) throw new BadRequestException('Select a pod or at least one recruiter for this unit.');
@@ -1964,7 +1983,20 @@ export class JobsService {
     
     if (dto.shiftTiming !== undefined) dataToUpdate.shiftTiming = dto.shiftTiming;
 
-    if (Object.keys(dataToUpdate).length > 0 && mode) {
+    if (automaticPublish) {
+      automaticallyAssignedPodId = await this.prisma.$transaction(async tx => {
+        const podId = await allocateAutomaticPod(tx, tenantId, publishBranchId, publishUnitId!);
+        const updated = await tx.job.updateMany({ where: { id, tenantId, status: 'Draft', updatedAt: currentJob.updatedAt }, data: dataToUpdate });
+        if (!updated.count) throw new BadRequestException('The draft changed. Refresh and try again.');
+        await tx.jobPod.deleteMany({ where: { jobId: id } });
+        await tx.jobRecruiter.deleteMany({ where: { jobId: id } });
+        if (podId) {
+          await tx.jobPod.create({ data: { jobId: id, podId } });
+          await tx.jobAssignmentLog.create({ data: { tenantId, jobId: id, podId, assignedBy: user.email || 'System' } });
+        }
+        return podId;
+      }, { maxWait: 10000, timeout: 15000 });
+    } else if (Object.keys(dataToUpdate).length > 0 && mode) {
       const updated = await this.prisma.job.updateMany({
         where: { id, tenantId, status: 'Draft', updatedAt: currentJob.updatedAt },
         data: dataToUpdate,
@@ -2033,6 +2065,14 @@ export class JobsService {
 
     // Dispatch live notification if primary recruiter was assigned or changed
     try {
+      if (automaticallyAssignedPodId && dto.status !== 'Pending Approval') {
+        const members = await this.prisma.user.findMany({ where: { tenantId, podId: automaticallyAssignedPodId, isActive: true, isApproved: true }, select: { id: true } });
+        if (members.length) await this.notifications.createMany(tenantId, members.map(member => member.id), {
+          type: 'JOB_NEW', title: `Job Assigned: ${currentJob.jobCode}`,
+          message: `Your pod has been assigned job "${currentJob.jobCode} - ${dto.title || currentJob.jobTitle}".`,
+          data: { jobId: id, jobCode: currentJob.jobCode, branchId: publishBranchId }, initiatorId: user.dbId,
+        });
+      }
       if (mode === 'publish' && dto.status === 'Pending Approval' && dto.assignedApproverId && dto.assignedApproverId !== user.dbId) {
         await this.notifications.create(tenantId, dto.assignedApproverId, {
           type: 'JOB_PENDING_APPROVAL', title: 'Job Requisition Pending Approval',
