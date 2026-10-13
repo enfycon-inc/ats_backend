@@ -119,7 +119,7 @@ export class AuthCoreService {
     return { available: result.rows.length === 0 };
   }
 
-  async login(dto: { email: string; password: string; subdomain?: string }) {
+  async login(dto: { email: string; password: string; subdomain?: string; rememberMe?: boolean }) {
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
     const cleanEmail = dto.email.trim().toLowerCase();
@@ -295,6 +295,7 @@ export class AuthCoreService {
     // Keycloak authentication — single source of truth
     let keycloakToken: string | null = null;
     let refreshToken: string | null = null;
+    let issuedScope = '';
     let expiresIn: number;
 
     const tokenUrl = `${this.getKeycloakInternalIssuer()}/protocol/openid-connect/token`;
@@ -306,6 +307,7 @@ export class AuthCoreService {
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', dto.password);
+    if (dto.rememberMe === true) params.append('scope', 'offline_access');
 
     try {
       let res = await fetch(tokenUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
@@ -333,6 +335,7 @@ export class AuthCoreService {
         const tokenData = await res.json();
         keycloakToken = tokenData.access_token;
         refreshToken = tokenData.refresh_token;
+        issuedScope = typeof tokenData.scope === 'string' ? tokenData.scope : '';
         expiresIn = tokenData.expires_in;
 
         // ── Derive authoritative systemRole from Keycloak realm_access.roles ──
@@ -358,10 +361,14 @@ export class AuthCoreService {
     }
 
     if (!keycloakToken) throw new UnauthorizedException('Invalid email or password.');
+    if (!refreshToken) throw new ServiceUnavailableException('The identity provider did not issue a session renewal token. Please try again or contact your administrator.');
+    if (dto.rememberMe === true && !issuedScope.split(/\s+/).includes('offline_access')) {
+      throw new ServiceUnavailableException('The identity provider did not grant offline access. Please try again or contact your administrator.');
+    }
 
     return {
       accessToken: keycloakToken,
-      refreshToken: refreshToken || keycloakToken,
+      refreshToken,
       expiresIn: expiresIn!,
       tokenType: 'Bearer',
       user: {
@@ -904,9 +911,11 @@ export class AuthCoreService {
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', ssoInternalPassword);
+    if (dto.rememberMe === true) params.append('scope', 'offline_access');
 
     let keycloakToken: string | null = null;
     let refreshToken: string | null = null;
+    let issuedScope = '';
     let expiresIn: number;
 
     try {
@@ -920,6 +929,7 @@ export class AuthCoreService {
         const tokenData = await res.json();
         keycloakToken = tokenData.access_token;
         refreshToken = tokenData.refresh_token;
+        issuedScope = typeof tokenData.scope === 'string' ? tokenData.scope : '';
         expiresIn = tokenData.expires_in;
 
         try {
@@ -943,9 +953,15 @@ export class AuthCoreService {
       throw new UnauthorizedException('Authentication failed with identity provider.');
     }
 
+    if (!keycloakToken) throw new UnauthorizedException('Authentication failed with identity provider.');
+    if (!refreshToken) throw new ServiceUnavailableException('The identity provider did not issue a session renewal token. Please try again or contact your administrator.');
+    if (dto.rememberMe === true && !issuedScope.split(/\s+/).includes('offline_access')) {
+      throw new ServiceUnavailableException('The identity provider did not grant offline access. Please try again or contact your administrator.');
+    }
+
     return {
       accessToken: keycloakToken,
-      refreshToken: refreshToken || keycloakToken,
+      refreshToken,
       expiresIn: expiresIn!,
       tokenType: 'Bearer',
       user: {

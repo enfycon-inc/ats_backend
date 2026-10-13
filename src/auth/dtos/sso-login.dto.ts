@@ -47,4 +47,10 @@ export class SsoLoginDto {
     description: 'Profile picture avatar URL',
   })
   picture?: string;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: 'Request a seven-day offline session when explicitly enabled by the user',
+  })
+  rememberMe?: boolean;
 }

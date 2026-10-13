@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class LoginDto {
   @ApiProperty({
@@ -19,4 +19,10 @@ export class LoginDto {
     required: false,
   })
   subdomain?: string;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: 'Request a seven-day offline session when explicitly enabled by the user',
+  })
+  rememberMe?: boolean;
 }
