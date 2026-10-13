@@ -10,6 +10,26 @@ import {
 export class AuthEmailService {
   constructor(private readonly systemMail: SystemMailService) {}
 
+  async sendRoleApprovalWelcomeEmail(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+  }) {
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'role_approved',
+        workspace: options.tenantName,
+        recipient: options.to,
+        fullName: options.fullName,
+        loginUrl: workspaceEmailLogin(options.subdomain),
+      }),
+    });
+  }
+
   async sendTenantStatusEmail(options: {
     tenantId: string;
     to: string;

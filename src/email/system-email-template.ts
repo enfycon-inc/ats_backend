@@ -5,6 +5,7 @@ export type SystemEmailTemplate = Context &
   (
     | { event: 'registration_received' }
     | { event: 'workspace_activated'; loginUrl: string }
+    | { event: 'role_approved'; loginUrl: string }
     | { event: 'team_invitation'; setupUrl: string; role?: string }
     | {
         event: 'account_created';
@@ -104,6 +105,18 @@ export function renderSystemEmail(
       );
       action = { label: 'Open your workspace', url: input.loginUrl };
       break;
+    case 'role_approved':
+      title = 'Your access request was approved';
+      preview = `Your access request for ${input.workspace} was approved.`;
+      copy =
+        'Your request to join this workspace has been approved. Sign in with your existing credentials to get started.';
+      details.push(
+        ['Status', 'Approved'],
+        ['Login email', input.recipient],
+        ['Workspace URL', applicationEmailUrl(input.loginUrl)],
+      );
+      action = { label: 'Sign in to your workspace', url: input.loginUrl };
+      break;
     case 'team_invitation':
       title = 'Join your team on EnfySync';
       preview = `You have been invited to join ${input.workspace}.`;
@@ -189,6 +202,7 @@ export function renderSystemEmail(
   const subject = {
     registration_received: 'Registration received',
     workspace_activated: 'Your workspace is ready',
+    role_approved: 'Your access request was approved',
     team_invitation: 'Invitation to join',
     account_created: 'Your account is ready',
     delivery_test: 'Email delivery test',

@@ -39,6 +39,11 @@ describe('corporate system email templates', () => {
       loginUrl: 'https://deb.enfyjobs.com/auth/login',
     },
     { ...context, event: 'delivery_test' },
+    {
+      ...context,
+      event: 'role_approved',
+      loginUrl: 'https://deb.enfyjobs.com/auth/login',
+    },
   ];
   it.each(variants)(
     'renders escaped $event content with common branding and disclaimer',
@@ -89,6 +94,18 @@ describe('corporate system email templates', () => {
     expect(invite.html).toContain('Valid for 24 hours');
     expect(invite.html).not.toContain('Sign in with Google');
     expect(invite.html).toContain('token=abc%26def');
+  });
+  it('renders role approval with a validated workspace login link and existing-credentials guidance', () => {
+    const email = renderSystemEmail({
+      ...context,
+      event: 'role_approved',
+      loginUrl: 'https://deb.enfyjobs.com/auth/login',
+    });
+    expect(email.subject).toContain('Your access request was approved');
+    expect(email.html).toContain('approved');
+    expect(email.html).toContain('existing credentials');
+    expect(email.html).toContain('https://deb.enfyjobs.com/auth/login');
+    expect(email.text).toContain('Sign in with your existing credentials');
   });
   it('preserves optional credential instructions, escaping HTML and sanitizing subject newlines', () => {
     const email = renderSystemEmail({

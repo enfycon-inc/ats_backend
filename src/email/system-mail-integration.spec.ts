@@ -63,6 +63,24 @@ describe('system mail application integration', () => {
       }),
     ).rejects.toThrow('mail failure');
   });
+  it('sends a role approval welcome email to the validated tenant workspace', async () => {
+    const send = jest.fn().mockResolvedValue({ success: true, status: 'accepted' });
+    const mail = new AuthEmailService({ send } as any);
+    await mail.sendRoleApprovalWelcomeEmail({
+      tenantId: 'tenant-a',
+      to: 'user@example.com',
+      fullName: 'User One',
+      tenantName: 'Company A',
+      subdomain: 'company-a',
+    });
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: 'tenant-a',
+      to: 'user@example.com',
+      subject: expect.stringContaining('Your access request was approved'),
+      html: expect.stringContaining('https://company-a.enfyjobs.com/auth/login'),
+      text: expect.stringContaining('existing credentials'),
+    }));
+  });
   it('reports onboarding acceptance or failure without undoing a saved account', async () => {
     const sendTenantStatusEmail = jest
       .fn()

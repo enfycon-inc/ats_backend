@@ -609,7 +609,10 @@ async approveTenantUser(
     requester: AuthUser
   ) {
     const userRes = await this.authQuery.query(
-      'SELECT id, email, full_name, tenant_id, branch_id, business_unit_id, requested_role, is_approved, is_active FROM users WHERE id = $1 LIMIT 1',
+      `SELECT u.id, u.email, u.full_name, u.tenant_id, u.branch_id, u.business_unit_id,
+              u.requested_role, u.is_approved, u.is_active, t.name AS tenant_name, t.domain AS tenant_domain
+       FROM users u JOIN tenants t ON t.id = u.tenant_id
+       WHERE u.id = $1 LIMIT 1`,
       [userId]
     );
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
@@ -701,7 +704,7 @@ async approveTenantUser(
       }
     }
 
-    await this.authQuery.query(
+    const approvalWrite = await this.authQuery.query(
       `UPDATE users
        SET is_approved = true,
            is_active = true,
@@ -711,9 +714,13 @@ async approveTenantUser(
            branch_id = $3::uuid,
            business_unit_id = $4::uuid,
            updated_at = NOW()
-       WHERE id = $5::uuid`,
-      [assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId]
+       WHERE id = $5::uuid AND requested_role IS NOT DISTINCT FROM $6::text
+       RETURNING id`,
+      [assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId, targetUser.requested_role ?? null]
     );
+    if (approvalWrite.rows.length === 0) {
+      throw new ConflictException('This approval request has already changed. Refresh the user list and try again.');
+    }
 
     this.logger.log(`User ${userId} approved by ${requester.email}`);
 
@@ -732,7 +739,32 @@ async approveTenantUser(
       this.logger.warn(`Keycloak provisioning on approval failed (non-blocking): ${err.message}`);
     });
 
-    return { success: true, message: `User ${targetUser.full_name || targetUser.email} has been approved.` };
+    let emailNotification: { status: 'accepted' | 'failed' | 'not_applicable'; message?: string } = { status: 'not_applicable' };
+    if (targetUser.requested_role) {
+      try {
+        if (!this.emailService) throw new Error('Approval email service unavailable');
+        await this.emailService.sendRoleApprovalWelcomeEmail({
+          tenantId: targetUser.tenant_id,
+          to: targetUser.email,
+          fullName: targetUser.full_name || 'Team Member',
+          tenantName: targetUser.tenant_name || 'Workspace',
+          subdomain: targetUser.tenant_domain || '',
+        });
+        emailNotification = { status: 'accepted' };
+      } catch (err: any) {
+        this.logger.warn(`User approval succeeded but welcome email was not accepted: ${err.message}`);
+        emailNotification = {
+          status: 'failed',
+          message: 'The user was approved, but the welcome email could not be sent. Check workspace email settings.',
+        };
+      }
+    }
+
+    return {
+      success: true,
+      message: `User ${targetUser.full_name || targetUser.email} has been approved.`,
+      emailNotification,
+    };
   }
 
   async rejectTenantUser(userId: string, requester: AuthUser) {
