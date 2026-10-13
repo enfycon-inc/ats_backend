@@ -12,6 +12,8 @@ import { UpdatePodDto } from './dtos/update-pod.dto';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 export interface PodMember {
+  avatar?: string | null;
+  profilePicture?: string | null;
   id: string;
   fullName: string;
   email: string;
@@ -606,6 +608,8 @@ export class PodsService {
         id: u.id,
         fullName: u.fullName,
         email: u.email,
+        avatar: u.profilePicture || null,
+        profilePicture: u.profilePicture || null,
         systemRole: u.customRole?.systemRole?.systemKey || 'RECRUITER',
       })),
       jobsCount: p._count.jobPods,
@@ -652,6 +656,8 @@ export class PodsService {
         id: u.id,
         fullName: u.fullName,
         email: u.email,
+        avatar: u.profilePicture || null,
+        profilePicture: u.profilePicture || null,
         systemRole: u.customRole?.systemRole?.systemKey || 'RECRUITER',
       })),
       jobsCount: pod._count.jobPods,
@@ -772,6 +778,8 @@ export class PodsService {
         fullName: u.fullName,
         email: u.email,
         roleName: recruiterRole?.name || u.customRole?.name || 'Recruiter',
+        avatar: u.profilePicture || null,
+        profilePicture: u.profilePicture || null,
         systemRole: recruiterRole?.systemRole?.systemKey || u.customRole?.systemRole?.systemKey || 'RECRUITER',
         businessUnitId: u.businessUnitId || null,
         branchId: u.branchId || null,

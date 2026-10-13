@@ -90,4 +90,72 @@ export class AuthEmailService {
       }),
     });
   }
+
+  async sendPasswordResetEmail(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    resetToken: string;
+  }) {
+    const resetUrl = new URL(
+      '/auth/create-password',
+      process.env.FRONTEND_URL || '',
+    );
+    resetUrl.searchParams.set('token', options.resetToken);
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'password_reset_request',
+        workspace: options.tenantName,
+        recipient: options.to,
+        fullName: options.fullName,
+        resetUrl: applicationEmailUrl(resetUrl.toString()),
+      }),
+    });
+  }
+
+  async sendPasswordChangedAlert(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+  }) {
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'password_changed_alert',
+        workspace: options.tenantName,
+        recipient: options.to,
+        fullName: options.fullName,
+        loginUrl: workspaceEmailLogin(options.subdomain),
+      }),
+    });
+  }
+
+  async sendAdminPasswordResetNotice(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    temporaryPassword: string;
+  }) {
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'admin_temp_password_notice',
+        workspace: options.tenantName,
+        recipient: options.to,
+        fullName: options.fullName,
+        temporaryPassword: options.temporaryPassword,
+        loginUrl: workspaceEmailLogin(options.subdomain),
+      }),
+    });
+  }
 }

@@ -16,6 +16,9 @@ import { AuthKeycloakService } from './services/auth-keycloak.service';
 import { AuthInviteService } from './services/auth-invite.service';
 import { AuthEmailService } from './services/auth-email.service';
 import { AuthInitService } from './services/auth-init.service';
+import { AuthPasswordService } from './services/auth-password.service';
+import { StaffProfileService } from './services/staff-profile.service';
+import { StaffProfileController } from './staff-profile.controller';
 
 const AUTH_SUB_SERVICES = [
   AuthQueryService,
@@ -26,13 +29,15 @@ const AUTH_SUB_SERVICES = [
   AuthUserService,
   AuthCoreService,
   AuthInviteService,
+  AuthPasswordService,
   AuthInitService,
+  StaffProfileService,
 ];
 
 @Global()
 @Module({
   imports: [EventsModule, SystemMailModule],
-  controllers: [AuthController],
+  controllers: [AuthController, StaffProfileController],
   providers: [AuthService, JwtAuthGuard, RolesGuard, ...AUTH_SUB_SERVICES],
   exports: [AuthService, JwtAuthGuard, RolesGuard, ...AUTH_SUB_SERVICES],
 })

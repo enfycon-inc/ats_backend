@@ -13,6 +13,13 @@ export type SystemEmailTemplate = Context &
         temporaryPassword?: string;
       }
     | { event: 'delivery_test' }
+    | { event: 'password_reset_request'; resetUrl: string }
+    | { event: 'password_changed_alert'; loginUrl?: string }
+    | {
+        event: 'admin_temp_password_notice';
+        temporaryPassword: string;
+        loginUrl: string;
+      }
   );
 
 const REPLY_MARKER = '<!--enfysync-reply-policy-->';
@@ -136,6 +143,48 @@ export function renderSystemEmail(
       details.push(['Purpose', 'System email verification']);
       note = 'This test does not guarantee delivery of future messages.';
       break;
+    case 'password_reset_request':
+      title = 'Reset your password';
+      preview = `Password reset request for ${input.workspace}.`;
+      copy =
+        'We received a request to reset your password. Use the secure link below to choose a new password. For security, this link expires in 30 minutes.';
+      details.push(
+        ['Account email', input.recipient],
+        ['Link expiry', 'Valid for 30 minutes'],
+      );
+      action = { label: 'Reset My Password', url: input.resetUrl };
+      note =
+        'If you did not request a password reset, no further action is required. Your password will remain unchanged.';
+      break;
+    case 'password_changed_alert':
+      title = 'Password successfully changed';
+      preview = `Security alert: Your password for ${input.workspace} was updated.`;
+      copy =
+        'The password for your EnfySync account was successfully updated. You can now use your new password to sign in.';
+      details.push(
+        ['Account email', input.recipient],
+        ['Status', 'Password changed'],
+      );
+      if (input.loginUrl) {
+        action = { label: 'Sign in to workspace', url: input.loginUrl };
+      }
+      note =
+        'If you did not perform this change, please immediately contact your workspace administrator or support.';
+      break;
+    case 'admin_temp_password_notice':
+      title = 'Your password was reset';
+      preview = `An administrator updated your password for ${input.workspace}.`;
+      copy =
+        'Your workspace administrator has reset your password and assigned a temporary credential. Sign in and change your password immediately.';
+      details.push(
+        ['Account email', input.recipient],
+        ['Temporary password', input.temporaryPassword],
+        ['Workspace URL', applicationEmailUrl(input.loginUrl)],
+      );
+      action = { label: 'Sign in to workspace', url: input.loginUrl };
+      note =
+        'Keep your account credentials confidential. Please change your password upon signing in.';
+      break;
   }
   const subject = {
     registration_received: 'Registration received',
@@ -143,6 +192,9 @@ export function renderSystemEmail(
     team_invitation: 'Invitation to join',
     account_created: 'Your account is ready',
     delivery_test: 'Email delivery test',
+    password_reset_request: 'Reset your password',
+    password_changed_alert: 'Security Alert: Password updated',
+    admin_temp_password_notice: 'Your password was reset by administrator',
   }[input.event];
   const safeSubject =
     `EnfySync — ${subject}${input.event === 'delivery_test' ? '' : ' · ' + input.workspace}`.replace(

@@ -8,6 +8,7 @@ import { Queue } from 'bullmq';
 import { SystemMailService } from './system-mail.service';
 import { renderSystemEmail } from './system-email-template';
 import type { SystemEmailRequest, EmailDispatchResult, TenantEmailSettings } from './system-email.types';
+import { StaffProfileService } from '../auth/services/staff-profile.service';
 
 @Injectable()
 export class EmailService {
@@ -18,6 +19,7 @@ export class EmailService {
     private readonly prisma: PrismaService,
     @InjectQueue('mass_mail') private emailQueue: Queue,
     private readonly systemMail: SystemMailService,
+    private readonly staffProfiles: StaffProfileService,
   ) {
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.ethereal.email',
@@ -30,6 +32,10 @@ export class EmailService {
   }
 
   async createCampaign(dto: any, tenantId: string, userId: string | null = null) {
+    // Resolve once per campaign, before queueing recipients. System mail keeps its own templates.
+    if (userId && dto.includeSignature !== false && typeof dto.body === 'string') {
+      dto = { ...dto, body: await this.staffProfiles.appendDefault(tenantId, userId, dto.body, 'new', dto.signatureId) };
+    }
     this.logger.log(`Creating mass mail campaign: ${dto.name} for tenant ${tenantId}`);
     this.logger.log(`DTO: ${JSON.stringify({ ...dto, recipients: dto.recipients?.length + ' recipients' })}`);
     

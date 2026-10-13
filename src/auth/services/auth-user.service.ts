@@ -11,9 +11,11 @@ import {
 import { AuthQueryService } from './auth-query.service';
 import { AuthRbacService } from './auth-rbac.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
+import { AuthEmailService } from './auth-email.service';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
 import { EventsGateway } from '../../events/events.gateway';
+import type { StaffProfile } from '../profile-contract';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -28,12 +30,13 @@ export class AuthUserService {
     private readonly authQuery: AuthQueryService,
     private readonly rbacService: AuthRbacService,
     private readonly keycloakService: AuthKeycloakService,
+    @Optional() private readonly emailService?: AuthEmailService,
     @Optional() private readonly events?: EventsGateway,
   ) {}
 
   async getProfile(userId: string) {
-    const result = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.is_approved, u.requested_role, u.created_at, u.updated_at,
+    const profileQuery = `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.is_approved, u.requested_role, u.created_at, u.updated_at,
+              u.profile_picture, to_jsonb(u)->>'city' as city, personal.phone, personal.designation,
               u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
@@ -44,13 +47,44 @@ export class AuthUserService {
               COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
               COALESCE(bu.work_end_time, b.work_end_time) as office_end_time
        FROM users u
+       LEFT JOIN ats.user_profiles personal ON personal.user_id = u.id AND personal.tenant_id = u.tenant_id
+       LEFT JOIN tenants t ON u.tenant_id = t.id
+       LEFT JOIN branches b ON u.branch_id = b.id
+       LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       LEFT JOIN users rev ON u.job_reviewer_id = rev.id
+       WHERE u.id = $1 LIMIT 1`;
+    let result;
+    try {
+      result = await this.authQuery.query(profileQuery, [userId]);
+    } catch (err: any) {
+      const databaseCode = err?.meta?.code || err?.code;
+      const databaseMessage = `${err?.meta?.message || err?.message || ''}`.toLowerCase();
+      const missingProfileTable = databaseCode === '42P01' && databaseMessage.includes('user_profiles');
+      if (!missingProfileTable) throw err;
+
+      this.logger.warn('User profile details table is not migrated yet; loading the account without phone and designation.');
+      result = await this.authQuery.query(
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.is_approved, u.requested_role, u.created_at, u.updated_at,
+              u.profile_picture, to_jsonb(u)->>'city' as city, NULL::text as phone, NULL::text as designation,
+              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
+              u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
+              t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
+              t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
+              t.site_title, t.logo_url,
+              b.name as branch_name, bu.name as business_unit_name,
+              b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
+              COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
+              COALESCE(bu.work_end_time, b.work_end_time) as office_end_time
+       FROM users u
+       LEFT JOIN ats.user_profiles personal ON personal.user_id = u.id AND personal.tenant_id = u.tenant_id
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
        LEFT JOIN users rev ON u.job_reviewer_id = rev.id
        WHERE u.id = $1 LIMIT 1`,
-      [userId],
-    );
+        [userId],
+      );
+    }
     if (result.rows.length === 0) throw new NotFoundException('User profile not found.');
     const u: any = result.rows[0];
 
@@ -112,6 +146,9 @@ export class AuthUserService {
 
     return {
       id: u.id, email: u.email, firstName: u.first_name || '', lastName: u.last_name || '', fullName: u.full_name,
+      phone: u.phone || null, designation: u.designation || null,
+      city: u.city || null,
+      avatar: u.profile_picture || null, profilePicture: u.profile_picture || null,
       roles: bestRoleObj ? [bestRoleObj.system_role || bestRoleObj.name] : [],
       roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds), assignedRoles,
       roleName, systemRole, baseRoleId, permissions: Array.from(userPerms), canReview,
@@ -128,7 +165,7 @@ export class AuthUserService {
       jobAssignmentMode: u.job_assignment_mode || 'AUTO',
       jobAssignmentOptions: u.job_assignment_options || { allowAuto: true, allowAll: true, allowUnassigned: true, allowedPodIds: [] },
       tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '', siteTitle: u.site_title || '', logoUrl: u.logo_url || '' },
-    };
+    } satisfies StaffProfile;
   }
 
   async listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) {
@@ -151,8 +188,8 @@ export class AuthUserService {
     }
 
     const result = await this.authQuery.query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.is_active, u.is_approved, u.created_at, u.requested_role,
-              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
+      `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.profile_picture, u.is_active, u.is_approved, u.created_at, u.requested_role,
+              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, to_jsonb(u)->>'city' as city,
               u.business_unit_id, u.job_reviewer_id,
               rev.full_name as job_reviewer_name,
                 r.name as role_name, sr.system_key as system_role, r.base_role_id as base_role_id,
@@ -212,12 +249,14 @@ export class AuthUserService {
 
       return {
         id: u.id, email: u.email, firstName: u.first_name || '', lastName: u.last_name || '', fullName: u.full_name,
+        avatar: u.profile_picture || null, profilePicture: u.profile_picture || null,
         roles: cleanRoles.length > 0 ? cleanRoles : [primaryRole],
         roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds),
         assignedRoles: assignedRoleObjs.map(role => ({ id: role.id, name: role.name, isSystem: role.is_system === true, systemRole: role.system_role, branchId: role.branch_id })),
         roleName: primaryRole, systemRole, baseRoleId, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
         podId: u.pod_id, branchId: u.branch_id,
         branchName: u.branch_name || null, businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
+        city: u.city || null,
         jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
         permissions: Array.from(userPerms), canReview,
       };
@@ -345,7 +384,7 @@ export class AuthUserService {
 
   async updateUserDetails(
     userId: string,
-    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null },
+    dto: { firstName?: string; lastName?: string; fullName?: string; email?: string; password?: string; roleId?: string; assignedRoleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[]; jobReviewerId?: string | null; city?: string | null },
     requester: any
   ) {
     const assignmentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -403,6 +442,11 @@ export class AuthUserService {
     if (dto.branchId !== undefined) branchId = dto.branchId?.trim() || null;
     if (dto.businessUnitId !== undefined) businessUnitId = dto.businessUnitId?.trim() || null;
     if (dto.jobReviewerId !== undefined) jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
+
+    const allowedCities = ['BBSR', 'PUNE', 'BENGALURU', 'VIZAG', 'HYDERABAD'];
+    if (dto.city !== undefined && dto.city !== null && !allowedCities.includes(dto.city)) {
+      throw new BadRequestException(`city must be one of: ${allowedCities.join(', ')} or null.`);
+    }
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const rawRoleIdentifiers = new Set<string>();
@@ -490,15 +534,38 @@ export class AuthUserService {
     else if (combinedRoleIds.size > 0) primaryRoleId = Array.from(combinedRoleIds)[0];
     else if (!hasRoleUpdates && user.role_id && uuidRegex.test(user.role_id)) primaryRoleId = user.role_id;
 
-    await this.authQuery.query(
-      `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5::uuid, business_unit_id = $6::uuid, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10::uuid AND tenant_id = $11::uuid`,
-      [firstName, lastName, fullName, email, branchId, businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds), userId, user.tenant_id]
-    );
+    const updateFields = [firstName, lastName, fullName, email, branchId, businessUnitId, jobReviewerId, primaryRoleId, Array.from(combinedRoleIds)];
+    if (dto.city === undefined) {
+      await this.authQuery.query(
+        `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5::uuid, business_unit_id = $6::uuid, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], updated_at = NOW() WHERE id = $10::uuid AND tenant_id = $11::uuid`,
+        [...updateFields, userId, user.tenant_id]
+      );
+    } else {
+      await this.authQuery.query(
+        `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5::uuid, business_unit_id = $6::uuid, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], city = $10::ats."UserCity", updated_at = NOW() WHERE id = $11::uuid AND tenant_id = $12::uuid`,
+        [...updateFields, dto.city, userId, user.tenant_id]
+      );
+    }
 
     if (dto.password && dto.password.length >= 8) {
       this.keycloakService.provisionUserInKeycloak({ email, password: dto.password, fullName, tenantId: user.tenant_id }).catch((err: any) => {
         this.logger.warn(`Keycloak password update note: ${err.message}`);
       });
+      if (this.emailService) {
+        this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [user.tenant_id]).then((tRes) => {
+          const tRow = tRes.rows[0] || {};
+          return this.emailService!.sendAdminPasswordResetNotice({
+            tenantId: user.tenant_id,
+            to: email,
+            fullName,
+            tenantName: tRow.name || 'EnfySync Workspace',
+            subdomain: tRow.domain || '',
+            temporaryPassword: dto.password!,
+          });
+        }).catch((mailErr: any) => {
+          this.logger.warn(`Admin password reset notification note: ${mailErr.message}`);
+        });
+      }
     }
 
     return this.getProfile(userId);

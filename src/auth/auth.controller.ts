@@ -1,4 +1,4 @@
-﻿import {
+import {
   Controller,
   ParseUUIDPipe,
   Post,
@@ -327,7 +327,7 @@ Validates email + password and returns a signed JWT access token.
   })
   async updateUserDetails(
     @Param('id') userId: string,
-    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roleId?: string; assignedRoleIds?: string[]; roles?: string[]; jobReviewerId?: string | null },
+    @Body() body: { fullName?: string; email?: string; password?: string; branchId?: string; businessUnitId?: string; roleId?: string; assignedRoleIds?: string[]; roles?: string[]; jobReviewerId?: string | null; city?: string | null },
     @CurrentUser() currentUser: AuthUser,
   ) {
     return this.authService.updateUserDetails(userId, body, currentUser);
@@ -945,6 +945,60 @@ Validates email + password and returns a signed JWT access token.
     @Body() dto: any,
   ) {
     return this.authService.updateTenantAuthPolicy(user.tenantId, dto);
+  }
+
+  // ─── POST /api/auth/forgot-password ──────────────────────────────────────────
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Request password reset email [Public]',
+    description: 'Generates a secure 30-minute password reset link and dispatches it to the user email.',
+  })
+  @ApiResponse({ status: 200, description: 'Reset email dispatched or generic anti-enumeration response.' })
+  async forgotPassword(@Body() dto: { email: string }) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  // ─── GET /api/auth/verify-reset-token ────────────────────────────────────────
+  @Get('verify-reset-token')
+  @ApiOperation({
+    summary: 'Verify password reset token validity [Public]',
+    description: 'Validates that the reset token is unexpired and unconsumed.',
+  })
+  @ApiResponse({ status: 200, description: 'Token is valid.' })
+  @ApiResponse({ status: 400, description: 'Token is invalid or expired.' })
+  async verifyResetToken(@Query('token') token: string) {
+    return this.authService.verifyResetToken(token);
+  }
+
+  // ─── POST /api/auth/reset-password ───────────────────────────────────────────
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset user password using token [Public]',
+    description: 'Consumes reset token and syncs new password to Keycloak identity provider.',
+  })
+  @ApiResponse({ status: 200, description: 'Password reset successfully.' })
+  @ApiResponse({ status: 400, description: 'Token invalid or password does not meet criteria.' })
+  async resetPassword(@Body() dto: { token: string; password: string }) {
+    return this.authService.resetPassword(dto);
+  }
+
+  // ─── POST /api/auth/users/:id/send-reset-link ────────────────────────────────
+  @Post('users/:id/send-reset-link')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Admin dispatch password reset email to user [ADMIN only]',
+    description: 'Generates a secure password reset token and sends email link directly to member.',
+  })
+  @ApiResponse({ status: 200, description: 'Reset link emailed successfully.' })
+  async adminSendResetLink(
+    @Param('id') userId: string,
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.adminSendResetLink(userId, currentUser);
   }
 }
 

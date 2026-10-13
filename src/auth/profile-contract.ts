@@ -1,0 +1,37 @@
+/** Canonical profile API contract. Mirrored in the web client profile-contract.ts. */
+export interface ProfileDetailsInput {
+  fullName: string;
+  phone: string;
+  designation?: string;
+}
+export interface AssignedProfileRole { id: string; name: string; }
+export interface StaffProfile {
+  [key: string]: unknown;
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  designation: string | null;
+  city: string | null;
+  avatar: string | null;
+  profilePicture: string | null;
+  assignedRoles: AssignedProfileRole[];
+  roleName?: string;
+  branchName: string | null;
+  businessUnitName: string | null;
+  tenantId: string;
+  tenantDomain: string;
+  tenant: { name: string; domain: string; siteTitle: string; logoUrl: string; };
+  defaultMarket: string;
+}
+export interface EmailSignature { id: string; name: string; html: string; }
+export interface SignatureSettings {
+  signatures: EmailSignature[];
+  newMessageSignatureId: string | null;
+  replySignatureId: string | null;
+}
+export interface SignatureInput { id: string; name: string; html: string; }
+export interface SignatureDefaultsInput {
+  newMessageSignatureId: string | null;
+  replySignatureId: string | null;
+}

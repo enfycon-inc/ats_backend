@@ -242,6 +242,7 @@ describe('system mail application integration', () => {
       {} as any,
       { client: Promise.resolve(redis) } as any,
       { tenant } as any,
+      { appendDefault: jest.fn() } as any,
     );
     return { service, redis, tenant };
   }
@@ -337,6 +338,7 @@ describe('system mail application integration', () => {
       } as any,
       {} as any,
       { tenant: jest.fn().mockResolvedValue({ id: 'tenant-a' }) } as any,
+      { appendDefault: jest.fn() } as any,
     );
     await expect(
       service.setDefaultAccount('account-b', 'tenant-a'),

@@ -415,7 +415,7 @@ export class AuthKeycloakService {
          SET keycloak_id = $1,
              first_name  = COALESCE(NULLIF($2, ''), first_name),
              last_name   = COALESCE(NULLIF($3, ''), last_name),
-             full_name   = COALESCE($4, full_name),
+             full_name   = COALESCE(NULLIF(full_name, ''), $4),
              role_id     = COALESCE(users.role_id, $5::uuid),
              assigned_role_ids = CASE WHEN cardinality(assigned_role_ids) = 0 THEN $6::uuid[] ELSE assigned_role_ids END,
              updated_at  = NOW()

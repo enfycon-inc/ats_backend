@@ -9,6 +9,8 @@ import { AuthRbacService } from './services/auth-rbac.service';
 import { AuthKeycloakService } from './services/auth-keycloak.service';
 import { AuthInviteService } from './services/auth-invite.service';
 import { AuthEmailService } from './services/auth-email.service';
+import { AuthPasswordService } from './services/auth-password.service';
+import type { AuthUser } from './interfaces/auth-user.interface';
 
 // DTOs
 import { LoginDto } from './dtos/login.dto';
@@ -49,6 +51,7 @@ export class AuthService {
     private readonly keycloakService: AuthKeycloakService,
     private readonly inviteService: AuthInviteService,
     private readonly emailService: AuthEmailService,
+    private readonly passwordService: AuthPasswordService,
   ) {}
 
   // ─── Backward-compatible query helper (used by guards / other modules) ───────
@@ -202,6 +205,23 @@ export class AuthService {
     }
 
     return report;
+  }
+
+  // ─── Password reset operations ─────────────────────────────────────────────
+  async forgotPassword(dto: { email: string }) {
+    return this.passwordService.forgotPassword(dto);
+  }
+
+  async verifyResetToken(token: string) {
+    return this.passwordService.verifyResetToken(token);
+  }
+
+  async resetPassword(dto: { token: string; password: string }) {
+    return this.passwordService.resetPassword(dto);
+  }
+
+  async adminSendResetLink(userId: string, requester: AuthUser) {
+    return this.passwordService.adminSendResetLink(userId, requester);
   }
 }
 

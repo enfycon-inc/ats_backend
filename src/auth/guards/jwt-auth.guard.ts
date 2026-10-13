@@ -225,7 +225,7 @@ export class JwtAuthGuard implements CanActivate {
         dbId: dbUser.id,
         keycloakId: decoded.sub,
         email: decoded.email || dbUser.email,
-        fullName: decoded.name || dbUser.full_name,
+        fullName: dbUser.full_name || decoded.name,
         roles: mergedRoles,
         tenantId: dbUser.tenant_id || targetTenantId || DEFAULT_TENANT_ID,
         isActive: dbUser.is_active,
