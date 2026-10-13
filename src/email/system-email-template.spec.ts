@@ -21,6 +21,13 @@ describe('corporate system email templates', () => {
     fullName: '<img src=x onerror=alert(1)>',
   };
   const variants: SystemEmailTemplate[] = [
+    {
+      ...context,
+      event: 'account_welcome',
+      loginUrl: 'https://deb.enfyjobs.com/auth/login',
+      loginOptions: { allowPasswordLogin: true, allowMicrosoftSso: true, allowGoogleSso: true },
+      passwordSetupUrl: 'https://enfyjobs.com/auth/setup-password?token=abc',
+    },
     { ...context, event: 'registration_received' },
     {
       ...context,
@@ -94,6 +101,26 @@ describe('corporate system email templates', () => {
     expect(invite.html).toContain('Valid for 24 hours');
     expect(invite.html).not.toContain('Sign in with Google');
     expect(invite.html).toContain('token=abc%26def');
+  });
+  it('renders only the login methods enabled for the tenant', () => {
+    const render = (loginOptions: Extract<SystemEmailTemplate, { event: 'account_welcome' }>['loginOptions']) =>
+      renderSystemEmail({
+        ...context,
+        event: 'account_welcome',
+        loginUrl: 'https://deb.enfyjobs.com/auth/login',
+        loginOptions,
+        passwordSetupUrl: 'https://enfyjobs.com/auth/setup-password?token=abc',
+      });
+    expect(render({ allowPasswordLogin: true, allowMicrosoftSso: true, allowGoogleSso: true }).text)
+      .toContain('Microsoft or Google account, or set up your password');
+    expect(render({ allowPasswordLogin: true, allowMicrosoftSso: true, allowGoogleSso: false }).text)
+      .toContain('corporate Microsoft account, or set up your password');
+    expect(render({ allowPasswordLogin: false, allowMicrosoftSso: true, allowGoogleSso: false }).text)
+      .toContain('corporate Microsoft account.');
+    expect(render({ allowPasswordLogin: false, allowMicrosoftSso: true, allowGoogleSso: false }).text)
+      .not.toContain('Google');
+    expect(render({ allowPasswordLogin: false, allowMicrosoftSso: true, allowGoogleSso: false }).html)
+      .not.toContain('setup-password');
   });
   it('renders role approval with a validated workspace login link and existing-credentials guidance', () => {
     const email = renderSystemEmail({

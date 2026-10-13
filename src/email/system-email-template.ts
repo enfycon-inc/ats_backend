@@ -1,8 +1,22 @@
 import type { SystemEmailRequest } from './system-email.types';
 
 type Context = { workspace: string; recipient: string; fullName?: string };
+export type WelcomeLoginOptions = {
+  allowPasswordLogin: boolean;
+  allowMicrosoftSso: boolean;
+  allowGoogleSso: boolean;
+};
 export type SystemEmailTemplate = Context &
   (
+    | {
+        event: 'account_welcome';
+        loginUrl: string;
+        loginOptions: WelcomeLoginOptions;
+        message?: string;
+        role?: string;
+        passwordSetupUrl?: string;
+        temporaryPassword?: string;
+      }
     | { event: 'registration_received' }
     | { event: 'workspace_activated'; loginUrl: string }
     | { event: 'role_approved'; loginUrl: string }
@@ -84,8 +98,43 @@ export function renderSystemEmail(
     preview: string,
     copy: string,
     action: { label: string; url: string } | undefined,
-    note = '';
+    note = '',
+    welcomeInstructions = '';
   switch (input.event) {
+    case 'account_welcome': {
+      title = 'Welcome to your workspace';
+      preview = `${input.fullName || 'Your account'} is ready at ${input.workspace}.`;
+      copy = input.message || 'Your account is ready. You can now access your workspace.';
+      details.push(
+        ...(input.role ? ([['Role', input.role]] as [string, string][]) : []),
+        ['Login email', input.recipient],
+        ['Workspace URL', applicationEmailUrl(input.loginUrl)],
+      );
+      const providers = [
+        ...(input.loginOptions.allowMicrosoftSso ? ['Microsoft'] : []),
+        ...(input.loginOptions.allowGoogleSso ? ['Google'] : []),
+      ];
+      const passwordEnabled = input.loginOptions.allowPasswordLogin;
+      const providerText = providers.length === 2 ? 'Microsoft or Google' : providers[0];
+      if (providers.length && passwordEnabled) {
+        welcomeInstructions = `Sign in with your corporate ${providerText} account, or set up your password to sign in with email and password.`;
+      } else if (providers.length) {
+        welcomeInstructions = `Sign in with your corporate ${providerText} account.`;
+      } else if (passwordEnabled) {
+        welcomeInstructions = 'Set up your password to sign in with your work email and password.';
+      } else {
+        welcomeInstructions = 'Contact your workspace administrator for help signing in.';
+      }
+      if (input.temporaryPassword && passwordEnabled) {
+        details.push(['Temporary password', input.temporaryPassword]);
+        note = 'Change your temporary password after your first sign in.';
+      }
+      if (input.passwordSetupUrl && passwordEnabled) {
+        details.push(['Password setup', applicationEmailUrl(input.passwordSetupUrl)]);
+      }
+      action = { label: 'Open your workspace', url: input.loginUrl };
+      break;
+    }
     case 'registration_received':
       title = 'Your registration is received';
       preview = 'Your workspace is awaiting administrator approval.';
@@ -205,6 +254,7 @@ export function renderSystemEmail(
     role_approved: 'Your access request was approved',
     team_invitation: 'Invitation to join',
     account_created: 'Your account is ready',
+    account_welcome: 'Welcome to your workspace',
     delivery_test: 'Email delivery test',
     password_reset_request: 'Reset your password',
     password_changed_alert: 'Security Alert: Password updated',
@@ -227,13 +277,20 @@ export function renderSystemEmail(
     action && url
       ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 16px"><tr><td bgcolor="#1e4e98" style="border-radius:4px;mso-padding-alt:14px 24px"><a href="${e(url)}" style="display:inline-block;padding:14px 24px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none">${e(action.label)}</a></td></tr></table><p style="font-size:12px;color:#475569;word-break:break-all">Or copy and open this link:<br><a href="${e(url)}" style="color:#1e4e98">${e(url)}</a></p>`
       : '';
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(title)}</title></head><body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a"><div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all">${e(preview)}</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f1f5f9"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-top:4px solid #1e4e98"><tr><td style="padding:28px 24px 12px"><span style="font-size:25px;font-weight:bold;color:#1e4e98">EnfySync</span><br><span style="font-size:10px;letter-spacing:1px;color:#64748b">AI RECRUITMENT</span></td></tr><tr><td style="padding:12px 24px 28px;font-size:15px;line-height:1.6"><h1 style="font-size:24px;line-height:1.3;margin:0 0 20px">${e(title)}</h1><p>Hi ${e(input.fullName || 'there')},</p><p>${e(copy)}</p><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0;font-size:14px;margin:20px 0">${rows}</table>${button}${note ? `<p style="font-size:13px;color:#475569">${e(note)}</p>` : ''}</td></tr><tr><td style="padding:20px 24px;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#64748b"><strong style="color:#1e4e98">EnfySync AI Recruitment Platform</strong><br>${e(input.workspace)}<p style="margin:10px 0">${DISCLAIMER}${REPLY_MARKER}</p><span>© ${new Date().getFullYear()} EnfySync</span></td></tr></table></td></tr></table></body></html>`;
+  const setupButton = input.event === 'account_welcome' && input.passwordSetupUrl
+    ? `<p style="margin:12px 0"><a href="${e(applicationEmailUrl(input.passwordSetupUrl))}" style="color:#1e4e98;font-weight:bold">Set up your password</a></p>`
+    : '';
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(title)}</title></head><body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a"><div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all">${e(preview)}</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f1f5f9"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-top:4px solid #1e4e98"><tr><td style="padding:28px 24px 12px"><span style="font-size:25px;font-weight:bold;color:#1e4e98">EnfySync</span><br><span style="font-size:10px;letter-spacing:1px;color:#64748b">AI RECRUITMENT</span></td></tr><tr><td style="padding:12px 24px 28px;font-size:15px;line-height:1.6"><h1 style="font-size:24px;line-height:1.3;margin:0 0 20px">${e(title)}</h1><p>Hi ${e(input.fullName || 'there')},</p><p>${e(copy)}</p>${welcomeInstructions ? `<p>${e(welcomeInstructions)}</p>` : ''}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0;font-size:14px;margin:20px 0">${rows}</table>${button}${setupButton}${note ? `<p style="font-size:13px;color:#475569">${e(note)}</p>` : ''}</td></tr><tr><td style="padding:20px 24px;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#64748b"><strong style="color:#1e4e98">EnfySync AI Recruitment Platform</strong><br>${e(input.workspace)}<p style="margin:10px 0">${DISCLAIMER}${REPLY_MARKER}</p><span>© ${new Date().getFullYear()} EnfySync</span></td></tr></table></td></tr></table></body></html>`;
   const text = [
     title,
     `Hi ${input.fullName || 'there'},`,
     copy,
+    welcomeInstructions,
     ...details.map(([label, value]) => `${label}: ${value}`),
     ...(action && url ? [action.label + ': ' + url] : []),
+    ...(input.event === 'account_welcome' && input.passwordSetupUrl
+      ? ['Set up your password: ' + applicationEmailUrl(input.passwordSetupUrl)]
+      : []),
     note,
     'EnfySync AI Recruitment Platform',
     input.workspace,

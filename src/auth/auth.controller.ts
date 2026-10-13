@@ -28,6 +28,7 @@ import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
 import { RegisterTenantDto } from './dtos/register-tenant.dto';
 import { InviteUserDto } from './dtos/invite-user.dto';
+import { BulkUserImportDto } from './dtos/bulk-user-import.dto';
 import { SsoLoginDto } from './dtos/sso-login.dto';
 import { AcceptInviteDto } from './dtos/accept-invite.dto';
 import { AddCustomDomainDto, VerifyCustomDomainDto } from './dtos/custom-domain.dto';
@@ -334,6 +335,24 @@ Validates email + password and returns a signed JWT access token.
   }
 
   // â”€â”€â”€ POST /api/auth/users/bulk-reviewer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  @Post('users/import/validate')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Validate a CSV batch of users before import' })
+  async validateBulkUsers(@Body() body: BulkUserImportDto, @CurrentUser() currentUser: AuthUser) {
+    return this.authService.validateBulkUsers(body.rows, currentUser);
+  }
+
+  @Post('users/import')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create users from a CSV batch and send welcome emails' })
+  async importUsers(@Body() body: BulkUserImportDto, @CurrentUser() currentUser: AuthUser) {
+    return this.authService.importUsers(body.rows, currentUser);
+  }
+
   @Post('users/bulk-reviewer')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')

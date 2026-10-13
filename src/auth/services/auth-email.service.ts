@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { SystemMailService } from '../../email/system-mail.service';
+import { AuthQueryService } from './auth-query.service';
 import {
   applicationEmailUrl,
   renderSystemEmail,
@@ -8,7 +9,59 @@ import {
 
 @Injectable()
 export class AuthEmailService {
-  constructor(private readonly systemMail: SystemMailService) {}
+  constructor(
+    private readonly systemMail: SystemMailService,
+    @Optional() private readonly authQuery?: AuthQueryService,
+  ) {}
+
+  async sendAccountWelcomeEmail(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    roleName?: string;
+    message?: string;
+    invitationToken?: string;
+    temporaryPassword?: string;
+    adminEmail?: string;
+  }) {
+    const policyResult = await this.authQuery?.query(
+      `SELECT allow_password_login, allow_microsoft_sso, allow_google_sso
+       FROM tenant_auth_settings WHERE tenant_id = $1::uuid LIMIT 1`,
+      [options.tenantId],
+    );
+    // Match the tenant policy service's defaults when a tenant has no settings row.
+    const policy = policyResult?.rows[0] as any;
+    const loginOptions = {
+      allowPasswordLogin: policy?.allow_password_login ?? true,
+      allowMicrosoftSso: policy?.allow_microsoft_sso ?? true,
+      allowGoogleSso: policy?.allow_google_sso ?? true,
+    };
+    let passwordSetupUrl: string | undefined;
+    if (loginOptions.allowPasswordLogin && options.invitationToken) {
+      const setup = new URL('/auth/setup-password', process.env.FRONTEND_URL || '');
+      setup.searchParams.set('token', options.invitationToken);
+      passwordSetupUrl = applicationEmailUrl(setup.toString());
+    }
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'account_welcome',
+        workspace: options.tenantName,
+        recipient: options.to,
+        fullName: options.fullName,
+        role: options.roleName,
+        message: options.message,
+        loginUrl: workspaceEmailLogin(options.subdomain),
+        loginOptions,
+        passwordSetupUrl,
+        temporaryPassword: loginOptions.allowPasswordLogin ? options.temporaryPassword : undefined,
+      }),
+      ...(options.adminEmail ? { replyTo: options.adminEmail } : {}),
+    });
+  }
 
   async sendRoleApprovalWelcomeEmail(options: {
     tenantId: string;
@@ -17,16 +70,9 @@ export class AuthEmailService {
     tenantName: string;
     subdomain: string;
   }) {
-    return this.systemMail.send({
-      tenantId: options.tenantId,
-      to: options.to,
-      ...renderSystemEmail({
-        event: 'role_approved',
-        workspace: options.tenantName,
-        recipient: options.to,
-        fullName: options.fullName,
-        loginUrl: workspaceEmailLogin(options.subdomain),
-      }),
+    return this.sendAccountWelcomeEmail({
+      ...options,
+      message: 'Your access request was approved. Your account is ready to use.',
     });
   }
 
@@ -67,23 +113,9 @@ export class AuthEmailService {
     adminEmail?: string;
     roleName?: string;
   }) {
-    const setup = new URL(
-      '/auth/setup-password',
-      process.env.FRONTEND_URL || '',
-    );
-    setup.searchParams.set('token', options.invitationToken);
-    return this.systemMail.send({
-      tenantId: options.tenantId,
-      to: options.to,
-      ...renderSystemEmail({
-        event: 'team_invitation',
-        workspace: options.tenantName,
-        recipient: options.to,
-        fullName: options.fullName,
-        role: options.roleName,
-        setupUrl: applicationEmailUrl(setup.toString()),
-      }),
-      ...(options.adminEmail ? { replyTo: options.adminEmail } : {}),
+    return this.sendAccountWelcomeEmail({
+      ...options,
+      message: `You have been invited to join ${options.tenantName}. Your account is ready.`,
     });
   }
 
@@ -96,18 +128,9 @@ export class AuthEmailService {
     temporaryPassword?: string;
     roleName?: string;
   }) {
-    return this.systemMail.send({
-      tenantId: options.tenantId,
-      to: options.to,
-      ...renderSystemEmail({
-        event: 'account_created',
-        workspace: options.tenantName,
-        recipient: options.to,
-        fullName: options.fullName,
-        role: options.roleName,
-        temporaryPassword: options.temporaryPassword,
-        loginUrl: workspaceEmailLogin(options.subdomain),
-      }),
+    return this.sendAccountWelcomeEmail({
+      ...options,
+      message: 'Your account has been created and is ready to use.',
     });
   }
 

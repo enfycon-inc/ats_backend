@@ -156,6 +156,8 @@ export class AuthService {
       this.inviteService.inviteUser(dto, requester)
     );
   }
+  validateBulkUsers(rows: any[], requester: AuthUser) { return this.inviteService.validateBulkUsers(rows, requester); }
+  importUsers(rows: any[], requester: AuthUser) { return this.inviteService.importUsers(rows, requester); }
   getInvitationDetails(token: string) { return this.inviteService.getInvitationDetails(token); }
   acceptInvite(dto: AcceptInviteDto) { return this.inviteService.acceptInvite(dto); }
 

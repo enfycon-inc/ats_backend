@@ -76,10 +76,11 @@ describe('system mail application integration', () => {
     expect(send).toHaveBeenCalledWith(expect.objectContaining({
       tenantId: 'tenant-a',
       to: 'user@example.com',
-      subject: expect.stringContaining('Your access request was approved'),
+      subject: expect.stringContaining('Welcome to your workspace'),
       html: expect.stringContaining('https://company-a.enfyjobs.com/auth/login'),
-      text: expect.stringContaining('existing credentials'),
+      text: expect.stringContaining('Microsoft or Google account'),
     }));
+    expect(send.mock.calls[0][0].text).toContain('Your access request was approved');
   });
   it('reports onboarding acceptance or failure without undoing a saved account', async () => {
     const sendTenantStatusEmail = jest

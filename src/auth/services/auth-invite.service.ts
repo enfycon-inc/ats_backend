@@ -13,9 +13,27 @@ import { AuthTenantService } from './auth-tenant.service';
 import { AuthRbacService } from './auth-rbac.service';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
+import { isTenantAdmin } from '../utils/branch-scoping';
+import { USER_CITY_VALUES, type UserCity } from '../user-city-contract';
 
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
+
+const normalizeImportName = (value: unknown) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+
+function editDistance(a: string, b: string): number {
+  const previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = previous[0];
+    previous[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const above = previous[j];
+      previous[j] = Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return previous[b.length];
+}
 
 /**
  * AuthInviteService — manages the full invitation lifecycle:
@@ -39,17 +57,20 @@ export class AuthInviteService {
     fullName: string;
     systemRole?: string;
     roleId?: string;
+    roleIds?: string[];
     branchId?: string;
+    businessUnitId?: string;
     podId?: string;
+    city?: UserCity | null;
     sendEmailInvite?: boolean;
   }, requester: { isAdmin: boolean; roles: string[]; tenantId: string | null } & Omit<Partial<AuthUser>, 'tenantId'>) {
-    if (!requester.isAdmin && !requester.roles.includes('BRANCH_ADMIN')) {
+    if (!requester.isAdmin && !requester.roles.includes('BRANCH_ADMIN') && !requester.permissions?.includes('user:manage')) {
       throw new BadRequestException('Only Administrators can invite new users.');
     }
 
     const tenantId = requester.tenantId || DEFAULT_TENANT_ID;
     const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    for (const [field, value] of Object.entries({ tenantId, roleId: dto.roleId, branchId: dto.branchId, podId: dto.podId })) {
+    for (const [field, value] of Object.entries({ tenantId, roleId: dto.roleId, branchId: dto.branchId, businessUnitId: dto.businessUnitId, podId: dto.podId })) {
       if (value && (typeof value !== 'string' || !validId.test(value))) throw new BadRequestException(`${field} must be a valid ID.`);
     }
     const cleanEmail = (dto.email || '').trim().toLowerCase();
@@ -91,52 +112,76 @@ export class AuthInviteService {
       }
     }
 
-    const systemRole = (dto.systemRole || 'RECRUITER').toUpperCase();
-    const sysRoleRes = await this.authQuery.query('SELECT id FROM system_roles WHERE system_key = $1 LIMIT 1', [systemRole]);
-    const systemRoleId = sysRoleRes.rows.length > 0 ? (sysRoleRes.rows[0] as any).id : null;
+    if (dto.businessUnitId) {
+      const unit = await this.authQuery.query(
+        'SELECT id FROM business_units WHERE id = $1::uuid AND tenant_id = $2::uuid AND branch_id = $3::uuid LIMIT 1',
+        [dto.businessUnitId, tenantId, dto.branchId || null],
+      );
+      if (!unit.rows.length) throw new BadRequestException('Select a unit in the chosen workspace and branch.');
+    }
 
-    let roleId = dto.roleId || null;
-    let roleName: string | undefined;
+    const systemRole = (dto.systemRole || 'RECRUITER').toUpperCase();
+    const requestedRoleIds = Array.from(new Set(dto.roleIds?.length ? dto.roleIds : dto.roleId ? [dto.roleId] : []));
+    let roleId = requestedRoleIds[0] || null;
+    let roleNames: string[] = [];
+    let systemRoleId: string | null = null;
     if (!roleId) {
       const defaultRoleRes = await this.authQuery.query(
-        `SELECT cr.id, cr.name FROM custom_roles cr
+        `SELECT cr.id, cr.name, sr.id AS system_role_id FROM custom_roles cr
          LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
          WHERE cr.tenant_id = $1 AND (sr.system_key = $2 OR cr.name = $2) LIMIT 1`,
         [tenantId, systemRole]
       );
       if (defaultRoleRes.rows.length > 0) {
         roleId = (defaultRoleRes.rows[0] as any).id;
-        roleName = (defaultRoleRes.rows[0] as any).name;
+        roleNames = [(defaultRoleRes.rows[0] as any).name];
+        systemRoleId = (defaultRoleRes.rows[0] as any).system_role_id || null;
       }
     } else {
-      const selectedRole = await this.authQuery.query('SELECT id, name FROM custom_roles WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1', [roleId, tenantId]);
-      if (!selectedRole.rows.length) throw new BadRequestException('Select a valid role in this workspace.');
-      roleName = (selectedRole.rows[0] as any).name;
+      const selectedRoles = await this.authQuery.query(
+        `SELECT cr.id, cr.name, cr.branch_id, cr.business_unit_id, sr.id AS system_role_id
+         FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id = cr.system_role_id
+         WHERE cr.id = ANY($1::uuid[]) AND cr.tenant_id = $2::uuid`,
+        [requestedRoleIds, tenantId],
+      );
+      if (selectedRoles.rows.length !== requestedRoleIds.length) throw new BadRequestException('Select valid roles in this workspace.');
+      for (const selected of selectedRoles.rows as any[]) {
+        if (selected.branch_id && selected.branch_id !== dto.branchId) throw new BadRequestException('A selected role is outside the chosen branch.');
+        if (selected.business_unit_id && selected.business_unit_id !== dto.businessUnitId) throw new BadRequestException('A selected role is outside the chosen unit.');
+      }
+      const byId = new Map((selectedRoles.rows as any[]).map((selected) => [selected.id, selected]));
+      roleNames = requestedRoleIds.map((id) => byId.get(id)?.name).filter(Boolean) as string[];
+      systemRoleId = byId.get(roleId)?.system_role_id || null;
     }
 
     const firstName = fullName.split(/\s+/)[0] || '';
     const lastName = fullName.split(/\s+/).slice(1).join(' ') || '';
-    const assignedRoleIds = roleId ? [roleId] : [];
+    const assignedRoleIds = requestedRoleIds.length ? requestedRoleIds : roleId ? [roleId] : [];
     const insertUserRes = await this.authQuery.query(
-      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, pod_id, is_active, is_approved)
-       VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid, $7::uuid[], $8::uuid, $9::uuid, true, true)
+      `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, business_unit_id, city, pod_id, is_active, is_approved)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid, $7::uuid[], $8::uuid, $9::uuid, $10::ats."UserCity", $11::uuid, true, true)
        RETURNING id, email, first_name, last_name, full_name, created_at`,
-      [tenantId, cleanEmail, firstName, lastName, fullName, roleId, assignedRoleIds, dto.branchId || null, dto.podId || null]
+      [tenantId, cleanEmail, firstName, lastName, fullName, roleId, assignedRoleIds, dto.branchId || null, dto.businessUnitId || null, dto.city || null, dto.podId || null]
     );
     const newUser: any = insertUserRes.rows[0];
 
     const invitationToken = crypto.randomUUID();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    await this.authQuery.query(
-      `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role_id, branch_id, pod_id, invitation_token, token_expires_at, created_by)
-       VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10::uuid)
-       ON CONFLICT (tenant_id, email) DO UPDATE SET
-         invitation_token = EXCLUDED.invitation_token,
-         token_expires_at = EXCLUDED.token_expires_at,
-         is_accepted = FALSE`,
-      [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.dbId || null]
-    );
+    try {
+      await this.authQuery.query(
+        `INSERT INTO user_invitations (tenant_id, email, full_name, role_id, system_role_id, branch_id, pod_id, invitation_token, token_expires_at, created_by)
+         VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10::uuid)
+         ON CONFLICT (tenant_id, email) DO UPDATE SET
+           invitation_token = EXCLUDED.invitation_token,
+           token_expires_at = EXCLUDED.token_expires_at,
+           is_accepted = FALSE`,
+        [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.dbId || null]
+      );
+    } catch (error) {
+      await this.authQuery.query('DELETE FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid', [newUser.id, tenantId]).catch(() => undefined);
+      throw error;
+    }
 
     const tenantRes = await this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
     const tenantName = (tenantRes.rows[0] as any)?.name || 'Enfycon Workspace';
@@ -146,7 +191,7 @@ export class AuthInviteService {
     if (dto.sendEmailInvite !== false) {
       try {
         await this.emailService.sendWelcomeEmail({ tenantId, to: cleanEmail, fullName, tenantName,
-          subdomain: tenantDomain, invitationToken, roleName });
+          subdomain: tenantDomain, invitationToken, roleName: roleNames.join(', ') || undefined });
         emailNotification = { status: 'accepted' };
       } catch {
         this.logger.warn('Invitation saved, but invitation email was not accepted.');
@@ -155,6 +200,146 @@ export class AuthInviteService {
     }
 
     return { success: true, emailNotification, message: 'User invited successfully.', user: newUser, invitationToken, expiresAt };
+  }
+
+  private assertBulkImportScope(requester: AuthUser) {
+    if (!requester?.tenantId || !requester.permissions?.includes('user:manage')) {
+      throw new ForbiddenException('User management permission is required to import users.');
+    }
+    if (isTenantAdmin(requester)) return { branchId: null as string | null, businessUnitId: null as string | null };
+    if (!requester.branchId) throw new ForbiddenException('A branch assignment is required to import users.');
+    const branchManager = requester.permissions.includes('branch_admin:manage') || requester.systemRole === 'DELIVERY_HEAD';
+    const unitManager = requester.permissions.includes('unit_admin:manage') && requester.systemRole !== 'DELIVERY_HEAD';
+    if (unitManager && !requester.businessUnitId) throw new ForbiddenException('A business unit assignment is required to import users.');
+    if (!branchManager && !unitManager && !requester.businessUnitId) {
+      throw new ForbiddenException('A business unit assignment is required to import users.');
+    }
+    return { branchId: requester.branchId, businessUnitId: branchManager ? null : requester.businessUnitId || null };
+  }
+
+  async validateBulkUsers(rows: any[], requester: AuthUser) {
+    const scope = this.assertBulkImportScope(requester);
+    if (!Array.isArray(rows) || rows.length < 1 || rows.length > 100) {
+      throw new BadRequestException('Upload between 1 and 100 user rows per import.');
+    }
+    const tenantId = requester.tenantId;
+    const policy = await this.tenantService.getTenantAuthPolicy(tenantId);
+    const [branchesResult, unitsResult, rolesResult] = await Promise.all([
+      this.authQuery.query('SELECT id, name FROM branches WHERE tenant_id = $1::uuid', [tenantId]),
+      this.authQuery.query('SELECT id, name, branch_id FROM business_units WHERE tenant_id = $1::uuid', [tenantId]),
+      this.authQuery.query(
+        `SELECT cr.id, cr.name, cr.branch_id, cr.business_unit_id, sr.system_key
+         FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id = cr.system_role_id
+         WHERE cr.tenant_id = $1::uuid`, [tenantId]),
+    ]);
+    const branches = branchesResult.rows as any[];
+    const units = unitsResult.rows as any[];
+    const roles = rolesResult.rows as any[];
+    const emails = rows.map((row) => String(row.email || '').trim().toLowerCase()).filter(Boolean);
+    const existingResult = emails.length
+      ? await this.authQuery.query('SELECT LOWER(email) AS email FROM users WHERE LOWER(email) = ANY($1::text[])', [emails])
+      : { rows: [] };
+    const existingEmails = new Set((existingResult.rows as any[]).map((row) => row.email));
+    const seenEmails = new Set<string>();
+    const personalDomains = ['gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com'];
+    const emailPolicyError = (email: string) => {
+      const domain = email.split('@')[1]?.toLowerCase() || '';
+      if (policy.allowPersonalEmails === false && personalDomains.includes(domain)) return 'Personal email addresses are not allowed by this workspace.';
+      if (policy.allowedEmailDomains?.length && !policy.allowedEmailDomains.map((item: string) => item.toLowerCase()).includes(domain)) return `Email domain @${domain} is not allowed by this workspace.`;
+      return '';
+    };
+    const matchName = (value: string, options: any[], field: string) => {
+      const normalized = normalizeImportName(value);
+      const exact = options.filter((option) => normalizeImportName(option.name) === normalized);
+      if (exact.length === 1) return { match: exact[0], error: '', suggestions: [] as string[] };
+      const choices = Array.from(new Set(options.map((option) => String(option.name))));
+      const near = choices.map((candidate) => ({ candidate, distance: editDistance(normalized, normalizeImportName(candidate)) }))
+        .filter((item) => normalized && item.distance <= Math.max(2, Math.floor(normalized.length * 0.22)))
+        .sort((a, b) => a.distance - b.distance);
+      const suggestions = near.length && (near.length === 1 || near[0].distance < near[1].distance) ? [near[0].candidate] : [];
+      return { match: null, error: exact.length > 1 ? `${field} name is ambiguous; use a more specific value.` : `${field} was not found.`, suggestions };
+    };
+    return rows.map((input, index) => {
+      const errors: string[] = [];
+      const suggestions: Record<string, string[]> = {};
+      const fullName = String(input.fullName || input.name || '').trim().replace(/\s+/g, ' ');
+      const email = String(input.email || '').trim().toLowerCase();
+      if (fullName.length < 2) errors.push('Full name is required.');
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push('Enter a valid email address.');
+      if (email) {
+        if (seenEmails.has(email)) errors.push('This email appears more than once in the file.');
+        seenEmails.add(email);
+        if (existingEmails.has(email)) errors.push('This email is already registered in the workspace.');
+        const policyError = emailPolicyError(email);
+        if (policyError) errors.push(policyError);
+      }
+      const branchMatch = matchName(String(input.branch || ''), branches.filter((branch) => !scope.branchId || branch.id === scope.branchId), 'Branch');
+      if (!branchMatch.match) {
+        errors.push(branchMatch.error || 'Branch is required.');
+        if (branchMatch.suggestions.length) suggestions.branch = branchMatch.suggestions;
+      }
+      const branchId = branchMatch.match?.id;
+      const unitMatch = matchName(String(input.unit || input.businessUnit || ''), units.filter((unit) =>
+        (!scope.branchId || unit.branch_id === scope.branchId) && (!branchId || unit.branch_id === branchId) &&
+        (!scope.businessUnitId || unit.id === scope.businessUnitId)), 'Unit');
+      if (!unitMatch.match) {
+        errors.push(unitMatch.error || 'Unit is required.');
+        if (unitMatch.suggestions.length) suggestions.unit = unitMatch.suggestions;
+      }
+      const cityInput = String(input.city || '').trim().toUpperCase();
+      const city = cityInput || null;
+      if (city && !USER_CITY_VALUES.includes(city as UserCity)) errors.push(`City must be one of: ${USER_CITY_VALUES.join(', ')}.`);
+      const roleNames = String(input.roles || input.role || '').split(';').map((role) => role.trim()).filter(Boolean);
+      if (!roleNames.length) errors.push('At least one role is required.');
+      const resolvedRoles: any[] = [];
+      if (branchId && unitMatch.match) {
+        for (const roleName of roleNames) {
+          const eligibleRoles = roles.filter((role) => (!role.branch_id || role.branch_id === branchId) && (!role.business_unit_id || role.business_unit_id === unitMatch.match.id));
+          const roleMatch = matchName(roleName, eligibleRoles, 'Role');
+          if (!roleMatch.match) {
+            errors.push(roleMatch.error || `Role "${roleName}" was not found for this branch and unit.`);
+            if (roleMatch.suggestions.length) suggestions[roleName] = roleMatch.suggestions;
+            continue;
+          }
+          const selected = roleMatch.match;
+          if (selected.system_key === 'SUPER_ADMIN' || selected.name.toUpperCase() === 'SUPER_ADMIN') errors.push('SUPER_ADMIN cannot be assigned through user import.');
+          if ((selected.system_key === 'TENANT_ADMIN' || selected.name.toUpperCase() === 'TENANT_ADMIN') && !isTenantAdmin(requester)) errors.push('Only a tenant administrator can assign the Tenant Admin role.');
+          resolvedRoles.push({ id: selected.id, name: selected.name });
+        }
+      }
+      return {
+        row: index + 2,
+        input,
+        normalized: { fullName, email, branchId, businessUnitId: unitMatch.match?.id || null,
+          city: city as UserCity | null, roleIds: resolvedRoles.map((role) => role.id), roleNames: resolvedRoles.map((role) => role.name) },
+        status: errors.length ? 'invalid' : 'ready',
+        errors: Array.from(new Set(errors)),
+        suggestions,
+      };
+    });
+  }
+
+  async importUsers(rows: any[], requester: AuthUser) {
+    const validation = await this.validateBulkUsers(rows, requester);
+    const results: Array<{ row: number; email: string; status: 'skipped' | 'created' | 'failed'; errors?: string[]; emailNotification?: any }> = [];
+    for (const row of validation) {
+      if (row.status !== 'ready') {
+        results.push({ row: row.row, email: row.normalized.email, status: 'skipped', errors: row.errors });
+        continue;
+      }
+      try {
+        const created = await this.inviteUser({ email: row.normalized.email, fullName: row.normalized.fullName,
+          roleIds: row.normalized.roleIds, branchId: row.normalized.branchId,
+          businessUnitId: row.normalized.businessUnitId, city: row.normalized.city, sendEmailInvite: true },
+        { ...requester, isAdmin: true });
+        results.push({ row: row.row, email: row.normalized.email, status: 'created', emailNotification: created.emailNotification });
+      } catch (error: any) {
+        results.push({ row: row.row, email: row.normalized.email, status: 'failed', errors: [error?.message || 'Could not create this user.'] });
+      }
+    }
+    return { total: results.length, created: results.filter((item) => item.status === 'created').length,
+      skipped: results.filter((item) => item.status === 'skipped').length,
+      failed: results.filter((item) => item.status === 'failed').length, results };
   }
 
   async getInvitationDetails(token: string) {
