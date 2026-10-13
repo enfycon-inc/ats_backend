@@ -26,13 +26,28 @@ export class AuthEmailService {
     temporaryPassword?: string;
     adminEmail?: string;
   }) {
-    const policyResult = await this.authQuery?.query(
-      `SELECT allow_password_login, allow_microsoft_sso, allow_google_sso
-       FROM tenant_auth_settings WHERE tenant_id = $1::uuid LIMIT 1`,
-      [options.tenantId],
-    );
+    const accountContextPromise = this.authQuery
+      ? this.authQuery.query(
+          `SELECT bu.name AS unit_name, b.name AS branch_name
+           FROM users u
+           LEFT JOIN business_units bu ON bu.id = u.business_unit_id
+           LEFT JOIN branches b ON b.id = u.branch_id
+           WHERE u.tenant_id = $1::uuid AND LOWER(u.email) = LOWER($2)
+           LIMIT 1`,
+          [options.tenantId, options.to],
+        ).catch(() => undefined)
+      : Promise.resolve(undefined);
+    const [policyResult, accountContextResult] = await Promise.all([
+      this.authQuery?.query(
+        `SELECT allow_password_login, allow_microsoft_sso, allow_google_sso
+         FROM tenant_auth_settings WHERE tenant_id = $1::uuid LIMIT 1`,
+        [options.tenantId],
+      ),
+      accountContextPromise,
+    ]);
     // Match the tenant policy service's defaults when a tenant has no settings row.
     const policy = policyResult?.rows[0] as any;
+    const accountContext = accountContextResult?.rows[0] as any;
     const loginOptions = {
       allowPasswordLogin: policy?.allow_password_login ?? true,
       allowMicrosoftSso: policy?.allow_microsoft_sso ?? true,
@@ -53,6 +68,8 @@ export class AuthEmailService {
         recipient: options.to,
         fullName: options.fullName,
         role: options.roleName,
+        unit: accountContext?.unit_name,
+        branch: accountContext?.branch_name,
         message: options.message,
         loginUrl: workspaceEmailLogin(options.subdomain),
         loginOptions,
