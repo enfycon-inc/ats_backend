@@ -253,15 +253,19 @@ export class AuthInviteService {
       if (policy.allowedEmailDomains?.length && !policy.allowedEmailDomains.map((item: string) => item.toLowerCase()).includes(domain)) return `Email domain @${domain} is not allowed by this workspace.`;
       return '';
     };
-    const matchName = (value: string, options: any[], field: string) => {
+    const matchName = (value: string, options: any[], field: string, resolveAmbiguousExact?: (matches: any[]) => any | null) => {
       const normalized = normalizeImportName(value);
       const exact = options.filter((option) => normalizeImportName(option.name) === normalized);
       if (exact.length === 1) return { match: exact[0], error: '', suggestions: [] as string[] };
+      if (exact.length > 1 && resolveAmbiguousExact) {
+        const resolved = resolveAmbiguousExact(exact);
+        if (resolved) return { match: resolved, error: '', suggestions: [] as string[] };
+      }
       const choices = Array.from(new Set(options.map((option) => String(option.name))));
       const near = choices.map((candidate) => ({ candidate, distance: editDistance(normalized, normalizeImportName(candidate)) }))
         .filter((item) => normalized && item.distance <= Math.max(2, Math.floor(normalized.length * 0.22)))
         .sort((a, b) => a.distance - b.distance);
-      const suggestions = near.length && (near.length === 1 || near[0].distance < near[1].distance) ? [near[0].candidate] : [];
+      const suggestions = !exact.length && near.length && (near.length === 1 || near[0].distance < near[1].distance) ? [near[0].candidate] : [];
       return { match: null, error: exact.length > 1 ? `${field} name is ambiguous; use a more specific value.` : `${field} was not found.`, suggestions };
     };
     return rows.map((rawInput, index) => {
@@ -304,8 +308,45 @@ export class AuthInviteService {
       const resolvedRoles: any[] = [];
       if (branchId && unitMatch.match) {
         for (const roleName of roleNames) {
-          const eligibleRoles = roles.filter((role) => (!role.branch_id || role.branch_id === branchId) && (!role.business_unit_id || role.business_unit_id === unitMatch.match.id));
-          const roleMatch = matchName(roleName, eligibleRoles, 'Role');
+          const eligibleRoles = roles.filter((role) => {
+            if ((role.branch_id && role.branch_id !== branchId) ||
+              (role.business_unit_id && role.business_unit_id !== unitMatch.match.id)) return false;
+            const roleKey = String(role.system_key || role.name).trim().toUpperCase().replace(/[\s-]+/g, '_');
+            if (['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'UNIT_ADMIN'].includes(roleKey)) {
+              return role.business_unit_id === unitMatch.match.id;
+            }
+            if (roleKey === 'BRANCH_ADMIN') {
+              return role.branch_id === branchId && !role.business_unit_id;
+            }
+            if (roleKey === 'TENANT_ADMIN') {
+              return !role.branch_id && !role.business_unit_id;
+            }
+            return true;
+          });
+          const hasExactName = (candidate: any) => normalizeImportName(candidate.name) === normalizeImportName(roleName);
+          const matchingRoles = roles.filter(hasExactName);
+          const matchingEligibleRoles = eligibleRoles.filter(hasExactName);
+          if (matchingRoles.length && !matchingEligibleRoles.length) {
+            const sample = matchingRoles[0];
+            const roleKey = String(sample.system_key || sample.name).trim().toUpperCase().replace(/[\s-]+/g, '_');
+            const expectedScope = ['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'UNIT_ADMIN'].includes(roleKey)
+              ? 'the selected unit'
+              : roleKey === 'BRANCH_ADMIN' ? 'the selected branch' : roleKey === 'TENANT_ADMIN' ? 'tenant-wide' : 'the selected branch or unit';
+            errors.push(`Role "${roleName}" must be assigned at ${expectedScope} scope.`);
+            continue;
+          }
+          const roleMatch = matchName(roleName, eligibleRoles, 'Role', (matches) => {
+            const scopeRank = (role: any) => {
+              const roleKey = String(role.system_key || role.name).trim().toUpperCase().replace(/[\s-]+/g, '_');
+              if (['RECRUITER', 'ACCOUNT_MANAGER', 'DELIVERY_HEAD', 'UNIT_ADMIN'].includes(roleKey)) return 3;
+              if (roleKey === 'BRANCH_ADMIN') return 2;
+              if (roleKey === 'TENANT_ADMIN') return 1;
+              return role.business_unit_id === unitMatch.match.id ? 2 : role.branch_id === branchId ? 1 : 0;
+            };
+            const bestRank = Math.max(...matches.map(scopeRank));
+            const bestMatches = matches.filter((role) => scopeRank(role) === bestRank);
+            return bestMatches.length === 1 ? bestMatches[0] : null;
+          });
           if (!roleMatch.match) {
             errors.push(roleMatch.error || `Role "${roleName}" was not found for this branch and unit.`);
             if (roleMatch.suggestions.length) suggestions[roleName] = roleMatch.suggestions;
