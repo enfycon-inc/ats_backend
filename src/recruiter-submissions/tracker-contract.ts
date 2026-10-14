@@ -35,6 +35,7 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  statusRecordedDates?: Partial<Record<'finalStatus' | 'l1Status' | 'l2Status' | 'l3Status', string>>;
   currentCompensationAmount?: string | null;
   expectedCompensationAmount?: string | null;
   compensationCurrency?: string | null;

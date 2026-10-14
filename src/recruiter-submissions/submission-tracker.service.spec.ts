@@ -12,6 +12,20 @@ function setup() {
   return { prisma, notifications, service };
 }
 describe('submission tracker API', () => {
+  it('loads recorded status dates in one tenant-scoped page query without using general update timestamps', async () => {
+    const {service, prisma} = setup();
+    prisma.$queryRawUnsafe.mockResolvedValueOnce([{count: 1n}])
+      .mockResolvedValueOnce([{id: 'submission-id', final_status: 'OFFER', updated_at: '2026-10-15T10:00:00Z'}])
+      .mockResolvedValueOnce([{submission_id: 'submission-id', field: 'finalStatus', created_at: new Date('2026-10-14T09:00:00Z')}]);
+    const result = await service.findAll('tenant-id', user, {});
+    expect(result.data[0].statusRecordedDates).toEqual({finalStatus: '2026-10-14T09:00:00.000Z'});
+    expect(prisma.$queryRawUnsafe).toHaveBeenCalledTimes(3);
+    const [sql, ...params] = prisma.$queryRawUnsafe.mock.calls[2];
+    expect(params).toEqual(['tenant-id', ['submission-id']]);
+    expect(sql).toContain("ev.kind = 'UPDATE'");
+    expect(sql).toContain("change.value->>'after'");
+    expect(sql).toContain('ev.sequence DESC');
+  });
   it('projects submitted candidate details without losing zero compensation or missing experience', () => {
     const { service } = setup();
     const result = (service as any).mapRowToDetails({ candidate_first_name: 'Alex', candidate_last_name: 'Morgan', candidate_current_company: 'Example', candidate_current_ctc: 0, candidate_expected_ctc: 12, candidate_ctc_currency: 'INR', candidate_ctc_term: 'LPA', candidate_relevant_experience: null, recruiter_avatar: '/avatar.png', recruiter_email: 'riya@example.com', job_type: 'Full-time' });

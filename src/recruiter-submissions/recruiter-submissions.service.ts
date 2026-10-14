@@ -559,10 +559,31 @@ export class RecruiterSubmissionsService {
       ]);
 
       const total = Number(countRes[0]?.count || 0);
-      const data = (retrieveRes || []).map((row: any) => ({
+      const data: SubmissionDetails[] = (retrieveRes || []).map((row: any) => ({
         ...this.mapRowToDetails(row),
         capabilities: submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId),
       }));
+      // One page-wide history projection; remarks-only updates do not change
+      // decision dates. Legacy BASELINE entries are not decision evidence.
+      if (data.length) {
+        const dates: any = await this.prisma.$queryRawUnsafe(`
+          SELECT DISTINCT ON (ev.submission_id, change.key)
+            ev.submission_id, change.key AS field, ev.created_at
+          FROM ats.submission_events ev
+          JOIN ats.recruiter_submissions s ON s.id = ev.submission_id AND s.tenant_id = ev.tenant_id
+          CROSS JOIN LATERAL jsonb_each(COALESCE(ev.details->'changes', '{}'::jsonb)) change
+          WHERE ev.tenant_id = $1 AND ev.submission_id = ANY($2::uuid[])
+            AND ev.kind = 'UPDATE'
+            AND change.key IN ('finalStatus', 'l1Status', 'l2Status', 'l3Status')
+            AND change.value->>'after' = (jsonb_build_object(
+              'finalStatus', s.final_status, 'l1Status', s.l1_status,
+              'l2Status', s.l2_status, 'l3Status', s.l3_status)->>change.key)
+          ORDER BY ev.submission_id, change.key, ev.sequence DESC
+        `, tenantId, data.map((sub: TrackerSubmission) => sub.id));
+        for (const sub of data) sub.statusRecordedDates = Object.fromEntries((dates || [])
+          .filter((row: any) => row.submission_id === sub.id)
+          .map((row: any) => [row.field, new Date(row.created_at).toISOString()]));
+      }
 
       return {
         data,
