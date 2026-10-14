@@ -1,9 +1,9 @@
 import type { SubmissionCapabilities } from './tracker-contract';
 
-export function submissionCapabilities(permissions: string[] = []): SubmissionCapabilities {
+export function submissionCapabilities(permissions: string[] = [], isAssignedManager = false): SubmissionCapabilities {
   const has = (permission: string) => permissions.includes('*') || permissions.includes(permission);
   return {
-    review: has('submission:internal_screening'),
+    review: has('submission:internal_screening') || isAssignedManager,
     schedule: has('submission:schedule_interview'),
     results: {
       l1: has('submission:audit_rounds') || has('submission:audit_l1'),

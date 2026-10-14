@@ -449,7 +449,7 @@ export class RecruiterSubmissionsService {
       params.push(user.dbId);
       paramIndex++;
     } else if (!canViewAll) {
-      baseSql += ` AND s.recruiter_id = $${paramIndex}`;
+      baseSql += ` AND (s.recruiter_id = $${paramIndex} OR r.job_reviewer_id = $${paramIndex})`;
       params.push(user.dbId);
       paramIndex++;
     }
@@ -563,7 +563,10 @@ export class RecruiterSubmissionsService {
       ]);
 
       const total = Number(countRes[0]?.count || 0);
-      const data = (retrieveRes || []).map((row: any) => ({ ...this.mapRowToDetails(row), capabilities: submissionCapabilities(user.permissions) }));
+      const data = (retrieveRes || []).map((row: any) => ({
+        ...this.mapRowToDetails(row),
+        capabilities: submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId),
+      }));
 
       return {
         data,
@@ -756,7 +759,7 @@ export class RecruiterSubmissionsService {
   }
 
   async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
-    await this.findOne(id, tenantId, user, branchId);
+    const visibleSubmission = await this.findOne(id, tenantId, user, branchId);
     this.logger.log(`Updating submission ID=${id} for tenant: ${tenantId}`);
 
     const existing = await this.prisma.recruiterSubmission.findFirst({
@@ -779,7 +782,7 @@ export class RecruiterSubmissionsService {
         return this.findOne(id, tenantId, user, branchId);
       }
     }
-    const caps = submissionCapabilities(user.permissions);
+    const caps = submissionCapabilities(user.permissions, visibleSubmission.recruiterJobReviewerId === user.dbId);
     validateTrackerUpdate(existing, dto, caps);
     if (dto.expectedUpdatedAt && new Date(dto.expectedUpdatedAt).getTime() !== existing.updatedAt.getTime()) {
       throw new ConflictException('This submission was updated by someone else. Reload it before saving.');
