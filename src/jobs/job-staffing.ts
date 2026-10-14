@@ -150,9 +150,10 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
     SELECT staff.id, staff.full_name AS "fullName", staff.email AS "email", staff.profile_picture AS "avatar", eligibility."canRecruit", eligibility."canReview"
     FROM ats.users staff
     CROSS JOIN LATERAL (
-      SELECT COALESCE(BOOL_OR(role.permissions::jsonb ? 'submission:create'), false) AS "canRecruit",
+      SELECT COALESCE(BOOL_OR(UPPER(COALESCE(system_role.system_key, '')) = 'RECRUITER'), false) AS "canRecruit",
              COALESCE(BOOL_OR(role.permissions::jsonb ? 'job:approve'), false) AS "canReview"
       FROM ats.custom_roles role
+      LEFT JOIN ats.system_roles system_role ON system_role.id = role.system_role_id
       WHERE role.tenant_id = staff.tenant_id
         AND (role.id = staff.role_id OR role.id = ANY(staff.assigned_role_ids))
         AND (role.branch_id IS NULL OR role.branch_id = staff.branch_id)
