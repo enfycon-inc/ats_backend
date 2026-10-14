@@ -64,6 +64,33 @@ describe('job operating unit persistence and reviewer routing', () => {
     await expect(service.createJob({ ...dto, podId: 'all' }, id)).rejects.toThrow('instead of a unit pool');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
+  it('persists all selected manual pods once', async () => {
+    const { service, prisma, dto } = setup();
+    const second = '44444444-4444-4444-8444-444444444444';
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, podDistributionStrategy: 'MANUAL', allowUnassigned: false });
+    prisma.pod = { findMany: jest.fn().mockResolvedValue([manager, second].map(id => ({ id, _count: { users: 1 } }))) };
+    prisma.jobPod.upsert = jest.fn();
+    prisma.jobAssignmentLog = { create: jest.fn() };
+    await service.createJob({ ...dto, podId: manager, podIds: [manager, second, manager] }, id, 'System', id,
+      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] });
+    expect(prisma.jobPod.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.jobPod.upsert.mock.calls.map(([args]: any[]) => args.create.podId)).toEqual([manager, second]);
+    expect(prisma.jobAssignmentLog.create).toHaveBeenCalledTimes(2);
+  });
+  it('rejects mixing manual pods with direct recruiters before saving', async () => {
+    const { service, prisma, dto } = setup();
+    await expect(service.createJob({ ...dto, podIds: [manager], recruiterIds: [manager] }, id))
+      .rejects.toThrow('either pods or direct recruiters');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
+  it('rejects a foreign pod in a multiple-pod selection', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, podDistributionStrategy: 'MANUAL' });
+    prisma.pod = { findMany: jest.fn().mockResolvedValue([{ id: manager, _count: { users: 1 } }]) };
+    await expect(service.createJob({ ...dto, podIds: [manager, unit] }, id, 'System', id,
+      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] })).rejects.toThrow('outside the job unit');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
   it.each(['MANUAL', 'AUTO'])('persists direct recruiters under %s pod policy without requiring pod permission', async strategy => {
     const { service, prisma, dto } = setup();
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: true, allowUnassigned: false, podDistributionStrategy: strategy });

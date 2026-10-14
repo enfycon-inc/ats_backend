@@ -127,6 +127,9 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 'pod-uuid-123', description: 'Assigned Recruitment Pod ID' })
   podId?: string;
 
+  @ApiPropertyOptional({ type: [String], description: 'Selected pod IDs for manual assignment' })
+  podIds?: string[];
+
   @ApiPropertyOptional({ example: '2026-07-31', description: 'Job submission deadline date' })
   respondBy?: string;
 
