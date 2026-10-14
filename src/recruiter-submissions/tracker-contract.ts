@@ -2,6 +2,30 @@
 // from the workspace root to update the frontend's generated contract.
 export type TrackerBucket = 'all' | 'review' | 'interviews' | 'offers' | 'closed';
 export type RoundKey = 'l1' | 'l2' | 'l3';
+export enum InterviewRoundStatus {
+  PENDING = 'PENDING',
+  SCHEDULED = 'SCHEDULED',
+  AWAITING_FEEDBACK = 'AWAITING_FEEDBACK',
+  CLEARED = 'CLEARED',
+  REJECTED = 'REJECTED',
+  CANCELLED = 'CANCELLED',
+}
+export enum SubmissionOutcome {
+  IN_PROGRESS = 'SUBMITTED',
+  SELECTED = 'SELECTED',
+  NOT_SELECTED = 'NOT_SELECTED',
+  OFFER_ISSUED = 'OFFER',
+  JOINED = 'JOIN',
+  WITHDRAWN = 'WITHDRAWN',
+}
+export const ROUND_STATUS_LABELS: Record<InterviewRoundStatus, string> = {
+  PENDING: 'Pending', SCHEDULED: 'Scheduled', AWAITING_FEEDBACK: 'Awaiting feedback',
+  CLEARED: 'Cleared', REJECTED: 'Rejected', CANCELLED: 'Cancelled',
+};
+export const OUTCOME_LABELS: Record<SubmissionOutcome, string> = {
+  SUBMITTED: 'In progress', SELECTED: 'Selected', NOT_SELECTED: 'Not selected',
+  OFFER: 'Offer issued', JOIN: 'Joined', WITHDRAWN: 'Withdrawn',
+};
 export interface SubmissionCapabilities {
   review: boolean;
   schedule: boolean;
@@ -109,14 +133,16 @@ export interface TrackerResponse {
   counts: Record<TrackerBucket, number>;
 }
 export interface TrackerUpdate {
+  correctionReason?: string;
+  resetFollowingRounds?: boolean;
   assessmentVersion?: string;
   reviewOverrides?: Record<string, 'Meets' | 'Does not meet' | 'Needs clarification'>;
   requestId?: string;
   bypassReason?: string;
   expectedUpdatedAt?: string;
-  l1Status?: string | null;
-  l2Status?: string | null;
-  l3Status?: string | null;
+  l1Status?: `${InterviewRoundStatus}` | null;
+  l2Status?: `${InterviewRoundStatus}` | null;
+  l3Status?: `${InterviewRoundStatus}` | null;
   l1Date?: string | null;
   l2Date?: string | null;
   l3Date?: string | null;
@@ -126,7 +152,7 @@ export interface TrackerUpdate {
   l1Interviewer?: string | null;
   l2Interviewer?: string | null;
   l3Interviewer?: string | null;
-  finalStatus?: string;
+  finalStatus?: `${SubmissionOutcome}` | 'PENDING_APPROVAL' | 'REJECTED';
   remarks?: string | null;
   reviewFeedback?: string | null;
   recruiterComment?: string | null;
@@ -145,6 +171,8 @@ export interface SubmissionHistoryEvent {
     changes?: Record<string, { before: string | null; after: string | null }>;
     snapshot?: Record<string, string | null>;
     bypassReason?: string;
+    correctionReason?: string;
+    resetFollowingRounds?: boolean;
   };
 }
 

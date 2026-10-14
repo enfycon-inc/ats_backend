@@ -1,7 +1,12 @@
 import type { TrackerUpdate } from '../tracker-contract';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { InterviewRoundStatus, SubmissionOutcome } from '../tracker-contract';
 
 export class UpdateSubmissionDto implements TrackerUpdate {
+  @ApiPropertyOptional({ description: 'Required reason for correcting a previously recorded decision.' })
+  correctionReason?: string;
+  @ApiPropertyOptional({ description: 'Explicit confirmation to reset rounds invalidated by an earlier correction.' })
+  resetFollowingRounds?: boolean;
   assessmentVersion?: string;
   reviewOverrides?: Record<string, 'Meets' | 'Does not meet' | 'Needs clarification'>;
   requestId?: string;
@@ -28,11 +33,11 @@ export class UpdateSubmissionDto implements TrackerUpdate {
   recruiterId?: string;
 
   @ApiPropertyOptional({
-    example: 'ACCEPTED',
-    enum: ['PENDING', 'ACCEPTED', 'REJECTED'],
+    example: 'CLEARED',
+    enum: InterviewRoundStatus,
     description: 'Updated L1 interview status',
   })
-  l1Status?: string;
+  l1Status?: TrackerUpdate['l1Status'];
 
   @ApiPropertyOptional({
     example: '2026-05-21T10:00:00.000Z',
@@ -42,10 +47,10 @@ export class UpdateSubmissionDto implements TrackerUpdate {
 
   @ApiPropertyOptional({
     example: 'PENDING',
-    enum: ['PENDING', 'ACCEPTED', 'REJECTED'],
+    enum: InterviewRoundStatus,
     description: 'Updated L2 interview status',
   })
-  l2Status?: string;
+  l2Status?: TrackerUpdate['l2Status'];
 
   @ApiPropertyOptional({
     example: '2026-05-22T10:00:00.000Z',
@@ -55,10 +60,10 @@ export class UpdateSubmissionDto implements TrackerUpdate {
 
   @ApiPropertyOptional({
     example: 'PENDING',
-    enum: ['PENDING', 'ACCEPTED', 'REJECTED'],
+    enum: InterviewRoundStatus,
     description: 'Updated L3 interview status',
   })
-  l3Status?: string;
+  l3Status?: TrackerUpdate['l3Status'];
 
   @ApiPropertyOptional({
     example: '2026-05-23T10:00:00.000Z',
@@ -68,10 +73,10 @@ export class UpdateSubmissionDto implements TrackerUpdate {
 
   @ApiPropertyOptional({
     example: 'SUBMITTED',
-    enum: ['PENDING_APPROVAL', 'SUBMITTED', 'REJECTED', 'OFFER', 'JOIN'],
+    enum: [...Object.values(SubmissionOutcome), 'PENDING_APPROVAL', 'REJECTED'],
     description: 'Final status of candidate submission',
   })
-  finalStatus?: string;
+  finalStatus?: TrackerUpdate['finalStatus'];
 
   @ApiPropertyOptional({
     example: 'Strong technical match with dbt experience.',

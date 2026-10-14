@@ -101,7 +101,7 @@ describe('submission tracker API', () => {
     expect(countSql).not.toMatch(/LIMIT\s+\$\d+/);
     expect(countParams).toEqual(['tenant-id', '%Name\\%%']);
     const [retrieveSql, ...retrieveParams] = prisma.$queryRawUnsafe.mock.calls[1];
-    expect(retrieveSql).toContain("AND s.final_status = 'OFFER'");
+    expect(retrieveSql).toContain("AND s.final_status IN ('SELECTED', 'OFFER')");
     expect(retrieveParams.slice(-2)).toEqual([10, 10]);
   });
   it('maps joined client names and stored rate currency without invented relationships', async () => {
@@ -151,5 +151,27 @@ describe('submission tracker API', () => {
     prisma.submissionEvent.count = jest.fn();
     await expect(service.history('submission-id', 'tenant-id', user, null, 1, 'invalid' as any)).rejects.toThrow('Invalid history order');
     expect(prisma.submissionEvent.count).not.toHaveBeenCalled();
+  });
+  it('saves a correction and downstream resets atomically with before/after history', async () => {
+    const { service, prisma } = setup();
+    jest.spyOn(service, 'findOne').mockResolvedValue({ id: 'submission-id' } as any);
+    const existing = { id: 'submission-id', finalStatus: 'SUBMITTED', l1Status: 'CLEARED', l1Date: new Date('2026-10-09T05:30:00Z'), l2Status: 'SCHEDULED', l2Date: new Date('2026-10-10T05:30:00Z'), l2Remarks: 'Client appointment', l2Interviewer: 'Client', l3Status: 'PENDING', updatedAt: new Date('2026-10-11T01:00:00Z') };
+    prisma.recruiterSubmission.findFirst.mockResolvedValue(existing);
+    prisma.recruiterSubmission.updateMany.mockResolvedValue({ count: 1 });
+    await service.update('submission-id', { l1Status: 'AWAITING_FEEDBACK', correctionReason: 'Wrong feedback', resetFollowingRounds: true, expectedUpdatedAt: existing.updatedAt.toISOString() }, 'tenant-id', { ...user, permissions: ['submission:audit_l1'] });
+    expect(prisma.recruiterSubmission.updateMany.mock.calls[0][0].data).toMatchObject({ l1Status: 'AWAITING_FEEDBACK', l2Status: 'PENDING', l2Date: null, l2Remarks: null, l2Interviewer: null });
+    const event = prisma.submissionEvent.create.mock.calls.at(-1)[0].data;
+    expect(event.details).toMatchObject({ correctionReason: 'Wrong feedback', resetFollowingRounds: true, changes: { l1Status: { before: 'CLEARED', after: 'AWAITING_FEEDBACK' }, l2Remarks: { before: 'Client appointment', after: null } } });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.submissionEvent.create.mock.calls[0][0].data.details.snapshot.l2Remarks).toBe('Client appointment');
+  });
+
+  it('does not erase audit entries when a submission is deleted', async () => {
+    const { service, prisma } = setup();
+    prisma.recruiterSubmission.findFirst.mockResolvedValue({ id: 'submission-id', jobId: 'job-id' });
+    prisma.submissionEvent.findFirst.mockResolvedValue({ id: 'event-id' });
+    prisma.recruiterSubmission.delete = jest.fn();
+    await expect(service.remove('submission-id', 'tenant-id')).rejects.toThrow('recorded history cannot be deleted');
+    expect(prisma.recruiterSubmission.delete).not.toHaveBeenCalled();
   });
 });

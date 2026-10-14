@@ -4,6 +4,7 @@ import { assessCandidate } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
 import { historySnapshot, historyChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
+import { roundUpdate } from './round-update';
 import {
   Injectable,
   Logger,
@@ -134,28 +135,23 @@ export class RecruiterSubmissionsService {
       throw new BadRequestException(`Candidate with ID ${dto.candidateId} not found under active tenant.`);
     }
 
-    // 3. Process L1/L2/L3 sequential auto-rejection for initial create (if overrides are passed)
+    // Interview decisions must use the authorized, audited update workflow.
+    for (const round of ['l1', 'l2', 'l3']) {
+      if ((dto[`${round}Status`] != null && dto[`${round}Status`] !== 'PENDING') || dto[`${round}Date`]) {
+        throw new BadRequestException('Create the submission first, then schedule and update interviews through the submission editor.');
+      }
+    }
+    if (dto.finalStatus && !['SUBMITTED', 'PENDING_APPROVAL'].includes(dto.finalStatus)) throw new BadRequestException('A new submission must start in progress or awaiting internal approval.');
+    // 3. Initialize the rounds; existing internal-review routing follows below.
     let finalStatus = dto.finalStatus || 'SUBMITTED';
     let l1Status = dto.l1Status || 'PENDING';
-    let l2Status = dto.l2Status || null;
-    let l3Status = dto.l3Status || null;
+    let l2Status = dto.l2Status || 'PENDING';
+    let l3Status = dto.l3Status || 'PENDING';
     let l1Date = dto.l1Date ? new Date(dto.l1Date) : null;
     let l2Date = dto.l2Date ? new Date(dto.l2Date) : null;
     let l3Date = dto.l3Date ? new Date(dto.l3Date) : null;
 
-    if (l1Status === 'REJECTED') {
-      finalStatus = 'REJECTED';
-      l2Status = null;
-      l2Date = null;
-      l3Status = null;
-      l3Date = null;
-    } else if (l2Status === 'REJECTED') {
-      finalStatus = 'REJECTED';
-      l3Status = null;
-      l3Date = null;
-    } else if (l3Status === 'REJECTED') {
-      finalStatus = 'REJECTED';
-    } else if (finalStatus !== 'REJECTED' && finalStatus !== 'OFFER' && finalStatus !== 'JOIN') {
+    if (['SUBMITTED', 'PENDING_APPROVAL'].includes(finalStatus)) {
       // Check recruiter role and pod for PENDING_APPROVAL workflow
       const recruiter = await this.prisma.user.findFirst({
         where: { id: dto.recruiterId, tenantId },
@@ -550,8 +546,8 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
       COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
       COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending,
-      COUNT(*) FILTER (WHERE l1_status IN ('SCHEDULED', 'CLEARED', 'PASSED') OR l2_status IN ('SCHEDULED', 'CLEARED', 'PASSED') OR l3_status IN ('SCHEDULED', 'CLEARED', 'PASSED')) as dashboard_interviews,
-      COUNT(*) FILTER (WHERE final_status IN ('OFFER', 'JOIN', 'PLACED')) as dashboard_selections
+      COUNT(*) FILTER (WHERE l1_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED') OR l2_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED') OR l3_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED')) as dashboard_interviews,
+      COUNT(*) FILTER (WHERE final_status IN ('SELECTED', 'OFFER', 'JOIN', 'PLACED')) as dashboard_selections
       FROM (${baseSql}) AS counted`;
     const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.')[bucket]} ORDER BY s.created_at DESC, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
@@ -783,36 +779,37 @@ export class RecruiterSubmissionsService {
       }
     }
     const caps = submissionCapabilities(user.permissions, visibleSubmission.recruiterJobReviewerId === user.dbId);
-    validateTrackerUpdate(existing, dto, caps);
+    validateTrackerUpdate({ ...existing, rejectionFromStatus: visibleSubmission.rejectionFromStatus }, dto, caps);
     if (dto.expectedUpdatedAt && new Date(dto.expectedUpdatedAt).getTime() !== existing.updatedAt.getTime()) {
       throw new ConflictException('This submission was updated by someone else. Reload it before saving.');
     }
 
-    const mergedL1Status = dto.l1Status !== undefined ? dto.l1Status : existing.l1Status;
-    const mergedL2Status = dto.l2Status !== undefined ? dto.l2Status : existing.l2Status;
-    const mergedL3Status = dto.l3Status !== undefined ? dto.l3Status : existing.l3Status;
+    const roundChanges = roundUpdate(existing, dto);
+    const mergedL1Status = roundChanges.l1Status !== undefined ? roundChanges.l1Status : existing.l1Status;
+    const mergedL2Status = roundChanges.l2Status !== undefined ? roundChanges.l2Status : existing.l2Status;
+    const mergedL3Status = roundChanges.l3Status !== undefined ? roundChanges.l3Status : existing.l3Status;
 
     let finalStatus = dto.finalStatus !== undefined ? dto.finalStatus : existing.finalStatus;
     let l1Status = mergedL1Status;
     let l2Status = mergedL2Status;
     let l3Status = mergedL3Status;
 
-    let l1Date = dto.l1Date !== undefined ? (dto.l1Date ? new Date(dto.l1Date) : null) : existing.l1Date;
-    let l2Date = dto.l2Date !== undefined ? (dto.l2Date ? new Date(dto.l2Date) : null) : existing.l2Date;
-    let l3Date = dto.l3Date !== undefined ? (dto.l3Date ? new Date(dto.l3Date) : null) : existing.l3Date;
+    let l1Date = roundChanges.l1Date !== undefined ? (roundChanges.l1Date ? new Date(roundChanges.l1Date) : null) : existing.l1Date;
+    let l2Date = roundChanges.l2Date !== undefined ? (roundChanges.l2Date ? new Date(roundChanges.l2Date) : null) : existing.l2Date;
+    let l3Date = roundChanges.l3Date !== undefined ? (roundChanges.l3Date ? new Date(roundChanges.l3Date) : null) : existing.l3Date;
 
     if (l1Status === 'REJECTED') {
-      finalStatus = 'REJECTED';
-      l2Status = null;
+      finalStatus = 'NOT_SELECTED';
+      l2Status = 'PENDING';
       l2Date = null;
-      l3Status = null;
+      l3Status = 'PENDING';
       l3Date = null;
     } else if (l2Status === 'REJECTED') {
-      finalStatus = 'REJECTED';
-      l3Status = null;
+      finalStatus = 'NOT_SELECTED';
+      l3Status = 'PENDING';
       l3Date = null;
     } else if (l3Status === 'REJECTED') {
-      finalStatus = 'REJECTED';
+      finalStatus = 'NOT_SELECTED';
     }
 
     const data: any = {
@@ -850,6 +847,10 @@ export class RecruiterSubmissionsService {
     if (dto.l3Remarks !== undefined) data.l3Remarks = dto.l3Remarks;
     if (dto.l3Interviewer !== undefined) data.l3Interviewer = dto.l3Interviewer;
     if (dto.meetingLink !== undefined) data.meetingLink = dto.meetingLink;
+    for (const round of ['l1', 'l2', 'l3']) for (const suffix of ['Remarks', 'Interviewer']) {
+      const key = `${round}${suffix}`;
+      if (roundChanges[key] !== undefined) data[key] = roundChanges[key];
+    }
     if (l1Status === 'REJECTED') {
       data.l2Remarks = null; data.l2Interviewer = null; data.l3Remarks = null; data.l3Interviewer = null;
     } else if (l2Status === 'REJECTED') {
@@ -879,7 +880,7 @@ export class RecruiterSubmissionsService {
         tenantId, submissionId: id, actorId: user.dbId || user.email || user.fullName || null,
         actorName: user.fullName || user.email || user.dbId || null,
         kind: 'UPDATE', sequence: (hasHistory?.sequence ?? 0) + 1, requestId: dto.requestId || randomUUID(), requestHash,
-        details: JSON.parse(JSON.stringify({ changes: historyChanges(existing, data), ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}) })),
+        details: JSON.parse(JSON.stringify({ changes: historyChanges(existing, data), ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}), ...(dto.correctionReason ? { correctionReason: dto.correctionReason.trim(), resetFollowingRounds: Boolean(dto.resetFollowingRounds) } : {}) })),
       } });
     });
 
@@ -984,12 +985,12 @@ export class RecruiterSubmissionsService {
             },
             initiatorId: user.dbId || user.email || 'System',
           });
-        } else if (!wasPending && existing.finalStatus !== 'REJECTED' && finalStatus === 'REJECTED') {
-          // 5. Client Rejection
+        } else if (!wasPending && !['REJECTED', 'NOT_SELECTED', 'WITHDRAWN'].includes(existing.finalStatus) && ['REJECTED', 'NOT_SELECTED', 'WITHDRAWN'].includes(finalStatus)) {
+          // 5. Client decision or candidate withdrawal
           await this.notifications.create(tenantId, targetRecruiter, {
             type: 'SUBMISSION_REJECTED',
-            title: 'Candidate Rejected by Client',
-            message: `Candidate "${candName}" was marked as rejected for job "${jobDisplay}".${feedbackNote ? ` Note: "${feedbackNote}"` : ''}`,
+            title: finalStatus === 'WITHDRAWN' ? 'Candidate Withdrawn' : 'Candidate Not Selected',
+            message: `Candidate "${candName}" ${finalStatus === 'WITHDRAWN' ? 'withdrew from' : 'was not selected for'} job "${jobDisplay}".${feedbackNote ? ` Note: "${feedbackNote}"` : ''}`,
             data: {
               submissionId: id,
               jobId: existing.jobId,
@@ -997,7 +998,7 @@ export class RecruiterSubmissionsService {
               jobTitle,
               candidateId: existing.candidateId,
               candidateName: candName,
-              status: 'REJECTED',
+              status: finalStatus,
             },
             initiatorId: user.dbId || user.email || 'System',
           });
@@ -1053,6 +1054,8 @@ export class RecruiterSubmissionsService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      const history = await tx.submissionEvent.findFirst({ where: { submissionId: id, tenantId }, select: { id: true } });
+      if (history) throw new BadRequestException('Submissions with recorded history cannot be deleted. Use a final outcome to close the submission.');
       await tx.recruiterSubmission.delete({
         where: { id },
       });
