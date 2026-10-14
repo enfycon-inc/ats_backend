@@ -102,15 +102,19 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
       const progression = ['SUBMITTED', 'SELECTED', 'OFFER', 'JOIN'];
       const movingBackward = progression.includes(dto.finalStatus) && progression.indexOf(dto.finalStatus) < progression.indexOf(existing.finalStatus);
       if ((terminal || movingBackward) && dto.finalStatus !== existing.finalStatus && !correction) throw new BadRequestException('Provide a correction reason to reopen or correct the final outcome.');
-      if (['SELECTED', 'OFFER', 'JOIN'].includes(dto.finalStatus) && ROUND_KEYS.some(round => merged[`${round}Status`] !== 'CLEARED')) throw new BadRequestException('Clear L1, L2 and L3 before selecting, offering or joining.');
-      if (dto.finalStatus !== existing.finalStatus && dto.finalStatus === 'OFFER' && existing.finalStatus !== 'SELECTED') throw new BadRequestException('Select the candidate before issuing an offer.');
-      if (dto.finalStatus !== existing.finalStatus && dto.finalStatus === 'JOIN' && existing.finalStatus !== 'OFFER') throw new BadRequestException('Issue an offer before recording joining.');
+      if (['SELECTED', 'OFFER', 'JOIN'].includes(dto.finalStatus)) {
+        if (merged.l1Status !== 'CLEARED' || ROUND_KEYS.some(round => merged[`${round}Status`] === 'REJECTED')) throw new BadRequestException('Clear L1 and correct any rejected interview before selecting, offering or joining.');
+        const bypass = ROUND_KEYS.some(round => ['SCHEDULED', 'AWAITING_FEEDBACK'].includes(merged[`${round}Status`])) ||
+          (dto.finalStatus === 'OFFER' && !['SELECTED', 'OFFER'].includes(existing.finalStatus)) ||
+          (dto.finalStatus === 'JOIN' && !['OFFER', 'JOIN'].includes(existing.finalStatus));
+        if (dto.finalStatus !== existing.finalStatus && bypass && !dto.bypassReason?.trim()) throw new BadRequestException('Record a reason for the direct outcome or unfinished interview.');
+      }
       if (['NOT_SELECTED', 'WITHDRAWN', 'REJECTED'].includes(dto.finalStatus) && dto.finalStatus !== existing.finalStatus && !dto.remarks?.trim()) throw new BadRequestException('Add remarks for the final outcome.');
     }
   }
   const outcome = dto.finalStatus ?? existing.finalStatus;
   if (dto.finalStatus === 'SUBMITTED' && existing.finalStatus !== 'PENDING_APPROVAL' && ROUND_KEYS.some(round => merged[`${round}Status`] === 'REJECTED')) throw new BadRequestException('Correct the rejected round before returning the submission to In progress.');
-  if (changedRound && ['SELECTED', 'OFFER', 'JOIN'].includes(outcome) && ROUND_KEYS.some(round => merged[`${round}Status`] !== 'CLEARED')) throw new BadRequestException('Return the final outcome to In progress when correcting a cleared round.');
+  if (changedRound && ['SELECTED', 'OFFER', 'JOIN'].includes(outcome) && (merged.l1Status !== 'CLEARED' || ROUND_KEYS.some(round => existing[`${round}Status`] === 'CLEARED' && merged[`${round}Status`] !== 'CLEARED'))) throw new BadRequestException('Return the final outcome to In progress when correcting a cleared round.');
   if (dto.remarks !== undefined) requirePermission(caps.notes || (dto.finalStatus !== undefined && (caps.review || caps.outcome)));
   if (dto.expectedUpdatedAt !== undefined && !Number.isFinite(new Date(dto.expectedUpdatedAt).getTime())) throw new BadRequestException('Invalid submission version.');
   if (!changedRound && Object.keys(dto).every(key => ['expectedUpdatedAt', 'requestId', 'bypassReason', 'correctionReason', 'resetFollowingRounds'].includes(key))) throw new BadRequestException('No changes to save.');

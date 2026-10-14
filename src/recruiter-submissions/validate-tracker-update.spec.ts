@@ -39,15 +39,30 @@ describe('submission tracker permissions and transitions', () => {
     expect(() => validateTrackerUpdate(existing, { recruiterComment: 'Note' }, submissionCapabilities([]))).toThrow(ForbiddenException);
     expect(() => validateTrackerUpdate(existing, { candidateId: 'another-candidate' }, submissionCapabilities(['*']))).toThrow(BadRequestException);
   });
-  it('requires all clearances, selection and an offer in sequence', () => {
+  it('requires clearance and a reason for a direct offer outside the normal sequence', () => {
     const caps = submissionCapabilities(['submission:final_status']);
     expect(() => validateTrackerUpdate(existing, { finalStatus: 'OFFER' }, caps)).toThrow(BadRequestException);
     expect(() => validateTrackerUpdate(existing, { finalStatus: 'JOIN' }, caps)).toThrow(BadRequestException);
     const cleared = { ...existing, l1Status: 'CLEARED', l2Status: 'CLEARED', l3Status: 'CLEARED' };
     expect(() => validateTrackerUpdate(cleared, { finalStatus: 'SELECTED' }, caps)).not.toThrow();
-    expect(() => validateTrackerUpdate(cleared, { finalStatus: 'OFFER' }, caps)).toThrow('Select the candidate');
+    expect(() => validateTrackerUpdate(cleared, { finalStatus: 'OFFER' }, caps)).toThrow('Record a reason');
     expect(() => validateTrackerUpdate({ ...cleared, finalStatus: 'SELECTED' }, { finalStatus: 'OFFER' }, caps)).not.toThrow();
     expect(() => validateTrackerUpdate({ ...cleared, finalStatus: 'OFFER' }, { finalStatus: 'JOIN' }, caps)).not.toThrow();
+  });
+  it.each([1, 2])('permits final outcomes after %s cleared rounds without fabricating later clearance', count => {
+    const record = { ...existing, l1Status: 'CLEARED', l2Status: count === 2 ? 'CLEARED' : 'PENDING', l3Status: 'PENDING' };
+    const caps = submissionCapabilities(['submission:final_status']);
+    expect(() => validateTrackerUpdate(record, { finalStatus: 'SELECTED' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate(record, { finalStatus: 'OFFER', bypassReason: 'Client has issued the offer' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate(record, { finalStatus: 'JOIN', bypassReason: 'Joining confirmed by client' }, caps)).not.toThrow();
+    expect(record.l3Status).toBe('PENDING');
+  });
+  it('requires a reason when selecting with another interview still active', () => {
+    const record = { ...existing, l1Status: 'CLEARED', l2Status: 'AWAITING_FEEDBACK' };
+    const caps = submissionCapabilities(['submission:final_status']);
+    expect(() => validateTrackerUpdate(record, { finalStatus: 'SELECTED' }, caps)).toThrow('unfinished interview');
+    expect(() => validateTrackerUpdate(record, { finalStatus: 'SELECTED', bypassReason: 'Client selected after L1' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...record, l2Status: 'REJECTED' }, { finalStatus: 'SELECTED', bypassReason: 'Override' }, caps)).toThrow('correct any rejected');
   });
   it('lets round auditors reject without requiring final-outcome authority', () => {
     expect(() => validateTrackerUpdate({ ...existing, l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z' }, { l1Status: 'REJECTED', l1Remarks: 'Client declined', finalStatus: 'REJECTED' }, submissionCapabilities(['submission:audit_l1']))).not.toThrow();
