@@ -33,6 +33,7 @@ describe('job drafts', () => {
       job: { findUnique: jest.fn().mockResolvedValue(null), upsert: jest.fn().mockImplementation(({ create }) => Promise.resolve(create)) },
       client: { create: jest.fn() },
     };
+    prisma.$transaction = jest.fn(async (work: any) => work(prisma));
     const service = new JobsService(prisma, notifications);
     jest.spyOn(service, 'findOneJob').mockResolvedValue({ id: draftId, jobStatus: 'Draft', type: 'Contract' } as any);
     await service.createJob({ draftId, jobCode: 'BBS-IND-001', branchId, businessUnitId: unitId, title: 'Java Developer', type: 'Contract', description: '', skillsRequired: [], payRate: 'INR - 50,000 to 60,000 /mo', clientBillRate: '' } as any, 'tenant', ownerId, branchId, actor, true);

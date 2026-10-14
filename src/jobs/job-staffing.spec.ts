@@ -1,4 +1,4 @@
-import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
+import { listJobStaff, listJobPods, validateJobRecruiters, resolveJobStaffingScope } from './job-staffing';
 import { JobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
 
@@ -14,6 +14,22 @@ describe('job recruiter staffing permissions and scope', () => {
   beforeEach(() => {
     prisma = { businessUnit: { findFirst: jest.fn().mockResolvedValue({ id: unit }) },
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ id: recruiter, fullName: 'Recruiter', canRecruit: true, canReview: false }]) };
+  });
+
+  it('allows pod assignment options on the Account Manager own job', async () => {
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ accountManagerId: other, branchId: branch, businessUnitId: unit }) };
+    await expect(resolveJobStaffingScope(prisma, { ...actor, permissions: ['job:assign_pod'] }, tenant, branch, unit, 'job:assign_pod', recruiter))
+      .resolves.toEqual({ branchId: branch, unitId: unit });
+  });
+  it('rejects pod assignment on another Account Manager job', async () => {
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ accountManagerId: recruiter, branchId: branch, businessUnitId: unit }) };
+    await expect(resolveJobStaffingScope(prisma, { ...actor, permissions: ['job:assign_pod'] }, tenant, branch, unit, 'job:assign_pod', recruiter))
+      .rejects.toThrow('own created jobs');
+  });
+  it('rejects moving own-job assignments into a different unit', async () => {
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ accountManagerId: other, branchId: branch, businessUnitId: unit }) };
+    await expect(resolveJobStaffingScope(prisma, { ...actor, permissions: ['job:assign_pod'] }, tenant, branch, other, 'job:assign_pod', recruiter))
+      .rejects.toThrow('job branch and unit');
   });
 
   it('lists unit pods with pod assignment permission without pod management access', async () => {
@@ -139,7 +155,7 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
     const service = new JobsService(prisma, { create: jest.fn(), createMany: jest.fn() } as any);
     await expect(service.updateJob(other, { recruiterIds: [recruiter] }, tenant,
-      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('Account Managers can only assign recruiters to their own created jobs');
+      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('Account Managers can only assign staff to their own created jobs');
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
@@ -283,7 +299,7 @@ describe('job recruiter staffing permissions and scope', () => {
 
   it('rejects Account Manager from fetching staffing options for another users job by jobId', async () => {
     prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: '99999999-9999-4999-8999-999999999999' }) };
-    await expect(listJobStaff(prisma, actor, tenant, branch, unit, other)).rejects.toThrow('Account Managers can only assign recruiters to their own created jobs');
+    await expect(listJobStaff(prisma, actor, tenant, branch, unit, other)).rejects.toThrow('Account Managers can only assign staff to their own created jobs');
   });
 
   it('lets a Pod Lead list eligible recruiters only for a job mapped to their pod', async () => {

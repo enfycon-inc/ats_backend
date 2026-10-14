@@ -13,6 +13,8 @@ describe('job operating unit persistence and reviewer routing', () => {
       jobPod: { deleteMany: jest.fn() },
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ id, permissions: direct ? ['job:publish_direct'] : [], job_reviewer_id: null, pod_head_id: null }]),
     };
+    prisma.$transaction = jest.fn(async (work: any) => work(prisma));
+    prisma.$queryRaw = jest.fn().mockResolvedValue([]);
     const service: any = new JobsService(prisma, { create: jest.fn(), createMany: jest.fn() } as any);
     service.ensureClientExists = jest.fn();
     service.resolveUserUuid = jest.fn(async (value: string) => value || null);
@@ -40,7 +42,7 @@ describe('job operating unit persistence and reviewer routing', () => {
   });
   it('rejects a pod from another unit before creating a job', async () => {
     const { service, prisma, dto } = setup();
-    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowUnassigned: false });
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, podDistributionStrategy: "MANUAL", allowUnassigned: false });
     prisma.pod = { findMany: jest.fn().mockResolvedValue([]) };
     await expect(service.createJob({ ...dto, podId: manager }, id, 'System', id,
       { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] })).rejects.toThrow('outside the job unit');
@@ -48,8 +50,8 @@ describe('job operating unit persistence and reviewer routing', () => {
   });
   it('persists an explicit unit pod without searching the tenant for another pod', async () => {
     const { service, prisma, dto } = setup();
-    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowUnassigned: false });
-    prisma.pod = { findMany: jest.fn().mockResolvedValue([{ id: manager }]), findFirst: jest.fn() };
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, podDistributionStrategy: "MANUAL", allowUnassigned: false });
+    prisma.pod = { findMany: jest.fn().mockResolvedValue([{ id: manager, _count: { users: 1 } }]), findFirst: jest.fn() };
     prisma.jobPod.upsert = jest.fn();
     prisma.jobAssignmentLog = { create: jest.fn() };
     await service.createJob({ ...dto, podId: manager }, id, 'System', id,
@@ -62,8 +64,9 @@ describe('job operating unit persistence and reviewer routing', () => {
     await expect(service.createJob({ ...dto, podId: 'all' }, id)).rejects.toThrow('instead of a unit pool');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
-  it('persists every validated recruiter once when Account Manager creates a job', async () => {
+  it.each(['MANUAL', 'AUTO'])('persists direct recruiters under %s pod policy without requiring pod permission', async strategy => {
     const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: true, allowUnassigned: false, podDistributionStrategy: strategy });
     const second = '44444444-4444-4444-8444-444444444444';
     prisma.jobRecruiter = { createMany: jest.fn().mockResolvedValue({ count: 2 }) };
     prisma.$queryRawUnsafe.mockImplementation(async (sql: string) => sql.includes('CROSS JOIN LATERAL')

@@ -82,13 +82,17 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
       where: { id: jobId, tenantId, deletedAt: null },
       select: { accountManagerId: true, recruitmentManagerId: true, branchId: true, businessUnitId: true },
     });
+    if (!job) throw new ForbiddenException('The job is outside your job staffing scope.');
     if (job) {
       isJobOwner = Boolean(
         (job.accountManagerId && (actor.dbId === job.accountManagerId || (actor as any).id === job.accountManagerId)) ||
         (job.recruitmentManagerId && (actor.dbId === job.recruitmentManagerId || (actor as any).id === job.recruitmentManagerId))
       );
       if (!branchManager && !isJobOwner) {
-        throw new ForbiddenException('Account Managers can only assign recruiters to their own created jobs.');
+        throw new ForbiddenException('Account Managers can only assign staff to their own created jobs.');
+      }
+      if (!branchManager && ((requestedBranch && requestedBranch !== job.branchId) || (requestedUnit && requestedUnit !== job.businessUnitId))) {
+        throw new ForbiddenException('Assignments must stay within the job branch and unit.');
       }
       jobResolvedBranch = job.branchId;
       jobResolvedUnit = job.businessUnitId;
@@ -112,8 +116,8 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
 }
 
 export async function listJobPods(prisma: PrismaService, actor: AuthUser, tenantId: string,
-  requestedBranch?: string, requestedUnit?: string) {
-  const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_pod');
+  requestedBranch?: string, requestedUnit?: string, jobId?: string) {
+  const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_pod', jobId);
   if (!unitId) throw new BadRequestException('Select an operating unit.');
   const pods = await prisma.pod.findMany({
     where: { tenantId, businessUnitId: unitId, ...(branchId ? { branchId } : {}) },

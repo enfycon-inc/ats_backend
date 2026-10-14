@@ -559,15 +559,18 @@ export class JobsService {
       if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
       assignmentPolicy = { ...unit, market: unit.marketSegment?.code };
     }
-    const automaticPods = usesAutomaticPods(assignmentPolicy);
+    const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
+    const automaticPods = usesAutomaticPods(assignmentPolicy) && !submittedRecruiters.length;
     if (!draft && automaticPods) {
       if (!actor) throw new ForbiddenException('Automatic assignment requires an authenticated context.');
       await listJobPods(this.prisma, actor, tenantId, branchId || undefined, businessUnitId || undefined);
-      if ((dto.podId && !['none', 'off'].includes(dto.podId)) || dto.recruiterId || dto.recruiterIds?.length) {
-        throw new BadRequestException('This unit assigns pods automatically. Remove manual assignments and publish again.');
+      if (dto.podId && !['none', 'off'].includes(dto.podId)) {
+        throw new BadRequestException('This unit chooses pods automatically. Select automatic pod assignment or direct recruiters.');
       }
     }
-    const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
+    if (usesAutomaticPods(assignmentPolicy) && dto.podId && !['none', 'off'].includes(dto.podId)) {
+      throw new BadRequestException('This unit chooses pods automatically. Select automatic pod assignment or direct recruiters.');
+    }
     if (submittedRecruiters.length) {
       if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
       await validateJobRecruiters(this.prisma, actor, tenantId, submittedRecruiters, branchId, businessUnitId);
@@ -839,7 +842,7 @@ export class JobsService {
         if (!draft && businessUnitId && !automaticPods) {
           await tx.$queryRaw`SELECT id FROM ats.business_units WHERE id = ${businessUnitId}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
           const currentPolicy = await tx.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
-          if (!currentPolicy || usesAutomaticPods(currentPolicy) !== automaticPods || currentPolicy.allowPods !== assignmentPolicy.allowPods || currentPolicy.allowNone !== assignmentPolicy.allowNone || currentPolicy.allowUnassigned !== assignmentPolicy.allowUnassigned) {
+          if (!currentPolicy || usesAutomaticPods(currentPolicy) !== usesAutomaticPods(assignmentPolicy) || currentPolicy.allowPods !== assignmentPolicy.allowPods || currentPolicy.allowNone !== assignmentPolicy.allowNone || currentPolicy.allowUnassigned !== assignmentPolicy.allowUnassigned) {
             throw new BadRequestException('The assignment policy changed. Refresh the job form.');
           }
         }
@@ -1716,10 +1719,17 @@ export class JobsService {
     const publishBranchId = dto.branchId ?? currentJob.branchId;
     const publishPolicy = mode === 'publish' && publishUnitId
       ? await this.prisma.businessUnit.findFirst({ where: { id: publishUnitId, tenantId, branchId: publishBranchId } }) : null;
-    const automaticPublish = mode === 'publish' && usesAutomaticPods(publishPolicy);
+    const publishingRecruiters = dto.recruiterIds !== undefined || dto.recruiterId !== undefined
+      ? (dto.recruiterIds || (dto.recruiterId ? [dto.recruiterId] : []))
+      : mode === 'publish' && usesAutomaticPods(publishPolicy) ? (await this.prisma.jobRecruiter.findMany({ where: { jobId: id }, select: { recruiterId: true } })).map(mapping => mapping.recruiterId) : [];
+    const automaticPublish = mode === 'publish' && usesAutomaticPods(publishPolicy) && !publishingRecruiters.length;
+    if (mode === 'publish' && publishingRecruiters.length) {
+      if (publishPolicy?.allowNone !== true) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
+      await validateJobRecruiters(this.prisma, user, tenantId, publishingRecruiters, publishBranchId, publishUnitId, id);
+    }
     let automaticallyAssignedPodId: string | null = null;
     if (automaticPublish) {
-      await listJobPods(this.prisma, user, tenantId, publishBranchId || undefined, publishUnitId || undefined);
+      await listJobPods(this.prisma, user, tenantId, publishBranchId || undefined, publishUnitId || undefined, id);
       // Draft selections may belong to an older unit policy. Route under current policy.
       dto = { ...dto };
       for (const key of ['podId', 'podIds', 'recruiterId', 'recruiterIds']) delete dto[key];
@@ -1740,7 +1750,8 @@ export class JobsService {
       const podsToValidate = automaticPublish ? [] : podChanged ? requestedPods : scopeChanged ? currentPods.map(p => p.podId) : [];
       if ((podChanged || scopeChanged) && (podsToValidate.length || (podChanged && currentPods.length))) {
         if (podsToValidate.length && policy?.allowPods === false) throw new BadRequestException('Pod assignment is disabled for this unit.');
-        const eligible = await listJobPods(this.prisma, user, tenantId, branchId || undefined, unitId || undefined);
+        if (requestedPods.length && usesAutomaticPods(policy)) throw new BadRequestException('This unit chooses pods automatically. Select automatic pod assignment or direct recruiters.');
+        const eligible = await listJobPods(this.prisma, user, tenantId, branchId || undefined, unitId || undefined, id);
         if (podsToValidate.some(p => !eligible.some(option => option.id === p))) throw new ForbiddenException('The selected pod is outside the job unit.');
       }
       const recruitersChanged = dto.recruiterId !== undefined || dto.recruiterIds !== undefined;
@@ -1832,7 +1843,7 @@ export class JobsService {
         throw new ForbiddenException('You do not have permission to assign recruiters.');
       }
       if (isAccountManager && !isJobCreator) {
-        throw new ForbiddenException('Account Managers can only assign recruiters to their own created jobs.');
+        throw new ForbiddenException('Account Managers can only assign staff to their own created jobs.');
       }
     }
 

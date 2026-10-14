@@ -163,6 +163,7 @@ export class AuthRbacService {
         ...role,
         name: displayName,
         permissions: rolePerms,
+        allowedPermissions: defaultPerms,
         isExactSubstitution: !role.isSystem,
         replacesSystemRole: !role.isSystem && role.systemRole ? baseSysRole : null,
       });
