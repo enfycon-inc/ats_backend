@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { AuthQueryService } from './auth-query.service';
@@ -178,21 +179,45 @@ export class AuthPasswordService {
       throw new BadRequestException('This password reset link has expired. Please request a new one.');
     }
 
-    // Mark token as consumed atomically
-    await this.authQuery.query(
-      `UPDATE ats.password_reset_tokens 
-       SET is_used = true, used_at = NOW() 
-       WHERE id = $1::uuid`,
+    // Claim the token atomically so parallel reset attempts cannot both update the account.
+    const claim = await this.authQuery.query(
+      `UPDATE ats.password_reset_tokens
+       SET is_used = true, used_at = NOW()
+       WHERE id = $1::uuid AND is_used = false AND expires_at > NOW()
+       RETURNING id`,
       [row.id],
     );
+    if (claim.rows.length === 0) {
+      throw new BadRequestException('This password reset link has already been used or has expired.');
+    }
 
-    // Sync new password to Keycloak
-    await this.keycloakService.provisionUserInKeycloak({
-      email: row.email,
-      password: dto.password,
-      fullName: row.full_name,
-      tenantId: row.tenant_id,
-    });
+    // Keep the token claim while updating Keycloak; release it if the provider update fails.
+    try {
+      const updated = await this.keycloakService.provisionUserInKeycloak({
+        email: row.email,
+        password: dto.password,
+        fullName: row.full_name,
+        tenantId: row.tenant_id,
+      });
+      if (!updated) {
+        throw new ServiceUnavailableException('Password service is temporarily unavailable. Please try again.');
+      }
+    } catch (error) {
+      try {
+        await this.authQuery.query(
+          `UPDATE ats.password_reset_tokens
+           SET is_used = false, used_at = NULL
+           WHERE id = $1::uuid AND is_used = true`,
+          [row.id],
+        );
+      } catch (releaseError: any) {
+        this.logger.error(
+          `Failed to release reset token ${row.id} after password update failure: ${releaseError.message}`,
+          releaseError.stack,
+        );
+      }
+      throw error;
+    }
 
     // Send security alert email to the user
     this.emailService.sendPasswordChangedAlert({

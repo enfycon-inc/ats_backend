@@ -131,7 +131,8 @@ describe('AuthPasswordService', () => {
             },
           ],
         }) // query token
-        .mockResolvedValueOnce({ rows: [] }); // update token is_used
+        .mockResolvedValueOnce({ rows: [{ id: 'token-uuid' }] }) // atomically claim token
+        .mockResolvedValueOnce({ rows: [] }); // password changed notification
 
       const res = await service.resetPassword({ token: rawToken, password: 'NewSecurePassword123!' });
       expect(res.success).toBe(true);
@@ -157,6 +158,59 @@ describe('AuthPasswordService', () => {
           tenantName: 'Acme Corp',
         }),
       );
+    });
+
+    it('releases the token when Keycloak cannot update the password', async () => {
+      keycloakService.provisionUserInKeycloak.mockResolvedValueOnce(false);
+      authQuery.query
+        .mockResolvedValueOnce({
+          rows: [{
+            id: 'token-uuid',
+            is_used: false,
+            expires_at: new Date(Date.now() + 60000),
+            user_id: 'user-uuid',
+            email: 'user@example.com',
+            full_name: 'John Doe',
+            tenant_id: 'tenant-uuid',
+            tenant_name: 'Acme Corp',
+            tenant_domain: 'acme',
+          }],
+        })
+        .mockResolvedValueOnce({ rows: [{ id: 'token-uuid' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await expect(
+        service.resetPassword({ token: 'abc123token', password: 'NewSecurePassword123!' }),
+      ).rejects.toThrow('Password service is temporarily unavailable');
+
+      expect(authQuery.query).toHaveBeenLastCalledWith(
+        expect.stringContaining('SET is_used = false, used_at = NULL'),
+        ['token-uuid'],
+      );
+      expect(emailService.sendPasswordChangedAlert).not.toHaveBeenCalled();
+    });
+
+    it('does not update Keycloak if another request already claimed the token', async () => {
+      authQuery.query
+        .mockResolvedValueOnce({
+          rows: [{
+            id: 'token-uuid',
+            is_used: false,
+            expires_at: new Date(Date.now() + 60000),
+            user_id: 'user-uuid',
+            email: 'user@example.com',
+            full_name: 'John Doe',
+            tenant_id: 'tenant-uuid',
+            tenant_name: 'Acme Corp',
+            tenant_domain: 'acme',
+          }],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await expect(
+        service.resetPassword({ token: 'abc123token', password: 'NewSecurePassword123!' }),
+      ).rejects.toThrow('already been used or has expired');
+      expect(keycloakService.provisionUserInKeycloak).not.toHaveBeenCalled();
     });
   });
 

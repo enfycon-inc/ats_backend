@@ -159,10 +159,11 @@ export class AuthEmailService {
     subdomain: string;
     resetToken: string;
   }) {
-    const resetUrl = new URL(
-      '/auth/create-password',
-      process.env.FRONTEND_URL || '',
-    );
+    const resetUrl = new URL(workspaceEmailLogin(options.subdomain));
+    const localTenant = resetUrl.searchParams.get('subdomain');
+    resetUrl.pathname = '/auth/create-password';
+    resetUrl.search = '';
+    if (localTenant) resetUrl.searchParams.set('subdomain', localTenant);
     resetUrl.searchParams.set('token', options.resetToken);
     return this.systemMail.send({
       tenantId: options.tenantId,

@@ -308,7 +308,7 @@ export class AuthKeycloakService {
               if (Array.isArray(usersList) && usersList.length > 0) {
                 const kcUserId = usersList[0].id;
                 const resetUrl = url.replace('/users', `/users/${kcUserId}/reset-password`);
-                await fetch(resetUrl, {
+                const resetRes = await fetch(resetUrl, {
                   method: 'PUT',
                   headers: {
                     'Content-Type': 'application/json',
@@ -316,7 +316,14 @@ export class AuthKeycloakService {
                   },
                   body: JSON.stringify({ type: 'password', value: data.password, temporary: false }),
                 });
+                if (!resetRes.ok) {
+                  this.logger.warn(`Keycloak password sync returned ${resetRes.status} for ${data.email}`);
+                  return false;
+                }
                 this.logger.log(`Keycloak user ${data.email} password synced in realm ${realm}`);
+              } else {
+                this.logger.warn(`Keycloak user ${data.email} was not found for password sync`);
+                return false;
               }
             }
             return true;
