@@ -27,6 +27,9 @@ describe('corporate system email templates', () => {
       loginUrl: 'https://deb.enfyjobs.com/auth/login',
       loginOptions: { allowPasswordLogin: true, allowMicrosoftSso: true, allowGoogleSso: true },
       passwordSetupUrl: 'https://enfyjobs.com/auth/setup-password?token=abc',
+      role: 'Recruiter',
+      branch: 'Enfycon',
+      unit: 'India Staffing',
     },
     { ...context, event: 'registration_received' },
     {
@@ -121,6 +124,18 @@ describe('corporate system email templates', () => {
       .not.toContain('Google');
     expect(render({ allowPasswordLogin: false, allowMicrosoftSso: true, allowGoogleSso: false }).html)
       .not.toContain('setup-password');
+    expect(render({ allowPasswordLogin: false, allowMicrosoftSso: true, allowGoogleSso: false }).text)
+      .not.toContain('setup-password');
+  });
+  it('keeps welcome details role-free and aligns both welcome actions to the same width', () => {
+    const email = renderSystemEmail(variants[0]);
+    expect(email.text).toContain('Branch: Enfycon');
+    expect(email.text).toContain('Unit: India Staffing');
+    expect(email.text).not.toContain('Recruiter');
+    expect(email.html).not.toContain('>Role<');
+    const fullWidthCenteredAction = 'display:block;box-sizing:border-box;width:100%;';
+    expect(email.html.match(new RegExp(fullWidthCenteredAction, 'g'))).toHaveLength(2);
+    expect(email.html.match(/text-align:center;font-size:14px;font-weight:bold/g)).toHaveLength(2);
   });
   it('renders role approval with a validated workspace login link and existing-credentials guidance', () => {
     const email = renderSystemEmail({

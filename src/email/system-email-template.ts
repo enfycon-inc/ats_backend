@@ -113,7 +113,6 @@ export function renderSystemEmail(
         ['Work email', input.recipient],
         ...(input.branch ? ([['Branch', input.branch]] as [string, string][]) : []),
         ...(input.unit ? ([['Unit', input.unit]] as [string, string][]) : []),
-        ...(input.role ? ([['Role', input.role]] as [string, string][]) : []),
       );
       const providers = [
         ...(input.loginOptions.allowMicrosoftSso ? ['Microsoft'] : []),
@@ -291,15 +290,17 @@ export function renderSystemEmail(
         `<tr><td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#475569;vertical-align:top;width:34%">${e(label)}</td><td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#0f172a;word-break:break-word">${e(value)}</td></tr>`,
     )
     .join('');
+  const welcomeEmail = input.event === 'account_welcome';
   const url = action ? applicationEmailUrl(action.url) : undefined;
   const button =
     action && url
-      ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 16px"><tr><td bgcolor="#1e4e98" style="border-radius:4px;mso-padding-alt:14px 24px"><a href="${e(url)}" style="display:inline-block;padding:14px 24px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none">${e(action.label)}</a></td></tr></table>${input.event === 'account_welcome' ? '' : `<p style="font-size:12px;color:#475569;word-break:break-all">Or copy and open this link:<br><a href="${e(url)}" style="color:#1e4e98">${e(url)}</a></p>`}`
+      ? welcomeEmail
+        ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;margin:20px 0 12px"><tr><td bgcolor="#1e4e98" style="border-radius:4px"><a href="${e(url)}" style="display:block;box-sizing:border-box;width:100%;padding:13px 16px;text-align:center;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none">${e(action.label)}</a></td></tr></table>`
+        : `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 16px"><tr><td bgcolor="#1e4e98" style="border-radius:4px;mso-padding-alt:14px 24px"><a href="${e(url)}" style="display:inline-block;padding:14px 24px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none">${e(action.label)}</a></td></tr></table><p style="font-size:12px;color:#475569;word-break:break-all">Or copy and open this link:<br><a href="${e(url)}" style="color:#1e4e98">${e(url)}</a></p>`
       : '';
   const setupButton = input.event === 'account_welcome' && input.passwordSetupUrl && input.loginOptions.allowPasswordLogin
-    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px"><tr><td align="center" style="padding:0 12px 18px"><span style="display:block;font-size:12px;color:#64748b;margin:0 0 12px">or</span><a href="${e(applicationEmailUrl(input.passwordSetupUrl))}" style="display:block;border:1px solid #2563eb;border-radius:5px;padding:11px 16px;color:#2563eb;text-decoration:none;font-weight:bold;font-size:14px">Set up your password</a></td></tr></table>`
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;margin:0 0 16px"><tr><td align="center"><span style="display:block;font-size:12px;color:#64748b;margin:0 0 12px">or</span><a href="${e(applicationEmailUrl(input.passwordSetupUrl))}" style="display:block;box-sizing:border-box;width:100%;border:1px solid #2563eb;border-radius:5px;padding:13px 16px;text-align:center;color:#2563eb;text-decoration:none;font-weight:bold;font-size:14px">Set up your password</a></td></tr></table>`
     : '';
-  const welcomeEmail = input.event === 'account_welcome';
   const displayTitle = welcomeEmail && input.fullName
     ? `Welcome to your workspace, ${input.fullName.split(/\s+/)[0]}`
     : title;
@@ -318,7 +319,7 @@ export function renderSystemEmail(
     welcomeInstructions,
     ...details.map(([label, value]) => `${label}: ${value}`),
     ...(action && url ? [action.label + ': ' + url] : []),
-    ...(input.event === 'account_welcome' && input.passwordSetupUrl
+    ...(input.event === 'account_welcome' && input.passwordSetupUrl && input.loginOptions.allowPasswordLogin
       ? ['Set up your password: ' + applicationEmailUrl(input.passwordSetupUrl)]
       : []),
     note,

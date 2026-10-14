@@ -397,11 +397,14 @@ export class AuthInviteService {
   async getInvitationDetails(token: string) {
     if (!token) throw new BadRequestException('Token is required.');
     const res = await this.authQuery.query(
-      `SELECT ui.id, ui.email, ui.full_name, sr.system_key as system_role, ui.token_expires_at, ui.is_accepted,
-              t.name as tenant_name, t.domain as tenant_domain
+      `SELECT ui.id, ui.email, ui.full_name, ui.token_expires_at, ui.is_accepted,
+              t.name as tenant_name, t.domain as tenant_domain,
+              COALESCE(tas.allow_password_login, true) AS allow_password_login,
+              COALESCE(tas.allow_microsoft_sso, true) AS allow_microsoft_sso,
+              COALESCE(tas.allow_google_sso, true) AS allow_google_sso
        FROM user_invitations ui
        JOIN tenants t ON ui.tenant_id = t.id
-       LEFT JOIN system_roles sr ON ui.system_role_id = sr.id
+       LEFT JOIN tenant_auth_settings tas ON tas.tenant_id = ui.tenant_id
        WHERE ui.invitation_token = $1 LIMIT 1`,
       [token]
     );
@@ -411,9 +414,11 @@ export class AuthInviteService {
     return {
       email: row.email,
       fullName: row.full_name,
-      systemRole: row.system_role,
       tenantName: row.tenant_name,
       tenantDomain: row.tenant_domain,
+      allowPasswordLogin: row.allow_password_login ?? true,
+      allowMicrosoftSso: row.allow_microsoft_sso ?? true,
+      allowGoogleSso: row.allow_google_sso ?? true,
       isExpired,
       isAccepted: row.is_accepted,
     };
@@ -424,8 +429,11 @@ export class AuthInviteService {
     if (dto.password.length < 8) throw new BadRequestException('Password must be at least 8 characters long.');
 
     const res = await this.authQuery.query(
-      `SELECT ui.*, t.domain as tenant_domain FROM user_invitations ui
+      `SELECT ui.*, t.domain as tenant_domain,
+              COALESCE(tas.allow_password_login, true) AS allow_password_login
+       FROM user_invitations ui
        JOIN tenants t ON ui.tenant_id = t.id
+       LEFT JOIN tenant_auth_settings tas ON tas.tenant_id = ui.tenant_id
        WHERE ui.invitation_token = $1 LIMIT 1`,
       [dto.token]
     );
@@ -433,6 +441,9 @@ export class AuthInviteService {
     const invite: any = res.rows[0];
     if (new Date(invite.token_expires_at).getTime() < Date.now()) {
       throw new BadRequestException('Invitation has expired. Please contact your administrator for a new invite.');
+    }
+    if (!invite.allow_password_login) {
+      throw new ForbiddenException('Password sign-in is disabled for this tenant. Use an enabled SSO provider or contact your administrator.');
     }
 
     await this.authQuery.query(
