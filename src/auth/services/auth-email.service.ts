@@ -14,6 +14,20 @@ export class AuthEmailService {
     @Optional() private readonly authQuery?: AuthQueryService,
   ) {}
 
+  private async getTenantBranding(tenantId: string, fallbackName: string) {
+    const result = await this.authQuery?.query(
+      `SELECT id, name, site_title, logo_url FROM tenants WHERE id = $1::uuid LIMIT 1`,
+      [tenantId],
+    ).catch(() => undefined);
+    const row = result?.rows?.[0] as any;
+    return {
+      tenantId,
+      tenantName: row?.name || fallbackName,
+      siteTitle: row?.site_title || null,
+      logoUrl: row?.logo_url || null,
+    };
+  }
+
   async sendAccountWelcomeEmail(options: {
     tenantId: string;
     to: string;
@@ -37,13 +51,14 @@ export class AuthEmailService {
           [options.tenantId, options.to],
         ).catch(() => undefined)
       : Promise.resolve(undefined);
-    const [policyResult, accountContextResult] = await Promise.all([
+    const [policyResult, accountContextResult, tenantBranding] = await Promise.all([
       this.authQuery?.query(
         `SELECT allow_password_login, allow_microsoft_sso, allow_google_sso
          FROM tenant_auth_settings WHERE tenant_id = $1::uuid LIMIT 1`,
         [options.tenantId],
       ),
       accountContextPromise,
+      this.getTenantBranding(options.tenantId, options.tenantName),
     ]);
     // Match the tenant policy service's defaults when a tenant has no settings row.
     const policy = policyResult?.rows[0] as any;
@@ -69,6 +84,7 @@ export class AuthEmailService {
       ...renderSystemEmail({
         event: 'account_welcome',
         workspace: options.tenantName,
+        tenantBranding,
         recipient: options.to,
         fullName: options.fullName,
         role: options.roleName,
@@ -105,10 +121,12 @@ export class AuthEmailService {
     subdomain: string;
     pending: boolean;
   }) {
+    const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     const context = {
       workspace: options.tenantName,
       recipient: options.to,
       fullName: options.fullName,
+      tenantBranding,
     };
     const content = options.pending
       ? renderSystemEmail({ ...context, event: 'registration_received' })
@@ -163,6 +181,7 @@ export class AuthEmailService {
     subdomain: string;
     resetToken: string;
   }) {
+    const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     const resetUrl = new URL(workspaceEmailLogin(options.subdomain));
     const localTenant = resetUrl.searchParams.get('subdomain');
     resetUrl.pathname = '/auth/create-password';
@@ -175,6 +194,7 @@ export class AuthEmailService {
       ...renderSystemEmail({
         event: 'password_reset_request',
         workspace: options.tenantName,
+        tenantBranding,
         recipient: options.to,
         fullName: options.fullName,
         resetUrl: applicationEmailUrl(resetUrl.toString()),
@@ -189,12 +209,14 @@ export class AuthEmailService {
     tenantName: string;
     subdomain: string;
   }) {
+    const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     return this.systemMail.send({
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
         event: 'password_changed_alert',
         workspace: options.tenantName,
+        tenantBranding,
         recipient: options.to,
         fullName: options.fullName,
         loginUrl: workspaceEmailLogin(options.subdomain),
@@ -210,12 +232,14 @@ export class AuthEmailService {
     subdomain: string;
     temporaryPassword: string;
   }) {
+    const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     return this.systemMail.send({
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
         event: 'admin_temp_password_notice',
         workspace: options.tenantName,
+        tenantBranding,
         recipient: options.to,
         fullName: options.fullName,
         temporaryPassword: options.temporaryPassword,

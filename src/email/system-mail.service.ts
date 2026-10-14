@@ -96,6 +96,8 @@ export class SystemMailService {
       select: {
         id: true,
         name: true,
+        siteTitle: true,
+        logoUrl: true,
         emailDispatchMode: true,
         customEmailDomain: true,
         customEmailDomainVerified: true,

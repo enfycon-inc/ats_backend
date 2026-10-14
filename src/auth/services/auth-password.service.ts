@@ -103,7 +103,15 @@ export class AuthPasswordService {
   /**
    * Public endpoint logic: Verify if a reset token is valid and unexpired before rendering the form.
    */
-  async verifyResetToken(token: string): Promise<{ valid: boolean; email?: string; fullName?: string; tenantName?: string }> {
+  async verifyResetToken(token: string): Promise<{
+    valid: boolean;
+    email?: string;
+    fullName?: string;
+    tenantId?: string;
+    tenantName?: string;
+    siteTitle?: string | null;
+    logoUrl?: string | null;
+  }> {
     if (!token || typeof token !== 'string' || token.trim().length === 0) {
       throw new BadRequestException('Reset token is required.');
     }
@@ -111,7 +119,9 @@ export class AuthPasswordService {
     const tokenHash = crypto.createHash('sha256').update(token.trim()).digest('hex');
 
     const res = await this.authQuery.query(
-      `SELECT prt.id, prt.expires_at, prt.is_used, u.email, u.full_name, t.name as tenant_name
+      `SELECT prt.id, prt.expires_at, prt.is_used, u.email, u.full_name,
+              t.id as tenant_id,
+              t.name as tenant_name, t.site_title, t.logo_url
        FROM ats.password_reset_tokens prt
        JOIN users u ON prt.user_id = u.id
        JOIN tenants t ON prt.tenant_id = t.id
@@ -137,7 +147,10 @@ export class AuthPasswordService {
       valid: true,
       email: row.email,
       fullName: row.full_name,
+      tenantId: row.tenant_id,
       tenantName: row.tenant_name,
+      siteTitle: row.site_title,
+      logoUrl: row.logo_url,
     };
   }
 

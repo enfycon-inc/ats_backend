@@ -699,7 +699,17 @@ export class EmailService {
   /** Shared tenant-aware dispatcher for system messages and delivery tests. */
   async sendSystemTestEmail(tenantId: string, to: string): Promise<EmailDispatchResult> {
     const tenant = await this.systemMail.tenant(tenantId);
-    return this.systemMail.send({ tenantId, to, ...renderSystemEmail({ event: 'delivery_test', workspace: tenant.name, recipient: to }) });
+    return this.systemMail.send({ tenantId, to, ...renderSystemEmail({
+      event: 'delivery_test',
+      workspace: tenant.name,
+      recipient: to,
+      tenantBranding: {
+        tenantId: tenant.id,
+        tenantName: tenant.name,
+        siteTitle: tenant.siteTitle,
+        logoUrl: tenant.logoUrl,
+      },
+    }) });
   }
 
   async sendTenantEmail(options: SystemEmailRequest): Promise<EmailDispatchResult> {

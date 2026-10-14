@@ -1,6 +1,16 @@
 import type { SystemEmailRequest } from './system-email.types';
 
-type Context = { workspace: string; recipient: string; fullName?: string };
+type Context = {
+  workspace: string;
+  recipient: string;
+  fullName?: string;
+  tenantBranding?: {
+    tenantId: string;
+    tenantName: string;
+    siteTitle?: string | null;
+    logoUrl?: string | null;
+  };
+};
 export type WelcomeLoginOptions = {
   allowPasswordLogin: boolean;
   allowMicrosoftSso: boolean;
@@ -291,6 +301,20 @@ export function renderSystemEmail(
     )
     .join('');
   const welcomeEmail = input.event === 'account_welcome';
+  const tenantDisplayName = input.tenantBranding?.siteTitle?.trim() ||
+    input.tenantBranding?.tenantName?.trim() || input.workspace;
+  const tenantLogoUrl = (() => {
+    const logoPath = input.tenantBranding?.logoUrl?.trim();
+    const tenantId = input.tenantBranding?.tenantId?.trim();
+    const match = logoPath?.match(/^\/public\/image\/logos\/([0-9a-f-]{36})\/([a-f0-9]{64}\.(?:png|jpg|gif|webp))$/i);
+    if (!logoPath || !tenantId || !match || match[1].toLowerCase() !== tenantId.toLowerCase()) return undefined;
+    try {
+      return applicationEmailUrl(new URL(logoPath, process.env.FRONTEND_URL).toString());
+    } catch {
+      return undefined;
+    }
+  })();
+  const tenantBrandingRow = `<tr><td style="padding:12px 24px 18px;border-bottom:1px solid #e2e8f0"><table role="presentation" cellpadding="0" cellspacing="0"><tr>${tenantLogoUrl ? `<td style="padding-right:12px;vertical-align:middle"><img src="${e(tenantLogoUrl)}" alt="${e(tenantDisplayName)}" style="display:block;max-width:150px;max-height:44px;width:auto;height:auto;border:0"></td>` : ''}<td style="font-size:14px;font-weight:bold;color:#334155;vertical-align:middle">${e(tenantDisplayName)}</td></tr></table></td></tr>`;
   const url = action ? applicationEmailUrl(action.url) : undefined;
   const button =
     action && url
@@ -305,8 +329,8 @@ export function renderSystemEmail(
     ? `Welcome to your workspace, ${input.fullName.split(/\s+/)[0]}`
     : title;
   const brandHeader = welcomeEmail
-    ? `<tr><td style="padding:18px 24px;border-bottom:1px solid #e2e8f0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td><span style="font-size:22px;font-weight:bold;color:#1e4e98">EnfySync</span><br><span style="font-size:9px;letter-spacing:1px;color:#64748b">AI RECRUITMENT</span></td><td align="right" style="font-size:12px;color:#64748b">${e(input.workspace)}</td></tr></table></td></tr>`
-    : `<tr><td style="padding:28px 24px 12px"><span style="font-size:25px;font-weight:bold;color:#1e4e98">EnfySync</span><br><span style="font-size:10px;letter-spacing:1px;color:#64748b">AI RECRUITMENT</span></td></tr>`;
+    ? `<tr><td style="padding:18px 24px 10px"><span style="font-size:22px;font-weight:bold;color:#1e4e98">EnfySync</span><br><span style="font-size:9px;letter-spacing:1px;color:#64748b">AI RECRUITMENT</span></td></tr>${tenantBrandingRow}`
+    : `<tr><td style="padding:28px 24px 10px"><span style="font-size:25px;font-weight:bold;color:#1e4e98">EnfySync</span><br><span style="font-size:10px;letter-spacing:1px;color:#64748b">AI RECRUITMENT</span></td></tr>${tenantBrandingRow}`;
   const welcomeSignInPanel = welcomeEmail
     ? `<tr><td style="padding:0 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0"><tr><td style="padding:16px 18px"><h2 style="font-size:16px;margin:0 0 4px;color:#0f172a">How would you like to sign in?</h2><p style="font-size:12px;line-height:1.5;color:#475569;margin:0 0 8px">${e(welcomeInstructions)}</p>${welcomeMethods}</td></tr>${button ? `<tr><td style="padding:0 18px">${button}</td></tr>` : ''}${setupButton ? `<tr><td style="padding:0 18px">${setupButton}</td></tr>` : ''}</table></td></tr>`
     : '';
