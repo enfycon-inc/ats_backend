@@ -55,7 +55,11 @@ export class AuthEmailService {
     };
     let passwordSetupUrl: string | undefined;
     if (loginOptions.allowPasswordLogin && options.invitationToken) {
-      const setup = new URL('/auth/setup-password', process.env.FRONTEND_URL || '');
+      const setup = new URL(workspaceEmailLogin(options.subdomain));
+      const localTenant = setup.searchParams.get('subdomain');
+      setup.pathname = '/auth/setup-password';
+      setup.search = '';
+      if (localTenant) setup.searchParams.set('subdomain', localTenant);
       setup.searchParams.set('token', options.invitationToken);
       passwordSetupUrl = applicationEmailUrl(setup.toString());
     }
