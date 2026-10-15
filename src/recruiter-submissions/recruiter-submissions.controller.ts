@@ -77,6 +77,8 @@ export class RecruiterSubmissionsController {
     @Query('view') view?: string,
     @Query('search') search?: string,
     @Query('bucket') bucket?: TrackerBucket,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDirection') sortDirection?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
@@ -95,6 +97,8 @@ export class RecruiterSubmissionsController {
       view,
       search,
       bucket,
+      sortBy,
+      sortDirection,
     });
   }
 
@@ -109,10 +113,12 @@ export class RecruiterSubmissionsController {
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchHeaderId?: string,
     @Query('view') view?: string,
+    @Query('rangeDays') rangeDays?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
     const bid = resolveBranchId(user, branchHeaderId);
-    return this.service.getTrackerStats(tid, user, { view, branchId: bid || undefined });
+    const parsedRange = rangeDays ? Number(rangeDays) : undefined;
+    return this.service.getTrackerStats(tid, user, { view, branchId: bid || undefined, rangeDays: parsedRange });
   }
 
   @Get('custom-remarks')
@@ -197,6 +203,20 @@ export class RecruiterSubmissionsController {
     @Headers('x-branch-id') branchHeaderId?: string,
   ) {
     return this.service.assessment(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId));
+  }
+
+  @Get(':id/people/:kind')
+  @ApiOperation({ summary: 'Get a team member profile related to a visible submission' })
+  async relatedPersonProfile(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('kind') kind: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+  ) {
+    if (kind !== 'recruiter' && kind !== 'account-manager') throw new ForbiddenException('Unsupported submission profile type.');
+    const tid = resolveTenantId(user, tenantId);
+    return this.service.relatedPersonProfile(id, kind, tid, user, resolveBranchId(user, branchHeaderId));
   }
 
   @Get(':id')

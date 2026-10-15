@@ -12,6 +12,21 @@ function setup() {
   return { prisma, notifications, service };
 }
 describe('submission tracker API', () => {
+  it('enriches history actors by tenant-scoped IDs while preserving recorded email snapshots', async () => {
+    const {service, prisma} = setup();
+    const actorId = '11111111-1111-4111-8111-111111111111';
+    jest.spyOn(service, 'findOne').mockResolvedValue({id: 'submission-id'} as any);
+    prisma.submissionEvent.count = jest.fn().mockResolvedValue(2);
+    prisma.submissionEvent.findMany = jest.fn().mockResolvedValue([
+      {id: 'old', actorId, actorName: 'Amit', details: {}},
+      {id: 'new', actorId, actorName: 'Amit', details: {actorEmail: 'recorded@example.com'}},
+    ]);
+    prisma.user = {findMany: jest.fn().mockResolvedValue([{id: actorId, email: 'current@example.com', profilePicture: '/avatar.png'}])};
+    const result = await service.history('submission-id', 'tenant-id', user);
+    expect(result.data[0]).toMatchObject({actorEmail: 'current@example.com', actorAvatar: '/avatar.png'});
+    expect(result.data[1]).toMatchObject({actorEmail: 'recorded@example.com'});
+    expect(prisma.user.findMany).toHaveBeenCalledWith({where: {tenantId: 'tenant-id', id: {in: [actorId]}}, select: {id: true, email: true, profilePicture: true}});
+  });
   it('loads recorded status dates in one tenant-scoped page query without using general update timestamps', async () => {
     const {service, prisma} = setup();
     prisma.$queryRawUnsafe.mockResolvedValueOnce([{count: 1n}])

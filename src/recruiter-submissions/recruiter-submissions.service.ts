@@ -20,7 +20,13 @@ import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { submissionCapabilities } from './submission-capabilities';
 import { validateTrackerUpdate } from './validate-tracker-update';
-import type { SubmissionCapabilities, TrackerBucket, TrackerSubmission } from './tracker-contract';
+import {
+  TRACKER_SORT_KEYS,
+  type SubmissionCapabilities,
+  type TrackerBucket,
+  type TrackerSubmission,
+  type TrackerSortKey,
+} from './tracker-contract';
 
 export interface SubmissionDetails extends TrackerSubmission {
   capabilities?: SubmissionCapabilities;
@@ -32,6 +38,7 @@ export interface SubmissionDetails extends TrackerSubmission {
   jobId: string;
   candidateId: string;
   recruiterId: string;
+  accountManagerId?: string | null;
   recruiterJobReviewerId?: string | null;
   l1Status: string;
   l1Date: string | null;
@@ -200,7 +207,7 @@ export class RecruiterSubmissionsService {
       await tx.submissionEvent.create({ data: {
         tenantId, submissionId: sub.id, actorId: user?.dbId || user?.email || user?.fullName || null,
         actorName: user?.fullName || user?.email || user?.dbId || null, kind: 'CREATED', sequence: 0,
-        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub) },
+        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub), ...(user?.email ? { actorEmail: user.email } : {}) },
       } });
       return sub;
     }, { maxWait: 15000, timeout: 30000 });
@@ -293,6 +300,10 @@ export class RecruiterSubmissionsService {
       submissionId?: string;
       search?: string;
       bucket?: TrackerBucket;
+      sortBy?: string;
+      sortDirection?: string;
+      dashboardRangeDays?: 7 | 30 | 90;
+      dashboardOnly?: boolean;
     },
   ) {
     this.logger.log(`Listing submissions for tenant: ${tenantId} under user role visibility, view=${filters.view || 'all'}`);
@@ -380,6 +391,7 @@ export class RecruiterSubmissionsService {
         r.job_reviewer_id AS recruiter_job_reviewer_id,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
+        am.id AS am_id,
         am.email AS am_email,
         (SELECT cr.name
          FROM ats.custom_roles cr
@@ -557,13 +569,92 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE l1_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED') OR l2_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED') OR l3_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED')) as dashboard_interviews,
       COUNT(*) FILTER (WHERE final_status IN ('SELECTED', 'OFFER', 'JOIN', 'PLACED')) as dashboard_selections
       FROM (${baseSql}) AS counted`;
-    const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.')[bucket]} ORDER BY s.created_at DESC, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    // Only allow server-owned expressions into ORDER BY; filter values remain bound parameters.
+    const roundIndex = `CASE WHEN s.final_status = 'PENDING_APPROVAL' THEN 0
+      WHEN s.final_status IN ('SELECTED', 'OFFER', 'JOIN', 'NOT_SELECTED', 'WITHDRAWN') THEN 4
+      WHEN COALESCE(s.l1_status, 'PENDING') <> 'CLEARED' THEN 1
+      WHEN COALESCE(s.l2_status, 'PENDING') <> 'CLEARED' THEN 2
+      WHEN COALESCE(s.l3_status, 'PENDING') <> 'CLEARED' THEN 3 ELSE 4 END`;
+    const statusLabel = `CASE s.final_status
+      WHEN 'PENDING_APPROVAL' THEN 'Needs internal review' WHEN 'JOIN' THEN 'Joined'
+      WHEN 'OFFER' THEN 'Offer issued' WHEN 'SELECTED' THEN 'Selected'
+      WHEN 'NOT_SELECTED' THEN 'Not selected' WHEN 'WITHDRAWN' THEN 'Withdrawn'
+      WHEN 'SUBMITTED' THEN CASE WHEN s.l1_status IS DISTINCT FROM 'CLEARED' THEN 'L1 ' || COALESCE(s.l1_status, 'PENDING')
+        WHEN s.l2_status IS DISTINCT FROM 'CLEARED' THEN 'L2 ' || COALESCE(s.l2_status, 'PENDING')
+        WHEN s.l3_status IS DISTINCT FROM 'CLEARED' THEN 'L3 ' || COALESCE(s.l3_status, 'PENDING') ELSE 'Final round cleared' END
+      ELSE s.final_status END`;
+    const sortExpressions: Record<TrackerSortKey, string> = {
+      job: 'LOWER(j.job_title)', manager: 'LOWER(COALESCE(am.full_name, am.email))',
+      recruiter: 'LOWER(r.full_name)', candidate: 'LOWER(c.full_name)',
+      pipeline: roundIndex, status: `LOWER(${statusLabel})`, jobCreated: 'j.created_at', submitted: 's.created_at',
+    };
+    const sortBy = filters.sortBy ?? 'submitted';
+    if (!(TRACKER_SORT_KEYS as readonly string[]).includes(sortBy)) throw new BadRequestException('Invalid submission sort column.');
+    const direction = filters.sortDirection ?? 'desc';
+    if (!['asc', 'desc'].includes(direction)) throw new BadRequestException('Invalid submission sort direction.');
+    const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.')[bucket]} ORDER BY ${sortExpressions[sortBy as TrackerSortKey]} ${direction.toUpperCase()} NULLS LAST, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
 
     try {
-      const [countRes, retrieveRes]: [any, any] = await Promise.all([
+      const [countRes, retrieveRes, dashboardRes]: [any, any, any] = await Promise.all([
         this.prisma.$queryRawUnsafe(countSql, ...params),
-        this.prisma.$queryRawUnsafe(retrieveSql, ...retrieveParams),
+        filters.dashboardOnly ? Promise.resolve([]) : this.prisma.$queryRawUnsafe(retrieveSql, ...retrieveParams),
+        filters.dashboardRangeDays ? this.prisma.$queryRawUnsafe(`
+          WITH scoped AS (${baseSql}),
+          bounds AS (
+            SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Kolkata')::date AS today
+          ),
+          days AS (
+            SELECT generate_series(
+              (today - ($${params.length + 1}::int - 1))::timestamp,
+              today::timestamp,
+              INTERVAL '1 day'
+            )::date AS day
+            FROM bounds
+          ),
+          activity AS (
+            SELECT (created_at AT TIME ZONE 'Asia/Kolkata')::date AS day, COUNT(*)::int AS submissions
+            FROM scoped CROSS JOIN bounds
+            WHERE created_at >= ((today - ($${params.length + 1}::int - 1))::timestamp AT TIME ZONE 'Asia/Kolkata')
+            GROUP BY (created_at AT TIME ZONE 'Asia/Kolkata')::date
+          ),
+          interview_activity AS (
+            SELECT (interview_date AT TIME ZONE 'Asia/Kolkata')::date AS day, COUNT(*)::int AS interviews
+            FROM scoped CROSS JOIN bounds
+            CROSS JOIN LATERAL (VALUES
+              (l1_status, l1_date), (l2_status, l2_date), (l3_status, l3_date)
+            ) AS rounds(status, interview_date)
+            WHERE status IN ('SCHEDULED', 'AWAITING_FEEDBACK')
+              AND interview_date >= ((today - ($${params.length + 1}::int - 1))::timestamp AT TIME ZONE 'Asia/Kolkata')
+            GROUP BY (interview_date AT TIME ZONE 'Asia/Kolkata')::date
+          ),
+          pipeline AS (
+            SELECT
+              COUNT(*) FILTER (WHERE final_status IN ('SUBMITTED', 'PENDING_APPROVAL'))::int AS submitted,
+              COUNT(*) FILTER (WHERE l1_status IN ('SCHEDULED', 'AWAITING_FEEDBACK') OR l2_status IN ('SCHEDULED', 'AWAITING_FEEDBACK') OR l3_status IN ('SCHEDULED', 'AWAITING_FEEDBACK'))::int AS interviewing,
+              COUNT(*) FILTER (WHERE final_status = 'SELECTED')::int AS selected,
+              COUNT(*) FILTER (WHERE final_status = 'OFFER')::int AS offers,
+              COUNT(*) FILTER (WHERE final_status = 'JOIN')::int AS joined
+            FROM scoped
+          )
+          SELECT
+            (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+              'date', to_char(days.day, 'YYYY-MM-DD'),
+              'submissions', COALESCE(activity.submissions, 0),
+              'interviews', COALESCE(interview_activity.interviews, 0)
+            ) ORDER BY days.day), '[]'::jsonb)
+             FROM days
+             LEFT JOIN activity ON activity.day = days.day
+             LEFT JOIN interview_activity ON interview_activity.day = days.day) AS activity,
+            (SELECT jsonb_build_array(
+              jsonb_build_object('stage', 'Submitted', 'count', submitted),
+              jsonb_build_object('stage', 'In interview', 'count', interviewing),
+              jsonb_build_object('stage', 'Selected', 'count', selected),
+              jsonb_build_object('stage', 'Offer', 'count', offers),
+              jsonb_build_object('stage', 'Joined', 'count', joined)
+            ) FROM pipeline) AS pipeline,
+            (SELECT interviewing FROM pipeline) AS in_interview_count
+          `, ...params, filters.dashboardRangeDays) : Promise.resolve(null),
       ]);
 
       const total = Number(countRes[0]?.count || 0);
@@ -618,6 +709,16 @@ export class RecruiterSubmissionsService {
           l2Pending: Number(countRes[0]?.l2_pending || 0),
           l3Pending: Number(countRes[0]?.l3_pending || 0),
         },
+        ...(dashboardRes?.[0] ? { dashboard: {
+          rangeDays: filters.dashboardRangeDays,
+          activity: dashboardRes[0].activity,
+          pipeline: dashboardRes[0].pipeline,
+          dashboardMetrics: {
+            submissions: Number(countRes[0]?.all_count || 0),
+            interviews: Number(dashboardRes[0].in_interview_count || 0),
+            selections: Number(countRes[0]?.dashboard_selections || 0),
+          },
+        } } : {}),
       };
     } catch (err: any) {
       this.logger.error(`Failed to retrieve submissions: ${err.message}`, err.stack);
@@ -711,6 +812,7 @@ export class RecruiterSubmissionsService {
         r.email AS recruiter_email, r.profile_picture AS recruiter_avatar,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
+        am.id AS am_id,
         am.email AS am_email,
         (SELECT cr.name
          FROM ats.custom_roles cr
@@ -746,6 +848,44 @@ export class RecruiterSubmissionsService {
     return this.mapRowToDetails(res[0]);
   }
 
+  async relatedPersonProfile(id: string, kind: 'recruiter' | 'account-manager', tenantId: string, user: AuthUser, branchId?: string | null) {
+    const submission = await this.findOne(id, tenantId, user, branchId);
+    const personId = kind === 'recruiter' ? submission.recruiterId : submission.accountManagerId;
+    if (!personId) throw new NotFoundException('Team member profile not found for this submission.');
+    const rows: any[] = await this.prisma.$queryRawUnsafe(`
+      SELECT u.id, u.full_name AS "fullName", u.email,
+             up.phone, up.designation, to_jsonb(u)->>'city' AS city,
+             u.profile_picture AS avatar, bu.name AS "businessUnitName", p.name AS "podName",
+             COALESCE(role_data.roles, ARRAY[]::text[]) AS roles
+      FROM ats.users u
+      LEFT JOIN ats.user_profiles up ON up.user_id = u.id AND up.tenant_id = u.tenant_id
+      LEFT JOIN ats.business_units bu ON bu.id = u.business_unit_id AND bu.tenant_id = u.tenant_id
+      LEFT JOIN ats.pods p ON p.id = u.pod_id AND p.tenant_id = u.tenant_id
+      LEFT JOIN LATERAL (
+        SELECT array_agg(DISTINCT cr.name ORDER BY cr.name) AS roles
+        FROM ats.custom_roles cr
+        WHERE cr.tenant_id = u.tenant_id
+          AND (cr.id = u.role_id OR cr.id = ANY(u.assigned_role_ids))
+      ) role_data ON TRUE
+      WHERE u.id = $1::uuid AND u.tenant_id = $2::uuid
+      LIMIT 1
+    `, personId, tenantId);
+    if (!rows.length) throw new NotFoundException('Team member profile not found for this submission.');
+    const row = rows[0];
+    return {
+      id: row.id,
+      fullName: row.fullName,
+      email: row.email,
+      phone: row.phone || null,
+      designation: row.designation || null,
+      city: row.city || null,
+      avatar: row.avatar || null,
+      businessUnitName: row.businessUnitName || null,
+      podName: row.podName || null,
+      assignedRoles: (row.roles || []).map((name: string) => ({ name })),
+    };
+  }
+
   /**
    * Update submission statuses with auto-rejection logic
    */
@@ -758,7 +898,17 @@ export class RecruiterSubmissionsService {
     if (!total) return { data: [{ id: 'legacy-baseline', kind: 'BASELINE', actorName: null, createdAt: current.updatedAt,
       details: { snapshot: historySnapshot(current) } }], page: 1, total: 1, totalPages: 1 };
     const data = await this.prisma.submissionEvent.findMany({ where, orderBy: { sequence: order }, skip: (page - 1) * 25, take: 25 });
-    return { data, page, total, totalPages: Math.ceil(total / 25) };
+    const actorIds = [...new Set(data.map(event => event.actorId).filter((value): value is string => Boolean(value) && /^[0-9a-f-]{36}$/i.test(value!)))];
+    const actors = actorIds.length ? await this.prisma.user.findMany({
+      where: { tenantId, id: { in: actorIds } }, select: { id: true, email: true, profilePicture: true },
+    }) : [];
+    const identities = new Map(actors.map(actor => [actor.id, actor]));
+    return { data: data.map(event => {
+      const actor = identities.get(event.actorId || '');
+      const details = event.details as Record<string, any>;
+      return { ...event, actorEmail: typeof details.actorEmail === 'string' ? details.actorEmail : actor?.email || null,
+        actorAvatar: actor?.profilePicture || null };
+    }), page, total, totalPages: Math.ceil(total / 25) };
   }
 
   async assessment(id: string, tenantId: string, user: AuthUser, branchId?: string | null) {
@@ -909,7 +1059,7 @@ export class RecruiterSubmissionsService {
         tenantId, submissionId: id, actorId: user.dbId || user.email || user.fullName || null,
         actorName: user.fullName || user.email || user.dbId || null,
         kind: 'UPDATE', sequence: (hasHistory?.sequence ?? 0) + 1, requestId: dto.requestId || randomUUID(), requestHash,
-        details: JSON.parse(JSON.stringify({ changes: historyChanges(existing, data), ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}), ...(dto.correctionReason ? { correctionReason: dto.correctionReason.trim(), resetFollowingRounds: Boolean(dto.resetFollowingRounds) } : {}) })),
+        details: JSON.parse(JSON.stringify({ actorEmail: user.email || null, changes: historyChanges(existing, data), ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}), ...(dto.correctionReason ? { correctionReason: dto.correctionReason.trim(), resetFollowingRounds: Boolean(dto.resetFollowingRounds) } : {}) })),
       } });
     });
 
@@ -1105,9 +1255,19 @@ export class RecruiterSubmissionsService {
   /**
    * Retrieve aggregate status counts for recruiter tracker, scoped by tenant
    */
-  async getTrackerStats(tenantId: string, user: AuthUser, filters: { view?: string; branchId?: string } = {}) {
-    const result = await this.findAll(tenantId, user, { ...filters, limit: 1 });
-    return result.stats;
+  async getTrackerStats(tenantId: string, user: AuthUser, filters: { view?: string; branchId?: string; rangeDays?: number } = {}) {
+    const rangeDays = filters.rangeDays;
+    if (rangeDays !== undefined && ![7, 30, 90].includes(rangeDays)) {
+      throw new BadRequestException('Dashboard range must be 7, 30, or 90 days.');
+    }
+    const result = await this.findAll(tenantId, user, {
+      view: filters.view,
+      branchId: filters.branchId,
+      limit: 1,
+      dashboardRangeDays: rangeDays as 7 | 30 | 90 | undefined,
+      dashboardOnly: true,
+    });
+    return { ...result.stats, ...(result.dashboard ? { dashboard: result.dashboard } : {}) };
   }
 
   /**
@@ -1122,6 +1282,7 @@ export class RecruiterSubmissionsService {
       jobId: row.job_id || row.jobId,
       candidateId: row.candidate_id || row.candidateId,
       recruiterId: row.recruiter_id || row.recruiterId,
+      accountManagerId: row.am_id || row.accountManagerId || null,
       recruiterJobReviewerId: row.recruiter_job_reviewer_id || row.recruiterJobReviewerId || null,
       l1Status: row.l1_status || row.l1Status,
       l1Date: row.l1_date || row.l1Date ? new Date(row.l1_date || row.l1Date).toISOString() : null,

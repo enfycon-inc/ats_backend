@@ -1,6 +1,27 @@
 // Canonical submission tracker contract. Run node ats_frontend_main/scripts/sync-submission-contract.cjs
 // from the workspace root to update the frontend's generated contract.
 export type TrackerBucket = 'all' | 'review' | 'interviews' | 'offers' | 'closed';
+export const TRACKER_SORT_KEYS = ['job', 'manager', 'recruiter', 'candidate', 'pipeline', 'status', 'jobCreated', 'submitted'] as const;
+export type TrackerSortKey = typeof TRACKER_SORT_KEYS[number];
+export type TrackerSortDirection = 'asc' | 'desc';
+export interface TrackerListFilters {
+  page?: number;
+  limit?: number;
+  view?: string;
+  bucket?: TrackerBucket;
+  jobId?: string;
+  candidateId?: string;
+  branchId?: string;
+  search?: string;
+  startDate?: string;
+  endDate?: string;
+  l1Status?: string;
+  l2Status?: string;
+  l3Status?: string;
+  finalStatus?: string;
+  sortBy?: TrackerSortKey;
+  sortDirection?: TrackerSortDirection;
+}
 export type RoundKey = 'l1' | 'l2' | 'l3';
 export enum InterviewRoundStatus {
   PENDING = 'PENDING',
@@ -104,6 +125,7 @@ export interface TrackerSubmission {
   candidatePhone?: string;
   candidateCurrentLocation?: string;
   candidateExperience?: number | null;
+  candidateDesignation?: string | null;
   candidateSkills?: string[] | null;
   jobCode?: string;
   jobTitle?: string;
@@ -112,6 +134,7 @@ export interface TrackerSubmission {
   recruiterName?: string;
   recruiterEmail?: string | null;
   accountManagerName?: string;
+  accountManagerId?: string | null;
   accountManagerRole?: string | null;
   accountManagerEmail?: string | null;
   jobCreatedAt?: string | null;
@@ -132,6 +155,19 @@ export interface TrackerResponse {
   limit: number;
   totalPages: number;
   counts: Record<TrackerBucket, number>;
+}
+export interface TrackerDashboardSummary {
+  rangeDays: 7 | 30 | 90;
+  activity: Array<{ date: string; submissions: number; interviews: number }>;
+  pipeline: Array<{ stage: string; count: number }>;
+  dashboardMetrics: { submissions: number; interviews: number; selections: number };
+}
+export interface TrackerStatsResponse {
+  total: number;
+  l1Pending: number;
+  l2Pending: number;
+  l3Pending: number;
+  dashboard?: TrackerDashboardSummary;
 }
 export interface TrackerUpdate {
   correctionReason?: string;
@@ -162,11 +198,14 @@ export interface TrackerUpdate {
 }
 
 export interface SubmissionHistoryEvent {
+  actorEmail?: string | null;
+  actorAvatar?: string | null;
   id: string;
   kind: 'BASELINE' | 'CREATED' | 'UPDATE';
   actorName: string | null;
   createdAt: string;
   details: {
+    actorEmail?: string | null;
     assessment?: CandidateAssessment;
     reviewOverrides?: Record<string, string>;
     changes?: Record<string, { before: string | null; after: string | null }>;
