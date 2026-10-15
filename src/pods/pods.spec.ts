@@ -85,6 +85,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
       },
       customRole: {
         findFirst: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([]),
       },
       $transaction: jest.fn((callback) => callback(prismaMock)),
     };
@@ -312,6 +313,231 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
         branchId,
         unitId,
       );
+    });
+  });
+
+  describe('Pod Lead Promotion & Demotion Role Synchronization', () => {
+    const podLeadRoleId = 'role-pod-lead-uuid';
+    const recruiterRoleId = 'role-recruiter-uuid';
+    const formerLeadId = 'user-former-lead';
+    const newLeadId = 'user-new-lead';
+    const podId = 'pod-123';
+
+    beforeEach(() => {
+      prismaMock.customRole.findMany.mockImplementation(async ({ where }: any) => {
+        if (where?.systemRole?.systemKey === 'POD_LEAD') {
+          return [{ id: podLeadRoleId, name: 'Pod Lead', systemRole: { systemKey: 'POD_LEAD' } }];
+        }
+        return [];
+      });
+
+      prismaMock.customRole.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.systemRole?.systemKey === 'POD_LEAD') {
+          return { id: podLeadRoleId, name: 'Pod Lead' };
+        }
+        if (where?.systemRole?.systemKey === 'RECRUITER') {
+          return { id: recruiterRoleId, name: 'Recruiter' };
+        }
+        return null;
+      });
+    });
+
+    it('strips POD_LEAD role from assignedRoleIds and sets roleId to RECRUITER when demoting', async () => {
+      prismaMock.pod.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === podId) {
+          return {
+            id: podId,
+            name: 'POD(Backend)',
+            podHeadId: formerLeadId,
+            branchId,
+            businessUnitId: unitId,
+            description: null,
+            users: [{ id: formerLeadId }],
+          };
+        }
+        // otherPods check
+        if (where?.podHeadId === formerLeadId) {
+          return null; // leads no other pods
+        }
+        return null;
+      });
+
+      prismaMock.user.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === formerLeadId) {
+          return {
+            id: formerLeadId,
+            roleId: podLeadRoleId,
+            assignedRoleIds: [recruiterRoleId, podLeadRoleId],
+            branchId,
+          };
+        }
+        if (where?.id === newLeadId) {
+          return {
+            id: newLeadId,
+            roleId: recruiterRoleId,
+            assignedRoleIds: [recruiterRoleId],
+            branchId,
+          };
+        }
+        return null;
+      });
+
+      prismaMock.user.findMany.mockResolvedValue([
+        {
+          id: newLeadId,
+          fullName: 'New Lead',
+          isActive: true,
+          isApproved: true,
+          businessUnitId: unitId,
+          podId: null,
+          roleId: recruiterRoleId,
+          assignedRoleIds: [recruiterRoleId],
+          customRole: {
+            id: recruiterRoleId,
+            name: 'Recruiter',
+            systemRole: { systemKey: 'RECRUITER' },
+          },
+        },
+      ]);
+      prismaMock.pod.update.mockResolvedValue({ id: podId });
+      prismaMock.user.update.mockResolvedValue({});
+
+      const findOneSpy = jest.spyOn(podsService, 'findOne').mockResolvedValue({
+        id: podId,
+        name: 'POD(Backend)',
+        branchId,
+        branchName: 'Main',
+        businessUnitId: unitId,
+        businessUnitName: 'Main',
+        podHeadId: newLeadId,
+        podHeadName: 'New Lead',
+        description: null,
+        isAvailableForAssignment: true,
+        members: [],
+        jobsCount: 0,
+        createdAt: new Date().toISOString(),
+      });
+
+      await podsService.update(podId, { podHeadId: newLeadId }, tenantId);
+
+      // Verify demotion of former lead
+      expect(prismaMock.user.update).toHaveBeenCalledWith({
+        where: { id: formerLeadId },
+        data: {
+          roleId: recruiterRoleId,
+          assignedRoleIds: [recruiterRoleId], // POD_LEAD cleanly stripped!
+        },
+      });
+
+      // Verify promotion of new lead
+      expect(prismaMock.user.update).toHaveBeenCalledWith({
+        where: { id: newLeadId },
+        data: {
+          roleId: podLeadRoleId,
+          assignedRoleIds: expect.arrayContaining([recruiterRoleId, podLeadRoleId]),
+        },
+      });
+    });
+
+    it('does not demote former lead if they still head another pod', async () => {
+      prismaMock.pod.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === podId) {
+          return {
+            id: podId,
+            name: 'POD(Backend)',
+            podHeadId: formerLeadId,
+            branchId,
+            businessUnitId: unitId,
+            description: null,
+            users: [{ id: formerLeadId }],
+          };
+        }
+        if (where?.podHeadId === formerLeadId) {
+          return { id: 'other-pod-999' }; // Still leads another pod!
+        }
+        return null;
+      });
+
+      prismaMock.user.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === newLeadId) {
+          return {
+            id: newLeadId,
+            roleId: recruiterRoleId,
+            assignedRoleIds: [recruiterRoleId],
+            branchId,
+          };
+        }
+        return null;
+      });
+
+      prismaMock.user.findMany.mockResolvedValue([
+        {
+          id: newLeadId,
+          fullName: 'New Lead',
+          isActive: true,
+          isApproved: true,
+          businessUnitId: unitId,
+          podId: null,
+          roleId: recruiterRoleId,
+          assignedRoleIds: [recruiterRoleId],
+          customRole: {
+            id: recruiterRoleId,
+            name: 'Recruiter',
+            systemRole: { systemKey: 'RECRUITER' },
+          },
+        },
+      ]);
+      prismaMock.pod.update.mockResolvedValue({ id: podId });
+      prismaMock.user.update.mockResolvedValue({});
+
+      jest.spyOn(podsService, 'findOne').mockResolvedValue({} as any);
+
+      await podsService.update(podId, { podHeadId: newLeadId }, tenantId);
+
+      // formerLead should NOT have been updated with RECRUITER role
+      expect(prismaMock.user.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: formerLeadId },
+        }),
+      );
+    });
+
+    it('demotes pod head cleanly on pod remove()', async () => {
+      prismaMock.pod.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === podId) {
+          return {
+            id: podId,
+            podHeadId: formerLeadId,
+            tenantId,
+          };
+        }
+        if (where?.podHeadId === formerLeadId) {
+          return null; // No other pods
+        }
+        return null;
+      });
+
+      prismaMock.user.findFirst.mockResolvedValue({
+        id: formerLeadId,
+        roleId: podLeadRoleId,
+        assignedRoleIds: [podLeadRoleId],
+        branchId,
+      });
+
+      prismaMock.pod.delete.mockResolvedValue({});
+      prismaMock.user.update.mockResolvedValue({});
+      prismaMock.user.updateMany.mockResolvedValue({ count: 1 });
+
+      await podsService.remove(podId, tenantId);
+
+      expect(prismaMock.user.update).toHaveBeenCalledWith({
+        where: { id: formerLeadId },
+        data: {
+          roleId: recruiterRoleId,
+          assignedRoleIds: [recruiterRoleId],
+        },
+      });
+      expect(prismaMock.pod.delete).toHaveBeenCalledWith({ where: { id: podId } });
     });
   });
 });

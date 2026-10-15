@@ -17,6 +17,8 @@ export interface StaffProfile {
   profilePicture: string | null;
   assignedRoles: AssignedProfileRole[];
   roleName?: string;
+  podId?: string | null;
+  podName?: string | null;
   branchName: string | null;
   businessUnitName: string | null;
   tenantId: string;

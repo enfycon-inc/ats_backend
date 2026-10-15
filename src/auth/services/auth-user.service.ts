@@ -39,7 +39,7 @@ export class AuthUserService {
   async getProfile(userId: string) {
     const profileQuery = `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.is_approved, u.requested_role, u.created_at, u.updated_at,
               u.profile_picture, to_jsonb(u)->>'city' as city, personal.phone, personal.designation,
-              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
+              u.role_id, u.assigned_role_ids, u.pod_id, p.name as pod_name, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
@@ -53,6 +53,7 @@ export class AuthUserService {
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       LEFT JOIN pods p ON u.pod_id = p.id
        LEFT JOIN users rev ON u.job_reviewer_id = rev.id
        WHERE u.id = $1 LIMIT 1`;
     let result;
@@ -68,7 +69,7 @@ export class AuthUserService {
       result = await this.authQuery.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.tenant_id, u.is_active, u.is_approved, u.requested_role, u.created_at, u.updated_at,
               u.profile_picture, to_jsonb(u)->>'city' as city, NULL::text as phone, NULL::text as designation,
-              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id,
+              u.role_id, u.assigned_role_ids, u.pod_id, p.name as pod_name, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
@@ -82,6 +83,7 @@ export class AuthUserService {
        LEFT JOIN tenants t ON u.tenant_id = t.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       LEFT JOIN pods p ON u.pod_id = p.id
        LEFT JOIN users rev ON u.job_reviewer_id = rev.id
        WHERE u.id = $1 LIMIT 1`,
         [userId],
@@ -156,7 +158,7 @@ export class AuthUserService {
       roleName, systemRole, baseRoleId, permissions: Array.from(userPerms), canReview,
       tenantId: u.tenant_id, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
       defaultMarket: u.default_market || 'US', tenantDomain: u.tenant_domain || '',
-      userLimit: u.user_limit || 5, podId: u.pod_id, branchId: u.branch_id,
+      userLimit: u.user_limit || 5, podId: u.pod_id || null, podName: u.pod_name || null, branchId: u.branch_id,
       branchName: u.branch_name || null,
       branchCity: u.branch_city || null, officeTimezone: u.office_timezone || null,
       officeStartTime: u.office_start_time || null, officeEndTime: u.office_end_time || null,
@@ -191,7 +193,7 @@ export class AuthUserService {
 
     const result = await this.authQuery.query(
       `SELECT u.id, u.email, u.first_name, u.last_name, u.full_name, u.profile_picture, u.is_active, u.is_approved, u.created_at, u.requested_role,
-              u.role_id, u.assigned_role_ids, u.pod_id, u.branch_id, to_jsonb(u)->>'city' as city,
+              u.role_id, u.assigned_role_ids, u.pod_id, p.name as pod_name, u.branch_id, to_jsonb(u)->>'city' as city,
               u.business_unit_id, u.job_reviewer_id,
               rev.full_name as job_reviewer_name,
                 r.name as role_name, sr.system_key as system_role, r.base_role_id as base_role_id,
@@ -201,6 +203,7 @@ export class AuthUserService {
          LEFT JOIN system_roles sr ON r.system_role_id = sr.id
        LEFT JOIN branches b ON u.branch_id = b.id
        LEFT JOIN business_units bu ON u.business_unit_id = bu.id
+       LEFT JOIN pods p ON u.pod_id = p.id
        LEFT JOIN users rev ON u.job_reviewer_id = rev.id
        WHERE u.tenant_id = $1 ${branchFilter} ORDER BY u.full_name ASC`,
       queryParams,
@@ -256,7 +259,7 @@ export class AuthUserService {
         roleId: bestRoleObj?.id || u.role_id, assignedRoleIds: Array.from(userRoleIds),
         assignedRoles: assignedRoleObjs.map(role => ({ id: role.id, name: role.name, isSystem: role.is_system === true, systemRole: role.system_role, branchId: role.branch_id })),
         roleName: primaryRole, systemRole, baseRoleId, isActive: u.is_active, isApproved: u.is_approved, requestedRole: u.requested_role, createdAt: u.created_at,
-        podId: u.pod_id, branchId: u.branch_id,
+        podId: u.pod_id || null, podName: u.pod_name || null, branchId: u.branch_id,
         branchName: u.branch_name || null, businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
         city: u.city || null,
         jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
