@@ -13,7 +13,10 @@ describe('job recruiter staffing permissions and scope', () => {
   let prisma: any;
   beforeEach(() => {
     prisma = { businessUnit: { findFirst: jest.fn().mockResolvedValue({ id: unit }) },
+      pod: { findFirst: jest.fn().mockResolvedValue(null) },
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ id: recruiter, fullName: 'Recruiter', canRecruit: true, canReview: false }]) };
+    prisma.$transaction = jest.fn(callback => callback(prisma));
+    prisma.auditLog = { create: jest.fn().mockResolvedValue({}) };
   });
 
   it('allows pod assignment options on the Account Manager own job', async () => {
@@ -88,9 +91,9 @@ describe('job recruiter staffing permissions and scope', () => {
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });
 
-  it('denies recruiter-role users even if recruiter assignment permission is accidentally present', async () => {
+  it('does not grant allocation authority through a recruiter role label', async () => {
     await expect(listJobStaff(prisma, { ...actor, roles: ['RECRUITER'], permissions: ['job:assign_recruiter'] }, tenant))
-      .rejects.toThrow('Recruiters cannot assign recruiters');
+      .rejects.toThrow('mapped to their pod');
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });
 
@@ -137,7 +140,7 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.job = { create: jest.fn() };
     const service = new JobsService(prisma, {} as any);
     await expect(service.createJob({ title: 'Job', branchId: branch, businessUnitId: unit,
-      recruiterIds: [recruiter, other] } as any, tenant, actor.dbId, branch, actor)).rejects.toThrow('eligible');
+      recruiterIds: [recruiter, other] } as any, tenant, actor.dbId, branch, actor)).rejects.toThrow('job:override_assignment');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
 
@@ -146,7 +149,7 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
     const service = new JobsService(prisma, {} as any);
     await expect(service.updateJob(other, { recruiterIds: [recruiter, other] }, tenant,
-      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('eligible');
+      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('mapped to your pod');
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
@@ -155,7 +158,7 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
     const service = new JobsService(prisma, { create: jest.fn(), createMany: jest.fn() } as any);
     await expect(service.updateJob(other, { recruiterIds: [recruiter] }, tenant,
-      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('Account Managers can only assign staff to their own created jobs');
+      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('mapped to your pod');
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
@@ -177,10 +180,10 @@ describe('job recruiter staffing permissions and scope', () => {
       tenantId: tenant,
       branchId: branch,
       roles: ['DELIVERY_HEAD'],
-      permissions: ['job:edit', 'job:assign', 'job:assign_recruiter'],
+      businessUnitId: unit, permissions: ['job:edit', 'job:assign', 'job:assign_recruiter', 'job:override_assignment'],
     };
 
-    const result = await service.updateJob(other, { recruiterIds: [recruiter] }, tenant, deliveryHeadActor);
+    const result = await service.updateJob(other, { recruiterIds: [recruiter], assignmentReason: 'Urgent coverage' }, tenant, deliveryHeadActor);
     expect(result).toBeDefined();
     expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({
       data: [{ jobId: other, recruiterId: recruiter }],
@@ -234,10 +237,10 @@ describe('job recruiter staffing permissions and scope', () => {
       branchId: branch,
       businessUnitId: unit,
       roles: ['UNIT_ADMIN'],
-      permissions: ['job:edit', 'unit_admin:manage', 'job:assign_recruiter'],
+      permissions: ['job:edit', 'unit_admin:manage', 'job:assign_recruiter', 'job:override_assignment'],
     };
 
-    const result = await service.updateJob(other, { recruiterIds: [recruiter] }, tenant, unitAdminActor);
+    const result = await service.updateJob(other, { recruiterIds: [recruiter], assignmentReason: 'Urgent coverage' }, tenant, unitAdminActor);
     expect(result).toBeDefined();
     expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({
       data: [{ jobId: other, recruiterId: recruiter }],
@@ -306,7 +309,7 @@ describe('job recruiter staffing permissions and scope', () => {
     const podId = '66666666-6666-4666-8666-666666666666';
     prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId, branchId: branch, businessUnitId: unit }) };
     prisma.jobPod = { findUnique: jest.fn().mockResolvedValue({ jobId: other }) };
-    const podLead = { ...actor, roles: ['POD_LEAD'], permissions: [] };
+    const podLead = { ...actor, roles: ['POD_LEAD'], permissions: ['job:assign_recruiter'] };
 
     await expect(listJobStaff(prisma, podLead, tenant, branch, unit, other)).resolves.toBeDefined();
     expect(prisma.$queryRawUnsafe.mock.calls[0].slice(1)).toEqual([tenant, branch, unit, podId]);
@@ -317,7 +320,7 @@ describe('job recruiter staffing permissions and scope', () => {
     const podId = '66666666-6666-4666-8666-666666666666';
     prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId, branchId: branch, businessUnitId: unit }) };
     prisma.jobPod = { findUnique: jest.fn().mockResolvedValue(null) };
-    await expect(listJobStaff(prisma, { ...actor, roles: ['POD_LEAD'], permissions: [] }, tenant, branch, unit, other))
+    await expect(listJobStaff(prisma, { ...actor, roles: ['POD_LEAD'], permissions: ['job:assign_recruiter'] }, tenant, branch, unit, other))
       .rejects.toThrow('mapped to your pod');
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });
@@ -327,11 +330,24 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, tenantId: tenant, branchId: branch, businessUnitId: unit }), update: jest.fn() };
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
     prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId }) };
-    const podLead = { ...actor, roles: ['POD_LEAD'], permissions: [] };
+    const podLead = { ...actor, roles: ['POD_LEAD'], permissions: ['job:assign_recruiter'] };
 
     await expect(new JobsService(prisma, {} as any).updateJob(other, { recruiterIds: [recruiter] }, tenant, podLead))
       .rejects.toThrow('mapped to your pod');
     expect(prisma.job.update).not.toHaveBeenCalled();
+  });
+
+  it('preserves other pod allocations when a lead changes their recruiters', async () => {
+    const podId = '66666666-6666-4666-8666-666666666666';
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, tenantId: tenant, branchId: branch, businessUnitId: unit }), update: jest.fn().mockResolvedValue({ id: other }) };
+    prisma.jobPod = { findMany: jest.fn().mockResolvedValue([{ podId }, { podId: 'another-pod' }]), findUnique: jest.fn().mockResolvedValue({ jobId: other }) };
+    prisma.pod = { findFirst: jest.fn().mockResolvedValue({ id: podId, branchId: branch, businessUnitId: unit }) };
+    prisma.user = { findFirst: jest.fn().mockResolvedValue({ id: recruiter }) };
+    prisma.jobRecruiter = { count: jest.fn().mockResolvedValue(1), deleteMany: jest.fn(), createMany: jest.fn() };
+    const service = new JobsService(prisma, { create: jest.fn(), createMany: jest.fn() } as any);
+    jest.spyOn(service, 'findOneJob').mockResolvedValue({ id: other } as any);
+    await service.updateJob(other, { recruiterIds: [recruiter] }, tenant, { ...actor, permissions: ['job:assign_recruiter'] });
+    expect(prisma.jobRecruiter.deleteMany).toHaveBeenCalledWith({ where: { jobId: other, recruiter: { tenantId: tenant, podId } } });
   });
 
   it('rejects recruiter assignment in updateJob when actor lacks job:assign_recruiter', async () => {

@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateJobDto {
+  @ApiPropertyOptional({ description: 'Reason for emergency direct assignment' })
+  assignmentReason?: string;
   @ApiPropertyOptional({ description: 'Stable request identifier for a new draft' })
   draftId?: string;
 

@@ -22,25 +22,13 @@ export interface JobPodOption {
   memberCount: number;
 }
 
-const normalizedRoles = (actor: AuthUser) => [
-  ...(actor.roles || []),
-  actor.systemRole || '',
-].map((role: string) => role.toUpperCase().replace(/[\s-_]+/g, ''));
-const isPodLead = (actor: AuthUser) => normalizedRoles(actor).some(role => ['PODLEAD', 'PODHEAD'].includes(role));
-const isRecruiterOnly = (actor: AuthUser) => {
-  const roles = normalizedRoles(actor);
-  return roles.includes('RECRUITER') && !roles.some(role => ['PODLEAD', 'PODHEAD', 'ACCOUNTMANAGER', 'BDM', 'DELIVERYHEAD', 'BRANCHADMIN', 'UNITADMIN', 'TENANTADMIN', 'SUPERADMIN'].includes(role));
-};
-
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function resolveJobStaffingScope(prisma: PrismaService, actor: AuthUser, tenantId: string,
   requestedBranch?: string, requestedUnit?: string, permission = 'job:assign_recruiter', jobId?: string) {
-  const podLeadAccess = permission === 'job:assign_recruiter' && isPodLead(actor);
-  if (permission === 'job:assign_recruiter' && isRecruiterOnly(actor) && !podLeadAccess) {
-    throw new ForbiddenException('Recruiters cannot assign recruiters.');
-  }
-  if (!actor.permissions?.includes(permission) && !podLeadAccess) {
+  const podLeadAccess = permission === 'job:assign_recruiter' && actor.permissions?.includes(permission) === true && !actor.permissions.some(p => ['job:override_assignment', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'job:create'].includes(p));
+
+  if (!actor.permissions?.includes(permission)) {
     throw new ForbiddenException(permission === 'job:assign_recruiter' ? 'Recruiter assignment permission is required.' : 'Pod assignment permission is required.');
   }
   for (const id of [requestedBranch, requestedUnit, jobId]) {
@@ -49,8 +37,9 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
   let branchId = resolveBranchId(actor, requestedBranch);
   const permissions = actor.permissions || [];
   const tenantManager = permissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
-  const deliveryHead = normalizedRoles(actor).includes('DELIVERYHEAD') || permissions.includes('job:assign');
+  const deliveryHead = permissions.includes('job:override_assignment');
   const branchManager = tenantManager || permissions.includes('branch_admin:manage') || deliveryHead;
+  if (deliveryHead && (!actor.branchId || !actor.businessUnitId || (requestedBranch && requestedBranch !== actor.branchId) || (requestedUnit && requestedUnit !== actor.businessUnitId))) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
 
   if (podLeadAccess) {
     if (!jobId) throw new ForbiddenException('Pod Leads can only assign recruiters to jobs mapped to their pod.');
@@ -83,6 +72,7 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
       select: { accountManagerId: true, recruitmentManagerId: true, branchId: true, businessUnitId: true },
     });
     if (!job) throw new ForbiddenException('The job is outside your job staffing scope.');
+    if (deliveryHead && (job.branchId !== actor.branchId || job.businessUnitId !== actor.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
     if (job) {
       isJobOwner = Boolean(
         (job.accountManagerId && (actor.dbId === job.accountManagerId || (actor as any).id === job.accountManagerId)) ||
@@ -150,7 +140,7 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
     SELECT staff.id, staff.full_name AS "fullName", staff.email AS "email", staff.profile_picture AS "avatar", eligibility."canRecruit", eligibility."canReview"
     FROM ats.users staff
     CROSS JOIN LATERAL (
-      SELECT COALESCE(BOOL_OR(UPPER(COALESCE(system_role.system_key, '')) = 'RECRUITER'), false) AS "canRecruit",
+      SELECT COALESCE(BOOL_OR(role.permissions::jsonb ? 'submission:create'), false) AS "canRecruit",
              COALESCE(BOOL_OR(role.permissions::jsonb ? 'job:approve'), false) AS "canReview"
       FROM ats.custom_roles role
       LEFT JOIN ats.system_roles system_role ON system_role.id = role.system_role_id
@@ -174,5 +164,3 @@ export async function validateJobRecruiters(prisma: PrismaService, actor: AuthUs
   const allowed = new Set(eligible.filter(staff => staff.canRecruit).map(staff => staff.id));
   if (ids.some(id => !allowed.has(id))) throw new ForbiddenException('A selected recruiter is outside the eligible job staffing scope.');
 }
-
-export function isPodLeadActor(actor: AuthUser) { return isPodLead(actor); }

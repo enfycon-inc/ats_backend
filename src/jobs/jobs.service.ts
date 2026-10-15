@@ -12,7 +12,7 @@ import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { delegationTargets } from '../business-units/business-units.service';
-import { listJobStaff, listJobPods, validateJobRecruiters, isPodLeadActor } from './job-staffing';
+import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere } from '../clients/client-visibility';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
@@ -576,6 +576,9 @@ export class JobsService {
     if (usesAutomaticPods(assignmentPolicy) && selectedPods.length) {
       throw new BadRequestException('This unit chooses pods automatically. Select automatic pod assignment or direct recruiters.');
     }
+    if (submittedRecruiters.length && !actor?.permissions?.includes('job:override_assignment')) throw new ForbiddenException('Direct recruiter assignment requires job:override_assignment.');
+    if (submittedRecruiters.length && (!actor?.branchId || !actor.businessUnitId || branchId !== actor.branchId || businessUnitId !== actor.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
+    if (submittedRecruiters.length && (!dto.assignmentReason?.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
     if (submittedRecruiters.length) {
       if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
       await validateJobRecruiters(this.prisma, actor, tenantId, submittedRecruiters, branchId, businessUnitId);
@@ -861,6 +864,7 @@ export class JobsService {
         if (submittedRecruiters.length) await tx.jobRecruiter.createMany({
           data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
         });
+        if (submittedRecruiters.length) await tx.auditLog.create({ data: { tenantId, actorId: actor!.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: jobId, details: { reason: dto.assignmentReason!.trim(), recruiterIds: submittedRecruiters } } });
         for (const assignedPodId of assignedPodIds) {
           await tx.jobPod.upsert({ where: { jobId_podId: { jobId, podId: assignedPodId } }, create: { jobId, podId: assignedPodId }, update: {} });
           await tx.jobAssignmentLog.create({ data: { tenantId, jobId, podId: assignedPodId, assignedBy: createdByEmail || 'System' } });
@@ -1059,6 +1063,16 @@ export class JobsService {
     let paramIndex = 2;
 
     const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
+    const managesJobs = userPermissions.some(permission => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage', 'job:create', 'job:override_assignment'].includes(permission));
+    if (!managesJobs) {
+      if (!user?.dbId || !userPermissions.includes('job:view')) return [];
+      sql += ` AND (
+        EXISTS (SELECT 1 FROM ats.job_recruiters access_jr WHERE access_jr.job_id = j.id AND access_jr.recruiter_id = $${paramIndex}::uuid)
+        OR EXISTS (SELECT 1 FROM ats.job_pods access_jp JOIN ats.pods access_p ON access_p.id = access_jp.pod_id AND access_p.tenant_id = $1
+          WHERE access_jp.job_id = j.id AND (access_p.pod_head_id = $${paramIndex}::uuid OR (${userPermissions.includes('job:view_pod_jobs') || userPermissions.includes('job:submit_pod_jobs') ? 'TRUE' : 'FALSE'} AND access_p.id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1))))
+      )`;
+      params.push(user.dbId); paramIndex++;
+    }
     const userRoles: string[] = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
 
     const canViewAllBranches = 
@@ -1152,7 +1166,7 @@ export class JobsService {
             SELECT 1 FROM ats.job_pods jp_s
             JOIN ats.pods p_s ON p_s.id = jp_s.pod_id AND p_s.tenant_id = $1
             JOIN ats.users u_s ON u_s.pod_id = p_s.id AND u_s.tenant_id = $1
-            WHERE jp_s.job_id = j.id AND u_s.id = $${paramIndex}::uuid AND u_s.is_active = true
+            WHERE jp_s.job_id = j.id AND u_s.id = $${paramIndex}::uuid AND u_s.is_active = true AND (${userPermissions.includes('job:view_pod_jobs') || userPermissions.includes('job:submit_pod_jobs') ? 'TRUE' : 'FALSE'} OR p_s.pod_head_id = u_s.id)
           )
         )`;
       params.push(user.dbId);
@@ -1288,6 +1302,11 @@ export class JobsService {
         throw new NotFoundException(`Job requisition ${idOrCode} not found.`);
       }
       assertUnitJobScope(user, { branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id });
+      if (user && !(user.permissions || []).some((permission: string) => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage', 'job:create', 'job:override_assignment'].includes(permission))) {
+        const direct = await this.prisma.jobRecruiter.findUnique({ where: { jobId_recruiterId: { jobId: rows[0].id, recruiterId: user.dbId } }, select: { jobId: true } });
+        const pod = direct ? null : await this.prisma.pod.findFirst({ where: { tenantId, jobPods: { some: { jobId: rows[0].id } }, OR: [{ podHeadId: user.dbId }, ...((user.permissions || []).some((permission: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)) ? [{ users: { some: { id: user.dbId, tenantId, isActive: true } } }] : [])] }, select: { id: true } });
+        if (!direct && !pod) throw new ForbiddenException('This job has not been assigned to you or your lead workspace.');
+      }
       if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return this.mapRowToProfile(rows[0]);
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
@@ -1716,6 +1735,11 @@ export class JobsService {
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
     }
+    const assignmentChanged = dto.recruiterIds !== undefined || dto.recruiterId !== undefined || dto.podId !== undefined || dto.podIds !== undefined;
+    if (assignmentChanged && user.permissions?.includes('job:override_assignment')) {
+      if (!user.branchId || !user.businessUnitId || currentJob.branchId !== user.branchId || currentJob.businessUnitId !== user.businessUnitId || (dto.branchId !== undefined && dto.branchId !== user.branchId) || (dto.businessUnitId !== undefined && dto.businessUnitId !== user.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
+      if (typeof dto.assignmentReason !== 'string' || !dto.assignmentReason.trim() || dto.assignmentReason.length > 2000) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
+    }
     assertUnitJobScope(user, currentJob);
     assertUnitJobScope(user, { branchId: dto.branchId ?? currentJob.branchId, businessUnitId: dto.businessUnitId ?? currentJob.businessUnitId });
     if (dto.startDate !== undefined || dto.endDate !== undefined) validateJobDates(
@@ -1756,7 +1780,7 @@ export class JobsService {
       const podChanged = dto.podId !== undefined || dto.podIds !== undefined;
       const scopeChanged = unitId !== currentJob.businessUnitId || branchId !== currentJob.branchId;
       const requestedPods: string[] = podChanged ? (dto.podIds || (dto.podId ? [dto.podId] : [])).filter((p: string) => !['none', 'off'].includes(p)) : [];
-      if (requestedPods.length && (dto.recruiterId || dto.recruiterIds?.length)) throw new BadRequestException('Choose either pods or direct recruiters for this job.');
+
       const currentPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
       const podsToValidate = automaticPublish ? [] : podChanged ? requestedPods : scopeChanged ? currentPods.map(p => p.podId) : [];
       if ((podChanged || scopeChanged) && (podsToValidate.length || (podChanged && currentPods.length))) {
@@ -1772,7 +1796,7 @@ export class JobsService {
         requestedRecruiters.push(...mappings.map(mapping => mapping.recruiterId));
         if (requestedRecruiters.length) await validateJobRecruiters(this.prisma, user, tenantId, requestedRecruiters, branchId, unitId);
       }
-      if (requestedRecruiters.length && policy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
+      if (requestedRecruiters.length && !currentPods.length && !requestedPods.length && !user.permissions?.includes('job:override_assignment') && policy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
       if (mode !== 'draft' && !automaticPublish && policy?.allowUnassigned === false) {
         const hasPods = podChanged ? requestedPods.length > 0 : currentPods.length > 0;
         const hasRecruiters = recruitersChanged ? requestedRecruiters.length > 0 : await this.prisma.jobRecruiter.count({ where: { jobId: id } }) > 0;
@@ -1785,7 +1809,7 @@ export class JobsService {
     const _hasEditPerm = _userPermissions.includes('job:edit');
     const _isOwner = currentJob.accountManagerId === user?.dbId || currentJob.accountManagerId === user?.id || 
                      currentJob.recruitmentManagerId === user?.dbId || currentJob.recruitmentManagerId === user?.id;
-    const isScopedPodLead = isPodLeadActor(user);
+    const isScopedPodLead = user.permissions?.includes('job:assign_recruiter') && !user.permissions?.some((p: string) => ['job:override_assignment', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage'].includes(p));
 
     const assignmentOnlyFields = new Set(['recruiterId', 'recruiterIds', 'recruiter', 'assignedTo']);
     const isPodLeadAssignmentOnly = isScopedPodLead &&
@@ -1833,13 +1857,11 @@ export class JobsService {
     const isDeliveryHead = userRoles.some(r => ['DELIVERY_HEAD', 'DELIVERYHEAD'].includes(r.toUpperCase().replace(/[\s-_]+/g, ''))) ||
       userPermissions.includes('job:assign');
 
-    const isSupervisoryAssigner = isTenantAdmin || isBranchAdmin || isUnitAdmin || isDeliveryHead;
+    const isSupervisoryAssigner = isTenantAdmin || isBranchAdmin || userPermissions.includes('job:override_assignment');
     const normalizedActorRoles = [...userRoles, user?.systemRole || ''].map(r => r.toUpperCase().replace(/[\s-_]+/g, ''));
     const isRecruiterOnly = normalizedActorRoles.includes('RECRUITER') &&
       !normalizedActorRoles.some(r => ['PODLEAD', 'PODHEAD', 'ACCOUNTMANAGER', 'BDM', 'DELIVERYHEAD', 'BRANCHADMIN', 'UNITADMIN', 'TENANTADMIN', 'SUPERADMIN'].includes(r));
-    if (isRecruiterOnly && !isSupervisoryAssigner) {
-      throw new ForbiddenException('Recruiters cannot assign recruiters.');
-    }
+
     const isJobCreator = Boolean(
       (currentJob.accountManagerId && (user?.dbId === currentJob.accountManagerId || user?.id === currentJob.accountManagerId)) ||
       (currentJob.recruitmentManagerId && (user?.dbId === currentJob.recruitmentManagerId || user?.id === currentJob.recruitmentManagerId))
@@ -2032,12 +2054,11 @@ export class JobsService {
     }
 
     if (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) {
-      await this.prisma.jobRecruiter.deleteMany({ where: { jobId: id } });
-      if (targetRecruiterIds.length > 0) {
-        await this.prisma.jobRecruiter.createMany({
-          data: targetRecruiterIds.map(rid => ({ jobId: id, recruiterId: rid }))
-        });
-      }
+      await this.prisma.$transaction(async tx => {
+        await tx.jobRecruiter.deleteMany({ where: { jobId: id, ...(podLeadPodId ? { recruiter: { tenantId, podId: podLeadPodId } } : {}) } });
+        if (targetRecruiterIds.length > 0) await tx.jobRecruiter.createMany({ data: targetRecruiterIds.map(recruiterId => ({ jobId: id, recruiterId })) });
+        if (user.permissions?.includes('job:override_assignment')) await tx.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { reason: dto.assignmentReason.trim(), recruiterIds: targetRecruiterIds, podIds: dto.podIds || [] } } });
+      });
     }
 
 
@@ -2086,6 +2107,9 @@ export class JobsService {
     }
 
     // Dispatch live notification if primary recruiter was assigned or changed
+    if ((dto.podId !== undefined || dto.podIds !== undefined) && user.permissions?.includes('job:override_assignment') && dto.recruiterId === undefined && dto.recruiterIds === undefined) {
+      await this.prisma.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { reason: dto.assignmentReason.trim(), podIds: dto.podIds || (dto.podId ? [dto.podId] : []) } } });
+    }
     try {
       if (automaticallyAssignedPodId && dto.status !== 'Pending Approval') {
         const members = await this.prisma.user.findMany({ where: { tenantId, podId: automaticallyAssignedPodId, isActive: true, isApproved: true }, select: { id: true } });

@@ -1,3 +1,6 @@
+function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
+  return [...new Set([...permissions, 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : [])])];
+}
 import {
   Injectable,
   Logger,
@@ -163,7 +166,7 @@ export class AuthRbacService {
         ...role,
         name: displayName,
         permissions: rolePerms,
-        allowedPermissions: defaultPerms,
+        allowedPermissions: assignmentPermissionCeiling(baseSysRole, defaultPerms),
         isExactSubstitution: !role.isSystem,
         replacesSystemRole: !role.isSystem && role.systemRole ? baseSysRole : null,
       });
@@ -262,7 +265,7 @@ export class AuthRbacService {
     for (const row of sysRolesRes.rows as any[]) {
       DEFAULT_PERMS[row.system_key] = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.permissions;
     }
-    const allowedBaseCeiling = new Set(DEFAULT_PERMS[resolvedSystemRole] || DEFAULT_PERMS.RECRUITER);
+    const allowedBaseCeiling = new Set(assignmentPermissionCeiling(resolvedSystemRole, DEFAULT_PERMS[resolvedSystemRole] || DEFAULT_PERMS.RECRUITER));
     let resolvedPermissions = permissions || [];
     if (resolvedPermissions.length === 0 ||
       (resolvedPermissions.length === 2 && resolvedPermissions.includes('job:view') && resolvedPermissions.includes('candidate:view'))) {
@@ -400,7 +403,7 @@ export class AuthRbacService {
       DEFAULT_PERMS[row.system_key] = typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.permissions;
     }
     const sysKey = (role.system_role || 'RECRUITER').toUpperCase();
-    const allowedCeiling = new Set(DEFAULT_PERMS[sysKey] || DEFAULT_PERMS.RECRUITER);
+    const allowedCeiling = new Set(assignmentPermissionCeiling(sysKey, DEFAULT_PERMS[sysKey] || DEFAULT_PERMS.RECRUITER));
     const filteredPermissions = role.is_system ? permissions : permissions.filter(p => allowedCeiling.has(p));
 
     await this.authQuery.query('UPDATE custom_roles SET permissions = $1::jsonb WHERE id = $2::uuid', [JSON.stringify(filteredPermissions), roleId]);
@@ -672,6 +675,9 @@ export class AuthRbacService {
       { id: 'job:reject', name: 'Reject Job Postings with Feedback', group: 'Jobs Management' },
       { id: 'job:assign', name: 'Assign Unassigned Jobs', group: 'Jobs Management' },
       { id: 'job:assign_recruiter', name: 'Assign Job to Specific Recruiter', group: 'Jobs Management' },
+      { id: 'job:view_pod_jobs', name: 'View All Jobs Assigned to Own Pod', group: 'Jobs Management' },
+      { id: 'job:submit_pod_jobs', name: 'Submit to Own Pod Jobs Without Individual Assignment', group: 'Jobs Management' },
+      { id: 'job:override_assignment', name: 'Override Job Assignment Within Current Unit', group: 'Jobs Management' },
       { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
       { id: 'job:delegate', name: 'Delegate Jobs to Same-Market Units in Other Branches', group: 'Jobs Management' },
       { id: 'job:accept_delegation', name: 'Accept Delegated Jobs for Your Operating Unit', group: 'Jobs Management' },
@@ -770,5 +776,3 @@ export class AuthRbacService {
     }
   }
 }
-
-

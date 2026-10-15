@@ -1,4 +1,5 @@
 import { submissionCompensation, submissionSource, isContractJob } from './submission-compensation';
+import { assertJobSubmissionAccess } from '../jobs/job-submission-access';
 import { randomUUID } from 'node:crypto';
 import { assessCandidate } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
@@ -110,6 +111,7 @@ export class RecruiterSubmissionsService {
     activeBranchId?: string | null,
   ): Promise<SubmissionDetails> {
     this.logger.log(`Creating submission for Candidate ID=${dto.candidateId} against Job ID=${dto.jobId} under tenant: ${tenantId}`);
+    await assertJobSubmissionAccess(this.prisma, user, tenantId, dto.jobId, dto.recruiterId);
 
     // 1. Verify job exists and belongs to the tenant, and check if it is active
     const job = await this.prisma.job.findFirst({
