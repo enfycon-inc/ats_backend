@@ -674,11 +674,20 @@ export class PodsService {
       select: { podId: true },
     });
 
-    if (!user || !user.podId) {
+    let podId = user?.podId;
+    if (!podId) {
+      const headPod = await this.prisma.pod.findFirst({
+        where: { tenantId, podHeadId: userId },
+        select: { id: true },
+      });
+      podId = headPod?.id || null;
+    }
+
+    if (!podId) {
       throw new NotFoundException('You are not currently assigned to any Recruitment Pod.');
     }
 
-    return this.findOne(user.podId, tenantId);
+    return this.findOne(podId, tenantId);
   }
 
   /**
