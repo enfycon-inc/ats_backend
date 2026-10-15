@@ -204,10 +204,7 @@ Validates email + password and returns a signed JWT access token.
     const isTenantAdmin = perms.some((p: string) => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p));
 
     const isBranchAdmin = perms.includes('branch_admin:manage') && !isTenantAdmin;
-    // Delivery Head shares unit_admin:manage but must be branch-scoped (not unit-scoped).
-    // Identify by systemRole so permission edits don't accidentally re-collapse them into unit scope.
-    const isDeliveryHead = (user as any).systemRole === 'DELIVERY_HEAD' && !isTenantAdmin && !isBranchAdmin;
-    const isUnitAdmin = perms.includes('unit_admin:manage') && !isTenantAdmin && !isBranchAdmin && !isDeliveryHead;
+    const isUnitAdmin = perms.includes('unit_admin:manage') && !isTenantAdmin && !isBranchAdmin;
 
     if (!isTenantAdmin && !perms.includes('user:manage')) throw new ForbiddenException('Missing user management permission.');
     if (!isTenantAdmin && !user.branchId) return [];
@@ -216,7 +213,7 @@ Validates email + password and returns a signed JWT access token.
     let scopedBranchId: string | null = null;
     let scopedBusinessUnitId: string | null = null;
 
-    if (isBranchAdmin || isUnitAdmin || isDeliveryHead) {
+    if (isBranchAdmin || isUnitAdmin) {
       // All three are scoped to their branch
       scopedBranchId = (user as any).branchId || null;
     }
@@ -224,9 +221,9 @@ Validates email + password and returns a signed JWT access token.
       // Unit Admin is strictly scoped to their own business unit
       scopedBusinessUnitId = (user as any).businessUnitId || null;
     }
-    // Delivery Head: branch-scoped but NOT unit-scoped — can assign any recruiter in the branch.
+    // Unit management capabilities are always limited to the assigned business unit.
     // Branch Admin: same — branch-scoped, not unit-scoped.
-    if (!isTenantAdmin && !isBranchAdmin && !isUnitAdmin && !isDeliveryHead) {
+    if (!isTenantAdmin && !isBranchAdmin && !isUnitAdmin) {
       // Any other role with user:manage (future-proofing) — scope to their own unit if available
       if (!user.businessUnitId) return [];
       scopedBranchId = user.branchId || null;
@@ -235,13 +232,13 @@ Validates email + password and returns a signed JWT access token.
 
     let users = await this.authService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId);
 
-    if (isUnitAdmin || isBranchAdmin || isDeliveryHead) {
+    if (isUnitAdmin || isBranchAdmin) {
       users = users.filter((u: any) => {
         const p = Array.isArray(u.permissions) ? u.permissions : [];
         if (isUnitAdmin && (p.includes('tenant:settings') || p.includes('branch_admin:manage'))) {
           return false; // Unit Admin cannot see Tenant Admins or Branch Admins
         }
-        if ((isBranchAdmin || isDeliveryHead) && p.includes('tenant:settings')) {
+        if ((isBranchAdmin) && p.includes('tenant:settings')) {
           return false; // Branch Admin / Delivery Head cannot see Tenant Admins
         }
         return true;
@@ -1020,5 +1017,3 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.adminSendResetLink(userId, currentUser);
   }
 }
-
-

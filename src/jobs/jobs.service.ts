@@ -1,4 +1,5 @@
 import { validateJobDates } from './job-dates';
+import { assertUnitJobScope, managesCurrentUnit } from './unit-job-scope';
 import { usesAutomaticPods } from '../business-units/pod-strategy';
 import { allocateAutomaticPod } from './automatic-pod';
 import { loadPocPolicy } from '../clients/poc-access';
@@ -1068,15 +1069,15 @@ export class JobsService {
 
     const targetBranchId = canViewAllBranches ? activeBranchId : user?.branchId;
     if (!canViewAllBranches && !targetBranchId) return [];
-    const unitScoped = userPermissions.includes('unit_admin:manage') && !userPermissions.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage', 'branch_admin:manage', 'job:view_all_branches'].includes(p));
+    const unitScoped = managesCurrentUnit(user);
     if (unitScoped) {
-      if (!user?.businessUnitId) return [];
-      sql += ' AND j.business_unit_id = $' + paramIndex;
-      params.push(user.businessUnitId);
-      paramIndex++;
+      if (!user?.businessUnitId || !user?.branchId) return [];
+      sql += ' AND j.business_unit_id = $' + paramIndex + ' AND j.branch_id = $' + (paramIndex + 1);
+      params.push(user.businessUnitId, user.branchId);
+      paramIndex += 2;
     }
 
-    if (targetBranchId) {
+    if (targetBranchId && !unitScoped) {
       if (user?.dbId) {
         sql += ` AND (
           j.branch_id = $${paramIndex} 
@@ -1286,6 +1287,7 @@ export class JobsService {
       if (rows.length === 0) {
         throw new NotFoundException(`Job requisition ${idOrCode} not found.`);
       }
+      assertUnitJobScope(user, { branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id });
       if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return this.mapRowToProfile(rows[0]);
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
@@ -1661,6 +1663,7 @@ export class JobsService {
     if (!global && !permissions.includes('job:edit')) throw new ForbiddenException('Missing job:edit permission.');
     const job = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
     if (!job) throw new NotFoundException('Job not found.');
+    assertUnitJobScope(user, job);
     if (!global && job.branchId && user.branchId !== job.branchId) throw new ForbiddenException('Job is outside your branch scope.');
     if (!global && user.businessUnitId && job.businessUnitId !== user.businessUnitId) throw new ForbiddenException('Job is outside your unit scope.');
     if (typeof dto.status !== 'string' || typeof dto.expectedStatus !== 'string') throw new BadRequestException('Status and previous status are required.');
@@ -1713,6 +1716,8 @@ export class JobsService {
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
     }
+    assertUnitJobScope(user, currentJob);
+    assertUnitJobScope(user, { branchId: dto.branchId ?? currentJob.branchId, businessUnitId: dto.businessUnitId ?? currentJob.businessUnitId });
     if (dto.startDate !== undefined || dto.endDate !== undefined) validateJobDates(
       dto.startDate !== undefined ? dto.startDate : currentJob.startDate,
       dto.endDate !== undefined ? dto.endDate : currentJob.endDate,

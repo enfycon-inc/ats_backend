@@ -14,6 +14,7 @@ import { AuthKeycloakService } from './auth-keycloak.service';
 import { AuthEmailService } from './auth-email.service';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
+import { assertUnitPendingRequest, isCurrentUnitManager } from '../utils/unit-pending-request';
 import { EventsGateway } from '../../events/events.gateway';
 import type { StaffProfile } from '../profile-contract';
 import { USER_CITY_VALUES, type UserCity } from '../user-city-contract';
@@ -628,6 +629,7 @@ async approveTenantUser(
     );
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const targetUser: any = userRes.rows[0];
+    assertUnitPendingRequest(requester, targetUser);
 
     // Multitenancy validation
     if (!requester.roles?.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
@@ -715,6 +717,15 @@ async approveTenantUser(
       }
     }
 
+    if (isCurrentUnitManager(requester)) {
+      if (branchId !== requester.branchId || businessUnitId !== requester.businessUnitId) throw new ForbiddenException('Approval must remain in your current unit.');
+      const ids = [...new Set(assignedRoleIds)];
+      const roles = await this.authQuery.query('SELECT id, permissions, branch_id, business_unit_id FROM ats.custom_roles WHERE tenant_id = $1 AND id = ANY($2::uuid[])', [requester.tenantId, ids]);
+      if (!ids.length || roles.rows.length !== ids.length || roles.rows.some((role: any) => {
+        const permissions = typeof role.permissions === 'string' ? JSON.parse(role.permissions) : role.permissions;
+        return !Array.isArray(permissions) || permissions.some((permission: string) => !requester.permissions?.includes(permission)) || (role.branch_id && role.branch_id !== requester.branchId) || (role.business_unit_id && role.business_unit_id !== requester.businessUnitId);
+      })) throw new ForbiddenException('You cannot grant roles beyond your current unit or permissions.');
+    }
     const approvalWrite = await this.authQuery.query(
       `UPDATE users
        SET is_approved = true,
@@ -726,8 +737,9 @@ async approveTenantUser(
            business_unit_id = $4::uuid,
            updated_at = NOW()
        WHERE id = $5::uuid AND requested_role IS NOT DISTINCT FROM $6::text
+         AND (NOT $7::boolean OR (tenant_id = $8::uuid AND branch_id = $3::uuid AND business_unit_id = $4::uuid AND is_approved = false))
        RETURNING id`,
-      [assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId, targetUser.requested_role ?? null]
+      [assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId, targetUser.requested_role ?? null, isCurrentUnitManager(requester), requester.tenantId]
     );
     if (approvalWrite.rows.length === 0) {
       throw new ConflictException('This approval request has already changed. Refresh the user list and try again.');
@@ -780,11 +792,12 @@ async approveTenantUser(
 
   async rejectTenantUser(userId: string, requester: AuthUser) {
     const userRes = await this.authQuery.query(
-      'SELECT id, email, full_name, tenant_id, branch_id FROM users WHERE id = $1 LIMIT 1',
+      'SELECT id, email, full_name, tenant_id, branch_id, business_unit_id, is_approved, requested_role FROM users WHERE id = $1 LIMIT 1',
       [userId]
     );
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const targetUser: any = userRes.rows[0];
+    assertUnitPendingRequest(requester, targetUser);
 
     if (!requester.roles?.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
       throw new ForbiddenException('You are not authorized to reject users in another tenant.');
@@ -802,7 +815,8 @@ async approveTenantUser(
       }
     }
 
-    await this.authQuery.query('UPDATE users SET is_active = false, is_approved = false WHERE id = $1', [userId]);
+    const rejection = await this.authQuery.query('UPDATE users SET is_active = false, is_approved = false, requested_role = NULL, updated_at = NOW() WHERE id = $1 AND (NOT $2::boolean OR (is_approved = false AND requested_role IS NOT DISTINCT FROM $3::text AND tenant_id = $4::uuid AND branch_id = $5::uuid AND business_unit_id = $6::uuid)) RETURNING id', [userId, isCurrentUnitManager(requester), targetUser.requested_role ?? null, requester.tenantId, requester.branchId ?? null, requester.businessUnitId ?? null]);
+    if (!rejection.rows.length) throw new ConflictException('This user request has already changed. Refresh and try again.');
     this.keycloakService.setKeycloakUserStatus(targetUser.email, false).catch(() => {});
 
     this.logger.log(`User registration request for ${targetUser.email} was rejected by ${requester.email}`);

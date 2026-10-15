@@ -411,6 +411,14 @@ export class RecruiterSubmissionsService {
     let paramIndex = 2;
 
     const userPerms = user.permissions || [];
+    // Unit managers never inherit tenant-wide submission visibility from view/audit permissions.
+    if (userPerms.includes('unit_admin:manage') && !userPerms.some(p => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage'].includes(p))) {
+      const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } });
+      if (!membership?.branchId || !membership.businessUnitId) throw new ForbiddenException('A current branch and unit assignment is required.');
+      baseSql += ` AND j.tenant_id = $1 AND j.branch_id = $${paramIndex}::uuid AND j.business_unit_id = $${paramIndex + 1}::uuid`;
+      params.push(membership.branchId, membership.businessUnitId);
+      paramIndex += 2;
+    }
     const canViewAll =
       userPerms.includes('*') ||
       userPerms.includes('tenant:manage') ||

@@ -9,11 +9,21 @@ describe('Unit Admin job scope', () => {
     const [sql, ...params] = query.mock.calls[0];
     expect(sql).toContain('j.business_unit_id = $2');
     expect(sql).toContain('j.branch_id = $3');
-    expect(params).toEqual(['tenant', 'unit', 'home', 'user']);
+    expect(params).toEqual(['tenant', 'unit', 'home']);
     expect(sql).not.toContain('j.recruitment_manager_id =');
   });
   it('fails closed if the unit assignment is missing', async () => {
     expect(await service.findAllJobs('tenant', { ...user, businessUnitId: null })).toEqual([]);
     expect(query).not.toHaveBeenCalled();
+  });
+  it('does not widen unit access with all-branch job viewing permission', async () => {
+    await service.findAllJobs('tenant', { ...user, permissions: [...user.permissions, 'job:view_all_branches'] }, 'foreign');
+    const [sql, ...params] = query.mock.calls[0];
+    expect(sql).toContain('j.business_unit_id = $2 AND j.branch_id = $3');
+    expect(params).toEqual(['tenant', 'unit', 'home']);
+  });
+  it('blocks a foreign unit job detail even with job viewing permission', async () => {
+    query.mockResolvedValueOnce([{ id: 'foreign-job', branch_id: 'home', business_unit_id: 'other' }]);
+    await expect(service.findOneJob('foreign-job', 'tenant', user)).rejects.toThrow('current unit');
   });
 });
