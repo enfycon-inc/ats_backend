@@ -11,6 +11,12 @@ export interface CandidateProfile {
   uploadedByName?: string | null;
   applicantId: string;
   fullName: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  currentLocation?: string | null;
+  currentCompany?: string | null;
+  relevantExperienceYears?: number | null;
+  availabilityToStart?: string | null;
   email: string;
   phone: string;
   city: string;

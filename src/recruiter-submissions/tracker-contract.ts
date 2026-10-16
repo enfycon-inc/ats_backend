@@ -127,6 +127,7 @@ export interface TrackerSubmission {
   candidateExperience?: number | null;
   candidateDesignation?: string | null;
   candidateSkills?: string[] | null;
+  verifiedCandidate?: Record<string, string | string[]> | null;
   jobCode?: string;
   jobTitle?: string;
   clientName?: string;

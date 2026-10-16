@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateSubmissionDto {
+  @ApiPropertyOptional() verifiedCandidate?: Record<string, unknown>;
+  @ApiPropertyOptional() updateCandidateSkills?: boolean;
   @ApiPropertyOptional() currentCompensation?: string;
   @ApiPropertyOptional() expectedCompensation?: string;
   @ApiPropertyOptional() compensationCurrency?: string;

@@ -1,5 +1,6 @@
 import { submissionCompensation, submissionSource, isContractJob } from './submission-compensation';
 import { assertJobSubmissionAccess } from '../jobs/job-submission-access';
+import { verifiedCandidateInput } from './verified-candidate';
 import { randomUUID } from 'node:crypto';
 import { assessCandidate } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
@@ -129,6 +130,7 @@ export class RecruiterSubmissionsService {
       );
     }
 
+    const verifiedCandidate = verifiedCandidateInput(dto.verifiedCandidate, dto.updateCandidateSkills, user?.permissions);
     const compensation = submissionCompensation(dto, job.jobType);
     const source = submissionSource(dto);
     if (dto.compensationInputUnit !== undefined && !dto.sourceCategory) throw new BadRequestException('Select the candidate source.');
@@ -173,6 +175,14 @@ export class RecruiterSubmissionsService {
     }
 
     const submission = await this.prisma.$transaction(async (tx) => {
+      if (verifiedCandidate) {
+        await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', `${tenantId}:${dto.jobId}:${dto.candidateId}`);
+        const duplicate = await tx.recruiterSubmission.findFirst({ where: { tenantId, jobId: dto.jobId, candidateId: dto.candidateId }, select: { id: true } });
+        if (duplicate) throw new ConflictException('This candidate has already been submitted to this job.');
+      }
+      if (dto.updateCandidateSkills && verifiedCandidate) {
+        await tx.candidate.update({ where: { id: candidate.id, tenantId }, data: { skills: verifiedCandidate.skills as string[] } });
+      }
       const sub = await tx.recruiterSubmission.create({
         data: {
           tenantId,
@@ -209,7 +219,7 @@ export class RecruiterSubmissionsService {
       await tx.submissionEvent.create({ data: {
         tenantId, submissionId: sub.id, actorId: user?.dbId || user?.email || user?.fullName || null,
         actorName: user?.fullName || user?.email || user?.dbId || null, kind: 'CREATED', sequence: 0,
-        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub), ...(user?.email ? { actorEmail: user.email } : {}) },
+        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub), ...(verifiedCandidate ? { verifiedCandidate, candidateSkillsUpdated: dto.updateCandidateSkills === true } : {}), ...(user?.email ? { actorEmail: user.email } : {}) },
       } });
       return sub;
     }, { maxWait: 15000, timeout: 30000 });
@@ -363,7 +373,10 @@ export class RecruiterSubmissionsService {
         COALESCE(s.candidate_notice_period, c.notice_period_days) AS candidate_notice_period,
         COALESCE(s.candidate_relevant_experience, c.relevant_experience_years) AS candidate_relevant_experience,
         COALESCE(s.candidate_preferred_locations, c.preferred_locations) AS candidate_preferred_locations,
-        c.skills AS candidate_skills,
+        (SELECT ev.details -> 'verifiedCandidate' FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id AND ev.kind = 'CREATED' LIMIT 1) AS verified_candidate,
+        COALESCE((SELECT ARRAY(SELECT jsonb_array_elements_text(ev.details #> '{verifiedCandidate,skills}'))
+          FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
+          AND ev.kind = 'CREATED' AND ev.details #> '{verifiedCandidate,skills}' IS NOT NULL LIMIT 1), c.skills) AS candidate_skills,
         j.skills_required AS job_skills_required,
         j.secondary_skills AS job_secondary_skills,
         j.urgency AS job_urgency,
@@ -790,7 +803,10 @@ export class RecruiterSubmissionsService {
         COALESCE(s.candidate_notice_period, c.notice_period_days) AS candidate_notice_period,
         COALESCE(s.candidate_relevant_experience, c.relevant_experience_years) AS candidate_relevant_experience,
         COALESCE(s.candidate_preferred_locations, c.preferred_locations) AS candidate_preferred_locations,
-        c.skills AS candidate_skills,
+        (SELECT ev.details -> 'verifiedCandidate' FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id AND ev.kind = 'CREATED' LIMIT 1) AS verified_candidate,
+        COALESCE((SELECT ARRAY(SELECT jsonb_array_elements_text(ev.details #> '{verifiedCandidate,skills}'))
+          FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
+          AND ev.kind = 'CREATED' AND ev.details #> '{verifiedCandidate,skills}' IS NOT NULL LIMIT 1), c.skills) AS candidate_skills,
         j.skills_required AS job_skills_required,
         j.secondary_skills AS job_secondary_skills,
         (SELECT ev.details #>> '{changes,finalStatus,before}'
@@ -1320,6 +1336,7 @@ export class RecruiterSubmissionsService {
       createdAt: row.created_at || row.createdAt ? new Date(row.created_at || row.createdAt).toISOString() : new Date().toISOString(),
       updatedAt: row.updated_at || row.updatedAt ? new Date(row.updated_at || row.updatedAt).toISOString() : new Date().toISOString(),
 
+      verifiedCandidate: row.verified_candidate || null,
       candidateFirstName: row.candidate_first_name ?? null,
       candidateLastName: row.candidate_last_name ?? null,
       candidateCurrentCompany: row.candidate_current_company ?? null,
