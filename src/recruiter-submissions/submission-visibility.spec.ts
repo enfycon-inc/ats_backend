@@ -67,6 +67,39 @@ describe('submission visibility and statistics', () => {
     expect(query.mock.calls[0].slice(1)).toEqual(['tenant-a']);
   });
 
+  it('defaults account managers to submissions for jobs they own', async () => {
+    const accountManager = { ...user, dbId: 'am-a', systemRole: 'ACCOUNT_MANAGER', roles: ['ACCOUNT_MANAGER'] };
+    await service.findAll('tenant-a', accountManager, {});
+    expect(query.mock.calls[0][0]).toContain('j.account_manager_id = $2');
+    expect(query.mock.calls[0][0]).not.toContain('s.recruiter_id = $2');
+    expect(query.mock.calls[0].slice(1)).toEqual(['tenant-a', 'am-a']);
+  });
+
+  it('denies account managers the all view unless the explicit permission is granted', async () => {
+    const accountManager = { ...user, dbId: 'am-a', systemRole: 'ACCOUNT_MANAGER', roles: ['ACCOUNT_MANAGER'] };
+    await expect(service.findAll('tenant-a', accountManager, { view: 'all' })).rejects.toThrow('All-submission access');
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('allows account managers to view all jobs only with submission:view_all', async () => {
+    const accountManager = { ...user, dbId: 'am-a', systemRole: 'ACCOUNT_MANAGER', roles: ['ACCOUNT_MANAGER'], permissions: ['submission:view', 'submission:view_all'] };
+    await service.findAll('tenant-a', accountManager, { view: 'all' });
+    expect(query.mock.calls[0][0]).not.toContain('j.account_manager_id = $2');
+    expect(query.mock.calls[0].slice(1)).toEqual(['tenant-a']);
+  });
+
+  it('removes status-edit capabilities for another account manager’s row without edit_all', async () => {
+    query.mockImplementation(async (sql: string) => sql.startsWith('SELECT COUNT')
+      ? [{ count: 1n }]
+      : [{ id: 'submission-b', am_id: 'am-b', recruiter_job_reviewer_id: null, recruiter_id: 'recruiter-b' }]);
+    const accountManager = { ...user, dbId: 'am-a', systemRole: 'ACCOUNT_MANAGER', roles: ['ACCOUNT_MANAGER'], permissions: ['submission:view', 'submission:view_all', 'submission:internal_screening', 'submission:audit_rounds', 'submission:final_status', 'submission:edit'] };
+    const result = await service.findAll('tenant-a', accountManager, { view: 'all' });
+    expect(result.data[0].capabilities).toEqual({
+      review: false, schedule: false, results: { l1: false, l2: false, l3: false },
+      outcome: false, notes: true, rate: false,
+    });
+  });
+
   it('limits create-only access to personal submissions', async () => {
     await service.findAll('tenant-a', { ...user, permissions: ['submission:create'] }, {});
     expect(query.mock.calls[0][0]).toContain('s.recruiter_id = $2');

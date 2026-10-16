@@ -440,6 +440,7 @@ export class RecruiterSubmissionsService {
     let paramIndex = 2;
 
     const userPerms = user.permissions || [];
+    const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
     // Unit managers never inherit tenant-wide submission visibility from view/audit permissions.
     if (userPerms.includes('unit_admin:manage') && !userPerms.some(p => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage'].includes(p))) {
       const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } });
@@ -453,27 +454,38 @@ export class RecruiterSubmissionsService {
       userPerms.includes('tenant:manage') ||
       userPerms.includes('tenant:settings') ||
       userPerms.includes('platform:manage') ||
-      userPerms.includes('submission:view') ||
-      userPerms.includes('submission:audit_rounds') ||
-      userPerms.includes('submission:audit_l1') ||
-      userPerms.includes('submission:audit_l2') ||
-      userPerms.includes('submission:audit_l3') ||
-      userPerms.includes('submission:internal_screening') ||
-      userPerms.includes('submission:schedule_interview') ||
-      userPerms.includes('submission:final_status') ||
-      userPerms.includes('submission:approve_client');
+      (isAccountManager
+        ? userPerms.includes('submission:view_all')
+        : userPerms.includes('submission:view') ||
+          userPerms.includes('submission:audit_rounds') ||
+          userPerms.includes('submission:audit_l1') ||
+          userPerms.includes('submission:audit_l2') ||
+          userPerms.includes('submission:audit_l3') ||
+          userPerms.includes('submission:internal_screening') ||
+          userPerms.includes('submission:schedule_interview') ||
+          userPerms.includes('submission:final_status') ||
+          userPerms.includes('submission:approve_client'));
 
-    const view = filters.view || 'all';
+    const view = filters.view || (isAccountManager ? 'my' : 'all');
     if (!['my', 'pod', 'all'].includes(view)) {
       throw new BadRequestException('Invalid submission view.');
     }
-    if (!canViewAll && !userPerms.includes('submission:create')) {
+    if (!canViewAll && !userPerms.includes('submission:create') && !(isAccountManager && userPerms.includes('submission:view'))) {
       throw new ForbiddenException('Missing submission access permission.');
     }
     if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');
 
+    if (isAccountManager && view === 'all' && !canViewAll) {
+      throw new ForbiddenException('All-submission access is not enabled for this role.');
+    }
+    if (isAccountManager && view === 'pod') {
+      throw new ForbiddenException('Pod submission view is not available to account managers.');
+    }
+
     if (view === 'my') {
-      baseSql += ` AND s.recruiter_id = $${paramIndex}`;
+      baseSql += isAccountManager
+        ? ` AND j.account_manager_id = $${paramIndex}`
+        : ` AND s.recruiter_id = $${paramIndex}`;
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
@@ -675,10 +687,19 @@ export class RecruiterSubmissionsService {
       ]);
 
       const total = Number(countRes[0]?.count || 0);
-      const data: SubmissionDetails[] = (retrieveRes || []).map((row: any) => ({
-        ...this.mapRowToDetails(row),
-        capabilities: submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId),
-      }));
+      const data: SubmissionDetails[] = (retrieveRes || []).map((row: any) => {
+        const capabilities = submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId);
+        const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+        const hasAdminScope = (user.permissions || []).some(permission => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(permission));
+        const cannotEditOtherManagerJob = isAccountManager && !hasAdminScope && row.am_id !== user.dbId && !(user.permissions || []).includes('submission:edit_all');
+        if (cannotEditOtherManagerJob) {
+          capabilities.review = false;
+          capabilities.schedule = false;
+          capabilities.results = { l1: false, l2: false, l3: false };
+          capabilities.outcome = false;
+        }
+        return { ...this.mapRowToDetails(row), capabilities };
+      });
       // One page-wide history projection; remarks-only updates do not change
       // decision dates. Legacy BASELINE entries are not decision evidence.
       if (data.length) {
@@ -1008,6 +1029,14 @@ export class RecruiterSubmissionsService {
 
     if (!existing) {
       throw new NotFoundException(`Recruiter submission with ID ${id} was not found.`);
+    }
+
+    const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+    const hasAdminScope = (user.permissions || []).some(permission => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(permission));
+    const isOtherManagerJob = isAccountManager && !hasAdminScope && existing.job?.accountManagerId !== user.dbId;
+    const changesStatus = dto.finalStatus !== undefined || dto.l1Status !== undefined || dto.l2Status !== undefined || dto.l3Status !== undefined;
+    if (isOtherManagerJob && changesStatus && !(user.permissions || []).includes('submission:edit_all')) {
+      throw new ForbiddenException('Editing status for another account manager’s job is not enabled for this role.');
     }
 
     const requestHash = saveRequestHash(dto);
