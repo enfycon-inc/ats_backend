@@ -1,3 +1,4 @@
+import { rejectManualPodLeadRoles } from './pod-lead-role-policy';
 import {
   Injectable,
   Logger,
@@ -521,6 +522,7 @@ export class AuthCoreService {
     if (Array.isArray(dto.roles) && dto.roles.length > 0) rawRolesList.push(...dto.roles);
     else if (dto.role) rawRolesList.push(dto.role);
     // if (rawRolesList.length === 0) rawRolesList.push('RECRUITER'); // Disabled auto-recruiter fallback
+    await rejectManualPodLeadRoles(this.authQuery, tenantId, rawRolesList);
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const resolvedRoleIds = new Set<string>();

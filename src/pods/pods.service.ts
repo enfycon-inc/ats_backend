@@ -97,51 +97,33 @@ export class PodsService {
   }
 
   /**
-   * Helper: Promotes a user to the POD_LEAD-archetype role for their branch.
+   * Helper: Adds the tenant Pod Lead role while preserving existing non-lead roles.
    * Finds any custom role whose systemRole = 'POD_LEAD' — regardless of display name
    * (e.g. "Team Lead", "Pod Head", "Senior Recruiter" etc.).
-   * Prefers the branch-specific role if one exists.
+   * Uses the single tenant custom role, or the system template before customization.
    */
   private async promoteToPodHead(userId: string, tenantId: string, branchId?: string | null, txClient?: any) {
     const db = txClient || this.prisma;
-    let effectiveBranchId = branchId;
-    if (!effectiveBranchId) {
-      const user = await db.user.findFirst({
-        where: { id: userId },
-        select: { branchId: true, assignedRoleIds: true },
-      });
-      effectiveBranchId = user?.branchId || null;
-    }
-
-    let role: { id: string } | null = null;
-    if (effectiveBranchId) {
-      role = await db.customRole.findFirst({
-        where: { tenantId, branchId: effectiveBranchId, systemRole: { systemKey: 'POD_LEAD' } },
-        select: { id: true },
-      });
-    }
-
-    if (!role) {
-      role = await db.customRole.findFirst({
-        where: { tenantId, systemRole: { systemKey: 'POD_LEAD' } },
-        select: { id: true },
-        orderBy: { createdAt: 'asc' },
-      });
-    }
-
-    if (!role) {
-      this.logger.warn(
-        `No custom role with systemRole=POD_LEAD found for tenant ${tenantId} (branch: ${effectiveBranchId}). Skipping auto-promotion.`,
-      );
-      return;
-    }
+    const customRoles = await db.customRole.findMany({
+      where: { tenantId, isSystem: false, systemRole: { systemKey: 'POD_LEAD' } },
+      select: { id: true, branchId: true, businessUnitId: true },
+    });
+    if (customRoles.length > 1) throw new ConflictException('Multiple custom Pod Lead roles exist. Ask the tenant administrator to reconcile them.');
+    if (customRoles[0]?.branchId || customRoles[0]?.businessUnitId) throw new BadRequestException('Save the existing Pod Lead custom role in Role Management to make it tenant-wide before assigning leadership.');
+    const role = customRoles[0] || await db.customRole.findFirst({
+      where: { tenantId, isSystem: true, branchId: null, systemRole: { systemKey: 'POD_LEAD' } },
+      select: { id: true },
+    });
+    if (!role) throw new BadRequestException('Configure a Pod Lead role before assigning pod leadership.');
 
     const userForRoles = await db.user.findFirst({
-      where: { id: userId },
-      select: { assignedRoleIds: true },
+      where: { id: userId, tenantId },
+      select: { assignedRoleIds: true, roleId: true },
     });
     const currentRoles = Array.isArray(userForRoles?.assignedRoleIds) ? userForRoles.assignedRoleIds : [];
-    const newAssignedRoleIds = Array.from(new Set([...currentRoles, role.id]));
+    const oldLeadRoles = await db.customRole.findMany({ where: { tenantId, systemRole: { systemKey: 'POD_LEAD' } }, select: { id: true } });
+    const leadIds = new Set(oldLeadRoles.map((r: any) => r.id));
+    const newAssignedRoleIds = Array.from(new Set([userForRoles?.roleId, ...currentRoles].filter((id): id is string => !!id && !leadIds.has(id)).concat(role.id)));
 
     await db.user.update({
       where: { id: userId },
@@ -155,10 +137,8 @@ export class PodsService {
   }
 
   /**
-   * Helper: Demotes a user back to RECRUITER-archetype role when they are no longer a pod head.
-   * Finds any custom role whose systemRole = 'RECRUITER' — regardless of display name.
-   * Strips all custom roles whose systemRole = 'POD_LEAD' from user.assignedRoleIds and user.roleId.
-   * Prefers the branch-specific role if one exists.
+   * Removes only leadership roles when the user no longer heads a pod.
+   * Existing non-lead roles and primary role are preserved.
    */
   private async demoteFromPodHead(userId: string, tenantId: string, txClient?: any, excludePodId?: string) {
     const db = txClient || this.prisma;
@@ -180,8 +160,6 @@ export class PodsService {
       select: { roleId: true, branchId: true, assignedRoleIds: true },
     });
     if (!user) return;
-    const branchId = user.branchId || null;
-
     // Find all custom roles in this tenant associated with POD_LEAD
     const podLeadRoles = await db.customRole.findMany({
       where: { tenantId, systemRole: { systemKey: 'POD_LEAD' } },
@@ -189,41 +167,9 @@ export class PodsService {
     });
     const podLeadRoleIds = new Set<string>(podLeadRoles.map((r: any) => r.id));
 
-    let recruiterRole: { id: string } | null = null;
-    if (branchId) {
-      recruiterRole = await db.customRole.findFirst({
-        where: { tenantId, branchId, systemRole: { systemKey: 'RECRUITER' } },
-        select: { id: true },
-      });
-    }
-
-    if (!recruiterRole) {
-      recruiterRole = await db.customRole.findFirst({
-        where: { tenantId, systemRole: { systemKey: 'RECRUITER' } },
-        select: { id: true },
-        orderBy: { createdAt: 'asc' },
-      });
-    }
-
-    if (!recruiterRole && podLeadRoleIds.size === 0) {
-      this.logger.warn(
-        `No custom role with systemRole=RECRUITER found for tenant ${tenantId}. Skipping auto-demotion.`,
-      );
-      return;
-    }
-
     const currentRoles: string[] = Array.isArray(user.assignedRoleIds) ? user.assignedRoleIds : [];
-    // Cleanly filter out all POD_LEAD roles
-    const filteredRoles = currentRoles.filter((rid: string) => !podLeadRoleIds.has(rid));
-
-    if (recruiterRole && !filteredRoles.includes(recruiterRole.id)) {
-      filteredRoles.push(recruiterRole.id);
-    }
-
-    let newRoleId = user.roleId;
-    if (!newRoleId || podLeadRoleIds.has(newRoleId)) {
-      newRoleId = recruiterRole?.id || filteredRoles[0] || null;
-    }
+    const filteredRoles = Array.from(new Set([...currentRoles, user.roleId].filter((id): id is string => !!id && !podLeadRoleIds.has(id))));
+    const newRoleId = user.roleId && !podLeadRoleIds.has(user.roleId) ? user.roleId : filteredRoles[0] || null;
 
     await db.user.update({
       where: { id: userId },
@@ -233,7 +179,7 @@ export class PodsService {
       },
     });
 
-    this.logger.log(`Demoted user ${userId} back to RECRUITER role (roleId: ${newRoleId}, assignedRoleIds: ${filteredRoles.join(', ')}).`);
+    this.logger.log(`Demoted user ${userId} from pod leadership (roleId: ${newRoleId}, assignedRoleIds: ${filteredRoles.join(', ')}).`);
   }
 
   /**
@@ -1054,17 +1000,10 @@ export class PodsService {
       throw new NotFoundException(`Pod not found.`);
     }
 
-    if (pod.podHeadId) {
-      await this.demoteFromPodHead(pod.podHeadId, tenantId, undefined, id);
-    }
-
-    await this.prisma.user.updateMany({
-      where: { podId: id, tenantId },
-      data: { podId: null },
-    });
-
-    await this.prisma.pod.delete({
-      where: { id },
+    await this.prisma.$transaction(async tx => {
+      if (pod.podHeadId) await this.demoteFromPodHead(pod.podHeadId, tenantId, tx, id);
+      await tx.user.updateMany({ where: { podId: id, tenantId }, data: { podId: null } });
+      await tx.pod.delete({ where: { id } });
     });
 
     return { message: 'Pod deleted successfully.' };

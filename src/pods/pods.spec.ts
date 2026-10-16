@@ -533,8 +533,8 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
       expect(prismaMock.user.update).toHaveBeenCalledWith({
         where: { id: formerLeadId },
         data: {
-          roleId: recruiterRoleId,
-          assignedRoleIds: [recruiterRoleId],
+          roleId: null,
+          assignedRoleIds: [],
         },
       });
       expect(prismaMock.pod.delete).toHaveBeenCalledWith({ where: { id: podId } });
@@ -594,7 +594,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
           },
         },
       ]);
-      prismaMock.customRole.findMany.mockResolvedValue([
+      prismaMock.customRole.findMany.mockImplementation(async ({ where }: any) => [
         {
           id: recruiterRoleId,
           name: 'Recruiter',
@@ -607,7 +607,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
           tenantId,
           systemRole: { systemKey: 'POD_LEAD' },
         },
-      ]);
+      ].filter(role => !where?.systemRole?.systemKey || role.systemRole.systemKey === where.systemRole.systemKey));
       prismaMock.tenant = { findFirst: jest.fn().mockResolvedValue({ name: 'Enfycon', domain: 'enfycon' }) };
       prismaMock.branch = { findFirst: jest.fn().mockResolvedValue({ name: 'Kolkata' }) };
       prismaMock.businessUnit.findFirst = jest.fn().mockResolvedValue({ id: unitId, name: 'India Staffing', branchId });

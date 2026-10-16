@@ -1,3 +1,4 @@
+import { rejectManualPodLeadRoles } from './pod-lead-role-policy';
 import {
   Injectable,
   Logger,
@@ -122,6 +123,7 @@ export class AuthInviteService {
       if (!unit.rows.length) throw new BadRequestException('Select a unit in the chosen workspace and branch.');
     }
 
+    await rejectManualPodLeadRoles(this.authQuery, tenantId, [...(dto.roleIds || []), ...(dto.roleId ? [dto.roleId] : []), dto.systemRole || 'RECRUITER']);
     const systemRole = (dto.systemRole || 'RECRUITER').toUpperCase();
     const requestedRoleIds = Array.from(new Set(dto.roleIds?.length ? dto.roleIds : dto.roleId ? [dto.roleId] : []));
     let roleId = requestedRoleIds[0] || null;
@@ -353,6 +355,7 @@ export class AuthInviteService {
             continue;
           }
           const selected = roleMatch.match;
+          if (selected.system_key === 'POD_LEAD') errors.push('Pod leadership is assigned only through Recruitment Pods.');
           if (selected.system_key === 'SUPER_ADMIN' || selected.name.toUpperCase() === 'SUPER_ADMIN') errors.push('SUPER_ADMIN cannot be assigned through user import.');
           if ((selected.system_key === 'TENANT_ADMIN' || selected.name.toUpperCase() === 'TENANT_ADMIN') && !isTenantAdmin(requester)) errors.push('Only a tenant administrator can assign the Tenant Admin role.');
           resolvedRoles.push({ id: selected.id, name: selected.name });

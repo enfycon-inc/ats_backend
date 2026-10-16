@@ -1,3 +1,4 @@
+import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 
 import {
   Injectable,
@@ -403,6 +404,7 @@ export class AuthUserService {
     const targetUser: any = userRes.rows[0];
     const isTargetSuperAdmin = targetUser.system_role === 'SUPER_ADMIN' || targetUser.role_name === 'SUPER_ADMIN';
     const tenantId = targetUser.tenant_id;
+    await rejectManualPodLeadRoles(this.authQuery, tenantId, roles);
 
     if (isTargetSuperAdmin && (!requesterRoles || !requesterRoles.includes('SUPER_ADMIN'))) {
       throw new ForbiddenException('You are not authorized to modify roles of a SUPER_ADMIN.');
@@ -416,19 +418,14 @@ export class AuthUserService {
 
     const customRolesRes = await this.authQuery.query(
       `SELECT cr.id, cr.name FROM custom_roles cr
-         LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
-         WHERE cr.tenant_id = ::uuid
-           AND (::text IS NULL OR cr.branch_id IS NULL OR cr.branch_id = ::uuid)
-           AND (
-             (CASE WHEN  ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN cr.id = ::uuid ELSE false END)
-             OR UPPER(cr.name) = UPPER()
-             OR UPPER(COALESCE(sr.system_key, '')) = UPPER()
-             
-           )
-         ORDER BY (cr.is_system = false) DESC, cr.created_at DESC`,
-      [tenantId, normalized]
+       LEFT JOIN system_roles sr ON sr.id=cr.system_role_id
+       WHERE cr.tenant_id=$1::uuid AND (cr.branch_id IS NULL OR cr.branch_id=$3::uuid)
+         AND (UPPER(cr.id::text)=ANY($2::text[]) OR UPPER(cr.name)=ANY($2::text[]) OR UPPER(sr.system_key)=ANY($2::text[]))
+       ORDER BY cr.created_at, cr.id`,
+      [tenantId, normalized, targetUser.branch_id || null]
     );
-    const roleIds: string[] = (customRolesRes.rows as any[]).map((r) => r.id);
+    const automaticRoleIds = await existingPodLeadRoleIds(this.authQuery, tenantId, userId);
+    const roleIds: string[] = [...new Set([...(customRolesRes.rows as any[]).map((r) => r.id), ...automaticRoleIds])];
     const cleanRoleNames: string[] = Array.from(new Set((customRolesRes.rows as any[]).map((r) => r.name)));
     const roleId = roleIds[0] || null;
 
@@ -535,6 +532,7 @@ export class AuthUserService {
       if (!Array.isArray(selection) || selection.some(r => typeof r !== 'string' || !r.trim())) {
         throw new BadRequestException('Roles must be a list of role IDs.');
       }
+      await rejectManualPodLeadRoles(this.authQuery, user.tenant_id, selection);
       selection.forEach(r => rawRoleIdentifiers.add(r.trim()));
     }
 
@@ -603,6 +601,11 @@ export class AuthUserService {
       }
     }
 
+    if (hasRoleUpdates) {
+      const automaticRoleIds = await existingPodLeadRoleIds(this.authQuery, user.tenant_id, userId);
+      automaticRoleIds.forEach(id => combinedRoleIds.add(id));
+      if (automaticRoleIds.length && (branchId !== user.branch_id || businessUnitId !== user.business_unit_id)) throw new BadRequestException('Remove or transfer pod leadership before moving this member to another unit.');
+    }
     let primaryRoleId: string | null = null;
     if (hasRoleUpdates && dto.roleId) primaryRoleId = Array.from(combinedRoleIds).find(id => id.toLowerCase() === dto.roleId!.toLowerCase())!;
     else if (user.role_id && combinedRoleIds.has(user.role_id)) primaryRoleId = user.role_id;
@@ -667,6 +670,8 @@ export class AuthUserService {
   }
 
     async requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string, city?: UserCity | null) {
+    const owner = await this.authQuery.query('SELECT tenant_id FROM users WHERE id=$1::uuid', [userId]);
+    if (owner.rows[0]) await rejectManualPodLeadRoles(this.authQuery, owner.rows[0].tenant_id, [role]);
       if (city !== undefined && city !== null && !USER_CITY_VALUES.includes(city)) {
         throw new BadRequestException('Select a valid city or leave it unspecified.');
       }
@@ -819,6 +824,7 @@ async approveTenantUser(
         return !Array.isArray(permissions) || permissions.some((permission: string) => !requester.permissions?.includes(permission)) || (role.branch_id && role.branch_id !== requester.branchId) || (role.business_unit_id && role.business_unit_id !== requester.businessUnitId);
       })) throw new ForbiddenException('You cannot grant roles beyond your current unit or permissions.');
     }
+    await rejectManualPodLeadRoles(this.authQuery, requester.tenantId!, assignedRoleIds);
     const approvalWrite = await this.authQuery.query(
       `UPDATE users
        SET is_approved = true,
