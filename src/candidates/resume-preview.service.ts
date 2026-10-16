@@ -9,7 +9,7 @@ export class ResumePreviewService {
   private bytes = 0;
   async render(file: StoredResumeFile, tenantId: string, page: number): Promise<Buffer | { pages: number }> {
     if (!Number.isInteger(page) || page < 0 || page > 30 || file.data.length > 10 * 1024**2) throw new BadRequestException('Invalid resume page or file size.');
-    const host = process.env.PYTHON_PARSER_URL;
+    const host = process.env.PYTHON_PARSER_URL || 'http://localhost:8000';
     if (!host) throw new ServiceUnavailableException('Resume rendering is not configured.');
     const key = `${tenantId}:${createHash('sha256').update(file.data).digest('hex')}:v1:${page}`;
     for (const [id, item] of this.cache) if (item.expires < Date.now()) { this.cache.delete(id); this.bytes -= item.bytes; }
@@ -35,7 +35,8 @@ export class ResumePreviewService {
     form.append('file', new Blob([new Uint8Array(file.data)], { type: file.mime }), file.filename);
     form.append('page', String(page));
     try {
-      const response = await fetch(`${process.env.PYTHON_PARSER_URL!.replace(/\/$/, '')}/api/v1/resume-preview`, { method: 'POST', body: form, signal: AbortSignal.timeout(20000) });
+      const host = process.env.PYTHON_PARSER_URL || 'http://localhost:8000';
+      const response = await fetch(`${host.replace(/\/$/, '')}/api/v1/resume-preview`, { method: 'POST', body: form, signal: AbortSignal.timeout(20000) });
       if (!response.ok) throw new Error('render');
       if (page) {
         if (!response.headers.get('content-type')?.startsWith('image/png')) throw new Error('format');
