@@ -250,7 +250,7 @@ export class AuthRbacService {
     }
 
     if (resolvedSystemRole === 'POD_LEAD' && requester && !requester.permissions?.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p))) {
-      throw new ForbiddenException('Tenant-wide pod leadership roles must be managed by the tenant administrator.');
+      throw new ForbiddenException('Pod Lead roles must be managed by the tenant administrator.');
     }
     if (!resolvedSystemRoleId) {
       const template = await this.authQuery.query('SELECT id FROM system_roles WHERE system_key = $1 LIMIT 1', [resolvedSystemRole]);
@@ -258,6 +258,19 @@ export class AuthRbacService {
     }
     if (!resolvedSystemRoleId) throw new BadRequestException('System role template is unavailable.');
     let effectiveBranchId = branchId || null;
+    let effectiveBusinessUnitId = businessUnitId || null;
+    if (resolvedSystemRole === 'POD_LEAD') {
+      if (!effectiveBusinessUnitId) throw new BadRequestException('Select a branch unit for the Pod Lead role.');
+      const unitResult = await this.authQuery.query(
+        'SELECT id, branch_id FROM ats.business_units WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1',
+        [effectiveBusinessUnitId, tenantId],
+      );
+      if (!unitResult.rows.length) throw new BadRequestException('The selected branch unit does not belong to this tenant.');
+      const unit = unitResult.rows[0] as any;
+      if (effectiveBranchId && effectiveBranchId !== unit.branch_id) throw new BadRequestException('The selected branch does not contain this branch unit.');
+      effectiveBranchId = unit.branch_id;
+      effectiveBusinessUnitId = unit.id;
+    }
     if (!effectiveBranchId && resolvedSystemRole !== 'POD_LEAD') {
       const defaultBranchRes = await this.authQuery.query(
         'SELECT id FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1',
@@ -265,8 +278,6 @@ export class AuthRbacService {
       );
       effectiveBranchId = (defaultBranchRes.rows[0] as any)?.id || null;
     }
-
-    if (resolvedSystemRole === 'POD_LEAD') effectiveBranchId = null;
 
     // Branch isolation: branch admins can only create roles in their assigned branches
     if (requester && effectiveBranchId) {
@@ -298,26 +309,26 @@ export class AuthRbacService {
       `INSERT INTO custom_roles (tenant_id, branch_id, business_unit_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, false, $6::uuid, $7::uuid, $8::uuid, $9::jsonb)
        RETURNING id, tenant_id, branch_id as "branchId", business_unit_id as "businessUnitId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
-      [tenantId, effectiveBranchId, resolvedSystemRole === 'POD_LEAD' ? null : businessUnitId || null, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
+      [tenantId, effectiveBranchId, effectiveBusinessUnitId, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
     );
     let roleRes: any;
     try {
       if (resolvedSystemRole === 'POD_LEAD') {
         roleRes = await this.authQuery.prisma.$transaction(async tx => {
-          await tx.$queryRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('pod-lead-role:' || $1::text, 0))::text`, tenantId);
-          const existing = await tx.$queryRawUnsafe<any[]>(`SELECT cr.id FROM ats.custom_roles cr JOIN ats.system_roles sr ON sr.id=cr.system_role_id WHERE cr.tenant_id=$1::uuid AND cr.is_system=false AND sr.system_key='POD_LEAD' LIMIT 1`, tenantId);
-          if (existing.length) throw new ConflictException('Only one custom Pod Lead role is allowed per tenant. Edit the existing role.');
+          await tx.$queryRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended('pod-lead-role:' || $1::text || ':' || $2::text, 0))::text`, tenantId, effectiveBusinessUnitId);
+          const existing = await tx.$queryRawUnsafe<any[]>(`SELECT cr.id FROM ats.custom_roles cr JOIN ats.system_roles sr ON sr.id=cr.system_role_id WHERE cr.tenant_id=$1::uuid AND cr.is_system=false AND sr.system_key='POD_LEAD' AND cr.business_unit_id=$2::uuid LIMIT 1`, tenantId, effectiveBusinessUnitId);
+          if (existing.length) throw new ConflictException('A custom Pod Lead role already exists for this branch unit. Edit the existing role.');
           const inserted = await insertRole(async (sql, params) => ({ rows: await tx.$queryRawUnsafe<any[]>(sql, ...params) }));
           const newId = inserted.rows[0].id;
           await tx.$executeRawUnsafe(`UPDATE ats.users u SET
             role_id = $2::uuid,
             assigned_role_ids = ARRAY(SELECT rid FROM unnest(ARRAY[u.role_id] || COALESCE(u.assigned_role_ids, ARRAY[]::uuid[]) || ARRAY[$2::uuid]) WITH ORDINALITY AS grants(rid, position) WHERE rid IS NOT NULL AND (rid=$2::uuid OR rid NOT IN (SELECT cr.id FROM ats.custom_roles cr JOIN ats.system_roles sr ON sr.id=cr.system_role_id WHERE cr.tenant_id=$1::uuid AND sr.system_key='POD_LEAD')) GROUP BY rid ORDER BY MIN(position)), updated_at=NOW()
-            WHERE u.tenant_id=$1::uuid AND EXISTS (SELECT 1 FROM ats.pods p WHERE p.tenant_id=u.tenant_id AND p.pod_head_id=u.id)`, tenantId, newId);
+            WHERE u.tenant_id=$1::uuid AND EXISTS (SELECT 1 FROM ats.pods p WHERE p.tenant_id=u.tenant_id AND p.pod_head_id=u.id AND p.business_unit_id=$3::uuid)`, tenantId, newId, effectiveBusinessUnitId);
           return inserted;
         }, { isolationLevel: 'ReadCommitted' });
       } else roleRes = await insertRole(this.authQuery.query.bind(this.authQuery));
     } catch (error: any) {
-      if (error?.meta?.code === '23505' || error?.code === 'P2002') throw new ConflictException('Only one custom Pod Lead role is allowed per tenant. Edit the existing role.');
+      if (error?.meta?.code === '23505' || error?.code === 'P2002') throw new ConflictException('A custom Pod Lead role already exists for this branch unit. Edit the existing role.');
       throw error;
     }
     const role: any = roleRes.rows[0];
@@ -339,7 +350,7 @@ export class AuthRbacService {
     requester?: AuthUser,
   ) {
     const roleResult = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, cr.branch_id, cr.base_role_id, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id=cr.system_role_id WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
+      `SELECT cr.id, cr.name, cr.is_system, cr.branch_id, cr.business_unit_id, cr.base_role_id, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id=cr.system_role_id WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
       [roleId, tenantId]
     );
     if (roleResult.rows.length === 0) throw new NotFoundException('Role not found.');
@@ -348,10 +359,20 @@ export class AuthRbacService {
 
     if (body.systemRole !== undefined) body.systemRole = body.systemRole.toUpperCase().trim();
     if (existingRole.system_role === 'POD_LEAD') {
-      if (requester && !requester.permissions?.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p))) throw new ForbiddenException('Tenant-wide pod leadership roles must be managed by the tenant administrator.');
+      if (requester && !requester.permissions?.some(p => ['tenant:settings', 'tenant:manage', 'platform:manage'].includes(p))) throw new ForbiddenException('Pod Lead roles must be managed by the tenant administrator.');
       if (body.systemRole && body.systemRole !== 'POD_LEAD') throw new BadRequestException('The Pod Lead base archetype cannot be changed.');
-      if (body.branchId || body.businessUnitId) throw new BadRequestException('The Pod Lead custom role is shared by the tenant and cannot be restricted to one unit.');
-    } else if (body.systemRole === 'POD_LEAD') throw new BadRequestException('Create the tenant Pod Lead custom role instead of converting an existing role.');
+      const targetBusinessUnitId = body.businessUnitId !== undefined ? body.businessUnitId || null : existingRole.business_unit_id;
+      if (!targetBusinessUnitId) throw new BadRequestException('Select a branch unit for the Pod Lead role.');
+      const unitResult = await this.authQuery.query(
+        'SELECT id, branch_id FROM ats.business_units WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1',
+        [targetBusinessUnitId, tenantId],
+      );
+      if (!unitResult.rows.length) throw new BadRequestException('The selected branch unit does not belong to this tenant.');
+      const targetBranchId = (unitResult.rows[0] as any).branch_id;
+      if (body.branchId && body.branchId !== targetBranchId) throw new BadRequestException('The selected branch does not contain this branch unit.');
+      body.branchId = targetBranchId;
+      body.businessUnitId = targetBusinessUnitId;
+    } else if (body.systemRole === 'POD_LEAD') throw new BadRequestException('Create a unit-scoped Pod Lead custom role instead of converting an existing role.');
     if (existingRole.system_role === 'POD_LEAD' && body.baseRoleId !== undefined && body.baseRoleId !== existingRole.base_role_id) throw new BadRequestException('The base role cannot be changed.');
 
     // Branch isolation: branch admins can only update roles in their assigned branches
@@ -359,7 +380,7 @@ export class AuthRbacService {
       validateBranchAccess(requester, existingRole.branch_id, 'update roles');
     }
 
-    const updates: string[] = ['updated_at = NOW()', ...(existingRole.system_role === 'POD_LEAD' ? ['branch_id = NULL', 'business_unit_id = NULL'] : [])];
+    const updates: string[] = ['updated_at = NOW()'];
     const params: any[] = [roleId, tenantId];
 
     if (body.name !== undefined) {
@@ -397,7 +418,7 @@ export class AuthRbacService {
       try {
         await this.authQuery.query(`UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1::uuid AND tenant_id = $2::uuid`, params);
       } catch (error: any) {
-        if (error?.meta?.code === '23505' || error?.code === 'P2002') throw new ConflictException('Only one custom Pod Lead role is allowed per tenant.');
+        if (error?.meta?.code === '23505' || error?.code === 'P2002') throw new ConflictException('A custom Pod Lead role already exists for this branch unit.');
         throw error;
       }
 
@@ -422,6 +443,44 @@ export class AuthRbacService {
 
     if (body.permissions && Array.isArray(body.permissions)) {
       await this.updateRolePermissions(tenantId, roleId, body.permissions);
+    }
+
+    if (existingRole.system_role === 'POD_LEAD') {
+      // Reconcile automatic grants against each lead's current pod unit. This
+      // also migrates legacy tenant-wide grants safely as unit roles are saved.
+      await this.authQuery.query(
+        `WITH lead_units AS (
+           SELECT DISTINCT ON (u.id) u.id, u.role_id, u.assigned_role_ids, p.business_unit_id
+           FROM ats.users u
+           JOIN ats.pods p ON p.pod_head_id = u.id AND p.tenant_id = u.tenant_id
+           WHERE u.tenant_id = $1::uuid
+           ORDER BY u.id, p.created_at, p.id
+         ), resolved AS (
+           SELECT lu.*,
+             (SELECT cr.id FROM ats.custom_roles cr JOIN ats.system_roles sr ON sr.id=cr.system_role_id
+              WHERE cr.tenant_id=$1::uuid AND cr.is_system=false AND sr.system_key='POD_LEAD'
+                AND cr.business_unit_id=lu.business_unit_id LIMIT 1) AS unit_role_id,
+             (SELECT cr.id FROM ats.custom_roles cr JOIN ats.system_roles sr ON sr.id=cr.system_role_id
+              WHERE cr.tenant_id=$1::uuid AND cr.is_system=true AND sr.system_key='POD_LEAD' LIMIT 1) AS system_role_id,
+             ARRAY(SELECT grants.rid FROM unnest(ARRAY[lu.role_id] || COALESCE(lu.assigned_role_ids, ARRAY[]::uuid[]))
+                   WITH ORDINALITY AS grants(rid, position)
+                   WHERE grants.rid IS NOT NULL AND NOT EXISTS (
+                     SELECT 1 FROM ats.custom_roles lead_role JOIN ats.system_roles sr ON sr.id=lead_role.system_role_id
+                     WHERE lead_role.id=grants.rid AND lead_role.tenant_id=$1::uuid AND sr.system_key='POD_LEAD'
+                   )
+                   GROUP BY grants.rid ORDER BY MIN(grants.position)) AS non_lead_role_ids
+           FROM lead_units lu
+         )
+         UPDATE ats.users u SET
+           role_id = COALESCE(r.unit_role_id, r.system_role_id, r.non_lead_role_ids[1]),
+           assigned_role_ids = r.non_lead_role_ids || CASE
+             WHEN COALESCE(r.unit_role_id, r.system_role_id) IS NULL THEN ARRAY[]::uuid[]
+             ELSE ARRAY[COALESCE(r.unit_role_id, r.system_role_id)]
+           END,
+           updated_at = NOW()
+         FROM resolved r WHERE u.id=r.id AND u.tenant_id=$1::uuid`,
+        [tenantId],
+      );
     }
 
     return { message: 'Custom role updated successfully.', roleId };

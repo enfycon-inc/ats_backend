@@ -2,7 +2,7 @@ import { submissionCompensation, submissionSource, isContractJob } from './submi
 import { assertJobSubmissionAccess } from '../jobs/job-submission-access';
 import { verifiedCandidateInput } from './verified-candidate';
 import { randomUUID } from 'node:crypto';
-import { assessCandidate } from '../jobs/candidate-assessment';
+import { assessCandidate, assessmentSourceVersion } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
 import { historySnapshot, historyChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
@@ -28,6 +28,7 @@ import {
   type TrackerBucket,
   type TrackerSubmission,
   type TrackerSortKey,
+  type CandidateAssessment,
 } from './tracker-contract';
 
 export interface SubmissionDetails extends TrackerSubmission {
@@ -96,6 +97,7 @@ export interface SubmissionDetails extends TrackerSubmission {
 @Injectable()
 export class RecruiterSubmissionsService {
   private readonly logger = new Logger(RecruiterSubmissionsService.name);
+  private readonly reviewAssessmentCache = new Map<string, { expiresAt: number; assessment: CandidateAssessment }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -932,7 +934,47 @@ export class RecruiterSubmissionsService {
   async assessment(id: string, tenantId: string, user: AuthUser, branchId?: string | null) {
     const submission = await this.findOne(id, tenantId, user, branchId);
     if (!submission.capabilities?.review) throw new ForbiddenException('Internal review permission is required.');
-    return { submission, assessment: await this.assessSubmission(this.prisma, submission, tenantId) };
+    const assessment = await this.assessSubmission(this.prisma, submission, tenantId);
+    this.cacheReviewAssessment(tenantId, id, assessment);
+    return { submission, assessment };
+  }
+
+  private reviewAssessmentKey(tenantId: string, submissionId: string, version: string) {
+    return `${tenantId}:${submissionId}:${version}`;
+  }
+
+  private cacheReviewAssessment(tenantId: string, submissionId: string, assessment: CandidateAssessment) {
+    const now = Date.now();
+    for (const [key, item] of this.reviewAssessmentCache) if (item.expiresAt <= now) this.reviewAssessmentCache.delete(key);
+    const key = this.reviewAssessmentKey(tenantId, submissionId, assessment.version);
+    this.reviewAssessmentCache.delete(key);
+    this.reviewAssessmentCache.set(key, { assessment, expiresAt: now + 5 * 60 * 1000 });
+    while (this.reviewAssessmentCache.size > 128) this.reviewAssessmentCache.delete(this.reviewAssessmentCache.keys().next().value!);
+  }
+
+  private getCachedReviewAssessment(tenantId: string, submissionId: string, version: string) {
+    const key = this.reviewAssessmentKey(tenantId, submissionId, version);
+    const entry = this.reviewAssessmentCache.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) { this.reviewAssessmentCache.delete(key); return null; }
+    return entry.assessment;
+  }
+
+  private async assessmentSourceVersion(db: any, submission: { jobId: string; candidateId: string }, tenantId: string) {
+    const [job, candidate, dictionary] = await Promise.all([
+      db.job.findFirst({ where: { id: submission.jobId, tenantId }, select: {
+        id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
+        city: true, state: true, country: true, workMode: true, degree: true, noticePeriod: true,
+      } }),
+      db.candidate.findFirst({ where: { id: submission.candidateId, tenantId, deletedAt: null }, select: {
+        id: true, updatedAt: true, resumeRecordId: true, skills: true, totalExperienceYears: true,
+        rawCurrentLocation: true, preferredLocations: true, noticePeriodDays: true,
+        resumeRecord: { select: { id: true, fileHash: true } },
+      } }),
+      loadAssessmentSkills(db),
+    ]);
+    if (!job || !candidate) throw new NotFoundException('Assessment sources are unavailable in this tenant.');
+    return assessmentSourceVersion(job, candidate, dictionary);
   }
 
   private async assessSubmission(db: any, submission: { jobId: string; candidateId: string }, tenantId: string) {
@@ -948,7 +990,8 @@ export class RecruiterSubmissionsService {
     ]);
     if (!job || !candidate) throw new NotFoundException('Assessment sources are unavailable in this tenant.');
     const dictionary = await loadAssessmentSkills(db);
-    return assessCandidate(job, { ...candidate, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson }, dictionary);
+    return assessCandidate(job, { ...candidate, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson }, dictionary,
+      assessmentSourceVersion(job, candidate, dictionary));
   }
 
   async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
@@ -1061,8 +1104,16 @@ export class RecruiterSubmissionsService {
     const version = existing.updatedAt.getTime();
     data.updatedAt = new Date(Math.max(Date.now(), version + 1));
     await this.prisma.$transaction(async tx => {
-      const assessment = dto.assessmentVersion ? await this.assessSubmission(tx, existing, tenantId) : null;
-      if (assessment && assessment.version !== dto.assessmentVersion) throw new ConflictException('The job or candidate evidence changed. Reload the assessment before deciding.');
+      let assessment: CandidateAssessment | null = null;
+      if (dto.assessmentVersion) {
+        const currentVersion = await this.assessmentSourceVersion(tx, existing, tenantId);
+        if (currentVersion !== dto.assessmentVersion) throw new ConflictException('The job or candidate evidence changed. Reload the assessment before deciding.');
+        assessment = this.getCachedReviewAssessment(tenantId, id, currentVersion);
+        // A cache miss can happen after a server restart or when a request reaches
+        // another backend instance. Rebuild the trusted snapshot as a safe fallback.
+        if (!assessment) assessment = await this.assessSubmission(tx, existing, tenantId);
+        if (assessment.version !== currentVersion) throw new ConflictException('The job or candidate evidence changed. Reload the assessment before deciding.');
+      }
       if (assessment && Object.keys(dto.reviewOverrides || {}).some(key => !assessment.criteria.some(row => row.key === key))) throw new BadRequestException('Reviewer override refers to an unknown requirement.');
       const saved = await tx.recruiterSubmission.updateMany({
         where: { id, tenantId, updatedAt: { gte: new Date(version), lt: new Date(version + 1) } }, data,

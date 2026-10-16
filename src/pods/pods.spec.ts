@@ -326,7 +326,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
     beforeEach(() => {
       prismaMock.customRole.findMany.mockImplementation(async ({ where }: any) => {
         if (where?.systemRole?.systemKey === 'POD_LEAD') {
-          return [{ id: podLeadRoleId, name: 'Pod Lead', systemRole: { systemKey: 'POD_LEAD' } }];
+          return [{ id: podLeadRoleId, name: 'Pod Lead', businessUnitId: unitId, systemRole: { systemKey: 'POD_LEAD' } }];
         }
         return [];
       });
@@ -605,6 +605,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
           id: podLeadRoleId,
           name: 'Pod Lead',
           tenantId,
+          businessUnitId: unitId,
           systemRole: { systemKey: 'POD_LEAD' },
         },
       ].filter(role => !where?.systemRole?.systemKey || role.systemRole.systemKey === where.systemRole.systemKey));

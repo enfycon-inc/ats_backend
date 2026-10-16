@@ -2,7 +2,7 @@ import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-rol
 import { AuthRbacService } from './auth-rbac.service';
 import { PodsService } from '../../pods/pods.service';
 
-describe('automatic tenant Pod Lead role', () => {
+describe('automatic unit-scoped Pod Lead role', () => {
   it.each(['POD_LEAD', 'Recruitment Captain', 'role-id'])('rejects manual assignment using %s', async identifier => {
     const query = { query: jest.fn().mockResolvedValue({ rows: [{ id: 'lead-role' }] }) };
     await expect(rejectManualPodLeadRoles(query as any, 'tenant', [identifier])).rejects.toMatchObject({ status: 400 });
@@ -41,20 +41,20 @@ describe('automatic tenant Pod Lead role', () => {
     await expect(call).rejects.toMatchObject({ status: 400 });
     expect(query.query).toHaveBeenCalledTimes(1);
   });
-  it('chooses the custom name without branch or unit selection and retains existing role grants', async () => {
+  it('chooses the custom role for the pod unit and retains existing role grants', async () => {
     const db = {
-      customRole: { findMany: jest.fn().mockResolvedValue([{ id: 'custom-lead', name: 'Recruitment Captain' }]), findFirst: jest.fn() },
+      customRole: { findMany: jest.fn().mockResolvedValue([{ id: 'custom-lead', name: 'Recruitment Captain', businessUnitId: 'unit-a' }]), findFirst: jest.fn() },
       user: { findFirst: jest.fn().mockResolvedValue({ roleId: 'original', assignedRoleIds: ['secondary'] }), update: jest.fn() },
     };
     const service = new PodsService(db as any);
-    await (service as any).promoteToPodHead('user', 'tenant', 'any-branch');
+    await (service as any).promoteToPodHead('user', 'tenant', 'unit-a');
     expect(db.customRole.findFirst).not.toHaveBeenCalled();
-    expect(db.customRole.findMany.mock.calls[0][0].where).toEqual({ tenantId: 'tenant', isSystem: false, systemRole: { systemKey: 'POD_LEAD' } });
+    expect(db.customRole.findMany.mock.calls[0][0].where).toEqual({ tenantId: 'tenant', businessUnitId: 'unit-a', isSystem: false, systemRole: { systemKey: 'POD_LEAD' } });
     expect(db.user.update).toHaveBeenCalledWith({ where: { id: 'user' }, data: { roleId: 'custom-lead', assignedRoleIds: ['original', 'secondary', 'custom-lead'] } });
   });
   it('fails closed on existing duplicate custom roles', async () => {
     const db = { customRole: { findMany: jest.fn().mockResolvedValue([{ id: 'a' }, { id: 'b' }]) }, user: { update: jest.fn() } };
-    await expect((new PodsService(db as any) as any).promoteToPodHead('user', 'tenant')).rejects.toMatchObject({ status: 409 });
+    await expect((new PodsService(db as any) as any).promoteToPodHead('user', 'tenant', 'unit-a')).rejects.toMatchObject({ status: 409 });
     expect(db.user.update).not.toHaveBeenCalled();
   });
   it('removes only leadership and restores the original non-Recruiter role', async () => {
@@ -78,35 +78,36 @@ describe('automatic tenant Pod Lead role', () => {
     const query = jest.fn(async (sql: string) => {
       if (sql.includes('SELECT cr.id, sr.id')) return { rows: [{ id: 'template', system_role_id: 'system-id' }] };
       if (sql === 'SELECT system_key, permissions FROM system_roles') return { rows: [{ system_key: 'POD_LEAD', permissions: ['pod:view', 'job:assign_recruiter'] }] };
+      if (sql.includes('FROM ats.business_units')) return { rows: [{ id: 'unit-a', branch_id: 'branch-a' }] };
       return { rows: [] };
     });
     const service = new AuthRbacService({ query, prisma: { $transaction: async (fn: any) => fn(tx) } } as any);
     return { service, tx };
   }
-  it('creates a tenant-wide custom name and adopts current actual pod heads in the same transaction', async () => {
+  it('creates a unit-scoped custom name and adopts only current pod heads in that unit', async () => {
     const { service, tx } = customRoleCreation();
-    const role = await service.createCustomRole('tenant', 'Recruitment Captain', '', ['pod:view'], 'POD_LEAD', 'ignored-branch', 'ignored-unit', undefined, undefined, { permissions: ['tenant:settings'] } as any);
+    const role = await service.createCustomRole('tenant', 'Recruitment Captain', '', ['pod:view'], 'POD_LEAD', 'branch-a', 'unit-a', undefined, undefined, { permissions: ['tenant:settings'] } as any);
     expect(role.name).toBe('Recruitment Captain');
-    expect(tx.$queryRawUnsafe.mock.calls.find(([sql]) => sql.includes('INSERT INTO'))!.slice(1, 4)).toEqual(['tenant', null, null]);
+    expect(tx.$queryRawUnsafe.mock.calls.find(([sql]) => sql.includes('INSERT INTO'))!.slice(1, 4)).toEqual(['tenant', 'branch-a', 'unit-a']);
     expect(tx.$queryRawUnsafe.mock.calls[0][0]).toContain('pg_advisory_xact_lock');
-    expect(tx.$executeRawUnsafe.mock.calls[0][0]).toContain('p.pod_head_id=u.id');
-    expect(tx.$executeRawUnsafe.mock.calls[0].slice(1)).toEqual(['tenant', 'custom-lead']);
+    expect(tx.$executeRawUnsafe.mock.calls[0][0]).toContain('p.business_unit_id=$3::uuid');
+    expect(tx.$executeRawUnsafe.mock.calls[0].slice(1)).toEqual(['tenant', 'custom-lead', 'unit-a']);
   });
   it('turns a database singleton conflict into a useful 409 and makes no user changes', async () => {
     const { service, tx } = customRoleCreation(true);
-    await expect(service.createCustomRole('tenant', 'Second name', '', ['pod:view'], 'POD_LEAD')).rejects.toMatchObject({ status: 409 });
+    await expect(service.createCustomRole('tenant', 'Second name', '', ['pod:view'], 'POD_LEAD', 'branch-a', 'unit-a')).rejects.toMatchObject({ status: 409 });
     expect(tx.$executeRawUnsafe).not.toHaveBeenCalled();
   });
-  it('prevents branch-scoped managers from creating a tenant-wide leadership role', async () => {
+  it('prevents branch-scoped managers from creating a unit-scoped leadership role', async () => {
     const { service, tx } = customRoleCreation();
-    await expect(service.createCustomRole('tenant', 'Team Lead', '', [], 'POD_LEAD', undefined, undefined, undefined, undefined, { permissions: ['user:manage', 'branch_admin:manage'] } as any)).rejects.toMatchObject({ status: 403 });
+    await expect(service.createCustomRole('tenant', 'Team Lead', '', [], 'POD_LEAD', 'branch-a', 'unit-a', undefined, undefined, { permissions: ['user:manage', 'branch_admin:manage'] } as any)).rejects.toMatchObject({ status: 403 });
     expect(tx.$queryRawUnsafe).not.toHaveBeenCalled();
   });
 
-  it('rejects a second role at the application boundary even before the migration is installed', async () => {
+  it('rejects a second role for the same unit at the application boundary before migration', async () => {
     const { service, tx } = customRoleCreation();
     tx.$queryRawUnsafe.mockImplementation(async (sql: string) => sql.includes('SELECT cr.id FROM ats.custom_roles') ? [{ id: 'existing-custom' }] : []);
-    await expect(service.createCustomRole('tenant', 'Second name', '', ['pod:view'], 'POD_LEAD')).rejects.toMatchObject({ status: 409 });
+    await expect(service.createCustomRole('tenant', 'Second name', '', ['pod:view'], 'POD_LEAD', 'branch-a', 'unit-a', undefined, undefined, { permissions: ['tenant:settings'] } as any)).rejects.toMatchObject({ status: 409 });
     expect(tx.$queryRawUnsafe.mock.calls.some(([sql]) => sql.includes('INSERT INTO'))).toBe(false);
     expect(tx.$executeRawUnsafe).not.toHaveBeenCalled();
   });

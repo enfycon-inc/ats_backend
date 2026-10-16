@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import { assessCandidate } from '../jobs/candidate-assessment';
+import { assessCandidate, assessmentSourceVersion } from '../jobs/candidate-assessment';
 import { RecruiterSubmissionsService } from './recruiter-submissions.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
@@ -83,7 +83,7 @@ describe('submission tracker API', () => {
     prisma.candidate = { findFirst: jest.fn().mockResolvedValue({ skills: ['Python'] }) };
     const reviewer = { ...user, permissions: ['submission:internal_screening'] };
     await expect(service.update('submission-id', { finalStatus: 'SUBMITTED', assessmentVersion: '0'.repeat(64) }, 'tenant-id', reviewer)).rejects.toThrow('evidence changed');
-    const version = assessCandidate({ skillsRequired: ['Python'] }, { skills: ['Python'] }).version;
+    const version = assessmentSourceVersion({ skillsRequired: ['Python'] }, { skills: ['Python'] });
     await expect(service.update('submission-id', { finalStatus: 'SUBMITTED', assessmentVersion: version, reviewOverrides: { 'unknown:requirement': 'Meets' } }, 'tenant-id', reviewer)).rejects.toThrow('unknown requirement');
     expect(prisma.recruiterSubmission.updateMany).not.toHaveBeenCalled(); expect(prisma.submissionEvent.create).not.toHaveBeenCalled();
   });
@@ -94,7 +94,7 @@ describe('submission tracker API', () => {
     prisma.job = { findFirst: jest.fn().mockResolvedValue(job) }; prisma.candidate = { findFirst: jest.fn().mockResolvedValue(candidate) };
     prisma.recruiterSubmission.findFirst.mockResolvedValue({ id: 'submission-id', jobId: 'job-id', candidateId: 'candidate-id', finalStatus: 'PENDING_APPROVAL', updatedAt: new Date() });
     prisma.recruiterSubmission.updateMany.mockResolvedValue({ count: 1 });
-    const assessment = assessCandidate(job, candidate);
+    const assessment = assessCandidate(job, candidate, [], assessmentSourceVersion(job, candidate));
     await service.update('submission-id', { finalStatus: 'SUBMITTED', assessmentVersion: assessment.version, reviewOverrides: { 'primary:python': 'Needs clarification' } }, 'tenant-id', { ...user, permissions: ['submission:internal_screening'] });
     const event = prisma.submissionEvent.create.mock.calls.at(-1)[0].data;
     expect(event.details.assessment).toMatchObject({ score: 100, version: assessment.version });
@@ -102,6 +102,29 @@ describe('submission tracker API', () => {
     candidate.skills[0] = 'Java';
     expect(event.details.assessment.criteria[0].requirement).toBe('Python');
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+  it('reuses the server-built assessment during review save and verifies only source metadata', async () => {
+    const { service, prisma } = setup();
+    const now = new Date('2026-10-16T10:00:00.000Z');
+    const submission = { id: 'submission-id', jobId: 'job-id', candidateId: 'candidate-id', capabilities: { review: true } };
+    jest.spyOn(service, 'findOne').mockResolvedValue(submission as any);
+    const job = { id: 'job-id', updatedAt: now, skillsRequired: ['Python'] };
+    const candidate = { id: 'candidate-id', updatedAt: now, resumeRecordId: 'resume-id', resumeRecord: { id: 'resume-id', fileHash: 'resume-sha' }, skills: ['Python'], rawText: 'Python '.repeat(200_000) };
+    prisma.job = { findFirst: jest.fn().mockResolvedValue(job) };
+    prisma.candidate = { findFirst: jest.fn().mockResolvedValue(candidate) };
+    const build = jest.spyOn(service as any, 'assessSubmission');
+    const { assessment } = await service.assessment('submission-id', 'tenant-id', { ...user, permissions: ['submission:internal_screening'] } as any);
+    expect(build).toHaveBeenCalledTimes(1);
+    prisma.recruiterSubmission.findFirst.mockResolvedValue({ ...submission, finalStatus: 'PENDING_APPROVAL', updatedAt: now });
+    prisma.recruiterSubmission.updateMany.mockResolvedValue({ count: 1 });
+    prisma.submissionEvent.findFirst.mockResolvedValue({ sequence: 0 });
+    await service.update('submission-id', {
+      finalStatus: 'SUBMITTED', expectedUpdatedAt: now.toISOString(), assessmentVersion: assessment.version,
+      reviewOverrides: { 'primary:python': 'Meets' },
+    }, 'tenant-id', { ...user, permissions: ['submission:internal_screening'] });
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(prisma.candidate.findFirst.mock.calls.at(-1)[0].select.resumeRecord.select).toEqual({ id: true, fileHash: true });
+    expect(prisma.submissionEvent.create.mock.calls.at(-1)[0].data.details.assessment.version).toBe(assessment.version);
   });
   it('loads review requirements through the authorized detail query and preserves zero-day notice', async () => {
     const { service, prisma } = setup();

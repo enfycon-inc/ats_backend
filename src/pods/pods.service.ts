@@ -97,19 +97,18 @@ export class PodsService {
   }
 
   /**
-   * Helper: Adds the tenant Pod Lead role while preserving existing non-lead roles.
-   * Finds any custom role whose systemRole = 'POD_LEAD' — regardless of display name
-   * (e.g. "Team Lead", "Pod Head", "Senior Recruiter" etc.).
-   * Uses the single tenant custom role, or the system template before customization.
+   * Adds the Pod Lead role configured for the pod's unit while preserving other grants.
+   * Falls back to the system template when that unit has no custom Pod Lead role.
    */
-  private async promoteToPodHead(userId: string, tenantId: string, branchId?: string | null, txClient?: any) {
+  private async promoteToPodHead(userId: string, tenantId: string, businessUnitId: string, txClient?: any) {
+    if (!businessUnitId) throw new BadRequestException('A branch unit is required to assign pod leadership.');
     const db = txClient || this.prisma;
     const customRoles = await db.customRole.findMany({
-      where: { tenantId, isSystem: false, systemRole: { systemKey: 'POD_LEAD' } },
+      where: { tenantId, businessUnitId, isSystem: false, systemRole: { systemKey: 'POD_LEAD' } },
       select: { id: true, branchId: true, businessUnitId: true },
     });
-    if (customRoles.length > 1) throw new ConflictException('Multiple custom Pod Lead roles exist. Ask the tenant administrator to reconcile them.');
-    if (customRoles[0]?.branchId || customRoles[0]?.businessUnitId) throw new BadRequestException('Save the existing Pod Lead custom role in Role Management to make it tenant-wide before assigning leadership.');
+    if (customRoles.length > 1) throw new ConflictException('Multiple custom Pod Lead roles exist for this branch unit. Ask the tenant administrator to reconcile them.');
+    if (customRoles[0] && customRoles[0].businessUnitId !== businessUnitId) throw new BadRequestException('The custom Pod Lead role must be assigned to the pod\'s branch unit.');
     const role = customRoles[0] || await db.customRole.findFirst({
       where: { tenantId, isSystem: true, branchId: null, systemRole: { systemKey: 'POD_LEAD' } },
       select: { id: true },
@@ -582,7 +581,7 @@ export class PodsService {
 
       // 6. Promote pod head role
       if (dto.podHeadId) {
-        await this.promoteToPodHead(dto.podHeadId, tenantId, effectiveBranchId, tx);
+        await this.promoteToPodHead(dto.podHeadId, tenantId, effectiveBusinessUnitId, tx);
       }
 
       return pod.id;
@@ -934,17 +933,17 @@ export class PodsService {
       });
 
       // 5. Pod head role adjustments
-      if (dto.podHeadId !== undefined && dto.podHeadId !== existingPod.podHeadId) {
-        if (existingPod.podHeadId) {
-          await this.demoteFromPodHead(existingPod.podHeadId, tenantId, tx, id);
-        }
-        if (podHeadId) {
-          await this.promoteToPodHead(podHeadId, tenantId, branchId, tx);
-          await tx.user.update({
-            where: { id: podHeadId },
-            data: { podId: id },
-          });
-        }
+      const podLeadChanged = dto.podHeadId !== undefined && dto.podHeadId !== existingPod.podHeadId;
+      const podUnitChanged = businessUnitId !== existingPod.businessUnitId;
+      if (podLeadChanged && existingPod.podHeadId) {
+        await this.demoteFromPodHead(existingPod.podHeadId, tenantId, tx, id);
+      }
+      if (podHeadId && (podLeadChanged || podUnitChanged)) {
+        await this.promoteToPodHead(podHeadId, tenantId, businessUnitId, tx);
+        await tx.user.update({
+          where: { id: podHeadId },
+          data: { podId: id },
+        });
       }
 
       // 6. Recruiter membership adjustments

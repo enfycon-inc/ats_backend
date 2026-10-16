@@ -12,6 +12,36 @@ export interface AssessmentCandidate {
   skills?: string[]; rawText?: string | null; parsedJson?: unknown; totalExperienceYears?: unknown;
   rawCurrentLocation?: string | null; preferredLocations?: string[]; noticePeriodDays?: number | null;
 }
+export function assessmentSourceVersion(job: AssessmentJob & { id?: string; updatedAt?: Date | string | null }, candidate: AssessmentCandidate & {
+  id?: string; updatedAt?: Date | string | null; resumeRecordId?: string | null;
+  resumeRecord?: { id?: string | null; fileHash?: string | null } | null;
+}, dictionary: AssessmentSkill[] = []) {
+  const stableDictionary = dictionary.map(row => ({
+    id: row.id,
+    canonicalName: row.canonicalName,
+    aliases: [...row.aliases].map(alias => alias.aliasName).sort(),
+  })).sort((a, b) => a.id - b.id);
+  return createHash('sha256').update(JSON.stringify({
+    engine: ASSESSMENT_ENGINE,
+    job: {
+      id: job.id, updatedAt: job.updatedAt,
+      skillsRequired: job.skillsRequired, secondarySkills: job.secondarySkills,
+      expMin: job.expMin, expMax: job.expMax, city: job.city, state: job.state,
+      country: job.country, workMode: job.workMode, degree: job.degree, noticePeriod: job.noticePeriod,
+    },
+    candidate: {
+      id: candidate.id, updatedAt: candidate.updatedAt,
+      resumeRecordId: candidate.resumeRecordId || candidate.resumeRecord?.id || null,
+      resumeFileHash: candidate.resumeRecord?.fileHash || null,
+      skills: candidate.skills,
+      totalExperienceYears: candidate.totalExperienceYears,
+      rawCurrentLocation: candidate.rawCurrentLocation,
+      preferredLocations: candidate.preferredLocations,
+      noticePeriodDays: candidate.noticePeriodDays,
+    },
+    dictionary: stableDictionary,
+  })).digest('hex');
+}
 export function normalizeTerm(value: string) { return value.toLowerCase().replace(/[^a-z0-9+#. ]/g, ' ').replace(/\s+/g, ' ').trim(); }
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item.trim()) : []; }
 function unique(values: string[]) { return [...new Map(values.map(value => [normalizeTerm(value), value])).values()].filter(value => normalizeTerm(value)); }
@@ -20,7 +50,7 @@ function textEvidence(term: string, text: string) {
   const match = new RegExp(`(^|[^a-z0-9+#])${escaped}([^a-z0-9+#]|$)`, 'i').exec(text);
   return match ? text.slice(Math.max(0, match.index - 65), match.index + match[0].length + 100).replace(/\s+/g, ' ').trim() : null;
 }
-export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandidate, dictionary: AssessmentSkill[] = []): CandidateAssessment {
+export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandidate, dictionary: AssessmentSkill[] = [], versionOverride?: string): CandidateAssessment {
   let parsed: any = candidate.parsedJson;
   if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch { parsed = null; } }
   const skills = unique([...strings(candidate.skills), ...strings(parsed?.skills),
@@ -88,7 +118,7 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   const measuredWeight = measured.reduce((sum, part) => sum + part.weight, 0);
   const possibleWeight = parts.reduce((sum, part) => sum + part.weight, 0);
   const result: CandidateAssessment = {
-    engine: ASSESSMENT_ENGINE, version: createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate, dictionary: dictionary.map(row => ({ ...row, aliases: [...row.aliases].sort((a, b) => a.aliasName.localeCompare(b.aliasName)) })).sort((a, b) => a.id - b.id) })).digest('hex'),
+    engine: ASSESSMENT_ENGINE, version: versionOverride || createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate, dictionary: dictionary.map(row => ({ ...row, aliases: [...row.aliases].sort((a, b) => a.aliasName.localeCompare(b.aliasName)) })).sort((a, b) => a.id - b.id) })).digest('hex'),
     calculatedAt: new Date().toISOString(), score: measuredWeight ? Math.round(measured.reduce((sum, part) => sum + part.score! * part.weight, 0) / measuredWeight) : null,
     coverage: possibleWeight ? Math.round(measuredWeight / possibleWeight * 100) : 0, criteria, breakdown: parts, candidateQualifications,
     additionalCandidateSkills: skills.filter(skill => ![...primary, ...secondary].some(required => resolver.resolve(required) === resolver.resolve(skill))),
