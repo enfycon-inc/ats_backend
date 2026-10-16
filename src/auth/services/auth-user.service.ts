@@ -133,8 +133,8 @@ export class AuthUserService {
     userRoleIds.forEach((rId) => { if (roleById[rId]) assignedRoleObjs.push(roleById[rId]); });
 
     const bestRoleObj = assignedRoleObjs.find(role => role.id === u.role_id) || assignedRoleObjs[0];
-    const roleName = bestRoleObj?.name || (u.role_id ? roleById[u.role_id]?.name : null) || 'RECRUITER';
-    const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || 'RECRUITER';
+    const roleName = bestRoleObj?.name || (u.role_id ? roleById[u.role_id]?.name : null) || null;
+    const systemRole = bestRoleObj?.system_role || (u.role_id ? roleById[u.role_id]?.system_role : null) || null;
     const baseRoleId = bestRoleObj?.base_role_id || (u.role_id ? roleById[u.role_id]?.base_role_id : null) || null;
 
     // Assigned dashboard perspectives must not depend on the branch-filtered role-management catalog.

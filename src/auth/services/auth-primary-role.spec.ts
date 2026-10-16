@@ -1,6 +1,22 @@
 import { AuthUserService } from './auth-user.service';
 
 describe('configured primary dashboard role', () => {
+  it('does not invent a recruiter role when no assigned role can be resolved', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [{ id: 'user', tenant_id: 'tenant', role_id: null, assigned_role_ids: [] }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+    const service = new AuthUserService({ query } as any, {} as any, {} as any);
+
+    const profile = await service.getProfile('user');
+
+    expect(profile.roleId).toBeNull();
+    expect(profile.roleName).toBeNull();
+    expect(profile.systemRole).toBeNull();
+    expect(profile.roles).toEqual([]);
+    expect(profile.assignedRoles).toEqual([]);
+  });
+
   it('returns the configured BDM role even when Branch Admin is also assigned', async () => {
     const query = jest.fn()
       .mockResolvedValueOnce({ rows: [{ id: 'user', tenant_id: 'tenant', role_id: 'bdm', assigned_role_ids: ['admin', 'bdm'] }] })

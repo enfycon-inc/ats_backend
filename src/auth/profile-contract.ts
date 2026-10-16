@@ -4,7 +4,7 @@ export interface ProfileDetailsInput {
   phone: string;
   designation?: string;
 }
-export interface AssignedProfileRole { id: string; name: string; }
+export interface AssignedProfileRole { id: string; name: string; systemRole?: string | null; }
 export interface StaffProfile {
   [key: string]: unknown;
   id: string;
@@ -16,7 +16,11 @@ export interface StaffProfile {
   avatar: string | null;
   profilePicture: string | null;
   assignedRoles: AssignedProfileRole[];
-  roleName?: string;
+  roleId?: string | null;
+  assignedRoleIds?: string[];
+  roleName?: string | null;
+  systemRole?: string | null;
+  activeRoleId?: string | null;
   podId?: string | null;
   podName?: string | null;
   branchName: string | null;
