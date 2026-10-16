@@ -4,6 +4,7 @@ import { CandidatesController } from './candidates.controller';
 import { CandidatesService } from './candidates.service';
 import { BulkCvProcessor } from './bulk-cv.processor';
 import { AuthModule } from '../auth/auth.module';
+import { ResumePreviewService } from './resume-preview.service';
 
 @Module({
   imports: [
@@ -11,7 +12,7 @@ import { AuthModule } from '../auth/auth.module';
     BullModule.registerQueue({ name: 'bulk_cv' }),
   ],
   controllers: [CandidatesController],
-  providers: [CandidatesService, BulkCvProcessor],
+  providers: [CandidatesService, BulkCvProcessor, ResumePreviewService],
   exports: [CandidatesService],
 })
 export class CandidatesModule {}

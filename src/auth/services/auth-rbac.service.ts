@@ -1,5 +1,5 @@
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
-  return [...new Set([...permissions, 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : [])])];
+  return [...new Set([...permissions, ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : [])])];
 }
 import {
   Injectable,
@@ -683,6 +683,7 @@ export class AuthRbacService {
       { id: 'job:accept_delegation', name: 'Accept Delegated Jobs for Your Operating Unit', group: 'Jobs Management' },
       { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates Management' },
       { id: 'candidate:view', name: 'View Candidates & Resume Bank', group: 'Candidates Management' },
+      { id: 'candidate:download_resume', name: 'Download Original Resume', group: 'Candidates Management' },
       { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:edit', name: 'Edit Submissions (General Notes & Comments)', group: 'Candidate Submissions & Sourcing' },

@@ -16,6 +16,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { resolveTenantId } from '../auth/utils/tenant-resolver';
 import { resolveBranchId } from '../auth/utils/branch-resolver';
+import { ForbiddenException } from '@nestjs/common';
+import { ResumePreviewService } from './resume-preview.service';
 
 @ApiTags('ATS Candidate Management')
 @Controller('api/candidates')
@@ -24,6 +26,7 @@ export class CandidatesController {
     private readonly candidatesService: CandidatesService,
     private readonly prisma: PrismaService,
     @InjectQueue('bulk_cv') private readonly bulkQueue: Queue,
+    private readonly resumePreview: ResumePreviewService,
   ) {}
 
   @Post()
@@ -288,11 +291,26 @@ export class CandidatesController {
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<void> {
+    if (!user.permissions?.includes('candidate:download_resume')) throw new ForbiddenException('Original resume download permission is required.');
     const activeTenantId = resolveTenantId(user, tenantId);
     const cv = await this.candidatesService.getResumeFile(id, activeTenantId);
     res.setHeader('Content-Type', cv.mime);
     res.setHeader('Content-Disposition', `inline; filename="${cv.filename.replace(/"/g, '')}"`);
     res.send(cv.data);
+  }
+
+  @Get(':id/resume-preview')
+  @UseGuards(JwtAuthGuard)
+  async previewResume(@Param('id', ParseUUIDPipe) id: string, @Query('page') requestedPage: string | undefined, @Res() res: Response, @CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId?: string) {
+    if (!user.permissions?.includes('candidate:view')) throw new ForbiddenException('Candidate view permission is required.');
+    const tenant = resolveTenantId(user, tenantId);
+    const page = requestedPage === undefined ? 0 : /^\d+$/.test(requestedPage) ? Number(requestedPage) : -1;
+    const file = await this.candidatesService.getResumeFile(id, tenant);
+    const result = await this.resumePreview.render(file, tenant, page);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (Buffer.isBuffer(result)) { res.type('image/png').send(result); }
+    else res.json(result);
   }
 
   @Get('dictionary/pending')

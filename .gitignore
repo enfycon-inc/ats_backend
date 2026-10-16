@@ -65,3 +65,6 @@ prisma/generated
 scratch/
 /public/image/logos/
 /memory
+.tmp-release-tests/
+/node-compile-cache
+/src/.tmp-assignment-tests/
