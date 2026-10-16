@@ -76,7 +76,7 @@ export class BranchesService {
 
   async findLocation(id: string, tenantId: string) {
     return this.prisma.branch.findFirst({ where: { id, tenantId },
-      select: { id: true, name: true, code: true, city: true, country: true } });
+      select: { id: true, name: true, code: true, city: true, country: true, allowPods: true } });
   }
 
   private parseJsonArray(value: any, defaultValue: string[]): string[] {
@@ -95,7 +95,7 @@ export class BranchesService {
 
   private formatBranch(b: any, members: BranchMember[] = []): BranchResponse {
     const podsCount = b._count?.pods ?? (Array.isArray(b.pods) ? b.pods.length : 0);
-    const allowPods = podsCount > 0 ? (b.allowPods !== false) : false;
+    const allowPods = b.allowPods !== false;
 
     const businessUnits: BusinessUnitSummary[] = Array.isArray(b.businessUnits)
       ? b.businessUnits.map((bu: any) => ({
