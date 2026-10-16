@@ -42,7 +42,14 @@ export class AuthEmailService {
   }) {
     const accountContextPromise = this.authQuery
       ? this.authQuery.query(
-          `SELECT bu.name AS unit_name, b.name AS branch_name
+          `SELECT bu.name AS unit_name, b.name AS branch_name,
+                  COALESCE(
+                    (SELECT string_agg(cr.name, ', ')
+                     FROM custom_roles cr
+                     WHERE cr.id = ANY(ARRAY[u.role_id] || COALESCE(u.assigned_role_ids, ARRAY[]::uuid[]))),
+                    (SELECT cr.name FROM custom_roles cr WHERE cr.id = u.role_id),
+                    u.requested_role
+                  ) AS role_name
            FROM users u
            LEFT JOIN business_units bu ON bu.id = u.business_unit_id
            LEFT JOIN branches b ON b.id = u.branch_id
@@ -87,7 +94,7 @@ export class AuthEmailService {
         tenantBranding,
         recipient: options.to,
         fullName: options.fullName,
-        role: options.roleName,
+        role: options.roleName || accountContext?.role_name,
         unit: accountContext?.unit_name,
         branch: accountContext?.branch_name,
         message: options.message,
@@ -106,6 +113,7 @@ export class AuthEmailService {
     fullName: string;
     tenantName: string;
     subdomain: string;
+    roleName?: string;
   }) {
     return this.sendAccountWelcomeEmail({
       ...options,
@@ -243,6 +251,64 @@ export class AuthEmailService {
         recipient: options.to,
         fullName: options.fullName,
         temporaryPassword: options.temporaryPassword,
+        loginUrl: workspaceEmailLogin(options.subdomain),
+      }),
+    });
+  }
+
+  async sendPodLeadAssignedEmail(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    podName: string;
+    branchName?: string;
+    unitName?: string;
+  }) {
+    const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'pod_lead_assigned',
+        workspace: options.tenantName,
+        tenantBranding,
+        recipient: options.to,
+        fullName: options.fullName,
+        podName: options.podName,
+        branch: options.branchName,
+        unit: options.unitName,
+        loginUrl: workspaceEmailLogin(options.subdomain),
+      }),
+    });
+  }
+
+  async sendRoleChangedAlert(options: {
+    tenantId: string;
+    to: string;
+    fullName: string;
+    tenantName: string;
+    subdomain: string;
+    newRoles: string;
+    previousRoles?: string;
+    branchName?: string;
+    unitName?: string;
+  }) {
+    const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
+    return this.systemMail.send({
+      tenantId: options.tenantId,
+      to: options.to,
+      ...renderSystemEmail({
+        event: 'role_changed_alert',
+        workspace: options.tenantName,
+        tenantBranding,
+        recipient: options.to,
+        fullName: options.fullName,
+        newRoles: options.newRoles,
+        previousRoles: options.previousRoles,
+        branch: options.branchName,
+        unit: options.unitName,
         loginUrl: workspaceEmailLogin(options.subdomain),
       }),
     });

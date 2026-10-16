@@ -5,11 +5,13 @@ import {
   ConflictException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePodDto } from './dtos/create-pod.dto';
 import { UpdatePodDto } from './dtos/update-pod.dto';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { AuthEmailService } from '../auth/services/auth-email.service';
 
 export interface PodMember {
   avatar?: string | null;
@@ -40,7 +42,59 @@ export interface PodResponse {
 export class PodsService {
   private readonly logger = new Logger(PodsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly emailService?: AuthEmailService,
+  ) {}
+
+  private async notifyPodLeadAssigned(params: {
+    podHeadId: string;
+    podName: string;
+    tenantId: string;
+    branchId?: string | null;
+    businessUnitId?: string | null;
+  }) {
+    if (!this.emailService) return;
+    try {
+      const [user, tenant, branch, unit] = await Promise.all([
+        this.prisma.user.findFirst({
+          where: { id: params.podHeadId, tenantId: params.tenantId },
+          select: { email: true, fullName: true },
+        }),
+        this.prisma.tenant.findFirst({
+          where: { id: params.tenantId },
+          select: { name: true, domain: true },
+        }),
+        params.branchId
+          ? this.prisma.branch.findFirst({
+              where: { id: params.branchId, tenantId: params.tenantId },
+              select: { name: true },
+            })
+          : Promise.resolve(null),
+        params.businessUnitId
+          ? this.prisma.businessUnit.findFirst({
+              where: { id: params.businessUnitId, tenantId: params.tenantId },
+              select: { name: true },
+            })
+          : Promise.resolve(null),
+      ]);
+
+      if (!user?.email || !tenant?.name) return;
+
+      await this.emailService.sendPodLeadAssignedEmail({
+        tenantId: params.tenantId,
+        to: user.email,
+        fullName: user.fullName || 'Team Member',
+        tenantName: tenant.name,
+        subdomain: tenant.domain || '',
+        podName: params.podName,
+        branchName: branch?.name,
+        unitName: unit?.name,
+      });
+    } catch (err: any) {
+      this.logger.warn(`Failed to send Pod Lead assignment email: ${err?.message}`);
+    }
+  }
 
   /**
    * Helper: Promotes a user to the POD_LEAD-archetype role for their branch.
@@ -586,7 +640,20 @@ export class PodsService {
       }
 
       return pod.id;
-    }).then((podId) => this.findOne(podId, tenantId));
+    }).then(async (podId) => {
+      if (dto.podHeadId) {
+        this.notifyPodLeadAssigned({
+          podHeadId: dto.podHeadId,
+          podName: dto.name.trim(),
+          tenantId,
+          branchId: effectiveBranchId,
+          businessUnitId: effectiveBusinessUnitId,
+        }).catch((err) => {
+          this.logger.warn(`Failed to notify pod lead: ${err?.message}`);
+        });
+      }
+      return this.findOne(podId, tenantId);
+    });
   }
 
   /**
@@ -854,6 +921,8 @@ export class PodsService {
       throw new BadRequestException('Recruitment pods must belong to a branch office.');
     }
 
+    const effectivePodName = dto.name !== undefined && dto.name.trim() ? dto.name.trim() : existingPod.name;
+
     return await this.prisma.$transaction(async (tx) => {
       // 1. Check name uniqueness
       if (dto.name && dto.name.trim().toUpperCase() !== existingPod.name.toUpperCase()) {
@@ -957,7 +1026,20 @@ export class PodsService {
       }
 
       return id;
-    }).then((podId) => this.findOne(podId, tenantId));
+    }).then(async (podId) => {
+      if (dto.podHeadId && dto.podHeadId !== existingPod.podHeadId) {
+        this.notifyPodLeadAssigned({
+          podHeadId: dto.podHeadId,
+          podName: effectivePodName,
+          tenantId,
+          branchId,
+          businessUnitId,
+        }).catch((err) => {
+          this.logger.warn(`Failed to notify pod lead: ${err?.message}`);
+        });
+      }
+      return this.findOne(podId, tenantId);
+    });
   }
 
   /**

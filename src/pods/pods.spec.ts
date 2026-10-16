@@ -539,5 +539,92 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
       });
       expect(prismaMock.pod.delete).toHaveBeenCalledWith({ where: { id: podId } });
     });
+
+    it('dispatches pod_lead_assigned email notification when pod lead is assigned', async () => {
+      const emailServiceMock = {
+        sendPodLeadAssignedEmail: jest.fn().mockResolvedValue({ status: 'accepted' }),
+      };
+      const serviceWithEmail = new PodsService(prismaMock, emailServiceMock as any);
+      jest.spyOn(serviceWithEmail, 'findOne').mockResolvedValue({} as any);
+
+      prismaMock.pod.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === podId) {
+          return { id: podId, name: 'Backend Pod', podHeadId: formerLeadId, tenantId, businessUnitId: unitId, branchId };
+        }
+        return null;
+      });
+      prismaMock.user.findFirst.mockImplementation(async ({ where }: any) => {
+        if (where?.id === newLeadId) {
+          return {
+            id: newLeadId,
+            email: 'newlead@enfycon.com',
+            fullName: 'New Lead',
+            roleId: recruiterRoleId,
+            assignedRoleIds: [recruiterRoleId],
+            branchId,
+          };
+        }
+        if (where?.id === formerLeadId) {
+          return {
+            id: formerLeadId,
+            email: 'former@enfycon.com',
+            fullName: 'Former Lead',
+            roleId: podLeadRoleId,
+            assignedRoleIds: [recruiterRoleId, podLeadRoleId],
+            branchId,
+          };
+        }
+        return null;
+      });
+      prismaMock.user.findMany.mockResolvedValue([
+        {
+          id: newLeadId,
+          fullName: 'New Lead',
+          email: 'newlead@enfycon.com',
+          isActive: true,
+          isApproved: true,
+          businessUnitId: unitId,
+          podId: null,
+          roleId: recruiterRoleId,
+          assignedRoleIds: [recruiterRoleId],
+          customRole: {
+            id: recruiterRoleId,
+            name: 'Recruiter',
+            systemRole: { systemKey: 'RECRUITER' },
+          },
+        },
+      ]);
+      prismaMock.customRole.findMany.mockResolvedValue([
+        {
+          id: recruiterRoleId,
+          name: 'Recruiter',
+          tenantId,
+          systemRole: { systemKey: 'RECRUITER' },
+        },
+        {
+          id: podLeadRoleId,
+          name: 'Pod Lead',
+          tenantId,
+          systemRole: { systemKey: 'POD_LEAD' },
+        },
+      ]);
+      prismaMock.tenant = { findFirst: jest.fn().mockResolvedValue({ name: 'Enfycon', domain: 'enfycon' }) };
+      prismaMock.branch = { findFirst: jest.fn().mockResolvedValue({ name: 'Kolkata' }) };
+      prismaMock.businessUnit.findFirst = jest.fn().mockResolvedValue({ id: unitId, name: 'India Staffing', branchId });
+      prismaMock.pod.update.mockResolvedValue({});
+      prismaMock.user.update.mockResolvedValue({});
+
+      await serviceWithEmail.update(podId, { podHeadId: newLeadId }, tenantId);
+
+      expect(emailServiceMock.sendPodLeadAssignedEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenantId,
+          to: 'newlead@enfycon.com',
+          fullName: 'New Lead',
+          podName: 'Backend Pod',
+          tenantName: 'Enfycon',
+        }),
+      );
+    });
   });
 });

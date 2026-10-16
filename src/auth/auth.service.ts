@@ -164,6 +164,8 @@ export class AuthService {
   // ─── Email ───────────────────────────────────────────────────────────────────
   sendWelcomeEmail(options: any) { return this.emailService.sendWelcomeEmail(options); }
   sendMemberCredentialsEmail(options: any) { return this.emailService.sendMemberCredentialsEmail(options); }
+  sendPodLeadAssignedEmail(options: any) { return this.emailService.sendPodLeadAssignedEmail(options); }
+  sendRoleChangedAlert(options: any) { return this.emailService.sendRoleChangedAlert(options); }
 
   // ─── Diagnostic ──────────────────────────────────────────────────────────────
   async diagnostic() {

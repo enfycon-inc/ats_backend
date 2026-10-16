@@ -336,11 +336,63 @@ export class AuthUserService {
     return { success: true, message: `User ${targetUser.full_name} (${targetUser.email}) has been permanently deleted.` };
   }
 
+  private async notifyUserRoleChanged(params: {
+    userId: string;
+    tenantId: string;
+    to: string;
+    fullName: string;
+    newRoleIds: string[];
+    prevRoleIds: string[];
+    branchId?: string | null;
+    businessUnitId?: string | null;
+  }) {
+    if (!this.emailService) return;
+    try {
+      const [tenantRes, newRolesRes, prevRolesRes, branchRes, unitRes] = await Promise.all([
+        this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [params.tenantId]),
+        params.newRoleIds.length > 0
+          ? this.authQuery.query('SELECT name FROM custom_roles WHERE id = ANY($1::uuid[])', [params.newRoleIds])
+          : Promise.resolve({ rows: [] }),
+        params.prevRoleIds.length > 0
+          ? this.authQuery.query('SELECT name FROM custom_roles WHERE id = ANY($1::uuid[])', [params.prevRoleIds])
+          : Promise.resolve({ rows: [] }),
+        params.branchId
+          ? this.authQuery.query('SELECT name FROM branches WHERE id = $1 LIMIT 1', [params.branchId])
+          : Promise.resolve({ rows: [] }),
+        params.businessUnitId
+          ? this.authQuery.query('SELECT name FROM business_units WHERE id = $1 LIMIT 1', [params.businessUnitId])
+          : Promise.resolve({ rows: [] }),
+      ]);
+
+      const tenantRow = tenantRes.rows[0] || {};
+      const newRoleNames = Array.from(new Set(newRolesRes.rows.map((r: any) => r.name))).join(', ');
+      const prevRoleNames = Array.from(new Set(prevRolesRes.rows.map((r: any) => r.name))).join(', ');
+      const branchName = branchRes.rows[0]?.name;
+      const unitName = unitRes.rows[0]?.name;
+
+      if (!tenantRow.name || !newRoleNames) return;
+
+      await this.emailService.sendRoleChangedAlert({
+        tenantId: params.tenantId,
+        to: params.to,
+        fullName: params.fullName || 'Team Member',
+        tenantName: tenantRow.name,
+        subdomain: tenantRow.domain || '',
+        newRoles: newRoleNames,
+        previousRoles: prevRoleNames || undefined,
+        branchName,
+        unitName,
+      });
+    } catch (err: any) {
+      this.logger.warn(`Failed to dispatch role changed email: ${err?.message}`);
+    }
+  }
+
   async updateUserRoles(userId: string, roles: string[], requesterRoles: string[]) {
     const normalized = roles.map((r) => r.toUpperCase());
 
     const userRes = await this.authQuery.query(
-      `SELECT u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, sr.system_key as system_role
+      `SELECT u.email, u.full_name, u.branch_id, u.business_unit_id, u.tenant_id, u.role_id, u.assigned_role_ids, cr.name as role_name, sr.system_key as system_role
        FROM users u
        LEFT JOIN custom_roles cr ON cr.id = u.role_id
        LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
@@ -384,6 +436,24 @@ export class AuthUserService {
       `UPDATE users SET role_id = $1::uuid, assigned_role_ids = $2::uuid[], updated_at = NOW() WHERE id = $3::uuid`,
       [roleId, roleIds, userId],
     );
+
+    const prevIds = new Set([targetUser.role_id, ...(targetUser.assigned_role_ids || [])].filter(Boolean));
+    const nextIds = new Set([roleId, ...roleIds].filter(Boolean));
+    const rolesChanged = prevIds.size !== nextIds.size || [...prevIds].some(id => !nextIds.has(id));
+    if (rolesChanged && this.emailService) {
+      this.notifyUserRoleChanged({
+        userId,
+        tenantId,
+        to: targetUser.email,
+        fullName: targetUser.full_name,
+        newRoleIds: Array.from(nextIds) as string[],
+        prevRoleIds: Array.from(prevIds) as string[],
+        branchId: targetUser.branch_id,
+        businessUnitId: targetUser.business_unit_id,
+      }).catch((err) => {
+        this.logger.warn(`Failed to send role changed email: ${err?.message}`);
+      });
+    }
     return { message: 'User roles updated successfully.', roles: cleanRoleNames.length > 0 ? cleanRoleNames : normalized };
   }
 
@@ -550,6 +620,26 @@ export class AuthUserService {
         `UPDATE users SET first_name = $1, last_name = $2, full_name = $3, email = $4, branch_id = $5::uuid, business_unit_id = $6::uuid, job_reviewer_id = $7::uuid, role_id = $8::uuid, assigned_role_ids = $9::uuid[], city = $10::ats."UserCity", updated_at = NOW() WHERE id = $11::uuid AND tenant_id = $12::uuid`,
         [...updateFields, dto.city, userId, user.tenant_id]
       );
+    }
+
+    if (hasRoleUpdates && this.emailService) {
+      const prevIds = new Set([user.role_id, ...(user.assigned_role_ids || [])].filter(Boolean));
+      const nextIds = new Set([primaryRoleId, ...Array.from(combinedRoleIds)].filter(Boolean));
+      const rolesChanged = prevIds.size !== nextIds.size || [...prevIds].some(id => !nextIds.has(id));
+      if (rolesChanged) {
+        this.notifyUserRoleChanged({
+          userId,
+          tenantId: user.tenant_id,
+          to: email,
+          fullName,
+          newRoleIds: Array.from(nextIds) as string[],
+          prevRoleIds: Array.from(prevIds) as string[],
+          branchId,
+          businessUnitId,
+        }).catch((err) => {
+          this.logger.warn(`Failed to send role changed email: ${err?.message}`);
+        });
+      }
     }
 
     if (dto.password && dto.password.length >= 8) {
@@ -769,12 +859,14 @@ async approveTenantUser(
     if (targetUser.requested_role) {
       try {
         if (!this.emailService) throw new Error('Approval email service unavailable');
+        const approvedRoleName = assignedRoleId ? (await this.authQuery.query('SELECT name FROM custom_roles WHERE id = $1 LIMIT 1', [assignedRoleId]).catch(() => undefined))?.rows?.[0]?.name : undefined;
         await this.emailService.sendRoleApprovalWelcomeEmail({
           tenantId: targetUser.tenant_id,
           to: targetUser.email,
           fullName: targetUser.full_name || 'Team Member',
           tenantName: targetUser.tenant_name || 'Workspace',
           subdomain: targetUser.tenant_domain || '',
+          roleName: approvedRoleName || targetUser.requested_role,
         });
         emailNotification = { status: 'accepted' };
       } catch (err: any) {

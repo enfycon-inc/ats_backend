@@ -33,6 +33,7 @@ describe('approval event delivery', () => {
       fullName: 'User',
       tenantName: 'Workspace',
       subdomain: 'workspace',
+      roleName: 'Delivery Head',
     });
     expect(result.emailNotification).toEqual({ status: 'accepted' });
   });
