@@ -1,6 +1,6 @@
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
-  return [...new Set([...permissions, ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), ...(key === 'ACCOUNT_MANAGER' ? ['submission:view_all', 'submission:edit_all'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : [])])];
+  return [...new Set([...permissions, ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : [])])];
 }
 import {
   Injectable,

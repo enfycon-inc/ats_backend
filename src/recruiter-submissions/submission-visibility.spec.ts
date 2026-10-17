@@ -61,10 +61,10 @@ describe('submission visibility and statistics', () => {
     expect(query.mock.calls[1].slice(-2)).toEqual([10, 0]);
   });
 
-  it('preserves All access granted by submission:view without requiring a named role', async () => {
+  it('does not interpret submission:view as tenant-wide access', async () => {
     await service.findAll('tenant-a', user, { view: 'all' });
-    expect(query.mock.calls[0][0]).not.toContain('s.recruiter_id = $2');
-    expect(query.mock.calls[0].slice(1)).toEqual(['tenant-a']);
+    expect(query.mock.calls[0][0]).toContain('(s.recruiter_id = $2 OR r.job_reviewer_id = $2)');
+    expect(query.mock.calls[0].slice(1)).toEqual(['tenant-a', 'recruiter-a']);
   });
 
   it('defaults account managers to submissions for jobs they own', async () => {

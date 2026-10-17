@@ -104,6 +104,94 @@ export class RecruiterSubmissionsService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  async findCalendarEvents(tenantId: string, user: AuthUser, branchId: string | null, startText?: string, endText?: string) {
+    if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');
+    const start = startText ? new Date(startText) : new Date();
+    const end = endText ? new Date(endText) : new Date(start.getTime() + 32 * 24 * 60 * 60 * 1000);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start || end.getTime() - start.getTime() > 93 * 24 * 60 * 60 * 1000) {
+      throw new BadRequestException('Calendar date range must be valid and no longer than 93 days.');
+    }
+
+    const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+    const has = (...keys: string[]) => permissions.includes('*') || keys.some(key => permissions.includes(key));
+    if (!has('submission:view', 'submission:view_all', 'tenant:manage', 'tenant:settings', 'platform:manage')) {
+      throw new ForbiddenException('Missing submission:view permission.');
+    }
+
+    const params: any[] = [tenantId, start, end];
+    let scopeSql = '';
+    const hasTenantWideScope = has('tenant:manage', 'tenant:settings', 'platform:manage');
+    if (!hasTenantWideScope) {
+      if (has('branch_admin:manage')) {
+        const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true } });
+        const assignedBranchId = membership?.branchId;
+        if (!assignedBranchId || (branchId && branchId !== assignedBranchId)) throw new ForbiddenException('A current branch assignment is required.');
+        params.push(assignedBranchId);
+        scopeSql = ` AND j.branch_id = $${params.length}::uuid`;
+      } else if (has('unit_admin:manage')) {
+        const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } });
+        if (!membership?.branchId || !membership.businessUnitId || (branchId && branchId !== membership.branchId)) throw new ForbiddenException('A current branch and unit assignment is required.');
+        params.push(membership.branchId, membership.businessUnitId);
+        scopeSql = ` AND j.branch_id = $${params.length - 1}::uuid AND j.business_unit_id = $${params.length}::uuid`;
+      } else if (!has('submission:view_all')) {
+        const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+        params.push(user.dbId);
+        scopeSql = isAccountManager
+          ? ` AND j.account_manager_id = $${params.length}::uuid`
+          : ` AND (s.recruiter_id = $${params.length}::uuid OR r.job_reviewer_id = $${params.length}::uuid)`;
+      }
+    }
+
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(`
+      SELECT s.id AS submission_id, s.updated_at, s.final_status,
+             j.id AS job_id, j.job_code, j.job_title, j.account_manager_id,
+             j.job_timezone, j.branch_id,
+             c.full_name AS candidate_name,
+             r.full_name AS recruiter_name,
+             rounds.round_key, rounds.round_status, rounds.interview_date,
+             rounds.interviewer, s.meeting_link
+      FROM ats.recruiter_submissions s
+      JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id
+      JOIN ats.candidates c ON c.id = s.candidate_id
+      LEFT JOIN ats.users r ON r.id = s.recruiter_id AND r.tenant_id = s.tenant_id
+      CROSS JOIN LATERAL (VALUES
+        ('L1', s.l1_status::text, s.l1_date, s.l1_interviewer),
+        ('L2', s.l2_status::text, s.l2_date, s.l2_interviewer),
+        ('L3', s.l3_status::text, s.l3_date, s.l3_interviewer)
+      ) AS rounds(round_key, round_status, interview_date, interviewer)
+      WHERE s.tenant_id = $1::uuid
+        AND rounds.interview_date >= $2::timestamptz
+        AND rounds.interview_date < $3::timestamptz
+        AND rounds.round_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'REJECTED')
+        AND s.final_status NOT IN ('PENDING_APPROVAL', 'WITHDRAWN')
+        AND (rounds.interview_date < CURRENT_TIMESTAMP OR s.final_status NOT IN ('SELECTED', 'OFFER', 'JOIN', 'NOT_SELECTED'))
+        ${scopeSql}
+      ORDER BY rounds.interview_date ASC, s.id ASC, rounds.round_key ASC
+      LIMIT 5000
+    `, ...params);
+
+    const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+    const canSchedule = has('submission:schedule_interview');
+    return rows.map((row: any) => ({
+      id: `${row.submission_id}:${String(row.round_key).toLowerCase()}`,
+      submissionId: row.submission_id,
+      title: `${row.candidate_name || 'Candidate'} · ${row.job_title || row.job_code || 'Job'} · ${row.round_key}`,
+      start: new Date(row.interview_date).toISOString(),
+      status: row.round_status,
+      round: row.round_key,
+      candidateName: row.candidate_name,
+      jobId: row.job_id,
+      jobCode: row.job_code,
+      jobTitle: row.job_title,
+      recruiterName: row.recruiter_name,
+      interviewer: row.interviewer,
+      meetingLink: row.meeting_link,
+      timezone: row.job_timezone,
+      updatedAt: row.updated_at,
+      canManage: canSchedule && ['SCHEDULED', 'AWAITING_FEEDBACK'].includes(row.round_status) && (!isAccountManager || row.account_manager_id === user.dbId || has('submission:edit_all')),
+    }));
+  }
+
   /**
    * Create a new recruiter submission
    */
@@ -449,28 +537,27 @@ export class RecruiterSubmissionsService {
       params.push(membership.branchId, membership.businessUnitId);
       paramIndex += 2;
     }
+    if (userPerms.includes('branch_admin:manage') && !userPerms.some(p => ['tenant:manage', 'tenant:settings', 'platform:manage', '*'].includes(p))) {
+      const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true } });
+      if (!membership?.branchId || (filters.branchId && filters.branchId !== membership.branchId)) throw new ForbiddenException('A current branch assignment is required.');
+      baseSql += ` AND j.tenant_id = $1 AND j.branch_id = $${paramIndex}::uuid`;
+      params.push(membership.branchId);
+      paramIndex++;
+    }
     const canViewAll =
       userPerms.includes('*') ||
       userPerms.includes('tenant:manage') ||
       userPerms.includes('tenant:settings') ||
       userPerms.includes('platform:manage') ||
-      (isAccountManager
-        ? userPerms.includes('submission:view_all')
-        : userPerms.includes('submission:view') ||
-          userPerms.includes('submission:audit_rounds') ||
-          userPerms.includes('submission:audit_l1') ||
-          userPerms.includes('submission:audit_l2') ||
-          userPerms.includes('submission:audit_l3') ||
-          userPerms.includes('submission:internal_screening') ||
-          userPerms.includes('submission:schedule_interview') ||
-          userPerms.includes('submission:final_status') ||
-          userPerms.includes('submission:approve_client'));
+      userPerms.includes('submission:view_all') ||
+      userPerms.includes('branch_admin:manage') ||
+      userPerms.includes('unit_admin:manage');
 
     const view = filters.view || (isAccountManager ? 'my' : 'all');
     if (!['my', 'pod', 'all'].includes(view)) {
       throw new BadRequestException('Invalid submission view.');
     }
-    if (!canViewAll && !userPerms.includes('submission:create') && !(isAccountManager && userPerms.includes('submission:view'))) {
+    if (!canViewAll && !userPerms.includes('submission:create') && !userPerms.includes('submission:view')) {
       throw new ForbiddenException('Missing submission access permission.');
     }
     if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');
@@ -769,7 +856,9 @@ export class RecruiterSubmissionsService {
    */
   async findOne(id: string, tenantId: string, user?: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
     if (user) {
-      const result = await this.findAll(tenantId, user, { submissionId: id, branchId: branchId || undefined, limit: 1 });
+      const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+      const hasScopedAllAccess = permissions.some(permission => ['*', 'submission:view_all', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage'].includes(permission));
+      const result = await this.findAll(tenantId, user, { submissionId: id, branchId: branchId || undefined, view: hasScopedAllAccess ? 'all' : undefined, limit: 1 });
       if (!result.data.length) throw new NotFoundException('Submission not found in your accessible workspace.');
       return result.data[0];
     }

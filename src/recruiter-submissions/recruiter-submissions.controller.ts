@@ -121,6 +121,20 @@ export class RecruiterSubmissionsController {
     return this.service.getTrackerStats(tid, user, { view, branchId: bid || undefined, rangeDays: parsedRange });
   }
 
+  @Get('calendar-events')
+  @ApiOperation({ summary: 'List interview events visible in the authenticated user’s submission scope' })
+  async calendarEvents(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('start') start?: string,
+    @Query('end') end?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    const bid = resolveBranchId(user, branchHeaderId);
+    return this.service.findCalendarEvents(tid, user, bid, start, end);
+  }
+
   @Get('custom-remarks')
   @ApiOperation({
     summary: 'List Tenant & Branch Custom Stage Remarks Templates',
