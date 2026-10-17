@@ -1156,7 +1156,14 @@ export class JobsService {
     }
 
     // ── Sub-view Filter Parameters (direct, pod, unassigned) ─────────────────
-    if (filter === 'sourcing') {
+    if (filter === 'dashboard') {
+      // The account-manager dashboard is intentionally narrower than the shared
+      // job catalog: it only aggregates jobs owned by the authenticated user.
+      if (!user?.dbId) return [];
+      sql += ` AND j.account_manager_id = $${paramIndex}::uuid`;
+      params.push(user.dbId);
+      paramIndex++;
+    } else if (filter === 'sourcing') {
       if (!user?.dbId) return [];
       sql += ` AND UPPER(j.status) = 'ACTIVE'
         AND (j.approval_status = 'APPROVED' OR j.approval_status IS NULL)
