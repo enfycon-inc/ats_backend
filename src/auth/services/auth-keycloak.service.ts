@@ -19,12 +19,19 @@ export class AuthKeycloakService {
 
   async assertSessionActive(claims: { sub?: string; session_state?: string }) {
     if (!claims?.sub) throw new UnauthorizedException('Invalid session identity.');
-    const result = await this.authQuery.query(
-      claims.session_state
-        ? 'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 AND session_id = $2 LIMIT 1'
-        : 'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 LIMIT 1',
-      claims.session_state ? [claims.sub, claims.session_state] : [claims.sub],
-    );
+    let result;
+    try {
+      result = await this.authQuery.query(
+        claims.session_state
+          ? 'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 AND session_id = $2 LIMIT 1'
+          : 'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 LIMIT 1',
+        claims.session_state ? [claims.sub, claims.session_state] : [claims.sub],
+      );
+    } catch (error) {
+      const databaseCode = (error as { code?: string })?.code || 'unknown';
+      this.logger.error(`Session activity lookup failed: database_code=${databaseCode}`);
+      throw error;
+    }
     assertNotRevoked(claims, !!result?.rows.length);
   }
 

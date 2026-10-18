@@ -640,6 +640,7 @@ export class AuthCoreService {
 
   private async refreshVerifiedBrokerSession(brokerClaims: any, refreshToken?: string) {
     if (!refreshToken || typeof refreshToken !== 'string') {
+      this.logger.warn('[SSO renewal] rejected: missing_broker_refresh_token');
       throw new ServiceUnavailableException('The identity provider did not issue a session renewal token. Please try again or contact your administrator.');
     }
 

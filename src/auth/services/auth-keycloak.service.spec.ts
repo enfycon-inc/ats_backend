@@ -34,3 +34,20 @@ describe('Keycloak role synchronization after role removal', () => {
     expect(result.permissions).toEqual([]);
   });
 });
+
+describe('Keycloak session revocation guard', () => {
+  it('logs a safe database code when the session revocation lookup fails', async () => {
+    const databaseError = Object.assign(new Error('relation is unavailable'), { code: '42P01' });
+    const query = jest.fn().mockRejectedValue(databaseError);
+    const service = new AuthKeycloakService({ query } as any);
+    const errorLog = jest.spyOn((service as any).logger, 'error');
+
+    await expect(service.assertSessionActive({ sub: 'user-id', session_state: 'session-id' })).rejects.toBe(databaseError);
+    expect(query).toHaveBeenCalledWith(
+      'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 AND session_id = $2 LIMIT 1',
+      ['user-id', 'session-id'],
+    );
+    expect(errorLog).toHaveBeenCalledWith('Session activity lookup failed: database_code=42P01');
+    expect(errorLog.mock.calls.flat().join(' ')).not.toContain('user-id');
+  });
+});
