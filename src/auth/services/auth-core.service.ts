@@ -308,7 +308,7 @@ export class AuthCoreService {
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', dto.password);
-    if (dto.rememberMe === true) params.append('scope', 'offline_access');
+    params.append('scope', 'openid profile email offline_access');
 
     try {
       let res = await fetch(tokenUrl, { method: 'POST', headers: this.sessionTransportHeaders(), body: params.toString() });
@@ -363,7 +363,7 @@ export class AuthCoreService {
 
     if (!keycloakToken) throw new UnauthorizedException('Invalid email or password.');
     if (!refreshToken) throw new ServiceUnavailableException('The identity provider did not issue a session renewal token. Please try again or contact your administrator.');
-    if (dto.rememberMe === true && !issuedScope.split(/\s+/).includes('offline_access')) {
+    if (!issuedScope.split(/\s+/).includes('offline_access')) {
       throw new ServiceUnavailableException('The identity provider did not grant offline access. Please try again or contact your administrator.');
     }
 
@@ -409,6 +409,9 @@ export class AuthCoreService {
 
     if (res && res.ok) {
       const tokenData = await res.json();
+      // Keycloak validated the refresh token. Check the signed response's
+      // original authentication time to stop refreshes racing an admin logout.
+      await this.keycloakService.assertSessionActive(this.decodeTokenPayload(tokenData.access_token));
       return {
         accessToken: tokenData.access_token,
         refreshToken: tokenData.refresh_token || refreshToken,
@@ -913,7 +916,7 @@ export class AuthCoreService {
     if (clientSecret) params.append('client_secret', clientSecret);
     params.append('username', cleanEmail);
     params.append('password', ssoInternalPassword);
-    if (dto.rememberMe === true) params.append('scope', 'offline_access');
+    params.append('scope', 'openid profile email offline_access');
 
     let keycloakToken: string | null = null;
     let refreshToken: string | null = null;
@@ -957,7 +960,7 @@ export class AuthCoreService {
 
     if (!keycloakToken) throw new UnauthorizedException('Authentication failed with identity provider.');
     if (!refreshToken) throw new ServiceUnavailableException('The identity provider did not issue a session renewal token. Please try again or contact your administrator.');
-    if (dto.rememberMe === true && !issuedScope.split(/\s+/).includes('offline_access')) {
+    if (!issuedScope.split(/\s+/).includes('offline_access')) {
       throw new ServiceUnavailableException('The identity provider did not grant offline access. Please try again or contact your administrator.');
     }
 

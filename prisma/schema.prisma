@@ -18,6 +18,16 @@ enum UserCity {
   @@schema("ats")
 }
 
+model SessionRevocation {
+  keycloakId    String   @map("keycloak_id") @db.VarChar(255)
+  sessionId     String   @map("session_id") @db.VarChar(255)
+  updatedAt     DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@id([keycloakId, sessionId])
+  @@map("session_revocations")
+  @@schema("ats")
+}
+
 model Tenant {
   staffProfiles             UserProfile[]
   staffPhotos               UserPhoto[]

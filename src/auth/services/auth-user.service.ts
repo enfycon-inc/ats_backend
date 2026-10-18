@@ -337,6 +337,33 @@ export class AuthUserService {
     return { success: true, message: `User ${targetUser.full_name} (${targetUser.email}) has been permanently deleted.` };
   }
 
+  async logoutUserSessions(userId: string, requester: AuthUser) {
+    const permissions = requester.permissions || [];
+    const platform = permissions.includes('*') || permissions.includes('platform:manage');
+    if (!platform && !permissions.includes('user:manage')) throw new ForbiddenException('Missing user management permission.');
+    const result = await this.authQuery.query<{
+      id: string; tenant_id: string; branch_id: string | null; business_unit_id: string | null; keycloak_id: string | null;
+    }>('SELECT id, tenant_id, branch_id, business_unit_id, keycloak_id FROM users WHERE id = $1', [userId]);
+    const target = result.rows[0];
+    if (!target || target.tenant_id !== requester.tenantId) throw new NotFoundException('User not found in the current workspace.');
+    validateBranchAccess(requester, target.branch_id, 'end user sessions');
+    const tenantWide = platform || permissions.includes('tenant:manage') || permissions.includes('tenant:settings');
+    if (!tenantWide && !permissions.includes('branch_admin:manage') &&
+        (!requester.businessUnitId || target.business_unit_id !== requester.businessUnitId)) {
+      throw new ForbiddenException('You can only end sessions for users in your business unit.');
+    }
+    if (!target.keycloak_id) throw new BadRequestException('This user has no linked sign-in identity.');
+    // Keycloak revocation applies to an identity across all devices/workspaces.
+    // A scoped administrator must not revoke someone else's tenant membership.
+    if (!platform) {
+      const other = await this.authQuery.query('SELECT id FROM users WHERE keycloak_id = $1 AND tenant_id <> $2 LIMIT 1', [target.keycloak_id, requester.tenantId]);
+      if (other.rows.length) throw new ForbiddenException('This identity belongs to multiple workspaces. A platform administrator must end its sessions.');
+    }
+    await this.keycloakService.revokeUserSessions(target.keycloak_id);
+    this.logger.log(`User sessions ended: actor=${requester.dbId} target=${target.id} tenant=${target.tenant_id}`);
+    return { success: true, message: 'All sessions ended. The user must sign in again.' };
+  }
+
   private async notifyUserRoleChanged(params: {
     userId: string;
     tenantId: string;

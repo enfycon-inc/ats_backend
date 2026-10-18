@@ -298,6 +298,16 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.setUserActive(userId, body.isActive, currentUser.dbId, currentUser);
   }
 
+  @Post('users/:id/logout-sessions')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'End all sessions for a user in the current management scope' })
+  async logoutUserSessions(@Param('id', new ParseUUIDPipe()) userId: string, @CurrentUser() currentUser: AuthUser) {
+    return this.authService.logoutUserSessions(userId, currentUser);
+  }
+
   // â”€â”€â”€ DELETE /api/auth/users/:id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Delete('users/:id')
   @UseGuards(JwtAuthGuard, PermissionsGuard)

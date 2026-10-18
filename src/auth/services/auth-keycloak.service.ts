@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { AuthQueryService } from './auth-query.service';
+import { assertNotRevoked } from '../session-policy';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -15,6 +16,60 @@ export class AuthKeycloakService {
   private lastIdentityProviderError: string | null = null;
 
   constructor(private readonly authQuery: AuthQueryService) {}
+
+  async assertSessionActive(claims: { sub?: string; session_state?: string }) {
+    if (!claims?.sub) throw new UnauthorizedException('Invalid session identity.');
+    const result = await this.authQuery.query(
+      claims.session_state
+        ? 'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 AND session_id = $2 LIMIT 1'
+        : 'SELECT 1 FROM ats.session_revocations WHERE keycloak_id = $1 LIMIT 1',
+      claims.session_state ? [claims.sub, claims.session_state] : [claims.sub],
+    );
+    assertNotRevoked(claims, !!result?.rows.length);
+  }
+
+  async revokeUserSessions(keycloakId: string) {
+    try {
+      await this.authQuery.query("DELETE FROM ats.session_revocations WHERE updated_at < NOW() - INTERVAL '1 day'");
+      const adminToken = await this.getKeycloakAdminToken();
+      if (!adminToken) throw new Error('Admin authentication unavailable');
+      const issuer = process.env.KEYCLOAK_ISSUER;
+      const clientId = process.env.KEYCLOAK_CLIENT_ID;
+      if (!issuer || !clientId) throw new Error('Identity provider configuration missing');
+      const realm = new URL(issuer).pathname.split('/realms/')[1];
+      if (!realm) throw new Error('Invalid identity provider realm');
+      const realmBase = `${this.getKeycloakAdminBaseUrl()}/admin/realms/${encodeURIComponent(realm)}`;
+      const base = `${realmBase}/users/${encodeURIComponent(keycloakId)}`;
+      const headers = { Authorization: `Bearer ${adminToken}` };
+      const clients = await fetch(`${realmBase}/clients?clientId=${encodeURIComponent(clientId)}`, { headers, signal: AbortSignal.timeout(10000) });
+      if (!clients.ok) throw new Error(`Client lookup: ${clients.status}`);
+      const clientList: Array<{ id?: string; clientId?: string }> = await clients.json();
+      const clientUuid = clientList.find((client) => client.clientId === clientId)?.id;
+      if (!clientUuid) throw new Error('Application client not found');
+      const onlineSessionsResponse = await fetch(`${base}/sessions`, { headers, signal: AbortSignal.timeout(10000) });
+      if (!onlineSessionsResponse.ok) throw new Error(`Session lookup: ${onlineSessionsResponse.status}`);
+      const onlineSessions: Array<{ id?: string }> = await onlineSessionsResponse.json();
+      const offlineSessionsResponse = await fetch(`${base}/offline-sessions/${encodeURIComponent(clientUuid)}`, { headers, signal: AbortSignal.timeout(10000) });
+      if (!offlineSessionsResponse.ok) throw new Error(`Offline session lookup: ${offlineSessionsResponse.status}`);
+      const offlineSessions: Array<{ id?: string }> = await offlineSessionsResponse.json();
+      const sessionIds = Array.from(new Set([...onlineSessions, ...offlineSessions].map((session) => session.id).filter((id): id is string => typeof id === 'string' && !!id)));
+      if (sessionIds.length) {
+        await this.authQuery.query(`INSERT INTO ats.session_revocations (keycloak_id, session_id)
+          SELECT $1, sessions.session_id FROM UNNEST($2::text[]) AS sessions(session_id)
+          ON CONFLICT (keycloak_id, session_id) DO NOTHING`, [keycloakId, sessionIds]);
+      }
+      // Consent revocation also removes offline sessions, unlike browser logout.
+      const consent = await fetch(`${base}/consents/${encodeURIComponent(clientUuid)}`, {
+        method: 'DELETE', headers, signal: AbortSignal.timeout(10000),
+      });
+      if (!consent.ok && consent.status !== 404) throw new Error(`Offline revocation: ${consent.status}`);
+      const logout = await fetch(`${base}/logout`, { method: 'POST', headers, signal: AbortSignal.timeout(10000) });
+      if (!logout.ok && logout.status !== 404) throw new Error(`Online logout: ${logout.status}`);
+    } catch (error) {
+      this.logger.warn(`Session revocation provider cleanup failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      throw new ServiceUnavailableException('Application access is blocked, but identity-provider logout could not finish. Please retry.');
+    }
+  }
 
   /** Returns the base URL for Keycloak admin API calls — prefers KEYCLOAK_INTERNAL_URL (Docker-internal) */
   private getKeycloakAdminBaseUrl(): string {

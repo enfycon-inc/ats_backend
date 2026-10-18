@@ -90,6 +90,9 @@ export class JwtAuthGuard implements CanActivate {
 
       const decoded = this.decodeBase64Json(parts[1]);
       this.checkExpiry(decoded.exp, 'Session');
+      // Never cache this check: an administrator logout must apply on the next
+      // request, including requests handled by another backend replica.
+      await this.authService.assertSessionActive(decoded);
 
       const IGNORED_KEYCLOAK_ROLES = new Set([
         'OFFLINE_ACCESS',
