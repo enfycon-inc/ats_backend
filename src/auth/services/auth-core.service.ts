@@ -638,6 +638,24 @@ export class AuthCoreService {
     return claims;
   }
 
+  private async refreshVerifiedBrokerSession(brokerClaims: any, refreshToken?: string) {
+    if (!refreshToken || typeof refreshToken !== 'string') {
+      throw new ServiceUnavailableException('The identity provider did not issue a session renewal token. Please try again or contact your administrator.');
+    }
+
+    const session = await this.refreshKeycloakToken(refreshToken);
+    const renewedClaims = await this.verifyBrokerAccessToken(session.accessToken);
+    const sameIdentity = renewedClaims.sub === brokerClaims.sub
+      && renewedClaims.email.trim().toLowerCase() === brokerClaims.email.trim().toLowerCase()
+      && renewedClaims.identity_provider === brokerClaims.identity_provider;
+    if (!sameIdentity) {
+      this.logger.warn('[SSO verification] rejected: refreshed_identity_mismatch');
+      throw new UnauthorizedException('Microsoft sign-in could not be verified. Please sign in again.');
+    }
+
+    return session;
+  }
+
   async ssoLogin(dto: SsoLoginDto) {
     let brokerClaims: any = null;
     if (dto.provider?.toLowerCase() === 'keycloak') {
@@ -876,11 +894,15 @@ export class AuthCoreService {
     let systemRole = user.is_approved ? ((user.system_role === 'SUPER_ADMIN' || user.system_role === 'super_admin') ? 'TENANT_ADMIN' : (user.system_role || 'UNASSIGNED')) : 'PENDING';
 
     if (brokerClaims) {
-      // Authorization-code login already supplied the user's token. Reusing it
-      // preserves MFA and the broker session without resetting the user's password.
+      // Renew the authorization-code session once to confirm that its refresh
+      // token is valid and to bind the app session to the same MFA-authenticated
+      // Microsoft identity. This preserves the broker session without resetting
+      // the user's password.
+      const renewableSession = await this.refreshVerifiedBrokerSession(brokerClaims, dto.brokerRefreshToken);
       return {
-        accessToken: dto.accessToken!,
-        expiresIn: Math.max(0, brokerClaims.exp - Math.floor(Date.now() / 1000)),
+        accessToken: renewableSession.accessToken,
+        refreshToken: renewableSession.refreshToken,
+        expiresIn: renewableSession.expiresIn,
         tokenType: 'Bearer',
         user: {
           id: user.id, email: user.email, firstName: user.first_name || '', lastName: user.last_name || '',

@@ -52,6 +52,34 @@ describe('broker token verification diagnostics', () => {
     await expect(service(payload).verifyBrokerAccessToken('test-token')).resolves.toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith('http://keycloak:8080/realms/ats/protocol/openid-connect/token/introspect', expect.objectContaining({ headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Forwarded-Proto': 'https' } }));
   });
+  it('returns a renewable broker session only when refresh keeps the verified Microsoft identity', async () => {
+    const original = claims();
+    const renewed = { ...original, exp: original.exp + 300 };
+    const instance = service(renewed);
+    instance.refreshKeycloakToken = jest.fn().mockResolvedValue({ accessToken: 'renewed-access', refreshToken: 'rotated-refresh', expiresIn: 300 });
+    instance.verifyBrokerAccessToken = jest.fn().mockResolvedValue(renewed);
+
+    await expect(instance.refreshVerifiedBrokerSession(original, 'broker-refresh')).resolves.toEqual({
+      accessToken: 'renewed-access', refreshToken: 'rotated-refresh', expiresIn: 300,
+    });
+    expect(instance.refreshKeycloakToken).toHaveBeenCalledWith('broker-refresh');
+    expect(instance.verifyBrokerAccessToken).toHaveBeenCalledWith('renewed-access');
+  });
+  it('rejects a renewed broker token for a different Microsoft identity', async () => {
+    const original = claims();
+    const instance = service({ ...original, sub: 'another-user' });
+    instance.refreshKeycloakToken = jest.fn().mockResolvedValue({ accessToken: 'wrong-access', refreshToken: 'rotated-refresh', expiresIn: 300 });
+    instance.verifyBrokerAccessToken = jest.fn().mockResolvedValue({ ...original, sub: 'another-user' });
+
+    await expect(instance.refreshVerifiedBrokerSession(original, 'broker-refresh')).rejects.toThrow('Microsoft sign-in could not be verified');
+  });
+  it('rejects a broker login without a renewable refresh token', async () => {
+    const instance = service(claims());
+    instance.refreshKeycloakToken = jest.fn();
+
+    await expect(instance.refreshVerifiedBrokerSession(claims(), undefined)).rejects.toThrow('did not issue a session renewal token');
+    expect(instance.refreshKeycloakToken).not.toHaveBeenCalled();
+  });
   it('binds new workspace account IDs as UUIDs', async () => {
     const payload = { ...claims(), identity_provider: 'microsoft-154fbda6-0a8f-4fa5-9c12-93727235798e' };
     const instance = service(payload);

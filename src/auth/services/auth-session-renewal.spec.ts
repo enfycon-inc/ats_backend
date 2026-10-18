@@ -7,7 +7,7 @@ describe('Keycloak session transport', () => {
     process.env.KEYCLOAK_ISSUER = 'https://auth.example/realms/ats';
     process.env.KEYCLOAK_INTERNAL_URL = 'http://keycloak:8080';
     process.env.KEYCLOAK_CLIENT_SECRET = 'test-secret';
-    service = new AuthCoreService(null as any, null as any, null as any, null as any, null as any);
+    service = new AuthCoreService(null as any, { assertSessionActive: jest.fn().mockResolvedValue(undefined) } as any, null as any, null as any, null as any);
   });
   afterEach(() => { jest.restoreAllMocks(); process.env = { ...env }; });
   it('renews independent sessions using the public HTTPS scheme and rotated tokens', async () => {
@@ -53,9 +53,9 @@ describe('Keycloak session transport', () => {
     }] }) };
     const keycloak = { syncKeycloakUser: jest.fn().mockResolvedValue(undefined) };
     const tenant = { getTenantAuthPolicy: jest.fn().mockResolvedValue({ allowPasswordLogin: true }) };
-    service = new AuthCoreService(query as any, keycloak as any, tenant as any, null as any, null as any);
+    service = new AuthCoreService(query as any, { ...keycloak, assertSessionActive: jest.fn().mockResolvedValue(undefined) } as any, tenant as any, null as any, null as any);
     const mock = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
-      access_token: 'header.eyJzdWIiOiJ1c2VyIn0.signature', refresh_token: 'renewal', expires_in: 300,
+      access_token: 'header.eyJzdWIiOiJ1c2VyIn0.signature', refresh_token: 'renewal', expires_in: 300, scope: 'openid profile email offline_access',
     })));
     await expect(service.login({ email: 'user@example.test', password: 'example' })).resolves.toMatchObject({ refreshToken: 'renewal', expiresIn: 300 });
     expect(new URLSearchParams(mock.mock.calls[0][1]?.body as string).get('grant_type')).toBe('password');

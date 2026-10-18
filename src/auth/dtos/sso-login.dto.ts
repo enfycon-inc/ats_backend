@@ -20,6 +20,11 @@ export class SsoLoginDto {
   accessToken?: string;
 
   @ApiPropertyOptional({
+    description: 'Keycloak offline refresh token returned by the Microsoft broker authorization-code flow',
+  })
+  brokerRefreshToken?: string;
+
+  @ApiPropertyOptional({
     description: 'Google ID token for cryptographical verification',
   })
   idToken?: string;
