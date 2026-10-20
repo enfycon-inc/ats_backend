@@ -137,7 +137,6 @@ export class RecruiterSubmissionsService {
     }
 
     const canViewAll = has('submission:view_all', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage');
-    if (!canViewAll && !has('submission:create', 'submission:view')) throw new ForbiddenException('Missing submission access permission.');
     if (isAccountManager && view === 'all' && !canViewAll) throw new ForbiddenException('All-submission access is not enabled for this role.');
     if (isAccountManager && view === 'pod') throw new ForbiddenException('Pod submission view is not available to account managers.');
     if (view === 'my') {
