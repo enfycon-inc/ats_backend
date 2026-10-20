@@ -1,5 +1,8 @@
 -- ATS: rollback-compatible
 -- Additive delegation support; rollback can drop the optional audit column and grants table.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE ats.jobs
   ADD COLUMN created_by_user_id uuid;
 
@@ -25,3 +28,5 @@ CREATE TABLE ats.job_creation_grants (
 
 CREATE INDEX job_creation_grants_delegate_active_idx
   ON ats.job_creation_grants (tenant_id, delegate_user_id, revoked_at);
+
+COMMIT;
