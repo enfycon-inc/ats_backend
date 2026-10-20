@@ -1,3 +1,5 @@
+-- ATS: rollback-compatible
+-- New nullable columns are ignored by the previous application version; existing writes remain valid.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 
