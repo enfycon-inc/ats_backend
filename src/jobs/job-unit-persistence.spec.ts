@@ -45,7 +45,7 @@ describe('job operating unit persistence and reviewer routing', () => {
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, podDistributionStrategy: "MANUAL", allowUnassigned: false });
     prisma.pod = { findMany: jest.fn().mockResolvedValue([]) };
     await expect(service.createJob({ ...dto, podId: manager }, id, 'System', id,
-      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] })).rejects.toThrow('outside the job unit');
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_pod'] })).rejects.toThrow('outside the job unit');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
   it('persists an explicit unit pod without searching the tenant for another pod', async () => {
@@ -55,7 +55,7 @@ describe('job operating unit persistence and reviewer routing', () => {
     prisma.jobPod.upsert = jest.fn();
     prisma.jobAssignmentLog = { create: jest.fn() };
     await service.createJob({ ...dto, podId: manager }, id, 'System', id,
-      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] });
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_pod'] });
     expect(prisma.jobPod.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: { jobId: id, podId: manager } }));
     expect(prisma.pod.findFirst).not.toHaveBeenCalled();
   });
@@ -72,7 +72,7 @@ describe('job operating unit persistence and reviewer routing', () => {
     prisma.jobPod.upsert = jest.fn();
     prisma.jobAssignmentLog = { create: jest.fn() };
     await service.createJob({ ...dto, podId: manager, podIds: [manager, second, manager] }, id, 'System', id,
-      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] });
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_pod'] });
     expect(prisma.jobPod.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.jobPod.upsert.mock.calls.map(([args]: any[]) => args.create.podId)).toEqual([manager, second]);
     expect(prisma.jobAssignmentLog.create).toHaveBeenCalledTimes(2);
@@ -88,7 +88,7 @@ describe('job operating unit persistence and reviewer routing', () => {
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, podDistributionStrategy: 'MANUAL' });
     prisma.pod = { findMany: jest.fn().mockResolvedValue([{ id: manager, _count: { users: 1 } }]) };
     await expect(service.createJob({ ...dto, podIds: [manager, unit] }, id, 'System', id,
-      { branchId: id, businessUnitId: unit, permissions: ['job:assign_pod'] })).rejects.toThrow('outside the job unit');
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_pod'] })).rejects.toThrow('outside the job unit');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
   it.each(['MANUAL', 'AUTO'])('persists emergency direct recruiters under %s policy with explicit override', async strategy => {

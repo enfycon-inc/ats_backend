@@ -43,10 +43,53 @@ export class JobsController {
     return this.jobsService.listJobStaff(user, resolveTenantId(user, tenantHeader), branchId, businessUnitId, jobId);
   }
 
+  @Get('creation-access/targets')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async jobCreationTargets(@CurrentUser() user: AuthUser) {
+    return this.jobsService.listJobCreationTargets(user);
+  }
+
+  @Get('creation-access/people')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async jobCreationGrantPeople(@CurrentUser() user: AuthUser) {
+    return this.jobsService.listJobCreationGrantPeople(user);
+  }
+
+  @Get('creation-access/owners')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async jobCreationGrantOwners(@CurrentUser() user: AuthUser) {
+    return this.jobsService.listJobCreationGrantOwners(user);
+  }
+
+  @Get('creation-access/grants')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async jobCreationGrants(@CurrentUser() user: AuthUser, @Query('accountManagerId') accountManagerId?: string) {
+    return this.jobsService.listJobCreationGrants(user, accountManagerId);
+  }
+
+  @Post('creation-access/grants')
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async createJobCreationGrant(@CurrentUser() user: AuthUser, @Body() body: { accountManagerId: string; delegateUserId: string }) {
+    return this.jobsService.createJobCreationGrant(user, body.accountManagerId, body.delegateUserId);
+  }
+
+  @Delete('creation-access/grants/:grantId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async revokeJobCreationGrant(@CurrentUser() user: AuthUser, @Param('grantId') grantId: string) {
+    await this.jobsService.revokeJobCreationGrant(user, grantId);
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:create')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Create new job requisition',
@@ -66,8 +109,7 @@ export class JobsController {
   }
 
   @Post('drafts')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:create')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   async createDraft(@Body() dto: CreateJobDto, @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string, @Headers('x-branch-id') branchId?: string) {
@@ -75,8 +117,7 @@ export class JobsController {
   }
 
   @Patch(':id/draft')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:edit')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   async updateDraft(@Param('id') id: string, @Body() dto: CreateJobDto, @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string) {
@@ -84,8 +125,7 @@ export class JobsController {
   }
 
   @Post(':id/publish')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:create')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   async publishDraft(@Param('id') id: string, @Body() dto: CreateJobDto, @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string) {

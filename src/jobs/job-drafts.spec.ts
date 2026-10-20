@@ -39,7 +39,7 @@ describe('job drafts', () => {
     await service.createJob({ draftId, jobCode: 'BBS-IND-001', branchId, businessUnitId: unitId, title: 'Java Developer', type: 'Contract', description: '', skillsRequired: [], payRate: 'INR - 50,000 to 60,000 /mo', clientBillRate: '' } as any, 'tenant', ownerId, branchId, actor, true);
     expect(prisma.job.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: draftId }, update: {},
-      create: expect.objectContaining({ id: draftId, status: 'Draft', jobType: 'Contract', payRateMin: 50000, payRateMax: 60000, payCurrency: 'INR', payTerm: 'Monthly', submissionRequired: 1, market: 'IND', accountManagerId: ownerId }),
+      create: expect.objectContaining({ id: draftId, status: 'Draft', jobType: 'Contract', payRateMin: 50000, payRateMax: 60000, payCurrency: 'INR', payTerm: 'Monthly', submissionRequired: 1, market: 'IND', accountManagerId: ownerId, createdByUserId: ownerId }),
     }));
     expect(prisma.client.create).not.toHaveBeenCalled();
     expect(notifications.create).not.toHaveBeenCalled();

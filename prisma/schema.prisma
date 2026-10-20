@@ -65,6 +65,7 @@ model Tenant {
   clients                   Client[]
   customRoles               CustomRole[]
   jobAssignmentLogs         JobAssignmentLog[]
+  jobCreationGrants         JobCreationGrant[]
   delegationRequests        JobDelegationRequest[]
   jobs                      Job[]
   marketSegments            MarketSegment[]
@@ -406,6 +407,10 @@ model User {
   @@unique([tenantId, email])
   @@unique([tenantId, keycloakId])
     createdContacts      ClientContact[]       @relation("ContactCreator")
+  jobsCreated          Job[]                 @relation("JobCreator")
+  jobCreationGrantsOwned JobCreationGrant[]   @relation("JobCreationGrantOwner")
+  jobCreationGrantsReceived JobCreationGrant[] @relation("JobCreationGrantDelegate")
+  jobCreationGrantsIssued JobCreationGrant[] @relation("JobCreationGrantIssuer")
 @@map("users")
   @@schema("ats")
 }
@@ -677,6 +682,7 @@ model Job {
   hoursPerWeek         Int?                   @default(40) @map("hours_per_week")
   duration             String?                @db.VarChar(100)
   accountManagerId     String?                @map("account_manager_id") @db.Uuid
+  createdByUserId      String?                @map("created_by_user_id") @db.Uuid
   recruitmentManagerId String?                @map("recruitment_manager_id") @db.Uuid
 
     industry             String?                @db.VarChar(100)
@@ -707,12 +713,34 @@ model Job {
   clientRef            Client?                @relation("JobClient", fields: [clientId], references: [id])
   endClientRef         Client?                @relation("JobEndClient", fields: [endClientId], references: [id])
   tenant               Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByUser        User?                  @relation("JobCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   submissions          RecruiterSubmission[]
 
     pocId                String?               @map("poc_id") @db.Uuid
   poc                  ClientContact?        @relation("JobPoc", fields: [pocId], references: [id])
   endClientPoc         ClientContact?        @relation("JobEndClientPoc", fields: [endClientPocId], references: [id])
 @@map("jobs")
+  @@index([tenantId, createdByUserId], map: "jobs_tenant_created_by_user_idx")
+  @@schema("ats")
+}
+
+model JobCreationGrant {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String    @map("tenant_id") @db.Uuid
+  accountManagerId   String    @map("account_manager_id") @db.Uuid
+  delegateUserId     String    @map("delegate_user_id") @db.Uuid
+  grantedByUserId    String?   @map("granted_by_user_id") @db.Uuid
+  revokedAt          DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant             Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  accountManager     User      @relation("JobCreationGrantOwner", fields: [accountManagerId], references: [id], onDelete: Cascade)
+  delegateUser       User      @relation("JobCreationGrantDelegate", fields: [delegateUserId], references: [id], onDelete: Cascade)
+  grantedBy          User?     @relation("JobCreationGrantIssuer", fields: [grantedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, accountManagerId, delegateUserId], map: "job_creation_grants_owner_delegate_key")
+  @@index([tenantId, delegateUserId, revokedAt], map: "job_creation_grants_delegate_active_idx")
+  @@map("job_creation_grants")
   @@schema("ats")
 }
 

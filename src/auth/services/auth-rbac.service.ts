@@ -782,6 +782,7 @@ export class AuthRbacService {
   listAllPermissions() {
     return [
       { id: 'job:create', name: 'Create Jobs', group: 'Jobs Management' },
+      { id: 'job:grant_creation_delegate', name: 'Grant Colleagues Permission to Create Jobs on Your Behalf', group: 'Jobs Management' },
       { id: 'job:edit', name: 'Edit Jobs', group: 'Jobs Management' },
       { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
       { id: 'job:publish_direct', name: 'Publish Jobs Directly (Bypass Approval Gate)', group: 'Jobs Management' },
