@@ -1,5 +1,7 @@
 export enum Permission {
   JOB_CREATE = 'job:create',
+  JOB_GRANT_CREATION_DELEGATE = 'job:grant_creation_delegate',
+  JOB_MANAGE_CREATION_ACCESS = 'job:manage_creation_access',
   JOB_EDIT = 'job:edit',
   JOB_VIEW = 'job:view',
   JOB_PUBLISH_DIRECT = 'job:publish_direct',

@@ -53,8 +53,8 @@ export class JobsController {
   @Get('creation-access/people')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  async jobCreationGrantPeople(@CurrentUser() user: AuthUser) {
-    return this.jobsService.listJobCreationGrantPeople(user);
+  async jobCreationGrantPeople(@CurrentUser() user: AuthUser, @Query('accountManagerId') accountManagerId?: string) {
+    return this.jobsService.listJobCreationGrantPeople(user, accountManagerId);
   }
 
   @Get('creation-access/owners')

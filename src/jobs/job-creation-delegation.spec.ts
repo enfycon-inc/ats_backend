@@ -54,6 +54,29 @@ describe('job creation delegation', () => {
     expect(prisma.user.findMany).not.toHaveBeenCalled();
   });
 
+  it('does not let generic user-management permission grant job access', async () => {
+    await expect(service.listJobCreationGrantPeople({
+      dbId: ownerId, tenantId, permissions: ['user:manage'],
+    } as any)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it('limits branch admins to job owners in their branch', () => {
+    const actor = { branchId: 'branch-a', businessUnitId: 'unit-a', permissions: ['job:manage_creation_access', 'branch_admin:manage'] };
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-b' })).toBe(true);
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-b', businessUnitId: 'unit-a' })).toBe(false);
+  });
+
+  it.each([
+    ['Unit Admin', ['job:manage_creation_access', 'unit_admin:manage']],
+    ['Delivery Head', ['job:manage_creation_access', 'unit_admin:manage']],
+  ])('%s can manage job access only in the assigned unit', (_role, permissions) => {
+    const actor = { branchId: 'branch-a', businessUnitId: 'unit-a', permissions };
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-a' })).toBe(true);
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-b' })).toBe(false);
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-b', businessUnitId: 'unit-a' })).toBe(false);
+  });
+
   it('lets an account manager grant same-unit access and records the issuer', async () => {
     const branchId = '44444444-4444-4444-8444-444444444444';
     const businessUnitId = '55555555-5555-4555-8555-555555555555';
@@ -91,7 +114,7 @@ describe('job creation delegation', () => {
     prisma.jobCreationGrant.upsert = jest.fn();
 
     await expect(service.createJobCreationGrant({
-      dbId: 'admin-id', tenantId, branchId, businessUnitId: 'owner-unit', permissions: ['user:manage'],
+      dbId: 'admin-id', tenantId, branchId, businessUnitId: 'owner-unit', permissions: ['job:manage_creation_access', 'branch_admin:manage'],
     } as any, ownerId, delegateId)).rejects.toThrow('same business unit');
     expect(prisma.jobCreationGrant.upsert).not.toHaveBeenCalled();
   });

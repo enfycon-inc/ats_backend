@@ -477,9 +477,18 @@ export class JobsService {
   private canManageJobOwnerScope(actor: AuthUser, owner: { branchId?: string | null; businessUnitId?: string | null }) {
     const permissions = actor.permissions || [];
     if (permissions.some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission))) return true;
-    if (!actor.branchId || owner.branchId !== actor.branchId) return false;
+    if (!permissions.includes('job:manage_creation_access') || !actor.branchId || owner.branchId !== actor.branchId) return false;
     if (permissions.includes('branch_admin:manage')) return true;
-    return !!actor.businessUnitId && owner.businessUnitId === actor.businessUnitId;
+    return permissions.includes('unit_admin:manage') && !!actor.businessUnitId && owner.businessUnitId === actor.businessUnitId;
+  }
+
+  private canManageJobCreationGrants(actor: AuthUser) {
+    const permissions = actor.permissions || [];
+    return permissions.some(permission => ['job:manage_creation_access', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission));
+  }
+
+  private hasTenantWideJobCreationManagement(actor: AuthUser) {
+    return (actor.permissions || []).some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission));
   }
 
   async listJobCreationTargets(actor: AuthUser) {
@@ -492,20 +501,22 @@ export class JobsService {
     return grants.map(grant => ({ id: grant.accountManagerId, name: grant.accountManager.fullName, email: grant.accountManager.email, branchId: grant.accountManager.branchId, businessUnitId: grant.accountManager.businessUnitId }));
   }
 
-  async listJobCreationGrantPeople(actor: AuthUser) {
-    const permissions = actor.permissions || [];
-    const isAdmin = permissions.some(p => ['user:manage', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
-    const canManageOwn = permissions.includes('job:grant_creation_delegate');
-    if (!isAdmin && !canManageOwn) throw new ForbiddenException('You cannot manage job creation access.');
-    const tenantWide = permissions.some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission));
-    const scopeFilter = tenantWide ? {} : {
-      branchId: actor.branchId || undefined,
-      ...(permissions.includes('branch_admin:manage') ? {} : { businessUnitId: actor.businessUnitId || undefined }),
-    };
-    if (!tenantWide && (!actor.branchId || (!permissions.includes('branch_admin:manage') && !actor.businessUnitId))) return [];
+  async listJobCreationGrantPeople(actor: AuthUser, requestedOwnerId?: string) {
+    const isManager = this.canManageJobCreationGrants(actor);
+    const canManageOwn = (actor.permissions || []).includes('job:grant_creation_delegate');
+    if (!isManager && !canManageOwn) throw new ForbiddenException('You cannot manage job creation access.');
+    const ownerId = requestedOwnerId || actor.dbId;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerId)) throw new BadRequestException('Select a valid account manager.');
+    if (!isManager && ownerId !== actor.dbId) throw new ForbiddenException('You can manage access only for your own jobs.');
+    const owner = await this.prisma.user.findFirst({
+      where: { id: ownerId, tenantId: actor.tenantId, isActive: true, isApproved: true },
+      select: { id: true, branchId: true, businessUnitId: true },
+    });
+    if (!owner || (isManager && !this.canManageJobOwnerScope(actor, owner))) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
+    if (!owner.branchId || !owner.businessUnitId) return [];
     return this.prisma.user.findMany({
       where: { tenantId: actor.tenantId, isActive: true, isApproved: true, id: { not: actor.dbId },
-        ...scopeFilter },
+        branchId: owner.branchId, businessUnitId: owner.businessUnitId },
       select: { id: true, fullName: true, email: true, branchId: true, businessUnitId: true },
       orderBy: { fullName: 'asc' },
       take: 250,
@@ -514,10 +525,9 @@ export class JobsService {
 
   async listJobCreationGrantOwners(actor: AuthUser) {
     const permissions = actor.permissions || [];
-    const isAdmin = permissions.some(p => ['user:manage', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
-    if (!isAdmin) throw new ForbiddenException('Only an administrator can select another job owner.');
-    const tenantWide = permissions.some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission));
-    if (!tenantWide && (!actor.branchId || (!permissions.includes('branch_admin:manage') && !actor.businessUnitId))) return [];
+    if (!this.canManageJobCreationGrants(actor)) throw new ForbiddenException('Only an authorized administrator can select another job owner.');
+    const tenantWide = this.hasTenantWideJobCreationManagement(actor);
+    if (!tenantWide && (!actor.branchId || (!permissions.includes('branch_admin:manage') && (!permissions.includes('unit_admin:manage') || !actor.businessUnitId)))) return [];
     const users = await this.prisma.user.findMany({
       where: { tenantId: actor.tenantId, isActive: true, isApproved: true,
         ...(!tenantWide ? { branchId: actor.branchId || undefined, ...(permissions.includes('branch_admin:manage') ? {} : { businessUnitId: actor.businessUnitId || undefined }) } : {}) },
@@ -536,12 +546,12 @@ export class JobsService {
 
   async listJobCreationGrants(actor: AuthUser, requestedOwnerId?: string) {
     const permissions = actor.permissions || [];
-    const isAdmin = permissions.some(p => ['user:manage', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
-    if (!isAdmin && !permissions.includes('job:grant_creation_delegate')) throw new ForbiddenException('You cannot manage job creation access.');
+    const isManager = this.canManageJobCreationGrants(actor);
+    if (!isManager && !permissions.includes('job:grant_creation_delegate')) throw new ForbiddenException('You cannot manage job creation access.');
     const ownerId = requestedOwnerId || actor.dbId;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ownerId)) throw new BadRequestException('Select a valid account manager.');
-    if (!isAdmin && ownerId !== actor.dbId) throw new ForbiddenException('You can manage access only for your own jobs.');
-    if (isAdmin && ownerId !== actor.dbId) {
+    if (!isManager && ownerId !== actor.dbId) throw new ForbiddenException('You can manage access only for your own jobs.');
+    if (isManager && ownerId !== actor.dbId) {
       const owner = await this.prisma.user.findFirst({ where: { id: ownerId, tenantId: actor.tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } });
       if (!owner || !this.canManageJobOwnerScope(actor, owner)) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
     }
@@ -554,8 +564,8 @@ export class JobsService {
 
   async createJobCreationGrant(actor: AuthUser, accountManagerId: string, delegateUserId: string) {
     const permissions = actor.permissions || [];
-    const isAdmin = permissions.some(p => ['user:manage', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
-    if (!isAdmin && (!permissions.includes('job:grant_creation_delegate') || accountManagerId !== actor.dbId)) throw new ForbiddenException('Only the account manager or an administrator can grant this access.');
+    const isManager = this.canManageJobCreationGrants(actor);
+    if (!isManager && (!permissions.includes('job:grant_creation_delegate') || accountManagerId !== actor.dbId)) throw new ForbiddenException('Only the account manager or an authorized administrator can grant this access.');
     const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
     if (!isUuid(accountManagerId) || !isUuid(delegateUserId)) throw new BadRequestException('Select valid colleagues.');
     if (!accountManagerId || !delegateUserId || accountManagerId === delegateUserId) throw new BadRequestException('Select a valid colleague.');
@@ -564,13 +574,13 @@ export class JobsService {
       this.prisma.user.findFirst({ where: { id: delegateUserId, tenantId: actor.tenantId, isActive: true, isApproved: true }, select: { id: true, branchId: true, businessUnitId: true } }),
     ]);
     if (!owner || !delegate) throw new BadRequestException('Both colleagues must be active users in this workspace.');
-    if (isAdmin && !this.canManageJobOwnerScope(actor, owner)) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
+    if (isManager && !this.canManageJobOwnerScope(actor, owner)) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
     const ownerRoleIds = [...new Set([owner.roleId, ...(owner.assignedRoleIds || [])].filter(Boolean))] as string[];
     const ownerRoles = ownerRoleIds.length ? await this.prisma.customRole.findMany({ where: { tenantId: actor.tenantId, id: { in: ownerRoleIds } }, select: { permissions: true } }) : [];
     if (!ownerRoles.some(role => Array.isArray(role.permissions) && (role.permissions.includes('job:create') || role.permissions.includes('*') || role.permissions.includes('platform:manage')))) {
       throw new BadRequestException('The selected job owner does not have job creation permission.');
     }
-    if (!isAdmin && owner.id !== actor.dbId) throw new ForbiddenException('You can grant access only for your own jobs.');
+    if (!isManager && owner.id !== actor.dbId) throw new ForbiddenException('You can grant access only for your own jobs.');
     if (delegate.branchId !== owner.branchId || delegate.businessUnitId !== owner.businessUnitId) throw new ForbiddenException('Job creation access is limited to colleagues in the same business unit.');
     const grant = await this.prisma.jobCreationGrant.upsert({
       where: { tenantId_accountManagerId_delegateUserId: { tenantId: actor.tenantId, accountManagerId, delegateUserId } },
@@ -584,15 +594,12 @@ export class JobsService {
 
   async revokeJobCreationGrant(actor: AuthUser, grantId: string) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(grantId || '')) throw new BadRequestException('Select valid job creation access.');
-    const grant = await this.prisma.jobCreationGrant.findFirst({ where: { id: grantId, tenantId: actor.tenantId }, select: { id: true, accountManagerId: true, delegateUserId: true, revokedAt: true } });
+    const grant = await this.prisma.jobCreationGrant.findFirst({ where: { id: grantId, tenantId: actor.tenantId }, select: { id: true, accountManagerId: true, delegateUserId: true, revokedAt: true, accountManager: { select: { branchId: true, businessUnitId: true } } } });
     if (!grant) throw new NotFoundException('Job creation access not found.');
     const permissions = actor.permissions || [];
-    const isAdmin = permissions.some(p => ['user:manage', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
-    if (!isAdmin && (!permissions.includes('job:grant_creation_delegate') || grant.accountManagerId !== actor.dbId)) throw new ForbiddenException('Only the account manager or an administrator can revoke this access.');
-    if (isAdmin && grant.accountManagerId !== actor.dbId) {
-      const owner = await this.prisma.user.findFirst({ where: { id: grant.accountManagerId, tenantId: actor.tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } });
-      if (!owner || !this.canManageJobOwnerScope(actor, owner)) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
-    }
+    const isManager = this.canManageJobCreationGrants(actor);
+    if (!isManager && (!permissions.includes('job:grant_creation_delegate') || grant.accountManagerId !== actor.dbId)) throw new ForbiddenException('Only the account manager or an authorized administrator can revoke this access.');
+    if (isManager && !this.canManageJobOwnerScope(actor, grant.accountManager)) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
     if (grant.revokedAt) return;
     await this.prisma.jobCreationGrant.update({ where: { id: grant.id }, data: { revokedAt: new Date() } });
     await this.prisma.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'JOB_CREATION_ACCESS_REVOKED', targetType: 'user', targetId: grant.delegateUserId, details: { accountManagerId: grant.accountManagerId } } });
