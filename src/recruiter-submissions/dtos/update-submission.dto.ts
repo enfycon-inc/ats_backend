@@ -71,6 +71,13 @@ export class UpdateSubmissionDto implements TrackerUpdate {
   })
   l3Date?: string;
 
+  @ApiPropertyOptional({ enum: ['blue', 'violet', 'rose', 'green', 'amber'], description: 'Calendar color for the interview round' })
+  l1Color?: TrackerUpdate['l1Color'];
+  @ApiPropertyOptional({ enum: ['blue', 'violet', 'rose', 'green', 'amber'], description: 'Calendar color for the interview round' })
+  l2Color?: TrackerUpdate['l2Color'];
+  @ApiPropertyOptional({ enum: ['blue', 'violet', 'rose', 'green', 'amber'], description: 'Calendar color for the interview round' })
+  l3Color?: TrackerUpdate['l3Color'];
+
   @ApiPropertyOptional({
     example: 'SUBMITTED',
     enum: [...Object.values(SubmissionOutcome), 'PENDING_APPROVAL', 'REJECTED'],

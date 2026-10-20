@@ -7,7 +7,7 @@ const progressed = (row: Record<string, any>, round: string) =>
 // The validator and persistence layer must evaluate exactly the same resulting state.
 export function roundUpdate(existing: Record<string, any>, dto: Record<string, any>) {
   const data: Record<string, any> = {};
-  for (const round of ROUND_KEYS) for (const suffix of ['Status', 'Date', 'Remarks', 'Interviewer']) {
+  for (const round of ROUND_KEYS) for (const suffix of ['Status', 'Date', 'Remarks', 'Interviewer', 'Color']) {
     const key = `${round}${suffix}`;
     if (dto[key] !== undefined) data[key] = suffix === 'Status' ? dto[key] ?? 'PENDING' : dto[key];
   }
@@ -18,6 +18,7 @@ export function roundUpdate(existing: Record<string, any>, dto: Record<string, a
     if (status === 'PENDING' && data[`${round}Status`] !== undefined) {
       data[`${round}Date`] = null;
       data[`${round}Interviewer`] = null;
+      data[`${round}Color`] = null;
     }
     if (existing[`${round}Status`] === 'CLEARED' && status !== 'CLEARED' &&
       ROUND_KEYS.slice(i + 1).some(next => progressed(existing, next))) {
@@ -36,6 +37,7 @@ export function roundUpdate(existing: Record<string, any>, dto: Record<string, a
     data[`${round}Date`] = null;
     data[`${round}Remarks`] = null;
     data[`${round}Interviewer`] = null;
+    data[`${round}Color`] = null;
   }
   return data;
 }

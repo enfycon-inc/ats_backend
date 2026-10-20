@@ -119,6 +119,16 @@ describe('submission tracker permissions and transitions', () => {
     expect(() => validateTrackerUpdate({ ...scheduled, l1Status: 'CANCELLED' }, { l1Status: 'SCHEDULED', l1Date: '2026-10-10T05:30:00Z' }, caps)).not.toThrow();
   });
 
+  it('enforces scheduling only for the current pending round and accepts allowlisted calendar colors', () => {
+    const caps = submissionCapabilities(['submission:schedule_interview']);
+    expect(() => validateTrackerUpdate(existing, { l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z', l1Color: 'violet' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...existing, l1Status: 'CLEARED', l2Status: 'PENDING' }, { l2Status: 'SCHEDULED', l2Date: '2026-10-09T05:30:00Z', l2Color: 'green' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...existing, l1Status: 'CLEARED', l2Status: 'CLEARED', l3Status: 'PENDING' }, { l3Status: 'SCHEDULED', l3Date: '2026-10-09T05:30:00Z', l3Color: 'amber' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate({ ...existing, l2Status: 'SCHEDULED', l2Date: '2026-10-09T05:30:00Z' }, { l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z' }, caps)).toThrow('no longer eligible');
+    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'SELECTED', l1Status: 'CLEARED' }, { l2Status: 'SCHEDULED', l2Date: '2026-10-09T05:30:00Z' }, caps)).toThrow(BadRequestException);
+    expect(() => validateTrackerUpdate(existing, { l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z', l1Color: '#ff00ff' }, caps)).toThrow('valid calendar color');
+  });
+
   it('requires explicit confirmation and reason before invalidating later rounds', () => {
     const caps = submissionCapabilities(['submission:audit_l1']);
     const progressed = { ...existing, l1Status: 'CLEARED', l1Date: '2026-10-09T05:30:00Z', l2Status: 'SCHEDULED', l2Date: '2026-10-10T05:30:00Z' };

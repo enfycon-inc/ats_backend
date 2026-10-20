@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-export const HISTORY_FIELDS = ['finalStatus', 'l1Status', 'l1Date', 'l1Remarks', 'l1Interviewer', 'l2Status', 'l2Date', 'l2Remarks', 'l2Interviewer', 'l3Status', 'l3Date', 'l3Remarks', 'l3Interviewer', 'meetingLink', 'remarks', 'reviewFeedback', 'podLeadRemarks', 'recruiterComment', 'submittedRateAmount', 'currentCompensationAmount', 'expectedCompensationAmount', 'compensationCurrency', 'compensationPeriod', 'compensationInputUnit', 'sourceCategory', 'sourceChannel', 'sourceDetail', 'availabilityToStart'];
+export const HISTORY_FIELDS = ['finalStatus', 'l1Status', 'l1Date', 'l1Remarks', 'l1Interviewer', 'l1Color', 'l2Status', 'l2Date', 'l2Remarks', 'l2Interviewer', 'l2Color', 'l3Status', 'l3Date', 'l3Remarks', 'l3Interviewer', 'l3Color', 'meetingLink', 'remarks', 'reviewFeedback', 'podLeadRemarks', 'recruiterComment', 'submittedRateAmount', 'currentCompensationAmount', 'expectedCompensationAmount', 'compensationCurrency', 'compensationPeriod', 'compensationInputUnit', 'sourceCategory', 'sourceChannel', 'sourceDetail', 'availabilityToStart'];
 export function historyValue(value: any): string | null {
   return value == null ? null : value instanceof Date ? value.toISOString() : String(value);
 }

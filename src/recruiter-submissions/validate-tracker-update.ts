@@ -7,7 +7,7 @@ import { historyValue } from './submission-history';
 export function validateTrackerUpdate(existing: Record<string, any>, dto: Record<string, any>, caps: SubmissionCapabilities) {
   const allowed = new Set(['requestId', 'bypassReason', 'correctionReason', 'resetFollowingRounds', 'expectedUpdatedAt', 'finalStatus', 'remarks', 'reviewFeedback', 'podLeadRemarks', 'recruiterComment', 'submittedRate', 'meetingLink']);
   allowed.add('assessmentVersion'); allowed.add('reviewOverrides');
-  for (const round of ['l1', 'l2', 'l3']) for (const suffix of ['Status', 'Date', 'Remarks', 'Interviewer']) allowed.add(`${round}${suffix}`);
+  for (const round of ['l1', 'l2', 'l3']) for (const suffix of ['Status', 'Date', 'Remarks', 'Interviewer', 'Color']) allowed.add(`${round}${suffix}`);
   for (const key of Object.keys(dto)) if (!allowed.has(key)) throw new BadRequestException(`Unsupported submission field: ${key}`);
   if (dto.requestId !== undefined && (typeof dto.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.requestId))) throw new BadRequestException('Invalid save request ID.');
   if (dto.bypassReason !== undefined && (typeof dto.bypassReason !== 'string' || dto.bypassReason.length > 4000)) throw new BadRequestException('Invalid bypass reason.');
@@ -34,7 +34,7 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
   const terminal = ['REJECTED', 'JOIN', 'NOT_SELECTED', 'WITHDRAWN'].includes(existing.finalStatus);
   let changedRound = false;
   for (const round of ['l1', 'l2', 'l3'] as const) {
-    const touched = ['Status', 'Date', 'Remarks', 'Interviewer'].some(suffix => dto[`${round}${suffix}`] !== undefined && historyValue(dto[`${round}${suffix}`]) !== historyValue(existing[`${round}${suffix}`]));
+    const touched = ['Status', 'Date', 'Remarks', 'Interviewer', 'Color'].some(suffix => dto[`${round}${suffix}`] !== undefined && historyValue(dto[`${round}${suffix}`]) !== historyValue(existing[`${round}${suffix}`]));
     if (!touched) continue;
     changedRound = true;
     if (['CLEARED', 'REJECTED'].includes(existing[`${round}Status`])) {
@@ -48,6 +48,8 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
       changes[`${round}Status`] === 'PENDING' && changes[`${round}Date`] === null && changes[`${round}Remarks`] === null && changes[`${round}Interviewer`] === null;
     if (prior && !reset && (merged[`${prior}Status`] !== 'CLEARED' || (round === 'l3' && merged.l1Status !== 'CLEARED'))) throw new BadRequestException('Clear the previous interview round first.');
     const status = merged[`${round}Status`];
+    if (dto[`${round}Color`] !== undefined && dto[`${round}Color`] !== null && !['blue', 'violet', 'rose', 'green', 'amber'].includes(dto[`${round}Color`])) throw new BadRequestException('Choose a valid calendar color.');
+    if (dto[`${round}Color`] !== undefined) requirePermission(caps.schedule || caps.results[round]);
     if (dto[`${round}Status`] !== undefined && dto[`${round}Status`] !== null && !Object.values(InterviewRoundStatus).includes(dto[`${round}Status`])) throw new BadRequestException('Invalid interview result.');
     const scheduling = status === 'SCHEDULED';
     const appointmentChange = scheduling || status === 'CANCELLED' || (status === 'PENDING' && ['SCHEDULED', 'CANCELLED'].includes(existing[`${round}Status`]));
@@ -68,6 +70,15 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
     const date = merged[`${round}Date`];
     if (date && !Number.isFinite(new Date(date).getTime())) throw new BadRequestException('Invalid interview date.');
     if (scheduling && !date) throw new BadRequestException('Choose an interview date and time.');
+    if (dto[`${round}Status`] === 'SCHEDULED') {
+      const activeRound = ROUND_KEYS.find(key => merged[`${key}Status`] !== 'CLEARED');
+      const laterRoundsPending = ROUND_KEYS.slice(ROUND_KEYS.indexOf(round) + 1).every(key => [null, undefined, 'PENDING'].includes(merged[`${key}Status`]) && !merged[`${key}Date`]);
+      const canRescheduleCurrent = ['SCHEDULED', 'AWAITING_FEEDBACK'].includes(existing[`${round}Status`]);
+      if ((dto.finalStatus ?? existing.finalStatus) !== 'SUBMITTED' || activeRound !== round || !laterRoundsPending ||
+        (!canRescheduleCurrent && ![null, undefined, 'PENDING', 'CANCELLED'].includes(existing[`${round}Status`]))) {
+        throw new BadRequestException('This submission is no longer eligible for interview scheduling. Refresh the eligible candidate list.');
+      }
+    }
     if (status === 'PENDING' && date) throw new BadRequestException('Schedule this round before adding an interview appointment.');
     if (['CLEARED', 'AWAITING_FEEDBACK'].includes(status) && !date && touched) throw new BadRequestException('A completed interview requires its recorded date and time.');
     if (recordingResult && date && new Date(date).getTime() > Date.now()) throw new BadRequestException('The interview must have taken place before recording feedback or clearance.');

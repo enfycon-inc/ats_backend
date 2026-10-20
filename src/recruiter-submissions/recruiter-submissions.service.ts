@@ -25,6 +25,7 @@ import { validateTrackerUpdate } from './validate-tracker-update';
 import {
   TRACKER_SORT_KEYS,
   type SubmissionCapabilities,
+  type EligibleInterviewResponse,
   type TrackerBucket,
   type TrackerSubmission,
   type TrackerSortKey,
@@ -104,6 +105,87 @@ export class RecruiterSubmissionsService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  async findEligibleForInterview(tenantId: string, user: AuthUser, filters: { page?: number; limit?: number; view?: string; search?: string; branchId?: string }): Promise<EligibleInterviewResponse> {
+    if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');
+    const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+    const has = (...keys: string[]) => permissions.includes('*') || keys.some(key => permissions.includes(key));
+    if (!has('submission:schedule_interview')) throw new ForbiddenException('Missing submission:schedule_interview permission.');
+
+    const page = Number.isFinite(filters.page) ? Math.max(1, Math.floor(filters.page!)) : 1;
+    const limit = Number.isFinite(filters.limit) ? Math.min(100, Math.max(1, Math.floor(filters.limit!))) : 25;
+    const offset = (page - 1) * limit;
+    const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+    const view = filters.view || (isAccountManager ? 'my' : 'all');
+    if (!['my', 'pod', 'all'].includes(view)) throw new BadRequestException('Invalid submission view.');
+
+    const params: any[] = [tenantId];
+    const where = ['s.tenant_id = $1::uuid', 'j.tenant_id = s.tenant_id'];
+    const addParam = (value: any) => { params.push(value); return `$${params.length}`; };
+    const tenantWide = has('tenant:manage', 'tenant:settings', 'platform:manage');
+    const unitAdmin = has('unit_admin:manage') && !has('tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage');
+    const branchAdmin = has('branch_admin:manage') && !tenantWide;
+    if (unitAdmin || branchAdmin) {
+      const membership = await this.prisma.user.findFirst({
+        where: { id: user.dbId, tenantId, isActive: true, isApproved: true },
+        select: { branchId: true, businessUnitId: true },
+      });
+      if (!membership?.branchId || (filters.branchId && filters.branchId !== membership.branchId) || (unitAdmin && !membership.businessUnitId)) {
+        throw new ForbiddenException('A current branch assignment is required.');
+      }
+      where.push(`j.branch_id = ${addParam(membership.branchId)}::uuid`);
+      if (unitAdmin) where.push(`j.business_unit_id = ${addParam(membership.businessUnitId)}::uuid`);
+    }
+
+    const canViewAll = has('submission:view_all', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage');
+    if (!canViewAll && !has('submission:create', 'submission:view')) throw new ForbiddenException('Missing submission access permission.');
+    if (isAccountManager && view === 'all' && !canViewAll) throw new ForbiddenException('All-submission access is not enabled for this role.');
+    if (isAccountManager && view === 'pod') throw new ForbiddenException('Pod submission view is not available to account managers.');
+    if (view === 'my') {
+      where.push(isAccountManager ? `j.account_manager_id = ${addParam(user.dbId)}::uuid` : `s.recruiter_id = ${addParam(user.dbId)}::uuid`);
+    } else if (view === 'pod') {
+      if (!has('pod:view')) throw new ForbiddenException('Missing pod:view permission.');
+      const userParam = addParam(user.dbId);
+      where.push(`s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1::uuid AND pod_id = (SELECT pod_id FROM ats.users WHERE id = ${userParam}::uuid AND tenant_id = $1::uuid))`);
+    } else if (!canViewAll) {
+      const userParam = addParam(user.dbId);
+      where.push(`(s.recruiter_id = ${userParam}::uuid OR r.job_reviewer_id = ${userParam}::uuid)`);
+    }
+    if (filters.branchId && !unitAdmin && !branchAdmin) {
+      const branchParam = addParam(filters.branchId.trim());
+      where.push(`(j.branch_id::text = ${branchParam} OR j.branch_id IN (SELECT id FROM ats.branches WHERE LOWER(name) = LOWER(${branchParam}) OR LOWER(code) = LOWER(${branchParam})) OR j.branch_id IS NULL)`);
+    }
+    if (filters.search?.trim()) {
+      const searchParam = addParam(`%${filters.search.trim().replace(/[\\%_]/g, '\\$&')}%`);
+      where.push(`(c.full_name ILIKE ${searchParam} OR c.email ILIKE ${searchParam} OR j.job_code ILIKE ${searchParam} OR j.job_title ILIKE ${searchParam})`);
+    }
+    const eligible = `s.final_status = 'SUBMITTED' AND (
+      (COALESCE(s.l1_status, 'PENDING') IN ('PENDING', 'CANCELLED') AND (s.l1_status = 'CANCELLED' OR s.l1_date IS NULL)
+        AND COALESCE(s.l2_status, 'PENDING') = 'PENDING' AND s.l2_date IS NULL
+        AND COALESCE(s.l3_status, 'PENDING') = 'PENDING' AND s.l3_date IS NULL)
+      OR (s.l1_status = 'CLEARED' AND COALESCE(s.l2_status, 'PENDING') IN ('PENDING', 'CANCELLED') AND (s.l2_status = 'CANCELLED' OR s.l2_date IS NULL)
+        AND COALESCE(s.l3_status, 'PENDING') = 'PENDING' AND s.l3_date IS NULL)
+      OR (s.l1_status = 'CLEARED' AND s.l2_status = 'CLEARED' AND COALESCE(s.l3_status, 'PENDING') IN ('PENDING', 'CANCELLED') AND (s.l3_status = 'CANCELLED' OR s.l3_date IS NULL))
+    )`;
+    const from = `FROM ats.recruiter_submissions s JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id
+      JOIN ats.candidates c ON c.id = s.candidate_id LEFT JOIN ats.users r ON r.id = s.recruiter_id AND r.tenant_id = s.tenant_id
+      WHERE ${where.join(' AND ')} AND ${eligible}`;
+    const countSql = `SELECT COUNT(*)::int AS total ${from}`;
+    const rowsSql = `SELECT s.id, c.full_name AS candidate_name, j.job_code, j.job_title,
+      CASE WHEN COALESCE(s.l1_status, 'PENDING') IN ('PENDING', 'CANCELLED') THEN 'l1'
+           WHEN s.l1_status = 'CLEARED' AND COALESCE(s.l2_status, 'PENDING') IN ('PENDING', 'CANCELLED') THEN 'l2'
+           ELSE 'l3' END AS eligible_round, s.final_status
+      ${from} ORDER BY LOWER(c.full_name), s.id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    const [countRows, rows] = await Promise.all([
+      this.prisma.$queryRawUnsafe<any[]>(countSql, ...params),
+      this.prisma.$queryRawUnsafe<any[]>(rowsSql, ...params, limit, offset),
+    ]);
+    const total = Number(countRows[0]?.total || 0);
+    return {
+      data: rows.map(row => ({ id: row.id, candidateName: row.candidate_name || 'Candidate', jobCode: row.job_code, jobTitle: row.job_title, finalStatus: row.final_status, eligibleRound: row.eligible_round })),
+      total, page, limit, totalPages: Math.ceil(total / limit),
+    };
+  }
+
   async findCalendarEvents(tenantId: string, user: AuthUser, branchId: string | null, startText?: string, endText?: string) {
     if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');
     const start = startText ? new Date(startText) : new Date();
@@ -149,16 +231,17 @@ export class RecruiterSubmissionsService {
              c.full_name AS candidate_name,
              r.full_name AS recruiter_name,
              rounds.round_key, rounds.round_status, rounds.interview_date,
+             rounds.interview_color,
              rounds.interviewer, s.meeting_link
       FROM ats.recruiter_submissions s
       JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id
       JOIN ats.candidates c ON c.id = s.candidate_id
       LEFT JOIN ats.users r ON r.id = s.recruiter_id AND r.tenant_id = s.tenant_id
       CROSS JOIN LATERAL (VALUES
-        ('L1', s.l1_status::text, s.l1_date, s.l1_interviewer),
-        ('L2', s.l2_status::text, s.l2_date, s.l2_interviewer),
-        ('L3', s.l3_status::text, s.l3_date, s.l3_interviewer)
-      ) AS rounds(round_key, round_status, interview_date, interviewer)
+        ('L1', s.l1_status::text, s.l1_date, s.l1_interviewer, s.l1_color),
+        ('L2', s.l2_status::text, s.l2_date, s.l2_interviewer, s.l2_color),
+        ('L3', s.l3_status::text, s.l3_date, s.l3_interviewer, s.l3_color)
+      ) AS rounds(round_key, round_status, interview_date, interviewer, interview_color)
       WHERE s.tenant_id = $1::uuid
         AND rounds.interview_date >= $2::timestamptz
         AND rounds.interview_date < $3::timestamptz
@@ -179,6 +262,7 @@ export class RecruiterSubmissionsService {
       start: new Date(row.interview_date).toISOString(),
       status: row.round_status,
       round: row.round_key,
+      color: row.interview_color,
       candidateName: row.candidate_name,
       jobId: row.job_id,
       jobCode: row.job_code,
@@ -188,7 +272,7 @@ export class RecruiterSubmissionsService {
       meetingLink: row.meeting_link,
       timezone: row.job_timezone,
       updatedAt: row.updated_at,
-      canManage: canSchedule && ['SCHEDULED', 'AWAITING_FEEDBACK'].includes(row.round_status) && (!isAccountManager || row.account_manager_id === user.dbId || has('submission:edit_all')),
+      canManage: canSchedule && row.final_status === 'SUBMITTED' && ['SCHEDULED', 'AWAITING_FEEDBACK'].includes(row.round_status) && (!isAccountManager || row.account_manager_id === user.dbId || has('submission:edit_all')),
     }));
   }
 
@@ -421,14 +505,17 @@ export class RecruiterSubmissionsService {
         s.l1_date,
         s.l1_remarks,
         s.l1_interviewer,
+        s.l1_color,
         s.l2_status,
         s.l2_date,
         s.l2_remarks,
         s.l2_interviewer,
+        s.l2_color,
         s.l3_status,
         s.l3_date,
         s.l3_remarks,
         s.l3_interviewer,
+        s.l3_color,
         s.meeting_link,
         s.final_status,
         s.remarks,
@@ -1123,7 +1210,9 @@ export class RecruiterSubmissionsService {
     const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
     const hasAdminScope = (user.permissions || []).some(permission => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(permission));
     const isOtherManagerJob = isAccountManager && !hasAdminScope && existing.job?.accountManagerId !== user.dbId;
-    const changesStatus = dto.finalStatus !== undefined || dto.l1Status !== undefined || dto.l2Status !== undefined || dto.l3Status !== undefined;
+    const changesStatus = dto.finalStatus !== undefined || ['l1', 'l2', 'l3'].some(round =>
+      ['Status', 'Date', 'Remarks', 'Interviewer', 'Color'].some(suffix => dto[`${round}${suffix}`] !== undefined),
+    );
     if (isOtherManagerJob && changesStatus && !(user.permissions || []).includes('submission:edit_all')) {
       throw new ForbiddenException('Editing status for another account manager’s job is not enabled for this role.');
     }
@@ -1179,6 +1268,10 @@ export class RecruiterSubmissionsService {
       l3Date,
       finalStatus,
     };
+    for (const round of ['l1', 'l2', 'l3']) {
+      const colorKey = `${round}Color`;
+      if (roundChanges[colorKey] !== undefined) data[colorKey] = roundChanges[colorKey];
+    }
 
     if (dto.jobId !== undefined) data.jobId = dto.jobId;
     if (dto.candidateId !== undefined) data.candidateId = dto.candidateId;
@@ -1497,10 +1590,13 @@ export class RecruiterSubmissionsService {
       reviewFeedback: row.review_feedback || row.reviewFeedback || row.pod_lead_remarks || row.podLeadRemarks || null,
       l1Remarks: row.l1_remarks || row.l1Remarks || null,
       l1Interviewer: row.l1_interviewer || row.l1Interviewer || null,
+      l1Color: row.l1_color ?? row.l1Color ?? null,
       l2Remarks: row.l2_remarks || row.l2Remarks || null,
       l2Interviewer: row.l2_interviewer || row.l2Interviewer || null,
+      l2Color: row.l2_color ?? row.l2Color ?? null,
       l3Remarks: row.l3_remarks || row.l3Remarks || null,
       l3Interviewer: row.l3_interviewer || row.l3Interviewer || null,
+      l3Color: row.l3_color ?? row.l3Color ?? null,
       meetingLink: row.meeting_link || row.meetingLink || null,
       createdAt: row.created_at || row.createdAt ? new Date(row.created_at || row.createdAt).toISOString() : new Date().toISOString(),
       updatedAt: row.updated_at || row.updatedAt ? new Date(row.updated_at || row.updatedAt).toISOString() : new Date().toISOString(),

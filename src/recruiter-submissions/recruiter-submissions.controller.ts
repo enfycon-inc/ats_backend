@@ -135,6 +135,31 @@ export class RecruiterSubmissionsController {
     return this.service.findCalendarEvents(tid, user, bid, start, end);
   }
 
+  @Get('eligible-for-interview')
+  @ApiOperation({ summary: 'List visible submissions that can be scheduled for their next interview round' })
+  async eligibleForInterview(
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('view') view?: string,
+    @Query('search') search?: string,
+  ) {
+    const tid = resolveTenantId(user, tenantId);
+    const bid = resolveBranchId(user, branchHeaderId);
+    if (!(user.permissions || []).some(permission => ['*', 'submission:schedule_interview'].includes(permission))) {
+      throw new ForbiddenException('Missing submission:schedule_interview permission.');
+    }
+    return this.service.findEligibleForInterview(tid, user, {
+      page: page ? parseInt(page, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 25,
+      branchId: bid || undefined,
+      view: view || undefined,
+      search,
+    });
+  }
+
   @Get('custom-remarks')
   @ApiOperation({
     summary: 'List Tenant & Branch Custom Stage Remarks Templates',
