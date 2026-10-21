@@ -1357,9 +1357,9 @@ model SubmissionEvent {
 }
 
 model DeveloperLoginGrant {
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user User @relation("DeveloperGrantee", fields: [userId], references: [id], onDelete: Cascade)
-  grantor User? @relation("DeveloperGrantor", fields: [grantedBy], references: [id], onDelete: SetNull)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user User @relation("DeveloperGrantee", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  grantor User? @relation("DeveloperGrantor", fields: [grantedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
   userId String @map("user_id") @db.Uuid
@@ -1370,7 +1370,7 @@ model DeveloperLoginGrant {
   @@schema("ats")
 }
 model DeveloperLoginSession {
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   keycloakId String @map("keycloak_id") @db.VarChar(255)
   sessionId String @map("session_id") @db.VarChar(255)
   grantId String? @map("grant_id") @db.Uuid
