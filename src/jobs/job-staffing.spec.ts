@@ -180,14 +180,20 @@ describe('job recruiter staffing permissions and scope', () => {
       tenantId: tenant,
       branchId: branch,
       roles: ['DELIVERY_HEAD'],
-      businessUnitId: unit, permissions: ['job:edit', 'job:assign', 'job:assign_recruiter', 'job:override_assignment'],
+      businessUnitId: unit, permissions: ['job:edit', 'job:assign', 'job:assign_recruiter', 'job:assign_pod', 'job:override_assignment', 'job:assignment_reason_optional'],
     };
 
-    const result = await service.updateJob(other, { recruiterIds: [recruiter], assignmentReason: 'Urgent coverage' }, tenant, deliveryHeadActor);
+    const result = await service.updateJob(other, { recruiterIds: [recruiter] }, tenant, deliveryHeadActor);
     expect(result).toBeDefined();
     expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({
       data: [{ jobId: other, recruiterId: recruiter }],
     });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        action: 'JOB_ASSIGNMENT_OVERRIDE',
+        details: expect.not.objectContaining({ reason: expect.anything() }),
+      }),
+    }));
   });
 
   it('allows Branch Admin to assign recruiters on any job within the branch', async () => {

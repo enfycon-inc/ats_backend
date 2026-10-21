@@ -1,6 +1,6 @@
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
-  return [...new Set([...permissions, ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : [])])];
+  return [...new Set([...permissions, ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional'] : [])])];
 }
 import {
   Injectable,
@@ -807,6 +807,7 @@ export class AuthRbacService {
       { id: 'job:view_pod_jobs', name: 'View All Jobs Assigned to Own Pod', group: 'Jobs Management' },
       { id: 'job:submit_pod_jobs', name: 'Submit to Own Pod Jobs Without Individual Assignment', group: 'Jobs Management' },
       { id: 'job:override_assignment', name: 'Override Job Assignment Within Current Unit', group: 'Jobs Management' },
+      { id: 'job:assignment_reason_optional', name: 'Skip Emergency Assignment Justification', group: 'Jobs Management' },
       { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
       { id: 'job:delegate', name: 'Delegate Jobs to Same-Market Units in Other Branches', group: 'Jobs Management' },
       { id: 'job:accept_delegation', name: 'Accept Delegated Jobs for Your Operating Unit', group: 'Jobs Management' },

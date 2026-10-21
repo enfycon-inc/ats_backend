@@ -875,7 +875,7 @@ export class JobsService {
     }
     if (submittedRecruiters.length && !actor?.permissions?.includes('job:override_assignment')) throw new ForbiddenException('Direct recruiter assignment requires job:override_assignment.');
     if (submittedRecruiters.length && (!actor?.branchId || !actor.businessUnitId || branchId !== actor.branchId || businessUnitId !== actor.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
-    if (submittedRecruiters.length && (!dto.assignmentReason?.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
+    if (submittedRecruiters.length && !actor?.permissions?.includes('job:assignment_reason_optional') && (!dto.assignmentReason?.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
     if (submittedRecruiters.length) {
       if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
       await validateJobRecruiters(this.prisma, actor, tenantId, submittedRecruiters, branchId, businessUnitId);
@@ -1171,7 +1171,7 @@ export class JobsService {
         if (submittedRecruiters.length) await tx.jobRecruiter.createMany({
           data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
         });
-        if (submittedRecruiters.length) await tx.auditLog.create({ data: { tenantId, actorId: actor!.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: jobId, details: { reason: dto.assignmentReason!.trim(), recruiterIds: submittedRecruiters } } });
+        if (submittedRecruiters.length) await tx.auditLog.create({ data: { tenantId, actorId: actor!.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: jobId, details: { ...(typeof dto.assignmentReason === 'string' && dto.assignmentReason.trim() ? { reason: dto.assignmentReason.trim() } : {}), recruiterIds: submittedRecruiters } } });
         for (const assignedPodId of assignedPodIds) {
           await tx.jobPod.upsert({ where: { jobId_podId: { jobId, podId: assignedPodId } }, create: { jobId, podId: assignedPodId }, update: {} });
           await tx.jobAssignmentLog.create({ data: { tenantId, jobId, podId: assignedPodId, assignedBy: createdByEmail || 'System' } });
@@ -2063,7 +2063,7 @@ export class JobsService {
     const assignmentChanged = dto.recruiterIds !== undefined || dto.recruiterId !== undefined || dto.podId !== undefined || dto.podIds !== undefined;
     if (assignmentChanged && user.permissions?.includes('job:override_assignment')) {
       if (!user.branchId || !user.businessUnitId || currentJob.branchId !== user.branchId || currentJob.businessUnitId !== user.businessUnitId || (dto.branchId !== undefined && dto.branchId !== user.branchId) || (dto.businessUnitId !== undefined && dto.businessUnitId !== user.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
-      if (typeof dto.assignmentReason !== 'string' || !dto.assignmentReason.trim() || dto.assignmentReason.length > 2000) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
+      if (!user.permissions?.includes('job:assignment_reason_optional') && (typeof dto.assignmentReason !== 'string' || !dto.assignmentReason.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
     }
     assertUnitJobScope(user, currentJob);
     assertUnitJobScope(user, { branchId: dto.branchId ?? currentJob.branchId, businessUnitId: dto.businessUnitId ?? currentJob.businessUnitId });
@@ -2382,7 +2382,7 @@ export class JobsService {
       await this.prisma.$transaction(async tx => {
         await tx.jobRecruiter.deleteMany({ where: { jobId: id, ...(podLeadPodId ? { recruiter: { tenantId, podId: podLeadPodId } } : {}) } });
         if (targetRecruiterIds.length > 0) await tx.jobRecruiter.createMany({ data: targetRecruiterIds.map(recruiterId => ({ jobId: id, recruiterId })) });
-        if (user.permissions?.includes('job:override_assignment')) await tx.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { reason: dto.assignmentReason.trim(), recruiterIds: targetRecruiterIds, podIds: dto.podIds || [] } } });
+        if (user.permissions?.includes('job:override_assignment')) await tx.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { ...(typeof dto.assignmentReason === 'string' && dto.assignmentReason.trim() ? { reason: dto.assignmentReason.trim() } : {}), recruiterIds: targetRecruiterIds, podIds: dto.podIds || [] } } });
       });
     }
 
@@ -2433,7 +2433,7 @@ export class JobsService {
 
     // Dispatch live notification if primary recruiter was assigned or changed
     if ((dto.podId !== undefined || dto.podIds !== undefined) && user.permissions?.includes('job:override_assignment') && dto.recruiterId === undefined && dto.recruiterIds === undefined) {
-      await this.prisma.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { reason: dto.assignmentReason.trim(), podIds: dto.podIds || (dto.podId ? [dto.podId] : []) } } });
+      await this.prisma.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { ...(typeof dto.assignmentReason === 'string' && dto.assignmentReason.trim() ? { reason: dto.assignmentReason.trim() } : {}), podIds: dto.podIds || (dto.podId ? [dto.podId] : []) } } });
     }
     try {
       if (automaticallyAssignedPodId && dto.status !== 'Pending Approval') {

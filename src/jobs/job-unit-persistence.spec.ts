@@ -91,7 +91,7 @@ describe('job operating unit persistence and reviewer routing', () => {
       { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_pod'] })).rejects.toThrow('outside the job unit');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
-  it.each(['MANUAL', 'AUTO'])('persists emergency direct recruiters under %s policy with explicit override', async strategy => {
+  it.each(['MANUAL', 'AUTO'])('persists direct recruiters without justification for Delivery Head capability under %s policy', async strategy => {
     const { service, prisma, dto } = setup();
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: true, allowUnassigned: false, podDistributionStrategy: strategy });
     const second = '44444444-4444-4444-8444-444444444444';
@@ -100,11 +100,19 @@ describe('job operating unit persistence and reviewer routing', () => {
     prisma.$queryRawUnsafe.mockImplementation(async (sql: string) => sql.includes('CROSS JOIN LATERAL')
       ? [manager, second].map(id => ({ id, fullName: 'Recruiter', canRecruit: true, canReview: false }))
       : [{ id, permissions: ['job:publish_direct'], job_reviewer_id: null, pod_head_id: null }]);
-    await service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager, second, manager], assignmentReason: 'Urgent coverage' }, id, id, id,
-      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter', 'job:override_assignment'] });
+    await service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager, second, manager] }, id, id, id,
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter', 'job:override_assignment', 'job:assignment_reason_optional'] });
     expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({ data: [
       { jobId: id, recruiterId: manager }, { jobId: id, recruiterId: second },
     ], skipDuplicates: true });
+  });
+  it('still requires a reason for direct recruiter creation by legacy override roles', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: true, allowUnassigned: false, podDistributionStrategy: 'MANUAL' });
+    await expect(service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager] }, id, id, id,
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter', 'job:override_assignment'] }))
+      .rejects.toThrow('emergency assignment reason');
+    expect(prisma.job.create).not.toHaveBeenCalled();
   });
   it('does not swallow reviewer query failures or create a job', async () => {
     const { service, prisma, dto } = setup();
