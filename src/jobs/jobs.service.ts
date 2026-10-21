@@ -15,6 +15,7 @@ import { delegationTargets } from '../business-units/business-units.service';
 import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere } from '../clients/client-visibility';
+import { resolveActiveRole } from '../auth/utils/active-role';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
@@ -443,7 +444,8 @@ export class JobsService {
     const isOwner = job.accountManagerId === actor.dbId;
     const isCreator = job.createdByUserId === actor.dbId;
     const activeGrant = !isOwner && isCreator && job.accountManagerId ? await this.prisma.jobCreationGrant.findFirst({
-      where: { tenantId, accountManagerId: job.accountManagerId, delegateUserId: actor.dbId, revokedAt: null },
+      where: { tenantId, accountManagerId: job.accountManagerId, delegateUserId: actor.dbId, revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
       select: { id: true },
     }) : null;
     if (!isOwner && !isCreator && !elevated) {
@@ -454,7 +456,7 @@ export class JobsService {
     }
   }
 
-  private async assertCanCreateFor(actor: AuthUser, tenantId: string, accountManagerId: string | null) {
+  private async assertCanCreateFor(actor: AuthUser, tenantId: string, accountManagerId: string | null, existingGrantUse = false) {
     if (actor.tenantId && actor.tenantId !== tenantId) throw new ForbiddenException('Workspace unavailable.');
     const permissions = actor.permissions || [];
     const canCreateJobs = permissions.includes('job:create') || permissions.includes('platform:manage') || permissions.includes('*');
@@ -464,14 +466,57 @@ export class JobsService {
     }
     const [owner, grant] = await Promise.all([
       this.prisma.user.findFirst({ where: { id: accountManagerId, tenantId, isActive: true, isApproved: true }, select: { id: true, roleId: true, assignedRoleIds: true } }),
-      this.prisma.jobCreationGrant.findFirst({ where: { tenantId, accountManagerId, delegateUserId: actor.dbId, revokedAt: null }, select: { id: true } }),
+      this.prisma.jobCreationGrant.findFirst({ where: { tenantId, accountManagerId, delegateUserId: actor.dbId, revokedAt: null }, select: { id: true, expiresAt: true, maxJobs: true, jobsUsed: true } }),
     ]);
-    if (!owner || !grant) throw new ForbiddenException('You are not authorized to create jobs for this colleague.');
+    if (!owner || !grant || (grant.expiresAt && grant.expiresAt <= new Date()) || (!existingGrantUse && grant.maxJobs !== null && grant.jobsUsed >= grant.maxJobs)) throw new ForbiddenException('Your job creation access is expired or its job limit has been reached.');
     const roleIds = [...new Set([owner.roleId, ...(owner.assignedRoleIds || [])].filter(Boolean))] as string[];
     const roles = roleIds.length ? await this.prisma.customRole.findMany({ where: { tenantId, id: { in: roleIds } }, select: { permissions: true } }) : [];
     if (!roles.some(role => Array.isArray(role.permissions) && (role.permissions.includes('job:create') || role.permissions.includes('*') || role.permissions.includes('platform:manage')))) {
       throw new ForbiddenException('This colleague no longer has permission to own job requisitions.');
     }
+    return grant;
+  }
+
+  private async delegatedClientContext(actor: AuthUser, tenantId: string, accountManagerId: string) {
+    if (!accountManagerId || accountManagerId === actor.dbId) throw new ForbiddenException('Delegated client access requires an active colleague authorization.');
+    await this.assertCanCreateFor(actor, tenantId, accountManagerId);
+    const owner = await this.prisma.user.findFirst({
+      where: { id: accountManagerId, tenantId, isActive: true, isApproved: true },
+      select: { id: true, email: true, fullName: true, roleId: true, assignedRoleIds: true, branchId: true, businessUnitId: true, podId: true },
+    });
+    if (!owner) throw new ForbiddenException('The job owner is unavailable.');
+    const scopedOwner = await resolveActiveRole(this.prisma, {
+      dbId: owner.id, tenantId, email: owner.email, fullName: owner.fullName,
+      branchId: owner.branchId, businessUnitId: owner.businessUnitId, podId: owner.podId,
+    } as AuthUser, undefined);
+    const readScope = await clientReadWhere(this.prisma, tenantId, scopedOwner);
+    return { owner: scopedOwner as AuthUser, readScope };
+  }
+
+  async listDelegatedJobClients(actor: AuthUser, accountManagerId: string, search?: string) {
+    const { readScope } = await this.delegatedClientContext(actor, actor.tenantId, accountManagerId);
+    const searchTerm = search?.trim().slice(0, 100);
+    const rows = await this.prisma.client.findMany({
+      where: { AND: [readScope, { deletedAt: null }, ...(searchTerm ? [{ clientName: { contains: searchTerm, mode: 'insensitive' as const } }] : [])] },
+      select: { id: true, clientName: true, clientShortName: true, market: true, country: true, currency: true, commissionPercentage: true, clientCode: true, state: true, city: true, businessUnit: true, primaryBusinessUnit: true, status: true, approvalStatus: true },
+      orderBy: { clientName: 'asc' }, take: 250,
+    });
+    return rows.map(client => ({ ...client, client_name: client.clientName, client_short_name: client.clientShortName }));
+  }
+
+  async listDelegatedJobClientContacts(actor: AuthUser, accountManagerId: string, clientId: string) {
+    const { owner, readScope } = await this.delegatedClientContext(actor, actor.tenantId, accountManagerId);
+    const client = await this.prisma.client.findFirst({ where: { AND: [readScope, { id: clientId, deletedAt: null }] }, select: { id: true } });
+    if (!client) throw new ForbiddenException('The selected client is outside the job owner’s access scope.');
+    const policy = await loadPocPolicy(this.prisma, actor.tenantId);
+    const contacts = await this.prisma.clientContact.findMany({
+      where: { tenantId: actor.tenantId, clientId, ...(!policy?.otherOwnerPocsVisible ? { createdBy: owner.dbId } : {}) },
+      select: { id: true, name: true, designation: true, email: true, phone: true, isPrimary: true, createdBy: true },
+      orderBy: [{ isPrimary: 'desc' }, { name: 'asc' }],
+    });
+    const myContacts = contacts.filter(contact => contact.createdBy === owner.dbId).map(({ createdBy: _createdBy, ...contact }) => contact);
+    const otherContacts = policy?.otherOwnerPocsVisible ? contacts.filter(contact => contact.createdBy !== owner.dbId).map(({ createdBy: _createdBy, ...contact }) => contact) : [];
+    return { myContacts, otherContacts };
   }
 
   private canManageJobOwnerScope(actor: AuthUser, owner: { branchId?: string | null; businessUnitId?: string | null }) {
@@ -494,14 +539,16 @@ export class JobsService {
   async listJobCreationTargets(actor: AuthUser) {
     const grants = await this.prisma.jobCreationGrant.findMany({
       where: { tenantId: actor.tenantId, delegateUserId: actor.dbId, revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
         accountManager: { isActive: true, isApproved: true } },
-      select: { id: true, accountManagerId: true, accountManager: { select: { fullName: true, email: true, branchId: true, businessUnitId: true } } },
+      select: { id: true, accountManagerId: true, expiresAt: true, maxJobs: true, jobsUsed: true, accountManager: { select: { fullName: true, email: true, branchId: true, businessUnitId: true } } },
       orderBy: { accountManager: { fullName: 'asc' } },
     });
-    return grants.map(grant => ({ id: grant.accountManagerId, name: grant.accountManager.fullName, email: grant.accountManager.email, branchId: grant.accountManager.branchId, businessUnitId: grant.accountManager.businessUnitId }));
+    return grants.filter(grant => grant.maxJobs === null || grant.jobsUsed < grant.maxJobs)
+      .map(grant => ({ id: grant.accountManagerId, name: grant.accountManager.fullName, email: grant.accountManager.email, branchId: grant.accountManager.branchId, businessUnitId: grant.accountManager.businessUnitId }));
   }
 
-  async listJobCreationGrantPeople(actor: AuthUser, requestedOwnerId?: string) {
+  async listJobCreationGrantPeople(actor: AuthUser, requestedOwnerId?: string, search?: string) {
     const isManager = this.canManageJobCreationGrants(actor);
     const canManageOwn = (actor.permissions || []).includes('job:grant_creation_delegate');
     if (!isManager && !canManageOwn) throw new ForbiddenException('You cannot manage job creation access.');
@@ -514,26 +561,36 @@ export class JobsService {
     });
     if (!owner || (isManager && !this.canManageJobOwnerScope(actor, owner))) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
     if (!owner.branchId || !owner.businessUnitId) return [];
+    const searchTerm = search?.trim().slice(0, 100);
     return this.prisma.user.findMany({
       where: { tenantId: actor.tenantId, isActive: true, isApproved: true, id: { not: actor.dbId },
-        branchId: owner.branchId, businessUnitId: owner.businessUnitId },
+        branchId: owner.branchId, businessUnitId: owner.businessUnitId,
+        ...(searchTerm ? { OR: [
+          { fullName: { contains: searchTerm, mode: 'insensitive' } },
+          { email: { contains: searchTerm, mode: 'insensitive' } },
+        ] } : {}) },
       select: { id: true, fullName: true, email: true, branchId: true, businessUnitId: true },
       orderBy: { fullName: 'asc' },
-      take: 250,
+      take: searchTerm ? 50 : 250,
     });
   }
 
-  async listJobCreationGrantOwners(actor: AuthUser) {
+  async listJobCreationGrantOwners(actor: AuthUser, search?: string) {
     const permissions = actor.permissions || [];
     if (!this.canManageJobCreationGrants(actor)) throw new ForbiddenException('Only an authorized administrator can select another job owner.');
     const tenantWide = this.hasTenantWideJobCreationManagement(actor);
     if (!tenantWide && (!actor.branchId || (!permissions.includes('branch_admin:manage') && (!permissions.includes('unit_admin:manage') || !actor.businessUnitId)))) return [];
+    const searchTerm = search?.trim().slice(0, 100);
     const users = await this.prisma.user.findMany({
       where: { tenantId: actor.tenantId, isActive: true, isApproved: true,
+        ...(searchTerm ? { OR: [
+          { fullName: { contains: searchTerm, mode: 'insensitive' } },
+          { email: { contains: searchTerm, mode: 'insensitive' } },
+        ] } : {}),
         ...(!tenantWide ? { branchId: actor.branchId || undefined, ...(permissions.includes('branch_admin:manage') ? {} : { businessUnitId: actor.businessUnitId || undefined }) } : {}) },
       select: { id: true, fullName: true, email: true, branchId: true, businessUnitId: true, roleId: true, assignedRoleIds: true },
       orderBy: { fullName: 'asc' },
-      take: 250,
+      take: searchTerm ? 100 : 250,
     });
     const roleIds = [...new Set(users.flatMap(user => [user.roleId, ...(user.assignedRoleIds || [])].filter(Boolean)))] as string[];
     const roles = roleIds.length ? await this.prisma.customRole.findMany({ where: { tenantId: actor.tenantId, id: { in: roleIds } }, select: { id: true, permissions: true } }) : [];
@@ -557,18 +614,25 @@ export class JobsService {
     }
     return this.prisma.jobCreationGrant.findMany({
       where: { tenantId: actor.tenantId, accountManagerId: ownerId },
-      select: { id: true, revokedAt: true, createdAt: true, delegateUser: { select: { id: true, fullName: true, email: true } }, grantedBy: { select: { fullName: true, email: true } } },
+      select: { id: true, revokedAt: true, expiresAt: true, maxJobs: true, jobsUsed: true, createdAt: true, delegateUser: { select: { id: true, fullName: true, email: true } }, grantedBy: { select: { fullName: true, email: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
 
-  async createJobCreationGrant(actor: AuthUser, accountManagerId: string, delegateUserId: string) {
+  async createJobCreationGrant(actor: AuthUser, accountManagerId: string, delegateUserId: string, options: { expiresAt?: string | null; maxJobs?: number | null } = {}) {
     const permissions = actor.permissions || [];
     const isManager = this.canManageJobCreationGrants(actor);
     if (!isManager && (!permissions.includes('job:grant_creation_delegate') || accountManagerId !== actor.dbId)) throw new ForbiddenException('Only the account manager or an authorized administrator can grant this access.');
     const isUuid = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
     if (!isUuid(accountManagerId) || !isUuid(delegateUserId)) throw new BadRequestException('Select valid colleagues.');
     if (!accountManagerId || !delegateUserId || accountManagerId === delegateUserId) throw new BadRequestException('Select a valid colleague.');
+    let expiresAt: Date | null = null;
+    if (options.expiresAt !== undefined && options.expiresAt !== null && options.expiresAt !== '') {
+      expiresAt = new Date(options.expiresAt);
+      if (!Number.isFinite(expiresAt.getTime()) || expiresAt <= new Date()) throw new BadRequestException('Expiry must be a valid future date and time.');
+    }
+    const maxJobs = options.maxJobs === undefined || options.maxJobs === null || options.maxJobs === ('' as any) ? null : Number(options.maxJobs);
+    if (maxJobs !== null && (!Number.isSafeInteger(maxJobs) || maxJobs < 1)) throw new BadRequestException('The job limit must be a positive whole number.');
     const [owner, delegate] = await Promise.all([
       this.prisma.user.findFirst({ where: { id: accountManagerId, tenantId: actor.tenantId, isActive: true, isApproved: true }, select: { id: true, branchId: true, businessUnitId: true, roleId: true, assignedRoleIds: true } }),
       this.prisma.user.findFirst({ where: { id: delegateUserId, tenantId: actor.tenantId, isActive: true, isApproved: true }, select: { id: true, branchId: true, businessUnitId: true } }),
@@ -584,11 +648,11 @@ export class JobsService {
     if (delegate.branchId !== owner.branchId || delegate.businessUnitId !== owner.businessUnitId) throw new ForbiddenException('Job creation access is limited to colleagues in the same business unit.');
     const grant = await this.prisma.jobCreationGrant.upsert({
       where: { tenantId_accountManagerId_delegateUserId: { tenantId: actor.tenantId, accountManagerId, delegateUserId } },
-      create: { tenantId: actor.tenantId, accountManagerId, delegateUserId, grantedByUserId: actor.dbId },
-      update: { revokedAt: null, grantedByUserId: actor.dbId, updatedAt: new Date() },
-      select: { id: true, accountManagerId: true, delegateUserId: true, revokedAt: true },
+      create: { tenantId: actor.tenantId, accountManagerId, delegateUserId, grantedByUserId: actor.dbId, expiresAt, maxJobs, jobsUsed: 0 },
+      update: { revokedAt: null, grantedByUserId: actor.dbId, expiresAt, maxJobs, jobsUsed: 0, updatedAt: new Date() },
+      select: { id: true, accountManagerId: true, delegateUserId: true, revokedAt: true, expiresAt: true, maxJobs: true, jobsUsed: true },
     });
-    await this.prisma.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'JOB_CREATION_ACCESS_GRANTED', targetType: 'user', targetId: delegateUserId, details: { accountManagerId } } });
+    await this.prisma.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'JOB_CREATION_ACCESS_GRANTED', targetType: 'user', targetId: delegateUserId, details: { accountManagerId, expiresAt: expiresAt?.toISOString() || null, maxJobs } } });
     return grant;
   }
 
@@ -605,9 +669,12 @@ export class JobsService {
     await this.prisma.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'JOB_CREATION_ACCESS_REVOKED', targetType: 'user', targetId: grant.delegateUserId, details: { accountManagerId: grant.accountManagerId } } });
   }
 
-  private async resolveSelectedClients(dto: CreateJobDto, tenantId: string, actor: AuthUser) {
+  private async resolveSelectedClients(dto: CreateJobDto, tenantId: string, actor: AuthUser, accountManagerId?: string | null) {
     if (!dto.client && !dto.clientId && !dto.endClientName && !dto.endClientId && !dto.pocId && !dto.endClientPocId) return;
-    const scope = await clientReadWhere(this.prisma, tenantId, actor);
+    const delegated = accountManagerId && accountManagerId !== actor.dbId
+      ? await this.delegatedClientContext(actor, tenantId, accountManagerId) : null;
+    const clientActor = delegated?.owner || actor;
+    const scope = delegated?.readScope || await clientReadWhere(this.prisma, tenantId, actor);
     for (const [nameKey, idKey] of [['client', 'clientId'], ['endClientName', 'endClientId']] as const) {
       const id = dto[idKey];
       const name = dto[nameKey];
@@ -624,7 +691,7 @@ export class JobsService {
     const pocPolicy = await loadPocPolicy(this.prisma, tenantId);
     for (const [contactId, clientId] of [[dto.pocId, dto.clientId], [dto.endClientPocId, dto.endClientId]]) {
       if (!contactId) continue;
-      const contact = clientId && await this.prisma.clientContact.findFirst({ where: { id: contactId, clientId, tenantId, ...(!pocPolicy?.otherOwnerPocsVisible ? { createdBy: actor.dbId } : {}) }, select: { id: true } });
+      const contact = clientId && await this.prisma.clientContact.findFirst({ where: { id: contactId, clientId, tenantId, ...(!pocPolicy?.otherOwnerPocsVisible ? { createdBy: clientActor.dbId } : {}) }, select: { id: true } });
       if (!contact) throw new BadRequestException('The selected contact does not belong to this client.');
     }
   }
@@ -638,11 +705,11 @@ export class JobsService {
     const existing = await this.prisma.job.findFirst({ where: { id: draftId } });
     if (existing) {
       await this.assertDraftAccess(existing, tenantId, actor);
-      await this.assertCanCreateFor(actor, tenantId, existing.accountManagerId);
+      await this.assertCanCreateFor(actor, tenantId, existing.accountManagerId, true);
       this.assertDraftScope(tenantId, actor, dto.branchId ?? existing.branchId, dto.businessUnitId ?? existing.businessUnitId);
     } else if (id) throw new NotFoundException('Draft not found.');
     else this.assertDraftScope(tenantId, actor, dto.branchId || branchId, dto.businessUnitId);
-    await this.resolveSelectedClients(dto, tenantId, actor);
+    await this.resolveSelectedClients(dto, tenantId, actor, existing?.accountManagerId || dto.accountManagerId);
     const payload = { ...dto, draftId, status: 'Draft', title: dto.title || '', type: dto.type || 'Full Time', description: dto.description || '', skillsRequired: dto.skillsRequired || [] };
     return existing
       ? this.updateJob(draftId, payload, tenantId, actor, 'draft')
@@ -653,12 +720,12 @@ export class JobsService {
     const job = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
     if (!job) throw new NotFoundException('Draft not found.');
     await this.assertDraftAccess(job, tenantId, actor);
-    await this.assertCanCreateFor(actor, tenantId, job.accountManagerId);
+    await this.assertCanCreateFor(actor, tenantId, job.accountManagerId, true);
     this.assertDraftScope(tenantId, actor, dto.branchId ?? job.branchId, dto.businessUnitId ?? job.businessUnitId);
     if ((dto.title || '').trim().length < 3 || (dto.description || '').trim().length < 10 || !dto.client || !dto.payRate || !dto.clientBillRate) {
       throw new BadRequestException('Complete the required job fields before publishing.');
     }
-    await this.resolveSelectedClients(dto, tenantId, actor);
+    await this.resolveSelectedClients(dto, tenantId, actor, job.accountManagerId);
     const clients = await this.prisma.client.findMany({ where: { tenantId, id: { in: [dto.clientId, dto.endClientId].filter((value): value is string => !!value) } }, select: { status: true, approvalStatus: true } });
     const creator = await this.prisma.user.findUnique({ where: { id: job.accountManagerId || actor.dbId }, select: { jobReviewerId: true } });
     const direct = (actor.permissions || []).some(p => ['job:publish_direct', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(p));
@@ -674,11 +741,12 @@ export class JobsService {
     const resolvedAccountManagerId = dto.accountManagerId
       ? await this.resolveUserUuid(dto.accountManagerId, tenantId)
       : actor?.dbId || await this.resolveUserUuid(createdByEmail, tenantId);
+    let creationGrant: { id: string; expiresAt: Date | null; maxJobs: number | null; jobsUsed: number } | undefined;
     if (actor) {
       if (!resolvedAccountManagerId) throw new BadRequestException('Select a valid account manager for this job.');
-      await this.assertCanCreateFor(actor, tenantId, resolvedAccountManagerId);
+      creationGrant = await this.assertCanCreateFor(actor, tenantId, resolvedAccountManagerId);
     }
-    if ((dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId) && actor && !draft) await this.resolveSelectedClients(dto, tenantId, actor);
+    if ((dto.clientId || dto.endClientId || dto.pocId || dto.endClientPocId || dto.client || dto.endClientName) && actor && !draft) await this.resolveSelectedClients(dto, tenantId, actor, resolvedAccountManagerId);
     this.logger.log(`Creating job: ${dto.title} for tenant: ${tenantId}`);
 
     const tenant = await this.prisma.tenant.findUnique({
@@ -1019,6 +1087,17 @@ export class JobsService {
           
         };
       const { createdJob, assignedPodIds } = await this.prisma.$transaction(async tx => {
+        if (creationGrant) await tx.$queryRaw`SELECT id FROM ats.job_creation_grants WHERE id = ${creationGrant.id}::uuid FOR UPDATE`;
+        const isExistingDraft = draft && dto.draftId ? !!await tx.job.findUnique({ where: { id: dto.draftId }, select: { id: true } }) : false;
+        if (creationGrant && !isExistingDraft) {
+          const quota = { id: creationGrant.id, tenantId, revokedAt: null, maxJobs: creationGrant.maxJobs,
+            ...(creationGrant.expiresAt ? { expiresAt: creationGrant.expiresAt } : { expiresAt: null }),
+            ...(creationGrant.maxJobs !== null ? { jobsUsed: { lt: creationGrant.maxJobs } } : {}),
+            AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }],
+          };
+          const reserved = await tx.jobCreationGrant.updateMany({ where: quota, data: { jobsUsed: { increment: 1 } } });
+          if (!reserved.count) throw new ForbiddenException('Your job creation access expired or reached its job limit.');
+        }
         if (!draft && businessUnitId && !automaticPods) {
           await tx.$queryRaw`SELECT id FROM ats.business_units WHERE id = ${businessUnitId}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
           const currentPolicy = await tx.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });

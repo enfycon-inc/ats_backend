@@ -27,7 +27,7 @@ describe('job creation delegation', () => {
   it('allows creation for another owner only when a live tenant grant exists', async () => {
     await expect((service as any).assertCanCreateFor(
       { dbId: delegateId, tenantId, permissions: ['job:view'] }, tenantId, ownerId,
-    )).resolves.toBeUndefined();
+    )).resolves.toEqual(expect.objectContaining({ id: 'grant-id' }));
     expect(prisma.jobCreationGrant.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: { tenantId, accountManagerId: ownerId, delegateUserId: delegateId, revokedAt: null },
     }));
@@ -38,6 +38,27 @@ describe('job creation delegation', () => {
     await expect((service as any).assertCanCreateFor(
       { dbId: delegateId, tenantId, permissions: ['job:view'] }, tenantId, ownerId,
     )).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('denies delegated creation after the grant expires', async () => {
+    prisma.jobCreationGrant.findFirst.mockResolvedValue({ id: 'grant-id', expiresAt: new Date(Date.now() - 60_000), maxJobs: null, jobsUsed: 0 });
+    await expect((service as any).assertCanCreateFor(
+      { dbId: delegateId, tenantId, permissions: ['job:view'] }, tenantId, ownerId,
+    )).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('denies delegated creation after its job limit is used', async () => {
+    prisma.jobCreationGrant.findFirst.mockResolvedValue({ id: 'grant-id', expiresAt: null, maxJobs: 2, jobsUsed: 2 });
+    await expect((service as any).assertCanCreateFor(
+      { dbId: delegateId, tenantId, permissions: ['job:view'] }, tenantId, ownerId,
+    )).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('allows an existing delegated draft to be worked on after its job quota is used', async () => {
+    prisma.jobCreationGrant.findFirst.mockResolvedValue({ id: 'grant-id', expiresAt: null, maxJobs: 1, jobsUsed: 1 });
+    await expect((service as any).assertCanCreateFor(
+      { dbId: delegateId, tenantId, permissions: ['job:view'] }, tenantId, ownerId, true,
+    )).resolves.toEqual(expect.objectContaining({ id: 'grant-id' }));
   });
 
   it('rejects a request whose tenant does not match the authenticated user', async () => {
@@ -95,7 +116,8 @@ describe('job creation delegation', () => {
     } as any, ownerId, delegateId);
 
     expect(prisma.jobCreationGrant.upsert).toHaveBeenCalledWith(expect.objectContaining({
-      create: expect.objectContaining({ tenantId, accountManagerId: ownerId, delegateUserId: delegateId, grantedByUserId: ownerId }),
+      create: expect.objectContaining({ tenantId, accountManagerId: ownerId, delegateUserId: delegateId, grantedByUserId: ownerId, expiresAt: null, maxJobs: null, jobsUsed: 0 }),
+      update: expect.objectContaining({ expiresAt: null, maxJobs: null, jobsUsed: 0, revokedAt: null }),
     }));
     expect(prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ action: 'JOB_CREATION_ACCESS_GRANTED', actorId: ownerId }),

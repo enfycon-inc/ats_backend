@@ -50,18 +50,32 @@ export class JobsController {
     return this.jobsService.listJobCreationTargets(user);
   }
 
+  @Get('creation-access/clients')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async delegatedJobClients(@CurrentUser() user: AuthUser, @Query('accountManagerId') accountManagerId: string, @Query('search') search?: string) {
+    return this.jobsService.listDelegatedJobClients(user, accountManagerId, search);
+  }
+
+  @Get('creation-access/clients/:clientId/contacts')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async delegatedJobClientContacts(@CurrentUser() user: AuthUser, @Param('clientId') clientId: string, @Query('accountManagerId') accountManagerId: string) {
+    return this.jobsService.listDelegatedJobClientContacts(user, accountManagerId, clientId);
+  }
+
   @Get('creation-access/people')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  async jobCreationGrantPeople(@CurrentUser() user: AuthUser, @Query('accountManagerId') accountManagerId?: string) {
-    return this.jobsService.listJobCreationGrantPeople(user, accountManagerId);
+  async jobCreationGrantPeople(@CurrentUser() user: AuthUser, @Query('accountManagerId') accountManagerId?: string, @Query('search') search?: string) {
+    return this.jobsService.listJobCreationGrantPeople(user, accountManagerId, search);
   }
 
   @Get('creation-access/owners')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  async jobCreationGrantOwners(@CurrentUser() user: AuthUser) {
-    return this.jobsService.listJobCreationGrantOwners(user);
+  async jobCreationGrantOwners(@CurrentUser() user: AuthUser, @Query('search') search?: string) {
+    return this.jobsService.listJobCreationGrantOwners(user, search);
   }
 
   @Get('creation-access/grants')
@@ -75,8 +89,8 @@ export class JobsController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  async createJobCreationGrant(@CurrentUser() user: AuthUser, @Body() body: { accountManagerId: string; delegateUserId: string }) {
-    return this.jobsService.createJobCreationGrant(user, body.accountManagerId, body.delegateUserId);
+  async createJobCreationGrant(@CurrentUser() user: AuthUser, @Body() body: { accountManagerId: string; delegateUserId: string; expiresAt?: string | null; maxJobs?: number | null }) {
+    return this.jobsService.createJobCreationGrant(user, body.accountManagerId, body.delegateUserId, { expiresAt: body.expiresAt, maxJobs: body.maxJobs });
   }
 
   @Delete('creation-access/grants/:grantId')
