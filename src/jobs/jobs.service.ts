@@ -536,6 +536,10 @@ export class JobsService {
     return (actor.permissions || []).some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission));
   }
 
+  private shouldRequireJobApproval(dto: CreateJobDto, requiresApprovalGate: boolean, clientApproved: boolean, delegated: boolean) {
+    return delegated || dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval' || requiresApprovalGate || !clientApproved;
+  }
+
   async listJobCreationTargets(actor: AuthUser) {
     const grants = await this.prisma.jobCreationGrant.findMany({
       where: { tenantId: actor.tenantId, delegateUserId: actor.dbId, revokedAt: null,
@@ -667,6 +671,56 @@ export class JobsService {
     if (grant.revokedAt) return;
     await this.prisma.jobCreationGrant.update({ where: { id: grant.id }, data: { revokedAt: new Date() } });
     await this.prisma.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'JOB_CREATION_ACCESS_REVOKED', targetType: 'user', targetId: grant.delegateUserId, details: { accountManagerId: grant.accountManagerId } } });
+  }
+
+  async updateJobCreationGrant(actor: AuthUser, grantId: string, options: { expiresAt?: string | null; maxJobs?: number | null } = {}) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(grantId || '')) throw new BadRequestException('Select valid job creation access.');
+    let expiresAt: Date | null | undefined;
+    if (options.expiresAt !== undefined) {
+      expiresAt = null;
+      if (options.expiresAt !== null && options.expiresAt !== '') {
+        expiresAt = new Date(options.expiresAt);
+        if (!Number.isFinite(expiresAt.getTime()) || expiresAt <= new Date()) throw new BadRequestException('Expiry must be a valid future date and time.');
+      }
+    }
+    const maxJobs = options.maxJobs === undefined ? undefined : options.maxJobs === null || options.maxJobs === ('' as any) ? null : Number(options.maxJobs);
+    if (maxJobs !== null && maxJobs !== undefined && (!Number.isSafeInteger(maxJobs) || maxJobs < 1)) throw new BadRequestException('The job limit must be a positive whole number.');
+
+    return this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM ats.job_creation_grants WHERE id = ${grantId}::uuid AND tenant_id = ${actor.tenantId}::uuid FOR UPDATE`;
+      const grant = await tx.jobCreationGrant.findFirst({
+        where: { id: grantId, tenantId: actor.tenantId },
+        select: { id: true, accountManagerId: true, delegateUserId: true, revokedAt: true, expiresAt: true, maxJobs: true, jobsUsed: true, accountManager: { select: { branchId: true, businessUnitId: true } } },
+      });
+      if (!grant) throw new NotFoundException('Job creation access not found.');
+      const permissions = actor.permissions || [];
+      const isManager = this.canManageJobCreationGrants(actor);
+      if (!isManager && (!permissions.includes('job:grant_creation_delegate') || grant.accountManagerId !== actor.dbId)) throw new ForbiddenException('Only the account manager or an authorized administrator can edit this access.');
+      if (isManager && !this.canManageJobOwnerScope(actor, grant.accountManager)) throw new ForbiddenException('The selected job owner is outside your staff-management scope.');
+      if (grant.revokedAt) throw new BadRequestException('Revoked access cannot be edited. Grant access again to restore it.');
+      if (maxJobs !== null && maxJobs !== undefined && maxJobs < grant.jobsUsed) throw new BadRequestException(`The job limit cannot be lower than the ${grant.jobsUsed} jobs already used.`);
+
+      const updateData = {
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+        ...(maxJobs !== undefined ? { maxJobs } : {}),
+        updatedAt: new Date(),
+      };
+      const updated = await tx.jobCreationGrant.update({
+        where: { id: grant.id }, data: updateData,
+        select: { id: true, accountManagerId: true, delegateUserId: true, revokedAt: true, expiresAt: true, maxJobs: true, jobsUsed: true },
+      });
+      await tx.auditLog.create({ data: {
+        tenantId: actor.tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'JOB_CREATION_ACCESS_UPDATED', targetType: 'user', targetId: grant.delegateUserId,
+        details: {
+          accountManagerId: grant.accountManagerId,
+          previousExpiresAt: grant.expiresAt?.toISOString() || null,
+          expiresAt: expiresAt === undefined ? grant.expiresAt?.toISOString() || null : expiresAt?.toISOString() || null,
+          previousMaxJobs: grant.maxJobs,
+          maxJobs: maxJobs === undefined ? grant.maxJobs : maxJobs,
+        },
+      } });
+      return updated;
+    });
   }
 
   private async resolveSelectedClients(dto: CreateJobDto, tenantId: string, actor: AuthUser, accountManagerId?: string | null) {
@@ -962,7 +1016,7 @@ export class JobsService {
     }
 
     // A job cannot be Active (Live) if the client is not approved
-    const isApprovalRequested = (dto.approvalStatus === 'PENDING_APPROVAL' || dto.status === 'Pending Approval') || requiresApprovalGate || !clientApproved;
+    const isApprovalRequested = this.shouldRequireJobApproval(dto, requiresApprovalGate, clientApproved, Boolean(creationGrant));
     const initialApprovalStatus = draft ? null : isApprovalRequested ? 'PENDING_APPROVAL' : (dto.approvalStatus || 'APPROVED');
     const initialJobStatus = draft ? 'Draft' : isApprovalRequested ? 'Pending Approval' : (dto.status || 'Active');
 

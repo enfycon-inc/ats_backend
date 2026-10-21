@@ -93,6 +93,13 @@ export class JobsController {
     return this.jobsService.createJobCreationGrant(user, body.accountManagerId, body.delegateUserId, { expiresAt: body.expiresAt, maxJobs: body.maxJobs });
   }
 
+  @Patch('creation-access/grants/:grantId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async updateJobCreationGrant(@CurrentUser() user: AuthUser, @Param('grantId') grantId: string, @Body() body: { expiresAt?: string | null; maxJobs?: number | null }) {
+    return this.jobsService.updateJobCreationGrant(user, grantId, { expiresAt: body.expiresAt, maxJobs: body.maxJobs });
+  }
+
   @Delete('creation-access/grants/:grantId')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)

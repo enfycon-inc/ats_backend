@@ -124,6 +124,62 @@ describe('job creation delegation', () => {
     }));
   });
 
+  it('requires approval for a delegated job even when the delegate can publish directly', () => {
+    expect((service as any).shouldRequireJobApproval({ approvalStatus: 'APPROVED', status: 'Active' }, false, true, true)).toBe(true);
+  });
+
+  it('allows a direct publisher to bypass the approval gate for a non-delegated job', () => {
+    expect((service as any).shouldRequireJobApproval({ approvalStatus: 'APPROVED', status: 'Active' }, false, true, false)).toBe(false);
+  });
+
+  it('updates grant limits without resetting jobs already used and records an audit event', async () => {
+    const grant = {
+      id: '66666666-6666-4666-8666-666666666666', accountManagerId: ownerId, delegateUserId: delegateId,
+      revokedAt: null, expiresAt: null, maxJobs: 4, jobsUsed: 2,
+      accountManager: { branchId: 'branch-a', businessUnitId: 'unit-a' },
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      jobCreationGrant: {
+        findFirst: jest.fn().mockResolvedValue(grant),
+        update: jest.fn().mockResolvedValue({ ...grant, maxJobs: 6 }),
+      },
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+    prisma.$transaction = jest.fn((callback: (transaction: any) => unknown) => callback(tx));
+
+    await service.updateJobCreationGrant({
+      dbId: ownerId, tenantId, email: 'owner@example.test', permissions: ['job:grant_creation_delegate'],
+    } as any, grant.id, { maxJobs: 6 });
+
+    expect(tx.jobCreationGrant.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: grant.id }, data: expect.objectContaining({ maxJobs: 6 }),
+    }));
+    expect(tx.jobCreationGrant.update.mock.calls[0][0].data).not.toHaveProperty('jobsUsed');
+    expect(tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ action: 'JOB_CREATION_ACCESS_UPDATED', targetId: delegateId }),
+    }));
+  });
+
+  it('rejects reducing a grant job limit below its existing usage', async () => {
+    const grant = {
+      id: '66666666-6666-4666-8666-666666666666', accountManagerId: ownerId, delegateUserId: delegateId,
+      revokedAt: null, expiresAt: null, maxJobs: 4, jobsUsed: 3,
+      accountManager: { branchId: 'branch-a', businessUnitId: 'unit-a' },
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      jobCreationGrant: { findFirst: jest.fn().mockResolvedValue(grant), update: jest.fn() },
+      auditLog: { create: jest.fn() },
+    };
+    prisma.$transaction = jest.fn((callback: (transaction: any) => unknown) => callback(tx));
+
+    await expect(service.updateJobCreationGrant({
+      dbId: ownerId, tenantId, permissions: ['job:grant_creation_delegate'],
+    } as any, grant.id, { maxJobs: 2 })).rejects.toThrow('cannot be lower');
+    expect(tx.jobCreationGrant.update).not.toHaveBeenCalled();
+  });
+
   it('prevents an administrator from granting access across business units', async () => {
     const branchId = '44444444-4444-4444-8444-444444444444';
     prisma.user.findFirst.mockImplementation(({ where }: any) => Promise.resolve({
