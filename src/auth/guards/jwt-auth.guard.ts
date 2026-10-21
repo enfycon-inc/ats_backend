@@ -92,7 +92,7 @@ export class JwtAuthGuard implements CanActivate {
       this.checkExpiry(decoded.exp, 'Session');
       // Never cache this check: an administrator logout must apply on the next
       // request, including requests handled by another backend replica.
-      await this.authService.assertSessionActive(decoded);
+      const developerSession = await this.authService.assertSessionActive(decoded);
 
       const IGNORED_KEYCLOAK_ROLES = new Set([
         'OFFLINE_ACCESS',
@@ -182,6 +182,11 @@ export class JwtAuthGuard implements CanActivate {
         identityTenantId = actor?.tenantId;
       }
 
+      if (developerSession) {
+        if (targetTenantId && targetTenantId !== developerSession.tenantId) throw new ForbiddenException('Developer session belongs to another workspace.');
+        identityTenantId = developerSession.tenantId;
+      }
+
       const cacheKey = `${identityTenantId || 'default'}:${decoded.sub}`;
       let dbUser: any;
       const cached = this.userCache.get(cacheKey);
@@ -205,6 +210,10 @@ export class JwtAuthGuard implements CanActivate {
           user: dbUser,
           expiresAt: Date.now() + 60_000,
         });
+      }
+
+      if (developerSession && (dbUser.id !== developerSession.userId || dbUser.tenant_id !== developerSession.tenantId)) {
+        throw new UnauthorizedException('Developer session membership is invalid.');
       }
 
       if (!dbUser.is_active) {

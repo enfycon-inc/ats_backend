@@ -18,6 +18,7 @@ describe('tenant Microsoft identity provider configuration', () => {
 
   it('binds a tenant UUID and empty domain list with explicit database types on first save', async () => {
     const query = jest.fn(async (sql: string, params: any[]) => {
+      if (sql.trim().startsWith('SELECT')) return { rows: [storedPolicy] };
       // Prisma binds JS strings as text; PostgreSQL cannot assign text to UUID.
       // Enforce the same type boundary here rather than accepting every mock SQL.
       if (!/VALUES\s*\(\$1::uuid,/.test(sql)) throw new Error('column tenant_id is of type uuid but expression is of type text');

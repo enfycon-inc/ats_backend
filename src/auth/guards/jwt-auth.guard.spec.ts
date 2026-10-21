@@ -12,14 +12,22 @@ describe('JWT role revocation', () => {
   function setup() {
     const syncKeycloakUser = jest.fn();
     const findUnique = jest.fn();
-    const prisma = { $executeRawUnsafe: jest.fn().mockResolvedValue(0), user: { findUnique } };
-    const guard = new JwtAuthGuard({ syncKeycloakUser } as any, prisma as any);
+    const assertSessionActive = jest.fn().mockResolvedValue(undefined);
+    const prisma = { $executeRawUnsafe: jest.fn().mockResolvedValue(0),
+      tenant: { findFirst: jest.fn() },
+      user: { findUnique, findFirst: jest.fn().mockResolvedValue({roleId:'role',assignedRoleIds:[]}) },
+      customRole: { findFirst: jest.fn(async () => {
+        const user = await syncKeycloakUser.mock.results.at(-1)!.value;
+        return {id:'role',name:user.roles[0],permissions:user.permissions};
+      }) },
+    };
+    const guard = new JwtAuthGuard({ syncKeycloakUser, assertSessionActive } as any, prisma as any);
     jest.spyOn(guard as any, 'getPublicKey').mockResolvedValue(keys.publicKey.export({ type: 'spki', format: 'pem' }));
-    return { guard, syncKeycloakUser, findUnique };
+    return { guard, syncKeycloakUser, findUnique, assertSessionActive, prisma };
   }
   const dbUser = { id: 'user', tenant_id: 'tenant', is_active: true, roles: ['BDM'], permissions: ['job:view'], updated_at: new Date('2026-09-17T01:00:00Z') };
-  async function request(guard: JwtAuthGuard, roles: string[]) {
-    const req: any = { headers: { authorization: `Bearer ${token(roles)}` } };
+  async function request(guard: JwtAuthGuard, roles: string[], headers = {}) {
+    const req: any = { headers: { authorization: `Bearer ${token(roles)}`, ...headers } };
     await guard.canActivate({ switchToHttp: () => ({ getRequest: () => req }) } as any);
     return req.user;
   }
@@ -46,4 +54,19 @@ describe('JWT role revocation', () => {
     syncKeycloakUser.mockResolvedValue(dbUser);
     expect((await request(guard, ['SUPER_ADMIN'])).roles).toContain('SUPER_ADMIN');
   });
+  it('binds developer session synchronization to its granted membership', async () => {
+    const {guard,syncKeycloakUser,assertSessionActive} = setup();
+    assertSessionActive.mockResolvedValue({tenantId:'tenant',userId:'user'});
+    syncKeycloakUser.mockResolvedValue(dbUser);
+    await request(guard, []);
+    expect(syncKeycloakUser).toHaveBeenCalledWith(expect.objectContaining({tenantId:'tenant'}));
+  });
+  it('rejects a developer session in another workspace before synchronizing identity', async () => {
+    const {guard,syncKeycloakUser,assertSessionActive,prisma} = setup();
+    assertSessionActive.mockResolvedValue({tenantId:'tenant',userId:'user'});
+    prisma.tenant.findFirst.mockResolvedValue({id:'different-tenant'});
+    await expect(request(guard, [], {'x-tenant-domain':'another-workspace'})).rejects.toMatchObject({status:403});
+    expect(syncKeycloakUser).not.toHaveBeenCalled();
+  });
+
 });

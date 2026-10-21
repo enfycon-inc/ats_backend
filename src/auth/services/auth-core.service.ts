@@ -1,3 +1,4 @@
+import { DeveloperAccessService } from './developer-access.service';
 import { rejectManualPodLeadRoles } from './pod-lead-role-policy';
 import {
   Injectable,
@@ -35,6 +36,7 @@ export class AuthCoreService {
     private readonly tenantService: AuthTenantService,
     private readonly rbacService: AuthRbacService,
     private readonly emailService: AuthEmailService,
+    private readonly developerAccess?: DeveloperAccessService,
   ) {}
 
   private getKeycloakIssuer(): string {
@@ -120,7 +122,9 @@ export class AuthCoreService {
     return { available: result.rows.length === 0 };
   }
 
-  async login(dto: { email: string; password: string; subdomain?: string; rememberMe?: boolean }) {
+  async login(dto: { email: string; password: string; subdomain?: string; rememberMe?: boolean }, developer = false) {
+    if (typeof dto.email !== 'string' || typeof dto.password !== 'string' || !dto.email.trim() || !dto.password) throw new UnauthorizedException('Invalid email or password.');
+    const developerGrant = developer ? await this.developerAccess!.authorize(dto.email, dto.subdomain) : null;
     this.logger.log(`Login attempt for ${dto.email} [Provider: Keycloak]`);
 
     const cleanEmail = dto.email.trim().toLowerCase();
@@ -134,15 +138,15 @@ export class AuthCoreService {
          LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
          LEFT JOIN branches b ON u.branch_id = b.id
          LEFT JOIN business_units bu ON u.business_unit_id = bu.id
-         WHERE LOWER(TRIM(u.email)) = $1 LIMIT 1`,
-        [cleanEmail]
+         WHERE LOWER(TRIM(u.email)) = $1 AND ($2::uuid IS NULL OR (u.id=$2::uuid AND u.tenant_id=$3::uuid)) LIMIT 1`,
+        [cleanEmail, developerGrant?.id || null, developerGrant?.tenant_id || null]
       );
     } catch (err) {
       this.logger.error(`Login query failed: ${err.message}`, err.stack);
       throw err;
     }
 
-    if (result.rows.length === 0) {
+    if (!developer && result.rows.length === 0) {
       try {
         const platformAdminEmail = process.env.PLATFORM_ADMIN_EMAIL;
         const isPlatformAdmin = Boolean(platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase());
@@ -194,6 +198,7 @@ export class AuthCoreService {
 
     if (result.rows.length === 0) throw new UnauthorizedException('Invalid email or password.');
     const user: any = result.rows[0];
+    if (developerGrant && (user.id !== developerGrant.id || user.tenant_id !== developerGrant.tenant_id)) throw new UnauthorizedException('Developer sign-in is unavailable or credentials are invalid.');
 
     if (user.tenant_status && user.tenant_status !== 'ACTIVE') {
       throw new UnauthorizedException('Your company workspace is inactive. Contact the platform administrator.');
@@ -204,9 +209,10 @@ export class AuthCoreService {
     }
 
     const policy = await this.tenantService.getTenantAuthPolicy(user.tenant_id);
-    if (policy.enforceSsoOnly || !policy.allowPasswordLogin) {
-      throw new UnauthorizedException('Password login is disabled by your organization administrator. Please sign in using Single Sign-On (SSO).');
+    if (!developer && (policy.enforceSsoOnly || !policy.allowPasswordLogin)) {
+      throw new UnauthorizedException('Password sign-in is unavailable. Use another enabled sign-in option.');
     }
+    if (developer && policy.requireMfa) throw new UnauthorizedException('Developer sign-in is unavailable with the current security policy.');
     if (policy.allowedEmailDomains && policy.allowedEmailDomains.length > 0) {
       const emailDomain = dto.email.split('@')[1]?.toLowerCase();
       if (!policy.allowedEmailDomains.map((d: string) => d.toLowerCase()).includes(emailDomain)) {
@@ -243,8 +249,8 @@ export class AuthCoreService {
       const validUuids = Array.from(userRoleIds).filter(id => uuidRegex.test(id));
       if (validUuids.length > 0) {
         const rolesResult = await this.authQuery.query(
-          'SELECT cr.id, cr.name, cr.permissions, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[])',
-          [validUuids]
+          'SELECT cr.id, cr.name, cr.permissions, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[]) AND cr.tenant_id = $2::uuid',
+          [validUuids, user.tenant_id]
         ).catch(() => ({ rows: [] }));
 
         const permSet = new Set<string>();
@@ -322,7 +328,7 @@ export class AuthCoreService {
       const isPlatformAdmin = Boolean(platformAdminEmail && cleanEmail === platformAdminEmail.toLowerCase());
       const adminExpectedPass = process.env.PLATFORM_ADMIN_PASSWORD;
 
-      if (!res.ok && res.status === 401 && isPlatformAdmin && adminExpectedPass && dto.password === adminExpectedPass) {
+      if (!developer && !res.ok && res.status === 401 && isPlatformAdmin && adminExpectedPass && dto.password === adminExpectedPass) {
         this.logger.log(`[Auth] Attempting auto-sync of credentials in Keycloak for ${cleanEmail}...`);
         await this.keycloakService.provisionUserInKeycloak({
           email: cleanEmail,
@@ -350,7 +356,7 @@ export class AuthCoreService {
           // if (dynamicRoles.includes('SUPER_ADMIN')) systemRole = 'SUPER_ADMIN'; // STRICT KEYCLOAK ENFORCEMENT
         }
 
-        await this.keycloakService.syncKeycloakUser({ keycloakId: user.id, email: user.email, fullName: user.full_name, roles: dynamicRoles }).catch(() => {});
+        if (!developer) await this.keycloakService.syncKeycloakUser({ keycloakId: user.id, email: user.email, fullName: user.full_name, roles: dynamicRoles }).catch(() => {});
       } else {
         this.logger.warn(`Keycloak direct grant rejected credentials for ${dto.email} (status ${res.status})`);
         throw new UnauthorizedException('Invalid email or password.');
@@ -366,6 +372,8 @@ export class AuthCoreService {
     if (!issuedScope.split(/\s+/).includes('offline_access')) {
       throw new ServiceUnavailableException('The identity provider did not grant offline access. Please try again or contact your administrator.');
     }
+
+    if (developerGrant) await this.developerAccess!.registerSession(developerGrant, this.decodeTokenPayload(keycloakToken));
 
     return {
       accessToken: keycloakToken,
@@ -876,8 +884,8 @@ export class AuthCoreService {
       const validUuids = Array.from(userRoleIds).filter(id => uuidRegex.test(id));
       if (validUuids.length > 0) {
         const rolesResult = await this.authQuery.query(
-          'SELECT cr.id, cr.name, cr.permissions, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[])',
-          [validUuids]
+          'SELECT cr.id, cr.name, cr.permissions, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON cr.system_role_id = sr.id WHERE cr.id = ANY($1::uuid[]) AND cr.tenant_id = $2::uuid',
+          [validUuids, user.tenant_id]
         ).catch(() => ({ rows: [] }));
 
         const permSet = new Set<string>();

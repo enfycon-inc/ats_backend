@@ -17,8 +17,9 @@ export class AuthKeycloakService {
 
   constructor(private readonly authQuery: AuthQueryService) {}
 
-  async assertSessionActive(claims: { sub?: string; session_state?: string }) {
+  async assertSessionActive(claims: { sub?: string; session_state?: string; sid?: string }) {
     if (!claims?.sub) throw new UnauthorizedException('Invalid session identity.');
+    claims.session_state = claims.sid || claims.session_state;
     let result;
     try {
       result = await this.authQuery.query(
@@ -33,6 +34,17 @@ export class AuthKeycloakService {
       throw error;
     }
     assertNotRevoked(claims, !!result?.rows.length);
+    if (claims.session_state) {
+      const developer = await this.authQuery.query(`SELECT s.tenant_id, g.user_id, (g.id IS NOT NULL AND p.allow_developer_login AND NOT p.require_mfa AND s.policy_epoch=p.developer_login_epoch AND u.is_active AND u.is_approved AND t.status = 'ACTIVE') AS allowed
+        FROM ats.developer_login_sessions s
+        LEFT JOIN ats.developer_login_grants g ON g.id=s.grant_id AND g.tenant_id=s.tenant_id
+        LEFT JOIN ats.tenant_auth_settings p ON p.tenant_id=s.tenant_id
+        LEFT JOIN ats.users u ON u.id=g.user_id AND u.tenant_id=s.tenant_id
+        LEFT JOIN ats.tenants t ON t.id=s.tenant_id
+        WHERE s.keycloak_id=$1 AND s.session_id=$2`, [claims.sub,claims.session_state]);
+      if (developer.rows.some((s: any) => !s.allowed)) throw new UnauthorizedException('Developer access has been revoked.');
+      if (developer.rows.length) return { tenantId: developer.rows[0].tenant_id as string, userId: developer.rows[0].user_id as string };
+    }
   }
 
   async revokeUserSessions(keycloakId: string) {

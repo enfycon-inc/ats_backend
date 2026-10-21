@@ -1,3 +1,4 @@
+import type { SignInPolicyUpdate } from './sign-in-policy';
 import { Injectable } from '@nestjs/common';
 
 // Sub-services
@@ -64,11 +65,12 @@ export class AuthService {
   getRequesterInfoFromToken(authHeader?: string) { return this.coreService.getRequesterInfoFromToken(authHeader); }
 
   // ─── Core Auth ───────────────────────────────────────────────────────────────
+  developerLogin(dto: LoginDto) { return this.coreService.login(dto, true); }
   login(dto: LoginDto) { return this.coreService.login(dto); }
   register(dto: RegisterDto, requesterUser?: any) { return this.coreService.register(dto, requesterUser); }
   refreshKeycloakToken(refreshToken: string) { return this.coreService.refreshKeycloakToken(refreshToken); }
   logoutKeycloakSession(refreshToken: string) { return this.coreService.logoutKeycloakSession(refreshToken); }
-  assertSessionActive(claims: { sub?: string; session_state?: string }) { return this.keycloakService.assertSessionActive(claims); }
+  assertSessionActive(claims: { sub?: string; session_state?: string; sid?: string }) { return this.keycloakService.assertSessionActive(claims); }
   logoutUserSessions(userId: string, requester: AuthUser) { return this.userService.logoutUserSessions(userId, requester); }
   ssoLogin(dto: SsoLoginDto) { return this.coreService.ssoLogin(dto); }
 
@@ -123,7 +125,7 @@ export class AuthService {
   isDomainRegistered(domainName: string) { return this.tenantService.isDomainRegistered(domainName); }
   updateTenantSettings(tenantId: string, settings: any) { return this.tenantService.updateTenantSettings(tenantId, settings); }
   getTenantAuthPolicy(tenantIdOrSubdomain: string) { return this.tenantService.getTenantAuthPolicy(tenantIdOrSubdomain); }
-  updateTenantAuthPolicy(tenantId: string, dto: any) { return this.tenantService.updateTenantAuthPolicy(tenantId, dto); }
+  updateTenantAuthPolicy(tenantId: string, dto: SignInPolicyUpdate) { return this.tenantService.updateTenantAuthPolicy(tenantId, dto); }
   verifyCustomDomain(tenantId: string, domainName: string) { return this.tenantService.verifyCustomDomain(tenantId, domainName); }
 
   // ─── RBAC ────────────────────────────────────────────────────────────────────

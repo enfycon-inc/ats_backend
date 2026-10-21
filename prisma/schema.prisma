@@ -29,6 +29,8 @@ model SessionRevocation {
 }
 
 model Tenant {
+  developerGrants DeveloperLoginGrant[]
+  developerSessions DeveloperLoginSession[]
   roleRequestDeliveries RoleRequestDelivery[]
   staffProfiles             UserProfile[]
   staffPhotos               UserPhoto[]
@@ -127,6 +129,8 @@ model TenantDomain {
 }
 
 model TenantAuthSettings {
+  developerLoginEpoch String @default(dbgenerated("gen_random_uuid()")) @map("developer_login_epoch") @db.Uuid
+  allowDeveloperLogin Boolean @default(false) @map("allow_developer_login")
   tenantId              String   @id @map("tenant_id") @db.Uuid
   allowPasswordLogin    Boolean  @default(true) @map("allow_password_login")
   allowMicrosoftSso     Boolean  @default(false) @map("allow_microsoft_sso")
@@ -364,6 +368,8 @@ model Pod {
 }
 
 model User {
+  developerGrants DeveloperLoginGrant[] @relation("DeveloperGrantee")
+  grantedDeveloperAccess DeveloperLoginGrant[] @relation("DeveloperGrantor")
   roleRequestVersion String? @map("role_request_version") @db.Uuid
   requestedRoleDeliveries RoleRequestDelivery[] @relation("RoleRequester")
   receivedRoleDeliveries RoleRequestDelivery[] @relation("RoleReviewer")
@@ -1347,5 +1353,32 @@ model SubmissionEvent {
   @@unique([submissionId, sequence])
   @@index([tenantId, submissionId, sequence])
   @@map("submission_events")
+  @@schema("ats")
+}
+
+model DeveloperLoginGrant {
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user User @relation("DeveloperGrantee", fields: [userId], references: [id], onDelete: Cascade)
+  grantor User? @relation("DeveloperGrantor", fields: [grantedBy], references: [id], onDelete: SetNull)
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  grantedBy String? @map("granted_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@unique([tenantId,userId])
+  @@map("developer_login_grants")
+  @@schema("ats")
+}
+model DeveloperLoginSession {
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  keycloakId String @map("keycloak_id") @db.VarChar(255)
+  sessionId String @map("session_id") @db.VarChar(255)
+  grantId String? @map("grant_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  policyEpoch String @map("policy_epoch") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@id([keycloakId,sessionId])
+  @@index([tenantId], map: "developer_sessions_tenant")
+  @@map("developer_login_sessions")
   @@schema("ats")
 }

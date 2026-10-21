@@ -1,3 +1,4 @@
+import type { SignInPolicyUpdate } from './sign-in-policy';
 import {
   Controller,
   ParseUUIDPipe,
@@ -23,6 +24,8 @@ import {
   ApiBearerAuth,
   ApiHeader,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { DeveloperAccessService } from './services/developer-access.service';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dtos/login.dto';
 import { RegisterDto } from './dtos/register.dto';
@@ -51,6 +54,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
+    private readonly developerAccess: DeveloperAccessService,
   ) {}
 
   // â”€â”€â”€ POST /api/auth/login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -76,6 +80,30 @@ Validates email + password and returns a signed JWT access token.
   }
 
   // â”€â”€â”€ POST /api/auth/refresh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  @Post('developer-login')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  async developerLogin(@Body() dto: LoginDto) {
+    return this.authService.developerLogin(dto);
+  }
+
+  @Get('developer-access/accounts')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
+  async developerAccounts(@CurrentUser() user: AuthUser, @Query('search') search?: string) {
+    return this.developerAccess.list(resolveTenantId(user), search);
+  }
+
+  @Put('developer-access/accounts/:id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
+  async developerGrant(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body('authorized') authorized: boolean) {
+    const tenantId = resolveTenantId(user);
+    const result = await this.developerAccess.setGrant(tenantId, id, user.dbId, authorized);
+    await this.auditService.log({ tenantId, actorId: user.dbId, action: authorized ? 'developer_access.granted' : 'developer_access.revoked', targetType: 'user', targetId: id });
+    return result;
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -984,9 +1012,12 @@ Validates email + password and returns a signed JWT access token.
   })
   async updateTenantAuthPolicy(
     @CurrentUser() user: AuthUser,
-    @Body() dto: any,
+    @Body() dto: SignInPolicyUpdate,
   ) {
-    return this.authService.updateTenantAuthPolicy(user.tenantId, dto);
+    const tenantId = resolveTenantId(user);
+    const result = await this.authService.updateTenantAuthPolicy(tenantId, dto);
+    await this.auditService.log({ tenantId, actorId: user.dbId, action: 'authentication_policy.updated', details: { allowDeveloperLogin: result.allowDeveloperLogin } });
+    return result;
   }
 
   // ─── POST /api/auth/forgot-password ──────────────────────────────────────────

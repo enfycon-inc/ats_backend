@@ -1,3 +1,4 @@
+import type { SignInPolicy, SignInPolicyUpdate } from '../sign-in-policy';
 import {
   Injectable,
   Logger,
@@ -520,7 +521,7 @@ export class AuthTenantService {
     return res.rows[0];
   }
 
-  async getTenantAuthPolicy(tenantIdOrSubdomain: string) {
+  async getTenantAuthPolicy(tenantIdOrSubdomain: string): Promise<SignInPolicy> {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantIdOrSubdomain);
     let tenantId = tenantIdOrSubdomain;
     if (!isUuid) {
@@ -528,18 +529,20 @@ export class AuthTenantService {
         `SELECT tenant_id FROM tenant_domains WHERE LOWER(domain_name) = $1
          UNION SELECT id as tenant_id FROM tenants WHERE LOWER(domain) = $1 LIMIT 1`,
         [tenantIdOrSubdomain.toLowerCase()]
-      ).catch(() => ({ rows: [] }));
-      tenantId = res.rows.length > 0 ? (res.rows[0] as any).tenant_id : DEFAULT_TENANT_ID;
+      );
+      tenantId = res.rows.length > 0 ? (res.rows[0] as any).tenant_id : (tenantIdOrSubdomain === 'default' ? DEFAULT_TENANT_ID : null);
+      if (!tenantId) throw new NotFoundException('Workspace not found.');
     }
 
-    const tenantRes = await this.authQuery.query('SELECT name, site_title, logo_url FROM tenants WHERE id = $1 LIMIT 1', [tenantId]).catch(() => ({ rows: [] }));
+    const tenantRes = await this.authQuery.query('SELECT name, site_title, logo_url FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
     const tenantData = tenantRes.rows.length > 0 ? tenantRes.rows[0] : null;
+    if (!tenantData) throw new NotFoundException('Workspace not found.');
 
-    const result = await this.authQuery.query('SELECT * FROM tenant_auth_settings WHERE tenant_id = $1 LIMIT 1', [tenantId]).catch(() => ({ rows: [] }));
+    const result = await this.authQuery.query('SELECT tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, allow_developer_login, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id FROM ats.tenant_auth_settings WHERE tenant_id = $1 LIMIT 1', [tenantId]);
     if (result.rows.length === 0) {
       return {
-        tenantId, allowPasswordLogin: true, allowMicrosoftSso: true, allowGoogleSso: true,
-        enforceSsoOnly: false, requireMfa: false, allowPersonalEmails: true, allowedEmailDomains: [],
+        tenantId, allowPasswordLogin: true, allowMicrosoftSso: false, allowGoogleSso: false,
+        allowDeveloperLogin: false, enforceSsoOnly: false, requireMfa: false, allowPersonalEmails: true, allowedEmailDomains: [],
         microsoftTenantId: null, microsoftClientId: null,
         name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url,
       };
@@ -550,6 +553,7 @@ export class AuthTenantService {
       allowPasswordLogin: row.allow_password_login ?? true,
       allowMicrosoftSso: row.allow_microsoft_sso ?? true,
       allowGoogleSso: row.allow_google_sso ?? true,
+      allowDeveloperLogin: row.allow_developer_login === true,
       enforceSsoOnly: row.enforce_sso_only ?? false,
       requireMfa: row.require_mfa ?? false,
       allowPersonalEmails: row.allow_personal_emails ?? true,
@@ -560,7 +564,21 @@ export class AuthTenantService {
     };
   }
 
-  async updateTenantAuthPolicy(tenantId: string, dto: any) {
+  async updateTenantAuthPolicy(tenantId: string, dto: SignInPolicyUpdate): Promise<SignInPolicy> {
+    if (!dto || typeof dto !== 'object' || Array.isArray(dto)) throw new BadRequestException('Invalid authentication policy.');
+    for (const key of ['allowDeveloperLogin', 'allowPasswordLogin', 'allowMicrosoftSso', 'allowGoogleSso', 'enforceSsoOnly', 'requireMfa', 'allowPersonalEmails']) {
+      if (dto[key] !== undefined && typeof dto[key] !== 'boolean') throw new BadRequestException('Sign-in options must be booleans.');
+    }
+    if (dto.allowedEmailDomains !== undefined && (!Array.isArray(dto.allowedEmailDomains) || dto.allowedEmailDomains.length > 100 || dto.allowedEmailDomains.some(d => typeof d !== 'string' || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d)))) throw new BadRequestException('Invalid allowed email domains.');
+    for (const key of ['microsoftTenantId', 'microsoftClientId', 'microsoftClientSecret']) {
+      if (dto[key] !== undefined && dto[key] !== null && (typeof dto[key] !== 'string' || dto[key].length > 2048)) throw new BadRequestException('Invalid identity provider configuration.');
+    }
+    const current = await this.getTenantAuthPolicy(tenantId);
+    const developerFlagChanged = dto.allowDeveloperLogin !== undefined && dto.allowDeveloperLogin !== current.allowDeveloperLogin;
+    dto = { ...current, ...dto };
+    if ((!dto.allowPasswordLogin || dto.enforceSsoOnly) && !dto.allowMicrosoftSso && !dto.allowGoogleSso) {
+      throw new BadRequestException('At least one standard sign-in method must remain enabled.');
+    }
     const submittedMicrosoftClientSecret = typeof dto.microsoftClientSecret === 'string'
       ? dto.microsoftClientSecret.trim()
       : '';
@@ -568,40 +586,17 @@ export class AuthTenantService {
       ? submittedMicrosoftClientSecret
       : null;
 
-    const result = await this.authQuery.query(
-      `INSERT INTO ats.tenant_auth_settings AS auth_settings (
-         tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret
-       )
-       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11)
-       ON CONFLICT (tenant_id) DO UPDATE SET
-         allow_password_login    = EXCLUDED.allow_password_login,
-         allow_microsoft_sso     = EXCLUDED.allow_microsoft_sso,
-         allow_google_sso        = EXCLUDED.allow_google_sso,
-         enforce_sso_only        = EXCLUDED.enforce_sso_only,
-         require_mfa             = EXCLUDED.require_mfa,
-         allow_personal_emails   = EXCLUDED.allow_personal_emails,
-         allowed_email_domains   = EXCLUDED.allowed_email_domains,
-         microsoft_tenant_id     = EXCLUDED.microsoft_tenant_id,
-         microsoft_client_id     = EXCLUDED.microsoft_client_id,
-         microsoft_client_secret = COALESCE(EXCLUDED.microsoft_client_secret, auth_settings.microsoft_client_secret),
-         updated_at              = NOW()
-       RETURNING *`,
-      [
-        tenantId,
-        dto.allowPasswordLogin ?? true, dto.allowMicrosoftSso ?? true, dto.allowGoogleSso ?? true,
-        dto.enforceSsoOnly ?? false, dto.requireMfa ?? false, dto.allowPersonalEmails ?? true,
-        dto.allowedEmailDomains || [], dto.microsoftTenantId || null, dto.microsoftClientId || null, microsoftClientSecret,
-      ]
-    );
-    const row: any = result.rows[0];
-
+    const storedSecret = await this.authQuery.query('SELECT microsoft_client_secret FROM ats.tenant_auth_settings WHERE tenant_id=$1::uuid', [tenantId]);
     let redirectUri: string | null = null;
-    const configuredClientId = row.microsoft_client_id;
-    const configuredClientSecret = String(row.microsoft_client_secret || '').trim();
-    const configuredMicrosoftTenantId = String(row.microsoft_tenant_id || '').trim();
+    const configuredClientId = dto.microsoftClientId;
+    const configuredClientSecret = String(microsoftClientSecret || storedSecret.rows[0]?.microsoft_client_secret || '').trim();
+    const configuredMicrosoftTenantId = String(dto.microsoftTenantId || '').trim();
     const microsoftTenantIdLooksValid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(configuredMicrosoftTenantId);
     const microsoftClientSecretLooksValid = !!configuredClientSecret && !/^[*•]+$/.test(configuredClientSecret);
-    if (row.allow_microsoft_sso) {
+    // A local developer-policy change must remain possible during an IdP outage.
+    const developerPolicyOnly = developerFlagChanged && dto.allowMicrosoftSso === current.allowMicrosoftSso &&
+      dto.microsoftClientId === current.microsoftClientId && dto.microsoftTenantId === current.microsoftTenantId && !microsoftClientSecret;
+    if (dto.allowMicrosoftSso && !developerPolicyOnly) {
       if (configuredClientId && configuredClientId.includes('@')) {
         throw new BadRequestException('Microsoft Client ID must be the Application (client) ID from Entra App registrations, not an email address.');
       }
@@ -629,7 +624,39 @@ export class AuthTenantService {
       }
     }
 
+
+    const result = await this.authQuery.query(
+      `INSERT INTO ats.tenant_auth_settings AS auth_settings (
+         tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, microsoft_client_secret, allow_developer_login
+       )
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11, $12)
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         developer_login_epoch = CASE WHEN NOT EXCLUDED.allow_developer_login OR EXCLUDED.require_mfa THEN gen_random_uuid() ELSE auth_settings.developer_login_epoch END,
+         allow_developer_login   = EXCLUDED.allow_developer_login,
+         allow_password_login    = EXCLUDED.allow_password_login,
+         allow_microsoft_sso     = EXCLUDED.allow_microsoft_sso,
+         allow_google_sso        = EXCLUDED.allow_google_sso,
+         enforce_sso_only        = EXCLUDED.enforce_sso_only,
+         require_mfa             = EXCLUDED.require_mfa,
+         allow_personal_emails   = EXCLUDED.allow_personal_emails,
+         allowed_email_domains   = EXCLUDED.allowed_email_domains,
+         microsoft_tenant_id     = EXCLUDED.microsoft_tenant_id,
+         microsoft_client_id     = EXCLUDED.microsoft_client_id,
+         microsoft_client_secret = COALESCE(EXCLUDED.microsoft_client_secret, auth_settings.microsoft_client_secret),
+         updated_at              = NOW()
+       RETURNING tenant_id, allow_developer_login, allow_password_login, allow_microsoft_sso, allow_google_sso, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id`,
+      [
+        tenantId,
+        dto.allowPasswordLogin ?? true, dto.allowMicrosoftSso ?? true, dto.allowGoogleSso ?? true,
+        dto.enforceSsoOnly ?? false, dto.requireMfa ?? false, dto.allowPersonalEmails ?? true,
+        dto.allowedEmailDomains || [], dto.microsoftTenantId || null, dto.microsoftClientId || null, microsoftClientSecret, dto.allowDeveloperLogin === true,
+      ]
+    );
+    const row: any = result.rows[0];
+
+
     return {
+      allowDeveloperLogin: row.allow_developer_login === true,
       tenantId: row.tenant_id, allowPasswordLogin: row.allow_password_login,
       allowMicrosoftSso: row.allow_microsoft_sso, allowGoogleSso: row.allow_google_sso,
       enforceSsoOnly: row.enforce_sso_only, requireMfa: row.require_mfa,

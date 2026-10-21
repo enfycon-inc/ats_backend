@@ -1,3 +1,4 @@
+import { DeveloperAccessService } from './services/developer-access.service';
 import { Module, Global } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -23,6 +24,7 @@ import { StaffProfileService } from './services/staff-profile.service';
 import { StaffProfileController } from './staff-profile.controller';
 
 const AUTH_SUB_SERVICES = [
+  DeveloperAccessService,
   RoleRequestsService,
   AuthQueryService,
   AuthEmailService,
