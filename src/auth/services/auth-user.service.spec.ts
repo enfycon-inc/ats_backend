@@ -79,7 +79,7 @@ describe('member role replacement', () => {
     query.mockResolvedValueOnce({ rows: [] });
     query.mockResolvedValueOnce({ rows: [{ id: admin, name: 'Branch Admin', permissions: ['branch_admin:manage'] }] });
     await expect(service.updateUserDetails(userId, { branchId: tenantId, assignedRoleIds: [admin] },
-      { ...requester, permissions: ['tenant:settings'] })).rejects.toThrow('existing branch');
+      { ...requester, permissions: ['user:manage', 'tenant:settings'] })).rejects.toThrow('existing branch');
     expect(writes()).toHaveLength(0);
   });
 

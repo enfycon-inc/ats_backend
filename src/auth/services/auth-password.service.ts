@@ -1,3 +1,4 @@
+import { assertMemberAction, memberPermissionProjection } from '../utils/user-management-access';
 import {
   Injectable,
   Logger,
@@ -257,7 +258,7 @@ export class AuthPasswordService {
   async adminSendResetLink(userId: string, requester: AuthUser): Promise<{ success: boolean; message: string }> {
     const userRes = await this.authQuery.query(
       `SELECT u.id, u.email, u.full_name, u.is_active, u.tenant_id,
-              t.name as tenant_name, t.domain as tenant_domain
+              u.branch_id, u.business_unit_id, ${memberPermissionProjection('u')}, t.name as tenant_name, t.domain as tenant_domain
        FROM users u
        JOIN tenants t ON u.tenant_id = t.id
        WHERE u.id = $1::uuid AND u.tenant_id = $2::uuid
@@ -270,6 +271,8 @@ export class AuthPasswordService {
     }
 
     const targetUser = userRes.rows[0];
+    assertMemberAction(requester, targetUser, 'resetPassword');
+
 
     // Generate secure token
     const rawToken = crypto.randomBytes(32).toString('hex');

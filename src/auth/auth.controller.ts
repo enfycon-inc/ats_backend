@@ -373,7 +373,7 @@ Validates email + password and returns a signed JWT access token.
     @Body() body: { userIds: string[]; reviewerId?: string | null },
     @CurrentUser() currentUser: AuthUser,
   ) {
-    return this.authService.bulkSetJobReviewer(currentUser.tenantId, body.userIds, body.reviewerId || null);
+    return this.authService.bulkSetJobReviewer(currentUser.tenantId, body.userIds, body.reviewerId || null, currentUser);
   }
 
 

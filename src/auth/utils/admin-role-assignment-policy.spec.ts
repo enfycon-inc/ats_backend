@@ -1,10 +1,23 @@
 import { ForbiddenException } from '@nestjs/common';
-import { assertRoleAssignmentAllowed, assertRoleManagementAccess } from './admin-role-assignment-policy';
+import { assertRoleAssignmentAllowed, assertRoleManagementAccess, isDeliveryHead, isUnitAdmin } from './admin-role-assignment-policy';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const branchId = 'branch-1';
 const businessUnitId = 'unit-1';
 
 describe('administrative role assignment policy', () => {
+  it('keeps the configured Unit Admin archetype even with all the Delivery Head capabilities', () => {
+    const init = readFileSync(join(__dirname, '../services/auth-init.service.ts'), 'utf8');
+    const seed = init.split('\n').find(line => line.includes("('Unit Admin', 'UNIT_ADMIN'"))!;
+    const permissions = JSON.parse(seed.match(/'(\[.*\])'/)![1]);
+    const actor = { systemRole: 'UNIT_ADMIN', roles: ['UNIT_ADMIN', 'DELIVERY_HEAD'], permissions, branchId, businessUnitId };
+    expect(permissions).toEqual(expect.arrayContaining(['user:manage', 'unit_admin:manage', 'job:approve']));
+    expect(isDeliveryHead(actor)).toBe(false);
+    expect(isUnitAdmin(actor)).toBe(true);
+    expect(() => assertRoleManagementAccess(actor)).not.toThrow();
+    expect(() => assertRoleAssignmentAllowed(actor, { system_role: 'UNIT_ADMIN', permissions }, { branchId, businessUnitId })).not.toThrow();
+  });
   const deliveryHead = {
     systemRole: 'DELIVERY_HEAD',
     roles: ['DELIVERY_HEAD'],

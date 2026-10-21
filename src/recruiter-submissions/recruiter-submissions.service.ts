@@ -4,7 +4,7 @@ import { verifiedCandidateInput } from './verified-candidate';
 import { randomUUID } from 'node:crypto';
 import { assessCandidate, assessmentSourceVersion } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
-import { historySnapshot, historyChanges, saveRequestHash } from './submission-history';
+import { historySnapshot, historyChanges, historyAuditChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
 import { roundUpdate } from './round-update';
 import {
@@ -1307,7 +1307,9 @@ export class RecruiterSubmissionsService {
       data.l3Remarks = null; data.l3Interviewer = null;
     }
 
+    const auditChanges = historyAuditChanges(existing, data);
     if (!Object.keys(historyChanges(existing, data)).length && !dto.bypassReason?.trim()) return this.findOne(id, tenantId, user, branchId);
+    const shouldRecordHistory = Object.keys(auditChanges).length > 0 || Boolean(dto.bypassReason?.trim() || dto.correctionReason?.trim() || dto.assessmentVersion);
 
     // Atomic compare-and-set, including legacy callers without an explicit version.
     // PostgreSQL default timestamps can have microseconds; compare the read millisecond.
@@ -1329,6 +1331,7 @@ export class RecruiterSubmissionsService {
         where: { id, tenantId, updatedAt: { gte: new Date(version), lt: new Date(version + 1) } }, data,
       });
       if (saved.count !== 1) throw new ConflictException('This submission changed while saving. Reload it and try again.');
+      if (!shouldRecordHistory) return;
       const hasHistory = await tx.submissionEvent.findFirst({ where: { submissionId: id, tenantId }, select: { sequence: true }, orderBy: { sequence: 'desc' } });
       if (!hasHistory) await tx.submissionEvent.create({ data: {
         tenantId, submissionId: id, kind: 'BASELINE', sequence: 0, requestId: 'baseline', requestHash: '',
@@ -1338,7 +1341,7 @@ export class RecruiterSubmissionsService {
         tenantId, submissionId: id, actorId: user.dbId || user.email || user.fullName || null,
         actorName: user.fullName || user.email || user.dbId || null,
         kind: 'UPDATE', sequence: (hasHistory?.sequence ?? 0) + 1, requestId: dto.requestId || randomUUID(), requestHash,
-        details: JSON.parse(JSON.stringify({ actorEmail: user.email || null, changes: historyChanges(existing, data), ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}), ...(dto.correctionReason ? { correctionReason: dto.correctionReason.trim(), resetFollowingRounds: Boolean(dto.resetFollowingRounds) } : {}) })),
+        details: JSON.parse(JSON.stringify({ actorEmail: user.email || null, changes: auditChanges, ...(assessment ? { assessment, reviewOverrides: dto.reviewOverrides || {} } : {}), ...(dto.bypassReason ? { bypassReason: dto.bypassReason.trim() } : {}), ...(dto.correctionReason ? { correctionReason: dto.correctionReason.trim(), resetFollowingRounds: Boolean(dto.resetFollowingRounds) } : {}) })),
       } });
     });
 

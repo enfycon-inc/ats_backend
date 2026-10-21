@@ -1,5 +1,6 @@
 import { ForbiddenException } from '@nestjs/common';
 import type { AuthUser } from '../interfaces/auth-user.interface';
+import { activeManagementRole } from '../user-management-policy';
 
 const ELEVATED_ADMIN_PERMISSIONS = new Set([
   'tenant:settings',
@@ -14,13 +15,7 @@ function normalize(value?: string | null) {
 }
 
 export function isDeliveryHead(actor: Partial<AuthUser>) {
-  if (normalize(actor.systemRole) === 'DELIVERY_HEAD'
-    || (actor.roles || []).some(role => normalize(role) === 'DELIVERY_HEAD')) return true;
-  const permissions = actor.permissions || [];
-  return permissions.includes('user:manage')
-    && permissions.includes('unit_admin:manage')
-    && permissions.includes('job:approve')
-    && !permissions.some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', 'branch_admin:manage'].includes(permission));
+  return activeManagementRole(actor) === 'DELIVERY_HEAD';
 }
 
 export function isUnitAdmin(actor: Partial<AuthUser>) {

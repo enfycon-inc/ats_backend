@@ -234,7 +234,7 @@ describe('AuthPasswordService', () => {
       const requester: any = {
         email: 'admin@example.com',
         tenantId: 'tenant-uuid',
-        permissions: ['user:manage'],
+        permissions: ['user:manage', 'tenant:settings'],
       };
 
       const res = await service.adminSendResetLink('target-user-id', requester);

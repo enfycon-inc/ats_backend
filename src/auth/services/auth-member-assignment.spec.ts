@@ -7,7 +7,7 @@ describe('member assignment updates', () => {
   function setup(empty = false) {
     const user = { id, tenant_id: id, email: 'member@example.com', first_name: 'Member', last_name: 'One', full_name: 'Member One', branch_id: empty ? null : branch, business_unit_id: empty ? null : id, job_reviewer_id: null, role_id: role, assigned_role_ids: [role] };
     const query = jest.fn(async (sql: string, _params?: any[]) => {
-      if (sql.startsWith('SELECT * FROM users')) return { rows: [user] };
+      if (sql.startsWith('SELECT users.*') || sql.includes('AND is_active = true')) return { rows: [user] };
       if (sql.includes('FROM custom_roles cr')) return { rows: [{ id: role, name: 'Delivery Head', permissions: ['job:view'] }] };
       if (sql.startsWith('UPDATE users')) {
         if (!sql.includes('branch_id = $5::uuid') || !sql.includes('business_unit_id = $6::uuid')) throw new Error('UUID fields cannot accept text');

@@ -1,5 +1,5 @@
 import { roundUpdate } from './round-update';
-import { historyChanges } from './submission-history';
+import { historyAuditChanges, historyChanges, historySnapshot } from './submission-history';
 
 describe('audited round correction projection', () => {
   it('resets affected appointments and feedback while capturing the original values', () => {
@@ -15,5 +15,13 @@ describe('audited round correction projection', () => {
   it('does not erase appointments when rescheduling or cancelling', () => {
     const existing = { l1Status: 'SCHEDULED', l1Date: '2026-10-09T05:30:00Z' };
     expect(roundUpdate(existing, { l1Status: 'CANCELLED', l1Remarks: 'Client cancelled' })).not.toHaveProperty('l1Date');
+  });
+  it('keeps calendar color edits detectable while omitting them from submission history', () => {
+    const existing = { l2Status: 'SCHEDULED', l2Date: '2026-10-09T05:30:00Z', l2Color: 'blue' };
+    const update = { l2Color: 'violet' };
+
+    expect(historyChanges(existing, update).l2Color).toEqual({ before: 'blue', after: 'violet' });
+    expect(historyAuditChanges(existing, update)).toEqual({});
+    expect(historySnapshot(existing)).not.toHaveProperty('l2Color');
   });
 });

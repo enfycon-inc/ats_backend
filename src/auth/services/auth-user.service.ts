@@ -20,6 +20,7 @@ import { assertRoleAssignmentAllowed } from '../utils/admin-role-assignment-poli
 import { EventsGateway } from '../../events/events.gateway';
 import type { StaffProfile } from '../profile-contract';
 import { USER_CITY_VALUES, type UserCity } from '../user-city-contract';
+import { assertMemberAction, memberPermissionProjection } from '../utils/user-management-access';
 import { RoleRequestsService } from './role-requests.service';
 import type { RoleRequestDecision } from '../role-request-contract';
 import { canReviewRoleRequest, canGrantRequestedRole } from '../utils/role-request-policy';
@@ -278,9 +279,12 @@ export class AuthUserService {
     if (userId === requesterId) {
       if (!isActive) throw new BadRequestException('You cannot deactivate your own account.');
     }
-    const userRes = await this.authQuery.query('SELECT email, tenant_id, is_active, is_approved, branch_id FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const userRes = await this.authQuery.query(`SELECT id, email, tenant_id, is_active, is_approved, branch_id, business_unit_id, ${memberPermissionProjection('users')} FROM users WHERE id = $1 LIMIT 1`, [userId]);
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = userRes.rows[0];
+
+    if (!requester) throw new ForbiddenException('User management identity is required.');
+    assertMemberAction(requester, { ...user, id: userId }, 'changeStatus');
 
     // Branch isolation: branch admins can only change status of users in their assigned branches
     if (requester && user.branch_id) {
@@ -347,10 +351,11 @@ export class AuthUserService {
     const platform = permissions.includes('*') || permissions.includes('platform:manage');
     if (!platform && !permissions.includes('user:manage')) throw new ForbiddenException('Missing user management permission.');
     const result = await this.authQuery.query<{
-      id: string; tenant_id: string; branch_id: string | null; business_unit_id: string | null; keycloak_id: string | null;
-    }>('SELECT id, tenant_id, branch_id, business_unit_id, keycloak_id FROM users WHERE id = $1', [userId]);
+      id: string; tenant_id: string; branch_id: string | null; business_unit_id: string | null; keycloak_id: string | null; management_permissions?: string[];
+    }>(`SELECT id, tenant_id, branch_id, business_unit_id, keycloak_id, ${memberPermissionProjection('users')} FROM users WHERE id = $1`, [userId]);
     const target = result.rows[0];
     if (!target || target.tenant_id !== requester.tenantId) throw new NotFoundException('User not found in the current workspace.');
+    assertMemberAction(requester, target, 'endSessions');
     validateBranchAccess(requester, target.branch_id, 'end user sessions');
     const tenantWide = platform || permissions.includes('tenant:manage') || permissions.includes('tenant:settings');
     if (!tenantWide && !permissions.includes('branch_admin:manage') &&
@@ -499,13 +504,15 @@ export class AuthUserService {
         throw new BadRequestException(`${field} must be a valid ID or empty.`);
       }
     }
-    const userRes = await this.authQuery.query('SELECT * FROM users WHERE id = $1 LIMIT 1', [userId]);
+    const userRes = await this.authQuery.query(`SELECT users.*, ${memberPermissionProjection('users')} FROM users WHERE id = $1 LIMIT 1`, [userId]);
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = userRes.rows[0];
 
     if (!requester.roles?.includes('SUPER_ADMIN') && user.tenant_id !== requester.tenantId) {
       throw new ForbiddenException('You are not authorized to update users in another company tenant.');
     }
+
+    assertMemberAction(requester, { ...user, id: userId }, 'editProfile');
 
     // Branch isolation: branch admins can only update users in their assigned branches
     if (user.branch_id) {
@@ -546,6 +553,9 @@ export class AuthUserService {
     if (dto.branchId !== undefined) branchId = dto.branchId?.trim() || null;
     if (dto.businessUnitId !== undefined) businessUnitId = dto.businessUnitId?.trim() || null;
     if (dto.jobReviewerId !== undefined) jobReviewerId = dto.jobReviewerId && dto.jobReviewerId.trim().length > 0 ? dto.jobReviewerId.trim() : null;
+    assertMemberAction(requester, { ...user, id: userId, branch_id: branchId, business_unit_id: businessUnitId }, 'editProfile');
+    if (dto.jobReviewerId && jobReviewerId) await this.validateManagerAssignment(user.tenant_id, jobReviewerId, requester);
+
 
     const allowedCities = USER_CITY_VALUES;
     if (dto.city !== undefined && dto.city !== null && !allowedCities.includes(dto.city)) {
@@ -952,14 +962,19 @@ async approveTenantUser(
     if (target.is_approved || !target.requested_role || expected !== target.role_request_version) throw new ConflictException('This request has already been handled or replaced. Refresh before deciding.');
   }
 
-  async bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) {
+  async bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null, requester?: AuthUser) {
     if (!Array.isArray(userIds) || userIds.length === 0) throw new BadRequestException('userIds array is required.');
     const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!validId.test(tenantId) || userIds.some(id => typeof id !== 'string' || !validId.test(id)) ||
         (reviewerId && (typeof reviewerId !== 'string' || !validId.test(reviewerId.trim())))) {
       throw new BadRequestException('Select valid users and a valid manager.');
     }
+    if (!requester) throw new ForbiddenException('User management identity is required.');
+    const selected = await this.authQuery.query(`SELECT id, tenant_id, branch_id, business_unit_id, ${memberPermissionProjection('users')} FROM users WHERE tenant_id = $1::uuid AND id = ANY($2::uuid[])`, [tenantId, [...new Set(userIds)]]);
+    if (selected.rows.length !== new Set(userIds).size) throw new ForbiddenException('One or more selected members are unavailable.');
+    selected.rows.forEach(member => assertMemberAction(requester, member, 'assignManager'));
     const cleanReviewerId = reviewerId && reviewerId.trim().length > 0 ? reviewerId.trim() : null;
+    if (cleanReviewerId) await this.validateManagerAssignment(tenantId, cleanReviewerId, requester);
     await this.authQuery.query(
       `UPDATE users SET job_reviewer_id = $1::uuid, updated_at = NOW() WHERE id = ANY($2::uuid[]) AND tenant_id = $3`,
       [cleanReviewerId, userIds, tenantId]
@@ -968,6 +983,13 @@ async approveTenantUser(
   }
 
   // ─── Shared helpers ───────────────────────────────────────────
+
+  private async validateManagerAssignment(tenantId: string, managerId: string, requester: AuthUser) {
+    const result = await this.authQuery.query(`SELECT id, tenant_id, branch_id, business_unit_id, ${memberPermissionProjection('users')} FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid AND is_active = true`, [managerId, tenantId]);
+    const manager = result.rows[0];
+    if (!manager) throw new ForbiddenException('Select an active manager in your permitted office.');
+    assertMemberAction(requester, manager, 'assignManager');
+  }
 
   private deduplicateRoles(assignedRoleObjs: any[]): string[] {
     const seen = new Set<string>();

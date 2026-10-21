@@ -70,10 +70,13 @@ describe('account creation IDs', () => {
   });
   it.each([id, null])('bulk assigns or resets manager %s', async manager => {
     const query = jest.fn().mockResolvedValue({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [{ id, tenant_id: id }] });
+    if (manager) query.mockResolvedValueOnce({ rows: [{ id: manager, tenant_id: id }] });
     const service = new AuthUserService({ query } as any, {} as any, {} as any);
-    await service.bulkSetJobReviewer(id, [id], manager);
-    expect(query.mock.calls[0][0]).toContain('job_reviewer_id = $1::uuid');
-    expect(query.mock.calls[0][1]).toEqual([manager, [id], id]);
+    await service.bulkSetJobReviewer(id, [id], manager, { tenantId: id, permissions: ['user:manage', 'tenant:settings'] } as any);
+    const write = query.mock.calls.find(([sql]) => sql.startsWith('UPDATE users'))!;
+    expect(write[0]).toContain('job_reviewer_id = $1::uuid');
+    expect(write[1]).toEqual([manager, [id], id]);
   });
   it('rejects invalid bulk manager input without a write', async () => {
     const query = jest.fn();
