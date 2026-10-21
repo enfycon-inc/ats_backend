@@ -523,7 +523,8 @@ export class JobsService {
     const permissions = actor.permissions || [];
     if (permissions.some(permission => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission))) return true;
     if (!permissions.includes('job:manage_creation_access') || !actor.branchId || owner.branchId !== actor.branchId) return false;
-    if (permissions.includes('branch_admin:manage')) return true;
+    const isDeliveryHead = [actor.systemRole, ...(actor.roles || [])].some(role => String(role || '').toUpperCase().replace(/[\s_-]+/g, '') === 'DELIVERYHEAD');
+    if (permissions.includes('branch_admin:manage') || isDeliveryHead) return true;
     return permissions.includes('unit_admin:manage') && !!actor.businessUnitId && owner.businessUnitId === actor.businessUnitId;
   }
 
@@ -583,7 +584,8 @@ export class JobsService {
     const permissions = actor.permissions || [];
     if (!this.canManageJobCreationGrants(actor)) throw new ForbiddenException('Only an authorized administrator can select another job owner.');
     const tenantWide = this.hasTenantWideJobCreationManagement(actor);
-    if (!tenantWide && (!actor.branchId || (!permissions.includes('branch_admin:manage') && (!permissions.includes('unit_admin:manage') || !actor.businessUnitId)))) return [];
+    const isDeliveryHead = [actor.systemRole, ...(actor.roles || [])].some(role => String(role || '').toUpperCase().replace(/[\s_-]+/g, '') === 'DELIVERYHEAD');
+    if (!tenantWide && (!actor.branchId || (!permissions.includes('branch_admin:manage') && !isDeliveryHead && (!permissions.includes('unit_admin:manage') || !actor.businessUnitId)))) return [];
     const searchTerm = search?.trim().slice(0, 100);
     const users = await this.prisma.user.findMany({
       where: { tenantId: actor.tenantId, isActive: true, isApproved: true,
@@ -591,7 +593,7 @@ export class JobsService {
           { fullName: { contains: searchTerm, mode: 'insensitive' } },
           { email: { contains: searchTerm, mode: 'insensitive' } },
         ] } : {}),
-        ...(!tenantWide ? { branchId: actor.branchId || undefined, ...(permissions.includes('branch_admin:manage') ? {} : { businessUnitId: actor.businessUnitId || undefined }) } : {}) },
+        ...(!tenantWide ? { branchId: actor.branchId || undefined, ...(permissions.includes('branch_admin:manage') || isDeliveryHead ? {} : { businessUnitId: actor.businessUnitId || undefined }) } : {}) },
       select: { id: true, fullName: true, email: true, branchId: true, businessUnitId: true, roleId: true, assignedRoleIds: true },
       orderBy: { fullName: 'asc' },
       take: searchTerm ? 100 : 250,

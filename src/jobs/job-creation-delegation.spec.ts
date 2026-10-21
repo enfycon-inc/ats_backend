@@ -88,14 +88,31 @@ describe('job creation delegation', () => {
     expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-b', businessUnitId: 'unit-a' })).toBe(false);
   });
 
-  it.each([
-    ['Unit Admin', ['job:manage_creation_access', 'unit_admin:manage']],
-    ['Delivery Head', ['job:manage_creation_access', 'unit_admin:manage']],
-  ])('%s can manage job access only in the assigned unit', (_role, permissions) => {
+  it('limits Unit Admin job access management to the assigned unit', () => {
+    const permissions = ['job:manage_creation_access', 'unit_admin:manage'];
     const actor = { branchId: 'branch-a', businessUnitId: 'unit-a', permissions };
     expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-a' })).toBe(true);
     expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-b' })).toBe(false);
     expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-b', businessUnitId: 'unit-a' })).toBe(false);
+  });
+
+  it('allows Delivery Head job access management across units in the assigned branch only', () => {
+    const actor = { systemRole: 'DELIVERY_HEAD', branchId: 'branch-a', businessUnitId: 'unit-a', permissions: ['job:manage_creation_access', 'unit_admin:manage'] };
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-a' })).toBe(true);
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-a', businessUnitId: 'unit-b' })).toBe(true);
+    expect((service as any).canManageJobOwnerScope(actor, { branchId: 'branch-b', businessUnitId: 'unit-a' })).toBe(false);
+  });
+
+  it('lists all job owners in a Delivery Head branch without widening to other branches', async () => {
+    prisma.user.findMany.mockResolvedValue([]);
+    await service.listJobCreationGrantOwners({
+      dbId: 'delivery-head', tenantId, systemRole: 'DELIVERY_HEAD', branchId: 'branch-a', businessUnitId: 'unit-a',
+      permissions: ['job:manage_creation_access', 'unit_admin:manage'],
+    } as any);
+    expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ tenantId, branchId: 'branch-a' }),
+    }));
+    expect(prisma.user.findMany.mock.calls[0][0].where).not.toHaveProperty('businessUnitId');
   });
 
   it('lets an account manager grant same-unit access and records the issuer', async () => {
