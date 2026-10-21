@@ -5,6 +5,8 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { SystemMailModule } from '../email/system-mail.module';
 import { EventsModule } from '../events/events.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { RoleRequestsService } from './services/role-requests.service';
 
 // Sub-services
 import { AuthQueryService } from './services/auth-query.service';
@@ -21,6 +23,7 @@ import { StaffProfileService } from './services/staff-profile.service';
 import { StaffProfileController } from './staff-profile.controller';
 
 const AUTH_SUB_SERVICES = [
+  RoleRequestsService,
   AuthQueryService,
   AuthEmailService,
   AuthKeycloakService,
@@ -36,7 +39,7 @@ const AUTH_SUB_SERVICES = [
 
 @Global()
 @Module({
-  imports: [EventsModule, SystemMailModule],
+  imports: [EventsModule, SystemMailModule, NotificationsModule],
   controllers: [AuthController, StaffProfileController],
   providers: [AuthService, JwtAuthGuard, RolesGuard, ...AUTH_SUB_SERVICES],
   exports: [AuthService, JwtAuthGuard, RolesGuard, ...AUTH_SUB_SERVICES],

@@ -101,7 +101,8 @@ export class AuthService {
   bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null) { return this.userService.bulkSetJobReviewer(tenantId, userIds, reviewerId); }
   requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string, city?: import('./user-city-contract').UserCity | null) { return this.userService.requestRole(userId, role, branchId, businessUnitId, city); }
   approveTenantUser(userId: string, dto: any, requester: any) { return this.userService.approveTenantUser(userId, dto, requester); }
-  rejectTenantUser(userId: string, requester: any) { return this.userService.rejectTenantUser(userId, requester); }
+  rejectTenantUser(userId: string, requester: any, expectedRequestVersion?: string) { return this.userService.rejectTenantUser(userId, requester, expectedRequestVersion); }
+  reviewRoleRequest(userId: string, version: string, requester: import('./interfaces/auth-user.interface').AuthUser) { return this.userService.reviewRoleRequest(userId, version, requester); }
 
   // ─── Tenant Lifecycle ────────────────────────────────────────────────────────
   registerTenant(dto: RegisterTenantDto) { return this.tenantService.registerTenant(dto); }

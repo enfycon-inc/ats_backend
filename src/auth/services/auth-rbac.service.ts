@@ -13,6 +13,7 @@ import {
 import { AuthQueryService } from './auth-query.service';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 import { isTenantAdmin, getUserAssignedBranchIds, validateBranchAccess } from '../utils/branch-scoping';
+import { assertRoleAssignmentAllowed, assertRoleManagementAccess } from '../utils/admin-role-assignment-policy';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -211,6 +212,7 @@ export class AuthRbacService {
     baseRoleId?: string,
     requester?: AuthUser,
   ) {
+    if (requester) assertRoleManagementAccess(requester);
     const nameUpper = name.toUpperCase().trim();
     if (nameUpper === 'SUPER_ADMIN') {
       throw new BadRequestException('Role name SUPER_ADMIN is reserved for the root system administrator.');
@@ -349,6 +351,7 @@ export class AuthRbacService {
     userId?: string,
     requester?: AuthUser,
   ) {
+    if (requester) assertRoleManagementAccess(requester);
     const roleResult = await this.authQuery.query(
       `SELECT cr.id, cr.name, cr.is_system, cr.branch_id, cr.business_unit_id, cr.base_role_id, sr.system_key as system_role FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id=cr.system_role_id WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
       [roleId, tenantId]
@@ -487,6 +490,7 @@ export class AuthRbacService {
   }
 
   async updateRolePermissions(tenantId: string, roleId: string, permissions: string[], requester?: AuthUser) {
+    if (requester) assertRoleManagementAccess(requester);
     const roleResult = await this.authQuery.query(
       `SELECT cr.id, cr.is_system, sr.system_key as system_role, cr.base_role_id, cr.branch_id 
        FROM custom_roles cr 
@@ -518,6 +522,7 @@ export class AuthRbacService {
   }
 
   async deleteCustomRole(tenantId: string, roleId: string, targetRoleId?: string, requester?: AuthUser) {
+    if (requester) assertRoleManagementAccess(requester);
     const roleRes = await this.authQuery.query(
       `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id 
        FROM custom_roles cr
@@ -611,7 +616,9 @@ export class AuthRbacService {
     if (!roleIds || roleIds.length === 0) throw new BadRequestException('Please specify at least one role.');
 
     const rolesResult = await this.authQuery.query(
-      'SELECT id, name, branch_id FROM custom_roles WHERE id = ANY($1) AND tenant_id = $2',
+      `SELECT cr.id, cr.name, cr.branch_id, cr.business_unit_id, cr.permissions, sr.system_key AS system_role
+       FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id = cr.system_role_id
+       WHERE cr.id = ANY($1) AND cr.tenant_id = $2`,
       [roleIds, tenantId]
     );
     if (rolesResult.rows.length === 0) throw new NotFoundException('Selected roles were not found.');
@@ -624,11 +631,15 @@ export class AuthRbacService {
     }
 
     const userRes = await this.authQuery.query(
-      'SELECT tenant_id, role_id, assigned_role_ids, branch_roles, branch_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT tenant_id, role_id, assigned_role_ids, branch_roles, branch_id, business_unit_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
     const targetUser: any = userRes.rows[0];
+
+    for (const role of newRolesData) {
+      assertRoleAssignmentAllowed(requester || {}, role, { branchId: targetUser.branch_id, businessUnitId: targetUser.business_unit_id });
+    }
 
     // Branch isolation: branch admins can only assign roles to users in their assigned branches
     if (requester && targetUser.branch_id) {
@@ -691,7 +702,7 @@ export class AuthRbacService {
     if (!userIds || userIds.length === 0) throw new BadRequestException('Please provide at least one user ID.');
 
     const roleRes = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id 
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id, cr.business_unit_id, cr.permissions
        FROM custom_roles cr
        LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
        WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
@@ -708,11 +719,12 @@ export class AuthRbacService {
     let assignedCount = 0;
     for (const userId of userIds) {
       const uRes = await this.authQuery.query(
-        'SELECT id, role_id, assigned_role_ids, branch_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+        'SELECT id, role_id, assigned_role_ids, branch_id, business_unit_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
         [userId, tenantId]
       );
       if (uRes.rows.length === 0) continue;
       const user: any = uRes.rows[0];
+      assertRoleAssignmentAllowed(requester || {}, targetRole, { branchId: user.branch_id, businessUnitId: user.business_unit_id });
 
       // Branch isolation: skip users not in requester's branch
       if (requester && user.branch_id && !isTenantAdmin(requester)) {
@@ -735,7 +747,7 @@ export class AuthRbacService {
   async unassignUserFromRole(tenantId: string, roleId: string, userId: string, requester?: AuthUser) {
     await rejectManualPodLeadRoles(this.authQuery, tenantId, [roleId]);
     const roleRes = await this.authQuery.query(
-      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id 
+      `SELECT cr.id, cr.name, cr.is_system, sr.system_key as system_role, cr.branch_id, cr.business_unit_id, cr.permissions
        FROM custom_roles cr
        LEFT JOIN system_roles sr ON cr.system_role_id = sr.id
        WHERE cr.id = $1 AND cr.tenant_id = $2 LIMIT 1`,
@@ -745,11 +757,12 @@ export class AuthRbacService {
     const role: any = roleRes.rows[0];
 
     const uRes = await this.authQuery.query(
-      'SELECT id, role_id, assigned_role_ids, branch_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
+      'SELECT id, role_id, assigned_role_ids, branch_id, business_unit_id FROM users WHERE id = $1 AND tenant_id = $2 LIMIT 1',
       [userId, tenantId]
     );
     if (uRes.rows.length === 0) throw new NotFoundException('User not found.');
     const user: any = uRes.rows[0];
+    assertRoleAssignmentAllowed(requester || {}, role, { branchId: user.branch_id, businessUnitId: user.business_unit_id });
 
     // Branch isolation: branch admins can only unassign roles from users in their assigned branches
     if (requester && user.branch_id) {

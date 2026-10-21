@@ -28,6 +28,27 @@ export class AuthEmailService {
     };
   }
 
+  async sendRoleRequestEmail(options: {
+    tenantId: string; to: string; fullName: string; requesterName: string; requesterEmail: string;
+    roleName: string; branch?: string; unit?: string; tenantName: string; subdomain: string; reviewPath: string;
+  }) {
+    const review = new URL(options.reviewPath, workspaceEmailLogin(options.subdomain));
+    const localTenant = new URL(workspaceEmailLogin(options.subdomain)).searchParams.get('subdomain');
+    if (localTenant) review.searchParams.set('subdomain', localTenant);
+    const approve = new URL(review); approve.searchParams.set('action', 'approve');
+    const reject = new URL(review); reject.searchParams.set('action', 'reject');
+    return this.systemMail.send({
+      tenantId: options.tenantId, to: options.to,
+      ...renderSystemEmail({
+        event: 'role_requested', workspace: options.tenantName, recipient: options.to, fullName: options.fullName,
+        tenantBranding: await this.getTenantBranding(options.tenantId, options.tenantName),
+        requesterName: options.requesterName, requesterEmail: options.requesterEmail, role: options.roleName,
+        branch: options.branch, unit: options.unit, reviewUrl: applicationEmailUrl(review.toString()),
+        approveUrl: applicationEmailUrl(approve.toString()), rejectUrl: applicationEmailUrl(reject.toString()),
+      }),
+    });
+  }
+
   async sendAccountWelcomeEmail(options: {
     tenantId: string;
     to: string;

@@ -22,7 +22,7 @@ export class NotificationsService {
   /**
    * Create and persist a single notification for a user, then dispatch live via WebSocket.
    */
-  async create(tenantId: string, userId: string, payload: NotificationPayload) {
+  async create(tenantId: string, userId: string, payload: NotificationPayload, deliveryId?: string, signalOnly = false) {
     try {
       let targetUuid = userId;
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
@@ -45,8 +45,7 @@ export class NotificationsService {
         }
       }
 
-      const notification = await this.prisma.notification.create({
-        data: {
+      const data = {
           tenantId,
           userId: targetUuid,
           type: payload.type,
@@ -54,8 +53,18 @@ export class NotificationsService {
           message: payload.message,
           data: payload.data || {},
           initiatorId: payload.initiatorId || null,
-        },
-      });
+        };
+      // A durable delivery keeps the same notification ID across worker retries.
+      const notification = deliveryId
+        ? await this.prisma.notification.upsert({ where: { id: deliveryId }, create: { ...data, id: deliveryId }, update: {} })
+        : await this.prisma.notification.create({ data });
+
+      // Role-request details are fetched through the authenticated notifications API.
+      // The existing presence channel must carry no role/access or personal data.
+      if (signalOnly) {
+        await this.events.sendToUser(targetUuid, 'notifications_changed', {});
+        return notification;
+      }
 
       // 1. Dispatch real-time WebSocket event to target user
       await this.events.sendToUser(targetUuid, 'notification', {

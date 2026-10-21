@@ -16,6 +16,7 @@ import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
 import { isTenantAdmin } from '../utils/branch-scoping';
 import { USER_CITY_VALUES, type UserCity } from '../user-city-contract';
+import { assertRoleAssignmentAllowed } from '../utils/admin-role-assignment-policy';
 
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
@@ -161,6 +162,18 @@ export class AuthInviteService {
     const firstName = (dto.firstName || fullName.split(/\s+/)[0] || '').trim();
     const lastName = (dto.lastName || fullName.split(/\s+/).slice(1).join(' ') || '').trim();
     const assignedRoleIds = requestedRoleIds.length ? requestedRoleIds : roleId ? [roleId] : [];
+    if (assignedRoleIds.length) {
+      const assignmentRoles = await this.authQuery.query(
+        `SELECT cr.id, cr.name, cr.branch_id, cr.business_unit_id, cr.permissions, sr.system_key AS system_role
+         FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id = cr.system_role_id
+         WHERE cr.tenant_id = $1::uuid AND cr.id = ANY($2::uuid[])`,
+        [tenantId, assignedRoleIds],
+      );
+      if (assignmentRoles.rows.length !== assignedRoleIds.length) throw new BadRequestException('Select valid roles in this workspace.');
+      for (const role of assignmentRoles.rows as any[]) {
+        assertRoleAssignmentAllowed(requester as any, role, { branchId: dto.branchId, businessUnitId: dto.businessUnitId });
+      }
+    }
     const insertUserRes = await this.authQuery.query(
       `INSERT INTO users (tenant_id, email, first_name, last_name, full_name, role_id, assigned_role_ids, branch_id, business_unit_id, city, pod_id, is_active, is_approved)
        VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid, $7::uuid[], $8::uuid, $9::uuid, $10::ats."UserCity", $11::uuid, true, true)
@@ -235,7 +248,7 @@ export class AuthInviteService {
       this.authQuery.query('SELECT id, name FROM branches WHERE tenant_id = $1::uuid', [tenantId]),
       this.authQuery.query('SELECT id, name, branch_id FROM business_units WHERE tenant_id = $1::uuid', [tenantId]),
       this.authQuery.query(
-        `SELECT cr.id, cr.name, cr.branch_id, cr.business_unit_id, sr.system_key
+        `SELECT cr.id, cr.name, cr.branch_id, cr.business_unit_id, cr.permissions, sr.system_key
          FROM custom_roles cr LEFT JOIN system_roles sr ON sr.id = cr.system_role_id
          WHERE cr.tenant_id = $1::uuid`, [tenantId]),
     ]);
@@ -355,6 +368,14 @@ export class AuthInviteService {
             continue;
           }
           const selected = roleMatch.match;
+          try {
+            assertRoleAssignmentAllowed(requester, {
+              ...selected,
+              system_role: selected.system_key,
+            }, { branchId, businessUnitId: unitMatch.match.id });
+          } catch (error: any) {
+            errors.push(error?.message || 'You are not authorized to assign this administrative role.');
+          }
           if (selected.system_key === 'POD_LEAD') errors.push('Pod leadership is assigned only through Recruitment Pods.');
           if (selected.system_key === 'SUPER_ADMIN' || selected.name.toUpperCase() === 'SUPER_ADMIN') errors.push('SUPER_ADMIN cannot be assigned through user import.');
           if ((selected.system_key === 'TENANT_ADMIN' || selected.name.toUpperCase() === 'TENANT_ADMIN') && !isTenantAdmin(requester)) errors.push('Only a tenant administrator can assign the Tenant Admin role.');

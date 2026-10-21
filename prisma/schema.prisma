@@ -29,6 +29,7 @@ model SessionRevocation {
 }
 
 model Tenant {
+  roleRequestDeliveries RoleRequestDelivery[]
   staffProfiles             UserProfile[]
   staffPhotos               UserPhoto[]
   staffSignatures           EmailSignature[]
@@ -363,6 +364,9 @@ model Pod {
 }
 
 model User {
+  roleRequestVersion String? @map("role_request_version") @db.Uuid
+  requestedRoleDeliveries RoleRequestDelivery[] @relation("RoleRequester")
+  receivedRoleDeliveries RoleRequestDelivery[] @relation("RoleReviewer")
   personalProfile      UserProfile?
   uploadedPhoto        UserPhoto?
   emailSignatures      EmailSignature[]
@@ -412,6 +416,30 @@ model User {
   jobCreationGrantsReceived JobCreationGrant[] @relation("JobCreationGrantDelegate")
   jobCreationGrantsIssued JobCreationGrant[] @relation("JobCreationGrantIssuer")
 @@map("users")
+  @@schema("ats")
+}
+
+model RoleRequestDelivery {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  requesterId String @map("requester_id") @db.Uuid
+  recipientId String @map("recipient_id") @db.Uuid
+  requestVersion String @map("request_version") @db.Uuid
+  channel String @db.VarChar(16)
+  status String @default("pending") @db.VarChar(16)
+  attempts Int @default(0)
+  availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
+  leaseId String? @map("lease_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requester User @relation("RoleRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  recipient User @relation("RoleReviewer", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, requestVersion, recipientId, channel], map: "role_request_delivery_unique")
+  @@index([status, availableAt], map: "role_request_delivery_ready")
+  @@index([tenantId], map: "role_request_delivery_tenant")
+  @@index([recipientId], map: "role_request_delivery_recipient")
+  @@map("role_request_deliveries")
   @@schema("ats")
 }
 

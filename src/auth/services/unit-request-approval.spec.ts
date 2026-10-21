@@ -7,7 +7,7 @@ describe('current-unit request review', () => {
   function setup(permissions: string[], target = pending) {
     const query = jest.fn(async (sql: string) => {
       if (sql.includes('SELECT u.id, u.email, u.full_name')) return { rows: [target] };
-      if (sql.includes('SELECT id, permissions')) return { rows: [{ id: roleId, permissions, branch_id: 'branch', business_unit_id: 'unit' }] };
+      if (sql.includes('cr.permissions')) return { rows: [{ id: roleId, permissions, branch_id: 'branch', business_unit_id: 'unit' }] };
       return { rows: [] };
     });
     const service = new AuthUserService({ query } as any, { checkSeatLimit: jest.fn() } as any, {} as any, {} as any);
@@ -15,7 +15,7 @@ describe('current-unit request review', () => {
   }
   it('rejects roles with permissions beyond the reviewing manager', async () => {
     const { service, query } = setup(['tenant:manage']);
-    await expect(service.approveTenantUser('target', { roleId }, actor)).rejects.toThrow('cannot grant roles');
+    await expect(service.approveTenantUser('target', { roleId }, actor)).rejects.toThrow(/cannot grant roles|may assign only Unit Admin/);
     expect(query.mock.calls.some(([sql]) => sql.includes('UPDATE users'))).toBe(false);
   });
   it('rejects a request moved to another unit before review', async () => {

@@ -24,6 +24,7 @@ describe('member role replacement', () => {
   const writes = () => query.mock.calls.filter(([sql]) => /^UPDATE users SET first_name/.test(sql.trim()));
 
   it('replaces all removed roles and primary role with the selected ID in one write', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
     query.mockResolvedValueOnce({ rows: [{ id: bdm, name: 'BDM', branch_id: branchId, system_role: 'ACCOUNT_MANAGER' }] });
     await service.updateUserDetails(userId, { assignedRoleIds: [bdm] }, requester);
     expect(writes()).toHaveLength(1);
@@ -75,6 +76,7 @@ describe('member role replacement', () => {
   });
 
   it('rejects moving an existing member while assigning branch administration', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
     query.mockResolvedValueOnce({ rows: [{ id: admin, name: 'Branch Admin', permissions: ['branch_admin:manage'] }] });
     await expect(service.updateUserDetails(userId, { branchId: tenantId, assignedRoleIds: [admin] },
       { ...requester, permissions: ['tenant:settings'] })).rejects.toThrow('existing branch');
@@ -84,6 +86,7 @@ describe('member role replacement', () => {
   it('rejects clearing an existing unit while assigning unit administration', async () => {
     query.mockReset();
     query.mockResolvedValueOnce({ rows: [{ id: userId, tenant_id: tenantId, branch_id: branchId, business_unit_id: branchId }] });
+    query.mockResolvedValueOnce({ rows: [] });
     query.mockResolvedValueOnce({ rows: [{ id: admin, name: 'Unit Admin', permissions: ['unit_admin:manage'] }] });
     await expect(service.updateUserDetails(userId, { businessUnitId: '', assignedRoleIds: [admin] }, requester))
       .rejects.toThrow('existing branch unit');

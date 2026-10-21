@@ -39,9 +39,11 @@ import { Roles } from './decorators/roles.decorator';
 import { RequirePermissions } from './decorators/permissions.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
+import { assertRoleManagementAccess } from './utils/admin-role-assignment-policy';
 import type { AuthUser } from './interfaces/auth-user.interface';
 import { resolveTenantId } from './utils/tenant-resolver';
 import { AuditService } from '../audit/audit.service';
+import type { RoleRequestDecision } from './role-request-contract';
 
 @ApiTags('Auth & Identity')
 @Controller('api/auth')
@@ -392,6 +394,18 @@ Validates email + password and returns a signed JWT access token.
   }
 
   // â”€â”€â”€ PATCH /api/auth/users/:id/approve â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  @Get('role-requests/:id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  async reviewRoleRequest(
+    @Param('id', new ParseUUIDPipe()) userId: string,
+    @Query('version', new ParseUUIDPipe()) version: string,
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.reviewRoleRequest(userId, version, currentUser);
+  }
+
   @Patch('users/:id/approve')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('user:manage')
@@ -401,7 +415,7 @@ Validates email + password and returns a signed JWT access token.
   })
   async approveTenantUser(
     @Param('id') userId: string,
-    @Body() body: { roleId?: string; roleIds?: string[]; branchId?: string; businessUnitId?: string; roles?: string[] },
+    @Body() body: RoleRequestDecision,
     @CurrentUser() currentUser: AuthUser,
   ) {
     return this.authService.approveTenantUser(userId, body, currentUser);
@@ -419,8 +433,9 @@ Validates email + password and returns a signed JWT access token.
   async rejectTenantUser(
     @Param('id') userId: string,
     @CurrentUser() currentUser: AuthUser,
+    @Body() body: Pick<RoleRequestDecision, 'expectedRequestVersion'>,
   ) {
-    return this.authService.rejectTenantUser(userId, currentUser);
+    return this.authService.rejectTenantUser(userId, currentUser, body?.expectedRequestVersion);
   }
 
   // â”€â”€â”€ GET /api/auth/approvals/pending â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -623,7 +638,8 @@ Validates email + password and returns a signed JWT access token.
   @ApiOperation({
     summary: 'List all system permissions',
   })
-  async listAllPermissions() {
+  async listAllPermissions(@CurrentUser() user: AuthUser) {
+    assertRoleManagementAccess(user);
     return this.authService.listAllPermissions();
   }
 

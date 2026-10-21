@@ -30,6 +30,7 @@ export type SystemEmailTemplate = Context &
         temporaryPassword?: string;
       }
     | { event: 'registration_received' }
+    | { event: 'role_requested'; requesterName: string; requesterEmail: string; role: string; branch?: string; unit?: string; reviewUrl: string; approveUrl: string; rejectUrl: string }
     | { event: 'workspace_activated'; loginUrl: string }
     | { event: 'role_approved'; loginUrl: string }
     | { event: 'team_invitation'; setupUrl: string; role?: string }
@@ -133,6 +134,15 @@ export function renderSystemEmail(
     welcomeInstructions = '',
     welcomeMethods = '';
   switch (input.event) {
+    case 'role_requested':
+      title = 'Role request awaiting your review';
+      preview = `${input.requesterName} requested the ${input.role} role.`;
+      copy = `${input.requesterName} requested access to your workspace. Review the request below.`;
+      details.push(['Requester', input.requesterName], ['Email', input.requesterEmail], ['Requested role', input.role],
+        ...(input.branch ? [['Branch', input.branch] as [string, string]] : []),
+        ...(input.unit ? [['Business unit', input.unit] as [string, string]] : []), ['Status', 'Pending approval']);
+      note = 'You received this because you can review this request. Sign in to review and confirm your decision.';
+      break;
     case 'account_welcome': {
       title = 'Welcome to your workspace';
       preview = `${input.fullName || 'Your account'} is ready at ${input.workspace}.`;
@@ -328,6 +338,7 @@ export function renderSystemEmail(
       break;
   }
   const subject = {
+    role_requested: input.event === 'role_requested' ? `Role request: ${input.requesterName} — ${input.role}` : '',
     registration_received: 'Registration received',
     workspace_activated: 'Your workspace is ready',
     role_approved: 'Your access request was approved',
@@ -368,8 +379,9 @@ export function renderSystemEmail(
   })();
   const tenantBrandingRow = `<tr><td style="padding:12px 24px 18px;border-bottom:1px solid #e2e8f0"><table role="presentation" cellpadding="0" cellspacing="0"><tr>${tenantLogoUrl ? `<td style="padding-right:12px;vertical-align:middle"><img src="${e(tenantLogoUrl)}" alt="${e(tenantDisplayName)}" style="display:block;max-width:150px;max-height:44px;width:auto;height:auto;border:0"></td>` : ''}<td style="font-size:14px;font-weight:bold;color:#334155;vertical-align:middle">${e(tenantDisplayName)}</td></tr></table></td></tr>`;
   const url = action ? applicationEmailUrl(action.url) : undefined;
-  const button =
-    action && url
+  const button = input.event === 'role_requested'
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0 16px"><tr><td style="padding-bottom:12px"><a href="${e(applicationEmailUrl(input.approveUrl))}" style="display:block;padding:14px 20px;border-radius:4px;background:#1e4e98;color:#ffffff;font-size:14px;font-weight:bold;text-align:center;text-decoration:none">Approve request</a></td></tr><tr><td><a href="${e(applicationEmailUrl(input.rejectUrl))}" style="display:block;padding:14px 20px;border:1px solid #dc2626;border-radius:4px;color:#dc2626;font-size:14px;font-weight:bold;text-align:center;text-decoration:none">Reject request</a></td></tr></table><p style="font-size:13px"><a href="${e(applicationEmailUrl(input.reviewUrl))}" style="color:#1e4e98">View request details</a></p>`
+    : action && url
       ? welcomeEmail
         ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%;margin:20px 0 12px"><tr><td bgcolor="#1e4e98" style="border-radius:4px"><a href="${e(url)}" style="display:block;box-sizing:border-box;width:100%;padding:13px 16px;text-align:center;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none">${e(action.label)}</a></td></tr></table>`
         : `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 16px"><tr><td bgcolor="#1e4e98" style="border-radius:4px;mso-padding-alt:14px 24px"><a href="${e(url)}" style="display:inline-block;padding:14px 24px;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none">${e(action.label)}</a></td></tr></table><p style="font-size:12px;color:#475569;word-break:break-all">Or copy and open this link:<br><a href="${e(url)}" style="color:#1e4e98">${e(url)}</a></p>`
@@ -394,6 +406,11 @@ export function renderSystemEmail(
     copy,
     welcomeInstructions,
     ...details.map(([label, value]) => `${label}: ${value}`),
+    ...(input.event === 'role_requested' ? [
+      'Approve request: ' + applicationEmailUrl(input.approveUrl),
+      'Reject request: ' + applicationEmailUrl(input.rejectUrl),
+      'View request details: ' + applicationEmailUrl(input.reviewUrl),
+    ] : []),
     ...(action && url ? [action.label + ': ' + url] : []),
     ...(input.event === 'account_welcome' && input.passwordSetupUrl && input.loginOptions.allowPasswordLogin
       ? ['Set up your password: ' + applicationEmailUrl(input.passwordSetupUrl)]

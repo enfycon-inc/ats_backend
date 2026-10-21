@@ -10,6 +10,7 @@ describe('approval event delivery', () => {
     const sendRoleApprovalWelcomeEmail = jest.fn(async () => { expect(committed).toBe(true); return { success: true, status: 'accepted' }; });
     const query = jest.fn(async (sql: string) => {
       if (sql.includes('SELECT u.id, u.email, u.full_name')) return { rows: [{ tenant_id: 'tenant', email: 'user@example.com', full_name: 'User', is_active: true, is_approved: false, requested_role: 'Delivery Head', tenant_name: 'Workspace', tenant_domain: 'workspace' }] };
+      if (sql.includes('cr.permissions')) return { rows: [{ id: roleId, name: 'Delivery Head', permissions: [], branch_id: null, business_unit_id: null }] };
       if (sql.includes('UPDATE users')) { if (failWrite) throw new Error('write failed'); committed = true; return { rows: [{ id: userId }] }; }
       return { rows: [] };
     });
@@ -54,6 +55,7 @@ describe('approval event delivery', () => {
     const query = (service as any).authQuery.query as jest.Mock;
     query.mockImplementation(async (sql: string) => {
       if (sql.includes('SELECT u.id, u.email, u.full_name')) return { rows: [{ tenant_id: 'tenant', email: 'user@example.com', full_name: 'User', is_active: true, is_approved: false, requested_role: 'Delivery Head', tenant_name: 'Workspace', tenant_domain: 'workspace' }] };
+      if (sql.includes('cr.permissions')) return { rows: [{ id: roleId, name: 'Delivery Head', permissions: [], branch_id: null, business_unit_id: null }] };
       if (sql.includes('UPDATE users')) return { rows: [] };
       return { rows: [] };
     });
