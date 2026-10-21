@@ -1,3 +1,9 @@
+-- ATS: rollback-compatible
+-- Additive only: previous images can ignore the new tables and defaulted columns.
+-- Disable Developer Access before application rollback; retain all session markers.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE ats.tenant_auth_settings ADD COLUMN allow_developer_login boolean NOT NULL DEFAULT false,
  ADD COLUMN developer_login_epoch uuid NOT NULL DEFAULT gen_random_uuid();
 CREATE TABLE ats.developer_login_grants (
@@ -19,3 +25,5 @@ CREATE TABLE ats.developer_login_sessions (
 );
 CREATE INDEX developer_sessions_tenant ON ats.developer_login_sessions(tenant_id);
 -- Keep session markers after grant deletion: re-granting must never revive old sessions.
+
+COMMIT;
