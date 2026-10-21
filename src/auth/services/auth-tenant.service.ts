@@ -1,4 +1,4 @@
-import type { SignInPolicy, SignInPolicyUpdate } from '../sign-in-policy';
+import { LOGIN_DESIGN_VARIANTS, type SignInPolicy, type SignInPolicyUpdate } from '../sign-in-policy';
 import {
   Injectable,
   Logger,
@@ -538,10 +538,10 @@ export class AuthTenantService {
     const tenantData = tenantRes.rows.length > 0 ? tenantRes.rows[0] : null;
     if (!tenantData) throw new NotFoundException('Workspace not found.');
 
-    const result = await this.authQuery.query('SELECT tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, allow_developer_login, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id FROM ats.tenant_auth_settings WHERE tenant_id = $1 LIMIT 1', [tenantId]);
+    const result = await this.authQuery.query('SELECT tenant_id, allow_password_login, allow_microsoft_sso, allow_google_sso, allow_developer_login, enforce_sso_only, require_mfa, allow_personal_emails, allowed_email_domains, microsoft_tenant_id, microsoft_client_id, login_design_variant FROM ats.tenant_auth_settings WHERE tenant_id = $1 LIMIT 1', [tenantId]);
     if (result.rows.length === 0) {
       return {
-        tenantId, allowPasswordLogin: true, allowMicrosoftSso: false, allowGoogleSso: false,
+        tenantId, loginDesignVariant: 'balanced-split', allowPasswordLogin: true, allowMicrosoftSso: false, allowGoogleSso: false,
         allowDeveloperLogin: false, enforceSsoOnly: false, requireMfa: false, allowPersonalEmails: true, allowedEmailDomains: [],
         microsoftTenantId: null, microsoftClientId: null,
         name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url,
@@ -550,6 +550,9 @@ export class AuthTenantService {
     const row = result.rows[0];
     return {
       tenantId: row.tenant_id,
+      loginDesignVariant: (LOGIN_DESIGN_VARIANTS as readonly string[]).includes(row.login_design_variant)
+        ? row.login_design_variant
+        : 'balanced-split',
       allowPasswordLogin: row.allow_password_login ?? true,
       allowMicrosoftSso: row.allow_microsoft_sso ?? true,
       allowGoogleSso: row.allow_google_sso ?? true,
@@ -562,6 +565,17 @@ export class AuthTenantService {
       microsoftClientId: row.microsoft_client_id || null,
       name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url,
     };
+  }
+
+  async updateTenantLoginDesign(tenantId: string, variant: string) {
+    if (!(LOGIN_DESIGN_VARIANTS as readonly string[]).includes(variant)) throw new BadRequestException('Unsupported sign-in page design.');
+    const result = await this.authQuery.query(
+      `INSERT INTO ats.tenant_auth_settings (tenant_id, login_design_variant)
+       VALUES ($1::uuid, $2)
+       ON CONFLICT (tenant_id) DO UPDATE SET login_design_variant = EXCLUDED.login_design_variant, updated_at = NOW()
+       RETURNING login_design_variant`, [tenantId, variant],
+    );
+    return { loginDesignVariant: result.rows[0].login_design_variant };
   }
 
   async updateTenantAuthPolicy(tenantId: string, dto: SignInPolicyUpdate): Promise<SignInPolicy> {
@@ -656,6 +670,7 @@ export class AuthTenantService {
 
 
     return {
+      loginDesignVariant: current.loginDesignVariant || 'balanced-split',
       allowDeveloperLogin: row.allow_developer_login === true,
       tenantId: row.tenant_id, allowPasswordLogin: row.allow_password_login,
       allowMicrosoftSso: row.allow_microsoft_sso, allowGoogleSso: row.allow_google_sso,

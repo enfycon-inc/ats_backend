@@ -129,6 +129,7 @@ model TenantDomain {
 }
 
 model TenantAuthSettings {
+  loginDesignVariant   String   @default("balanced-split") @map("login_design_variant") @db.VarChar(32)
   developerLoginEpoch String @default(dbgenerated("gen_random_uuid()")) @map("developer_login_epoch") @db.Uuid
   allowDeveloperLogin Boolean @default(false) @map("allow_developer_login")
   tenantId              String   @id @map("tenant_id") @db.Uuid

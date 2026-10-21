@@ -1020,6 +1020,18 @@ Validates email + password and returns a signed JWT access token.
     return result;
   }
 
+  @Patch('tenant-login-design')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('tenant:settings')
+  @ApiBearerAuth()
+  async updateTenantLoginDesign(@CurrentUser() user: AuthUser, @Body() body: { loginDesignVariant?: unknown }) {
+    if (typeof body?.loginDesignVariant !== 'string') throw new BadRequestException('Choose a valid sign-in page design.');
+    const tenantId = resolveTenantId(user);
+    const result = await this.authService.updateTenantLoginDesign(tenantId, body.loginDesignVariant);
+    await this.auditService.log({ tenantId, actorId: user.dbId, action: 'authentication_policy.login_design_updated', details: result });
+    return result;
+  }
+
   // ─── POST /api/auth/forgot-password ──────────────────────────────────────────
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)

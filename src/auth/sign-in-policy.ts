@@ -1,5 +1,6 @@
 // Canonical contract. Sync to the frontend using sync-sign-in-policy.cjs.
 export interface SignInPolicy {
+  loginDesignVariant: LoginDesignVariant;
   tenantId: string;
   allowPasswordLogin: boolean;
   allowMicrosoftSso: boolean;
@@ -16,6 +17,8 @@ export interface SignInPolicy {
   logoUrl?: string;
   microsoftRedirectUri?: string | null;
 }
+export const LOGIN_DESIGN_VARIANTS = ['balanced-split', 'compact-focus', 'editorial', 'bottom-anchored', 'workspace-banner'] as const;
+export type LoginDesignVariant = typeof LOGIN_DESIGN_VARIANTS[number];
 export type SignInPolicyUpdate = Partial<Pick<SignInPolicy,
   'allowPasswordLogin' | 'allowMicrosoftSso' | 'allowGoogleSso' | 'allowDeveloperLogin' |
   'enforceSsoOnly' | 'requireMfa' | 'allowPersonalEmails' | 'allowedEmailDomains' |

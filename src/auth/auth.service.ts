@@ -126,6 +126,7 @@ export class AuthService {
   updateTenantSettings(tenantId: string, settings: any) { return this.tenantService.updateTenantSettings(tenantId, settings); }
   getTenantAuthPolicy(tenantIdOrSubdomain: string) { return this.tenantService.getTenantAuthPolicy(tenantIdOrSubdomain); }
   updateTenantAuthPolicy(tenantId: string, dto: SignInPolicyUpdate) { return this.tenantService.updateTenantAuthPolicy(tenantId, dto); }
+  updateTenantLoginDesign(tenantId: string, variant: string) { return this.tenantService.updateTenantLoginDesign(tenantId, variant); }
   verifyCustomDomain(tenantId: string, domainName: string) { return this.tenantService.verifyCustomDomain(tenantId, domainName); }
 
   // ─── RBAC ────────────────────────────────────────────────────────────────────
