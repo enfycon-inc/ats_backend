@@ -2,6 +2,9 @@ import { PodsService } from './pods.service';
 import { PodsController } from './pods.controller';
 import { ForbiddenException, ConflictException, BadRequestException, NotFoundException } from '@nestjs/common';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { Prisma } from '@prisma/client';
+import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { Reflector } from '@nestjs/core';
 
 describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', () => {
   let prismaMock: any;
@@ -92,6 +95,58 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
 
     podsService = new PodsService(prismaMock);
     podsController = new PodsController(podsService);
+  });
+
+  describe('Assigned pod deletion protection', () => {
+    it('rejects all linked jobs before changing the lead or members', async () => {
+      prismaMock.pod.findFirst.mockResolvedValue({ id: 'pod', podHeadId: 'lead', _count: { jobPods: 1 } });
+      const demote = jest.spyOn(podsService as any, 'demoteFromPodHead');
+      await expect(podsService.remove('pod', tenantId)).rejects.toThrow(ConflictException);
+      expect(prismaMock.pod.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'pod', tenantId } }));
+      expect(demote).not.toHaveBeenCalled();
+      expect(prismaMock.user.updateMany).not.toHaveBeenCalled();
+      expect(prismaMock.pod.delete).not.toHaveBeenCalled();
+    });
+
+    it('allows an unassigned pod to be deleted', async () => {
+      prismaMock.pod.findFirst.mockResolvedValue({ id: 'pod', podHeadId: null, _count: { jobPods: 0 } });
+      await expect(podsService.remove('pod', tenantId)).resolves.toEqual({ message: 'Pod deleted successfully.' });
+      expect(prismaMock.user.updateMany).toHaveBeenCalledWith({ where: { podId: 'pod', tenantId }, data: { podId: null } });
+      expect(prismaMock.pod.delete).toHaveBeenCalledWith({ where: { id: 'pod' } });
+    });
+
+    it('throws a conflict out of the transaction when a concurrent assignment blocks deletion', async () => {
+      prismaMock.pod.findFirst.mockResolvedValue({ id: 'pod', podHeadId: null, _count: { jobPods: 0 } });
+      prismaMock.pod.delete.mockRejectedValue(new Prisma.PrismaClientKnownRequestError('Foreign key constraint failed', { code: 'P2003', clientVersion: Prisma.prismaVersion.client }));
+      await expect(podsService.remove('pod', tenantId)).rejects.toThrow('Reassign or remove all job assignments first.');
+      // The transaction promise rejects, so Prisma rolls back every prior write.
+      await expect(prismaMock.$transaction.mock.results[0].value).rejects.toThrow(ConflictException);
+    });
+
+    it('rejects a missing or foreign-tenant pod without writes', async () => {
+      prismaMock.pod.findFirst.mockResolvedValue(null);
+      await expect(podsService.remove('foreign-pod', tenantId)).rejects.toThrow(NotFoundException);
+      expect(prismaMock.user.updateMany).not.toHaveBeenCalled();
+      expect(prismaMock.pod.delete).not.toHaveBeenCalled();
+    });
+
+    it('preserves unexpected errors rather than reporting an assignment conflict', async () => {
+      prismaMock.pod.findFirst.mockResolvedValue({ id: 'pod', podHeadId: null, _count: { jobPods: 0 } });
+      const error = new Error('Unexpected failure');
+      prismaMock.pod.delete.mockRejectedValue(error);
+      await expect(podsService.remove('pod', tenantId)).rejects.toBe(error);
+    });
+
+    it('requires pod:delete independently of edit or create permissions', () => {
+      const guard = new PermissionsGuard(new Reflector());
+      const context = (permissions: string[]) => ({
+        getHandler: () => PodsController.prototype.remove,
+        getClass: () => PodsController,
+        switchToHttp: () => ({ getRequest: () => ({ user: { permissions } }) }),
+      }) as any;
+      expect(() => guard.canActivate(context(['pod:edit', 'pod:create']))).toThrow(ForbiddenException);
+      expect(guard.canActivate(context(['pod:delete']))).toBe(true);
+    });
   });
 
   describe('Scope Resolution (Unit Scoping)', () => {
@@ -509,6 +564,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
             id: podId,
             podHeadId: formerLeadId,
             tenantId,
+            _count: { jobPods: 0 },
           };
         }
         if (where?.podHeadId === formerLeadId) {

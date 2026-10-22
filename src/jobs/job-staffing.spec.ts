@@ -82,7 +82,10 @@ describe('job recruiter staffing permissions and scope', () => {
     const sql = prisma.$queryRawUnsafe.mock.calls[0][0];
     expect(sql).toContain('staff.is_approved = true');
     expect(sql).toContain('staff.is_active = true');
-    expect(sql).toContain("role.permissions::jsonb ? 'submission:create'");
+    expect(sql).toContain("system_role.system_key = 'RECRUITER'");
+    expect(sql).toContain('parent.id = child.base_role_id');
+    expect(sql).toContain('AND eligibility."canRecruit"');
+    expect(sql).not.toContain('eligibility."canRecruit" OR eligibility."canReview"');
     expect(sql).toContain('staff.email');
   });
 

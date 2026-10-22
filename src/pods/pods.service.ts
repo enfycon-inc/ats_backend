@@ -12,6 +12,7 @@ import { CreatePodDto } from './dtos/create-pod.dto';
 import { UpdatePodDto } from './dtos/update-pod.dto';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { AuthEmailService } from '../auth/services/auth-email.service';
+import { Prisma } from '@prisma/client';
 
 export interface PodMember {
   avatar?: string | null;
@@ -31,6 +32,7 @@ export interface PodResponse {
   businessUnitName: string | null;
   podHeadId: string | null;
   podHeadName: string | null;
+  podHeadEmail: string | null;
   description: string | null;
   isAvailableForAssignment: boolean;
   members: PodMember[];
@@ -615,7 +617,7 @@ export class PodsService {
     const pods = await this.prisma.pod.findMany({
       where,
       include: {
-        podHead: { select: { fullName: true } },
+        podHead: { select: { fullName: true, email: true } },
         branch: { select: { name: true } },
         businessUnit: { select: { name: true } },
         _count: { select: { jobPods: true } },
@@ -638,6 +640,7 @@ export class PodsService {
       businessUnitName: p.businessUnit?.name || null,
       podHeadId: p.podHeadId || null,
       podHeadName: p.podHead?.fullName || null,
+      podHeadEmail: p.podHead?.email || null,
       description: p.description,
       isAvailableForAssignment: p.isAvailableForAssignment,
       members: p.users.map((u) => ({
@@ -660,7 +663,7 @@ export class PodsService {
     const pod = await this.prisma.pod.findFirst({
       where: { id, tenantId },
       include: {
-        podHead: { select: { fullName: true } },
+        podHead: { select: { fullName: true, email: true } },
         branch: { select: { name: true } },
         businessUnit: { select: { name: true } },
         _count: { select: { jobPods: true } },
@@ -686,6 +689,7 @@ export class PodsService {
       businessUnitName: pod.businessUnit?.name || null,
       podHeadId: pod.podHeadId || null,
       podHeadName: pod.podHead?.fullName || null,
+      podHeadEmail: pod.podHead?.email || null,
       description: pod.description,
       isAvailableForAssignment: pod.isAvailableForAssignment,
       members: pod.users.map((u) => ({
@@ -991,18 +995,27 @@ export class PodsService {
    * Delete a pod and release members
    */
   async remove(id: string, tenantId: string) {
-    const pod = await this.prisma.pod.findFirst({
-      where: { id, tenantId },
-    });
-
-    if (!pod) {
-      throw new NotFoundException(`Pod not found.`);
-    }
-
     await this.prisma.$transaction(async tx => {
+      const pod = await tx.pod.findFirst({
+        where: { id, tenantId },
+        select: { id: true, podHeadId: true, _count: { select: { jobPods: true } } },
+      });
+      if (!pod) throw new NotFoundException('Pod not found.');
+      const assignedJobsMessage = 'Cannot delete this pod because it has assigned jobs. Reassign or remove all job assignments first.';
+      if (pod._count.jobPods > 0) throw new ConflictException(assignedJobsMessage);
+
       if (pod.podHeadId) await this.demoteFromPodHead(pod.podHeadId, tenantId, tx, id);
       await tx.user.updateMany({ where: { podId: id, tenantId }, data: { podId: null } });
-      await tx.pod.delete({ where: { id } });
+      try {
+        await tx.pod.delete({ where: { id } });
+      } catch (error) {
+        // The RESTRICT foreign key also protects assignments created after the check.
+        // Throwing out of this transaction rolls back member and lead changes.
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+          throw new ConflictException(assignedJobsMessage);
+        }
+        throw error;
+      }
     });
 
     return { message: 'Pod deleted successfully.' };
