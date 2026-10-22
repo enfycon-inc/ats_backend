@@ -1,3 +1,5 @@
+-- ATS: rollback-compatible
+-- Review: RESTRICT fails safely on assigned pods; prior app versions can continue operating, and the rollback script restores cascade behavior.
 -- Retain job-to-pod assignments when a pod deletion is attempted.
 -- Job deletion still cascades through job_pods_job_id_fkey.
 BEGIN;
