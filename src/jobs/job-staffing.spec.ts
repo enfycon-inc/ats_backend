@@ -138,12 +138,13 @@ describe('job recruiter staffing permissions and scope', () => {
   });
 
   it('rejects forged recruiters before a job creation write', async () => {
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowNone: true });
     prisma.tenant = { findUnique: jest.fn().mockResolvedValue({ name: 'Tenant' }) };
     prisma.branch = { findFirst: jest.fn().mockResolvedValue({ id: branch, code: 'BR' }) };
     prisma.job = { create: jest.fn() };
     const service = new JobsService(prisma, {} as any);
     await expect(service.createJob({ title: 'Job', branchId: branch, businessUnitId: unit,
-      recruiterIds: [recruiter, other] } as any, tenant, actor.dbId, branch, actor)).rejects.toThrow('job:override_assignment');
+      recruiterIds: [recruiter, other] } as any, tenant, actor.dbId, branch, actor)).rejects.toThrow('eligible');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
 

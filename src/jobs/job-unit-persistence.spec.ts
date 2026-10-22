@@ -91,7 +91,7 @@ describe('job operating unit persistence and reviewer routing', () => {
       { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_pod'] })).rejects.toThrow('outside the job unit');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
-  it.each(['MANUAL', 'AUTO'])('persists direct recruiters without justification for Delivery Head capability under %s policy', async strategy => {
+  it.each(['MANUAL', 'AUTO'])('persists initial direct recruiters without override permission under %s policy', async strategy => {
     const { service, prisma, dto } = setup();
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: true, allowUnassigned: false, podDistributionStrategy: strategy });
     const second = '44444444-4444-4444-8444-444444444444';
@@ -101,17 +101,37 @@ describe('job operating unit persistence and reviewer routing', () => {
       ? [manager, second].map(id => ({ id, fullName: 'Recruiter', canRecruit: true, canReview: false }))
       : [{ id, permissions: ['job:publish_direct'], job_reviewer_id: null, pod_head_id: null }]);
     await service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager, second, manager] }, id, id, id,
-      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter', 'job:override_assignment', 'job:assignment_reason_optional'] });
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter'] });
     expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({ data: [
       { jobId: id, recruiterId: manager }, { jobId: id, recruiterId: second },
     ], skipDuplicates: true });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({ data: {
+      tenantId: id, actorId: id, action: 'JOB_RECRUITER_ASSIGNMENT', targetType: 'job', targetId: id,
+      details: { recruiterIds: [manager, second] },
+    } });
   });
-  it('still requires a reason for direct recruiter creation by legacy override roles', async () => {
+  it.each([false, undefined])('rejects direct recruiters when unit policy is not enabled (%s)', async allowNone => {
     const { service, prisma, dto } = setup();
-    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: true, allowUnassigned: false, podDistributionStrategy: 'MANUAL' });
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowNone });
     await expect(service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager] }, id, id, id,
       { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter', 'job:override_assignment'] }))
-      .rejects.toThrow('emergency assignment reason');
+      .rejects.toThrow('Direct recruiter assignment is disabled');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
+  it('rejects initial recruiter assignment without explicit permission', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowNone: true });
+    await expect(service.createJob({ ...dto, recruiterIds: [manager] }, id, id, id,
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create'] }))
+      .rejects.toThrow('Recruiter assignment permission');
+    expect(prisma.job.create).not.toHaveBeenCalled();
+  });
+  it('rejects initial recruiter assignment to a different unit', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowNone: true });
+    await expect(service.createJob({ ...dto, recruiterIds: [manager] }, id, id, id,
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: manager, permissions: ['job:create', 'job:assign_recruiter'] }))
+      .rejects.toThrow('assigned unit');
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
   it('does not swallow reviewer query failures or create a job', async () => {

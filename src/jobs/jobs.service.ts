@@ -873,13 +873,10 @@ export class JobsService {
     if (usesAutomaticPods(assignmentPolicy) && selectedPods.length) {
       throw new BadRequestException('This unit chooses pods automatically. Select automatic pod assignment or direct recruiters.');
     }
-    if (submittedRecruiters.length && !actor?.permissions?.includes('job:override_assignment')) throw new ForbiddenException('Direct recruiter assignment requires job:override_assignment.');
-    if (submittedRecruiters.length && (!actor?.branchId || !actor.businessUnitId || branchId !== actor.branchId || businessUnitId !== actor.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
-    if (submittedRecruiters.length && !actor?.permissions?.includes('job:assignment_reason_optional') && (!dto.assignmentReason?.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
     if (submittedRecruiters.length) {
       if (!actor) throw new ForbiddenException('Recruiter assignment requires an authenticated job staffing context.');
+      if (!businessUnitId || assignmentPolicy?.allowNone !== true) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
       await validateJobRecruiters(this.prisma, actor, tenantId, submittedRecruiters, branchId, businessUnitId);
-      if (assignmentPolicy?.allowNone === false) throw new BadRequestException('Direct recruiter assignment is disabled for this unit.');
     }
     if (dto.podId === 'all') throw new BadRequestException('Select individual recruiters instead of a unit pool.');
     if (selectedPods.length) {
@@ -1171,7 +1168,7 @@ export class JobsService {
         if (submittedRecruiters.length) await tx.jobRecruiter.createMany({
           data: submittedRecruiters.map(recruiterId => ({ jobId, recruiterId })), skipDuplicates: true,
         });
-        if (submittedRecruiters.length) await tx.auditLog.create({ data: { tenantId, actorId: actor!.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: jobId, details: { ...(typeof dto.assignmentReason === 'string' && dto.assignmentReason.trim() ? { reason: dto.assignmentReason.trim() } : {}), recruiterIds: submittedRecruiters } } });
+        if (submittedRecruiters.length) await tx.auditLog.create({ data: { tenantId, actorId: actor!.dbId, action: 'JOB_RECRUITER_ASSIGNMENT', targetType: 'job', targetId: jobId, details: { recruiterIds: submittedRecruiters } } });
         for (const assignedPodId of assignedPodIds) {
           await tx.jobPod.upsert({ where: { jobId_podId: { jobId, podId: assignedPodId } }, create: { jobId, podId: assignedPodId }, update: {} });
           await tx.jobAssignmentLog.create({ data: { tenantId, jobId, podId: assignedPodId, assignedBy: createdByEmail || 'System' } });
