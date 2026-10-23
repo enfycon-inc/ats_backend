@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS ats.public_jobs_api_keys (
   revoked_at timestamptz,
   created_by uuid NOT NULL REFERENCES ats.users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT public_jobs_api_keys_scope_check CHECK (
+  CONSTRAINT public_jobs_api_keys_scope_assignment_check CHECK (
     (scope = 'TENANT' AND branch_id IS NULL AND business_unit_id IS NULL) OR
     (scope = 'BRANCH' AND branch_id IS NOT NULL AND business_unit_id IS NULL) OR
     (scope = 'BUSINESS_UNIT' AND business_unit_id IS NOT NULL)
