@@ -2640,9 +2640,10 @@ export class JobsService {
       return this.dbSkillsCache;
     }
     try {
-      const skills = await this.prisma.skillMaster.findMany({
-        include: { aliases: true },
-      });
+      const skills = await this.prisma.$transaction(
+        (tx) => tx.skillMaster.findMany({ include: { aliases: true } }),
+        { maxWait: 3000, timeout: 3000 },
+      );
       if (skills.length > 0) {
         this.dbSkillsCache = skills.map((sm) => ({
           name: sm.canonicalName,
@@ -2665,16 +2666,19 @@ export class JobsService {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 3000);
         const url = `${host}/api/v1/parse-jd`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-          fastApiResult = await res.json();
-          break;
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+            signal: controller.signal,
+          });
+          if (res.ok) {
+            fastApiResult = await res.json();
+            break;
+          }
+        } finally {
+          clearTimeout(timer);
         }
       } catch (err: any) {
         this.logger.debug(`Parser endpoint note at ${host}: ${err.message}`);

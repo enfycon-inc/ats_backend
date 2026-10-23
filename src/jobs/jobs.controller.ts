@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param, Headers, Query,
-  HttpStatus, HttpCode, UseGuards,
+  HttpStatus, HttpCode, UseGuards, HttpException,
 } from '@nestjs/common';
 import {
   ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth,
@@ -163,7 +163,11 @@ export class JobsController {
   async parseJd(
     @Body() body: { text: string },
   ): Promise<any> {
-    return this.jobsService.parseJobDescription(body?.text || '');
+    const text = typeof body?.text === 'string' ? body.text : '';
+    if (text.length > 50_000) {
+      throw new HttpException('Job description is too long to parse. Maximum length is 50,000 characters.', HttpStatus.PAYLOAD_TOO_LARGE);
+    }
+    return this.jobsService.parseJobDescription(text);
   }
 
   @Get()
