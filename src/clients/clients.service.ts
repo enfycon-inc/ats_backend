@@ -3,7 +3,7 @@ import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestEx
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere, clientJobReadWhere } from './client-visibility';
-import { clientCreationErrors, normalizeClientMarket, normalizeClientName, type ClientCreationContext, type ClientCreationRequest } from './client-creation.contract';
+import { clientCreationErrors, normalizeContactInput, normalizeClientMarket, normalizeClientName, type ClientCreationContext, type ClientCreationRequest } from './client-creation.contract';
 import { assertClientMarket, resolveClientCreationContext } from './client-market-policy';
 
 @Injectable()
@@ -148,6 +148,7 @@ export class ClientsService {
     if (dto.business_unit_id !== undefined && dto.business_unit_id !== context.businessUnitId) throw new ForbiddenException('The staffing unit has changed. Reload the form.');
     const errors = clientCreationErrors(dto);
     if (Object.keys(errors).length) throw new BadRequestException(Object.values(errors)[0]);
+    if (dto.contact) dto = { ...dto, contact: normalizeContactInput(dto.contact) };
     this.validateActorId(dto.request_id);
     return this.prisma.$transaction(async tx => {
       // Stable request UUID handles retries; the name lock serializes duplicate checks.
@@ -279,7 +280,7 @@ export class ClientsService {
         coiReceived: dto.coi_received ?? false, vendorPortalCreated: dto.vendor_portal_created ?? false,
         status: initialStatus, approvalStatus, assignedApproverId, approvedBy, approvedAt,
         ...(dto.contact ? { clientContacts: { create: {
-          tenantId, createdBy, name: dto.contact.name.trim(), email: dto.contact.email.trim(),
+          tenantId, createdBy, name: dto.contact.name!, email: dto.contact.email!,
           designation: dto.contact.designation || null, phone: dto.contact.phone || null, isPrimary: true,
         } } } : {}),
       },

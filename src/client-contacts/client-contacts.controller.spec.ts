@@ -20,7 +20,7 @@ describe('contact HTTP route compatibility', () => {
         await request(app.getHttpServer()).get(`${prefix}/client/contacts`).expect(200);
       }
       expect(service.create).toHaveBeenCalledTimes(2);
-      expect(service.create).toHaveBeenCalledWith('client', 'tenant', 'database-user', { name: 'Contact' });
+      expect(service.create).toHaveBeenCalledWith('client', 'tenant', 'database-user', { name: 'Contact' }, expect.objectContaining({ tenantId: 'tenant', dbId: 'database-user' }));
       expect(service.findAllForClient).toHaveBeenCalledWith('client', 'tenant', 'database-user', expect.objectContaining({ tenantId: 'tenant', dbId: 'database-user' }));
     } finally { await app.close(); }
   });
@@ -36,7 +36,7 @@ describe('contact actor identity', () => {
     controller.list('client', req);
     controller.update('client', 'contact', dto, req);
     controller.remove('client', 'contact', req);
-    expect(service.create).toHaveBeenCalledWith('client', 'tenant', 'database-user', dto);
+    expect(service.create).toHaveBeenCalledWith('client', 'tenant', 'database-user', dto, req.user);
     expect(service.findAllForClient).toHaveBeenCalledWith('client', 'tenant', 'database-user', req.user);
     expect(service.update).toHaveBeenCalledWith('contact', 'tenant', 'database-user', dto, []);
     expect(service.remove).toHaveBeenCalledWith('contact', 'tenant', 'database-user', []);

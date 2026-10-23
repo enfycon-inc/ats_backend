@@ -1,4 +1,44 @@
 // Source of truth; sync the frontend copy with scripts/sync-client-creation-contract.cjs.
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
+export const POC_DESIGNATIONS = ['HR Executive', 'HR Manager', 'HR Head', 'Talent Acquisition Specialist', 'Talent Acquisition Manager', 'Hiring Manager', 'Procurement Manager', 'Vendor Manager', 'VMS Lead', 'Other'] as const;
+export interface ClientContactInput {
+  firstName?: string;
+  lastName?: string;
+  /** Legacy full names remain accepted; never split historical names automatically. */
+  name?: string;
+  designation?: string;
+  otherDesignation?: string;
+  email?: string;
+  phone?: string;
+}
+export function contactInputErrors(input: ClientContactInput, requireEmail = true): Record<string, string> {
+  const errors: Record<string, string> = {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { contact: 'Enter valid contact details.' };
+  for (const key of ['firstName', 'lastName', 'name', 'designation', 'otherDesignation', 'email', 'phone'] as const) {
+    if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key]!.length > (key === 'phone' ? 50 : 255))) errors[key] = 'Enter a valid contact value.';
+  }
+  if (Object.keys(errors).length) return errors;
+  const structured = input.firstName !== undefined || input.lastName !== undefined;
+  if (structured ? !input.firstName?.trim() : !input.name?.trim()) errors.firstName = 'Enter the contact’s first name.';
+  const name = structured ? [input.firstName?.trim(), input.lastName?.trim()].filter(Boolean).join(' ') : input.name?.trim() || '';
+  if (name.length > 255) errors.firstName = 'The full contact name must be at most 255 characters.';
+  if ((requireEmail || input.email?.trim()) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email?.trim() || '')) errors.email = 'Enter a valid work email.';
+  if (input.designation === 'Other' && !input.otherDesignation?.trim()) errors.otherDesignation = 'Specify the contact’s designation.';
+  if (input.phone?.trim()) {
+    const phone = input.phone.trim().startsWith('+') ? parsePhoneNumberFromString(input.phone.trim()) : undefined;
+    if (!phone?.isValid()) errors.phone = 'Enter a valid mobile number including its country code.';
+  }
+  return errors;
+}
+export function normalizeContactInput(input: ClientContactInput) {
+  const structured = input.firstName !== undefined || input.lastName !== undefined;
+  return {
+    name: structured ? [input.firstName?.trim(), input.lastName?.trim()].filter(Boolean).join(' ') : input.name?.trim() || '',
+    designation: (input.designation === 'Other' ? input.otherDesignation : input.designation)?.trim() || undefined,
+    email: input.email?.trim() || undefined,
+    phone: input.phone?.trim() ? parsePhoneNumberFromString(input.phone.trim())?.number : undefined,
+  };
+}
 export const CLIENT_CATEGORIES = ['Direct employer', 'Staffing vendor', 'Implementation partner', 'MSP'] as const;
 export type ClientMarket = 'INDIA' | 'US';
 export function normalizeClientName(name: string): string {
@@ -53,7 +93,7 @@ export interface ClientCreationRequest {
   credit_check_status?: string;
   fillability_score?: string;
   vetting_notes?: string;
-  contact?: { name: string; designation?: string; email: string; phone?: string };
+  contact?: ClientContactInput;
 }
 export interface CreatedClient {
   id: string;
@@ -85,7 +125,13 @@ export function clientCreationErrors(input: Partial<ClientCreationRequest>): Rec
   if (input.email_id && (!email.test(input.email_id) || input.email_id.length > 255)) errors.email_id = 'Enter a valid company email.';
   if (input.website && !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/i.test(input.website)) errors.website = 'Enter a website starting with https:// or http://.';
   if (input.commission_percentage !== undefined && (!Number.isFinite(input.commission_percentage) || input.commission_percentage < 0 || input.commission_percentage > 100)) errors.commission_percentage = 'Commission must be between 0 and 100.';
-  if (input.contact && (typeof input.contact !== 'object' || typeof input.contact.name !== 'string' || !input.contact.name.trim() || input.contact.name.length > 255 || typeof input.contact.email !== 'string' || !email.test(input.contact.email) || input.contact.email.length > 255 || (input.contact.phone !== undefined && (typeof input.contact.phone !== 'string' || input.contact.phone.length > 50)) || (input.contact.designation !== undefined && (typeof input.contact.designation !== 'string' || input.contact.designation.length > 255)))) errors.contact = 'Enter a contact name, valid work email, and phone of at most 50 characters.';
+  if (input.contact) {
+    const contactErrors = contactInputErrors(input.contact);
+    if (Object.keys(contactErrors).length) {
+      errors.contact = Object.values(contactErrors)[0];
+      for (const [key, message] of Object.entries(contactErrors)) errors[`contact.${key}`] = message;
+    }
+  }
   const choices = { tier_rating: ['TIER_1', 'TIER_2', 'TIER_3'], credit_check_status: ['PENDING_CHECK', 'APPROVED', 'HIGH_RISK'], fillability_score: ['HIGH', 'MEDIUM', 'LOW'] };
   for (const [key, options] of Object.entries(choices)) {
     const value = input[key as keyof typeof choices];

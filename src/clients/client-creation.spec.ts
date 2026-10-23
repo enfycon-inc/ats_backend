@@ -55,10 +55,10 @@ describe('shared client creation policy', () => {
   });
   it('derives ownership and approval and creates the primary contact in the same write', async () => {
     const { db, service } = setup();
-    const saved = await service.createClient({ ...request, status: 'Active', ownership: 'forged', contact: { name: 'Primary', email: 'primary@example.test' } } as any, tenantId, actor.dbId, actor);
+    const saved = await service.createClient({ ...request, status: 'Active', ownership: 'forged', contact: { firstName: 'Primary', lastName: 'Contact', email: 'primary@example.test', phone: '+91 98765 43210' } } as any, tenantId, actor.dbId, actor);
     expect(saved).toMatchObject({ market: 'INDIA', currency: 'INR', status: 'Pending Approval', approval_status: 'PENDING_APPROVAL' });
     expect(db.client.create.mock.calls[0][0].data).toMatchObject({ id: request.request_id, primaryOwner: actor.dbId, ownership: actor.dbId, businessUnit: 'India Staffing', branchId,
-      clientContacts: { create: { tenantId, createdBy: actor.dbId, name: 'Primary', email: 'primary@example.test', isPrimary: true } } });
+      clientContacts: { create: { tenantId, createdBy: actor.dbId, name: 'Primary Contact', email: 'primary@example.test', phone: '+919876543210', isPrimary: true } } });
     expect(db.$transaction).toHaveBeenCalledTimes(1);
   });
   it('does not grant direct approval from an inactive role bundle', async () => {

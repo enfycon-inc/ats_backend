@@ -1,8 +1,17 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateClientContactDto {
-  @ApiProperty({ example: 'Suresh Kumar', description: 'Full name of the contact' })
-  name: string;
+  @ApiPropertyOptional({ example: 'Suresh Kumar', description: 'Legacy full name; new forms submit firstName and lastName' })
+  name?: string;
+
+  @ApiPropertyOptional({ description: "Contact first name" })
+  firstName?: string;
+
+  @ApiPropertyOptional({ description: "Contact last name" })
+  lastName?: string;
+
+  @ApiPropertyOptional({ description: "Custom title when designation is Other" })
+  otherDesignation?: string;
 
   @ApiPropertyOptional({ example: 'HR Head', description: 'Designation / title at the client' })
   designation?: string;

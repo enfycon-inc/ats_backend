@@ -1,5 +1,6 @@
+import { contactInputErrors, normalizeContactInput } from '../clients/client-creation.contract';
 import { loadPocPolicy, protectPoc } from '../clients/poc-access';
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientContactDto } from './dtos/create-client-contact.dto';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -15,6 +16,10 @@ export class ClientContactsService {
     const client = await this.prisma.client.findFirst({ where: { ...access, id: clientId, deletedAt: null } });
     if (!client) throw new NotFoundException('Client not found.');
 
+    const errors = contactInputErrors(dto, dto.firstName !== undefined || dto.lastName !== undefined);
+    if (Object.keys(errors).length) throw new BadRequestException(Object.values(errors)[0]);
+    const contactInput = normalizeContactInput(dto);
+
     // If marking as primary, unset existing primary
     if (dto.isPrimary) {
       await this.prisma.clientContact.updateMany({
@@ -28,10 +33,10 @@ export class ClientContactsService {
         tenantId,
         clientId,
         createdBy: createdById,
-        name: dto.name,
-        designation: dto.designation || null,
-        email: dto.email || null,
-        phone: dto.phone || null,
+        name: contactInput.name,
+        designation: contactInput.designation || null,
+        email: contactInput.email || null,
+        phone: contactInput.phone || null,
         linkedinUrl: dto.linkedinUrl || null,
         isPrimary: dto.isPrimary ?? false,
         notes: dto.notes || null,
