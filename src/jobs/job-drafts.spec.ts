@@ -36,12 +36,13 @@ describe('job drafts', () => {
     prisma.$transaction = jest.fn(async (work: any) => work(prisma));
     const service = new JobsService(prisma, notifications);
     jest.spyOn(service, 'findOneJob').mockResolvedValue({ id: draftId, jobStatus: 'Draft', type: 'Contract' } as any);
-    await service.createJob({ draftId, jobCode: 'BBS-IND-001', branchId, businessUnitId: unitId, title: 'Java Developer', type: 'Contract', description: '', skillsRequired: [], payRate: 'INR - 50,000 to 60,000 /mo', clientBillRate: '' } as any, 'tenant', ownerId, branchId, actor, true);
+    await service.createJob({ draftId, jobCode: 'BBS-IND-001', branchId, businessUnitId: unitId, title: 'Java Developer', type: 'Contract', description: '<h2>Skills</h2><script>alert(1)</script>', skillsRequired: [], payRate: 'INR - 50,000 to 60,000 /mo', clientBillRate: '' } as any, 'tenant', ownerId, branchId, actor, true);
     expect(prisma.job.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: draftId }, update: {},
       create: expect.objectContaining({ id: draftId, status: 'Draft', jobType: 'Contract', payRateMin: 50000, payRateMax: 60000, payCurrency: 'INR', payTerm: 'Monthly', submissionRequired: 1, market: 'IND', accountManagerId: ownerId, createdByUserId: ownerId }),
     }));
     expect(prisma.client.create).not.toHaveBeenCalled();
+    expect(prisma.job.upsert.mock.calls[0][0].create.jobDescription).toBe('<h2>Skills</h2>');
     expect(notifications.create).not.toHaveBeenCalled();
     expect(notifications.createMany).not.toHaveBeenCalled();
   });
@@ -53,10 +54,10 @@ describe('job drafts', () => {
       jobPod: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new JobsService(prisma, {} as any);
-    await expect(service.updateJob(draftId, { status: 'Draft', type: 'Contract', payRate: 'INR - 50000 to 60000 /mo' }, 'tenant', actor, 'draft')).rejects.toThrow('draft changed');
+    await expect(service.updateJob(draftId, { status: 'Draft', type: 'Contract', description: '<p onclick="alert(1)">Updated</p>', payRate: 'INR - 50000 to 60000 /mo' }, 'tenant', actor, 'draft')).rejects.toThrow('draft changed');
     expect(prisma.job.updateMany).toHaveBeenCalledWith({
       where: { id: draftId, tenantId: 'tenant', status: 'Draft', updatedAt: existing.updatedAt },
-      data: expect.objectContaining({ status: 'Draft', jobType: 'Contract', payRateMin: 50000, payRateMax: 60000 }),
+      data: expect.objectContaining({ status: 'Draft', jobType: 'Contract', jobDescription: '<p>Updated</p>', payRateMin: 50000, payRateMax: 60000 }),
     });
   });
   it('saves an incomplete contract without publishing or creating a placeholder client', async () => {

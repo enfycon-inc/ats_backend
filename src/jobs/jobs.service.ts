@@ -1,4 +1,6 @@
 import { validateJobDates } from './job-dates';
+import { sanitizeJobDescription } from './job-description-html';
+import { normalizeJobTitle, stripJobTitleMarkdown } from './job-description-policy';
 import { assertUnitJobScope, managesCurrentUnit } from './unit-job-scope';
 import { usesAutomaticPods } from '../business-units/pod-strategy';
 import { allocateAutomaticPod } from './automatic-pod';
@@ -1089,7 +1091,7 @@ export class JobsService {
           jobCode,
           jobTitle: dto.title,
           jobType: dto.type,
-          jobDescription: dto.description,
+          jobDescription: sanitizeJobDescription(dto.description || ''),
           skillsRequired: dto.skillsRequired || [],
           secondarySkills: dto.secondarySkills || [],
           status: initialJobStatus,
@@ -2303,7 +2305,7 @@ export class JobsService {
     if (mode && dto.businessUnitId !== undefined) dataToUpdate.businessUnitId = dto.businessUnitId;
     if (dto.title !== undefined) dataToUpdate.jobTitle = dto.title;
     if (dto.type !== undefined) dataToUpdate.jobType = dto.type;
-    if (dto.description !== undefined) dataToUpdate.jobDescription = dto.description;
+    if (dto.description !== undefined) dataToUpdate.jobDescription = sanitizeJobDescription(dto.description);
     if (dto.skillsRequired !== undefined) dataToUpdate.skillsRequired = dto.skillsRequired;
     if (dto.secondarySkills !== undefined) dataToUpdate.secondarySkills = dto.secondarySkills;
     if (dto.status !== undefined) dataToUpdate.status = dto.status;
@@ -2687,7 +2689,7 @@ export class JobsService {
 
       return {
         ...fastApiResult,
-        jobTitle: (fastApiResult.jobTitle && fastApiResult.jobTitle !== 'Unknown') ? fastApiResult.jobTitle : fallback.jobTitle,
+        jobTitle: normalizeJobTitle(fastApiResult.jobTitle) || fallback.jobTitle,
         experienceMin: fastApiResult.experienceMin ?? fallback.experienceMin,
         experienceMax: fastApiResult.experienceMax ?? fallback.experienceMax,
         payRate: fastApiResult.payRate || fastApiResult.ctc || fastApiResult.salary || fallback.payRate,
@@ -2708,21 +2710,21 @@ export class JobsService {
     let jobTitle = '';
     let foundExplicitTitle = false;
     for (const line of lines) {
-      const cleanHeading = line.replace(/^[#\*\-\s]+/, '').trim();
+      const cleanHeading = stripJobTitleMarkdown(line);
       const match = cleanHeading.match(/^(?:role|job title|position|title)\s*:\s*(.+)/i);
       if (match && match[1].trim()) {
-        jobTitle = match[1].replace(/[\*\#]/g, '').trim();
+        jobTitle = normalizeJobTitle(match[1]);
         foundExplicitTitle = true;
         break;
       }
     }
     if (!foundExplicitTitle) {
       for (const line of lines.slice(0, 5)) {
-        const cleanLine = line.replace(/^[#\*\-\s]+/, '').replace(/\s*\([\d–—\-]+\s*years?(\s*experience)?\)/gi, '').trim();
+        const cleanLine = stripJobTitleMarkdown(line).replace(/\s*\([\d–—\-]+\s*years?(\s*experience)?\)/gi, '').trim();
         if (cleanLine.toLowerCase().startsWith('job summary') || cleanLine.toLowerCase().startsWith('location:')) continue;
         const roleKeywords = ['developer', 'engineer', 'architect', 'manager', 'consultant', 'administrator', 'specialist', 'analyst', 'lead', 'designer', 'tester'];
         if (cleanLine.split(/\s+/).length < 8 && roleKeywords.some((kw) => cleanLine.toLowerCase().includes(kw))) {
-          jobTitle = cleanLine.replace(/[\*\#]/g, '').trim();
+          jobTitle = normalizeJobTitle(cleanLine);
           break;
         }
       }

@@ -10,6 +10,15 @@ describe('JD title parsing', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
+  it.each([false, true])('normalizes Markdown title labels and preserves C# when parser success is %s', async success => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: success,
+      json: async () => ({ success: true, jobTitle: '# **Job Title:** C# / .NET Developer' }),
+    } as Response);
+    const result = await service.parseJobDescription('# **Job Title:** C# / .NET Developer\n\nBuild APIs.');
+    expect(result.jobTitle).toBe('C# / .NET Developer');
+  });
+
   it.each([false, true])('leaves an unidentified title blank when parser success is %s', async success => {
     jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: success,
