@@ -25,9 +25,19 @@ export interface JobPodOption {
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Pod Leads are restricted to their own pod. Job creators use their own-job scope instead. */
+export function isPodScopedRecruiterAssigner(actor: Pick<AuthUser, 'permissions'>): boolean {
+  const permissions = actor.permissions || [];
+  return permissions.includes('job:assign_recruiter') &&
+    !permissions.some(permission => [
+      'job:override_assignment', 'tenant:manage', 'tenant:settings', 'platform:manage',
+      'branch_admin:manage', 'job:create',
+    ].includes(permission));
+}
+
 export async function resolveJobStaffingScope(prisma: PrismaService, actor: AuthUser, tenantId: string,
   requestedBranch?: string, requestedUnit?: string, permission = 'job:assign_recruiter', jobId?: string) {
-  const podLeadAccess = permission === 'job:assign_recruiter' && actor.permissions?.includes(permission) === true && !actor.permissions.some(p => ['job:override_assignment', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'job:create'].includes(p));
+  const podLeadAccess = permission === 'job:assign_recruiter' && isPodScopedRecruiterAssigner(actor);
 
   if (!actor.permissions?.includes(permission)) {
     throw new ForbiddenException(permission === 'job:assign_recruiter' ? 'Recruiter assignment permission is required.' : 'Pod assignment permission is required.');

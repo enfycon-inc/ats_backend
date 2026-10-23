@@ -15,7 +15,7 @@ import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { delegationTargets } from '../business-units/business-units.service';
-import { listJobStaff, listJobPods, validateJobRecruiters } from './job-staffing';
+import { listJobStaff, listJobPods, validateJobRecruiters, isPodScopedRecruiterAssigner } from './job-staffing';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere } from '../clients/client-visibility';
 import { resolveActiveRole } from '../auth/utils/active-role';
@@ -2063,6 +2063,9 @@ export class JobsService {
     if (!currentJob) {
       throw new NotFoundException(`Job not found.`);
     }
+    if ((dto.podId !== undefined || dto.podIds !== undefined) && !user.permissions?.includes('job:assign_pod')) {
+      throw new ForbiddenException('You do not have permission to assign pods.');
+    }
     const assignmentChanged = dto.recruiterIds !== undefined || dto.recruiterId !== undefined || dto.podId !== undefined || dto.podIds !== undefined;
     if (assignmentChanged && user.permissions?.includes('job:override_assignment')) {
       if (!user.branchId || !user.businessUnitId || currentJob.branchId !== user.branchId || currentJob.businessUnitId !== user.businessUnitId || (dto.branchId !== undefined && dto.branchId !== user.branchId) || (dto.businessUnitId !== undefined && dto.businessUnitId !== user.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
@@ -2137,7 +2140,7 @@ export class JobsService {
     const _hasEditPerm = _userPermissions.includes('job:edit');
     const _isOwner = currentJob.accountManagerId === user?.dbId || currentJob.accountManagerId === user?.id || 
                      currentJob.recruitmentManagerId === user?.dbId || currentJob.recruitmentManagerId === user?.id;
-    const isScopedPodLead = user.permissions?.includes('job:assign_recruiter') && !user.permissions?.some((p: string) => ['job:override_assignment', 'tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage'].includes(p));
+    const isScopedPodLead = isPodScopedRecruiterAssigner(user);
 
     const assignmentOnlyFields = new Set(['recruiterId', 'recruiterIds', 'recruiter', 'assignedTo']);
     const isPodLeadAssignmentOnly = isScopedPodLead &&

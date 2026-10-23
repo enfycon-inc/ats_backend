@@ -153,7 +153,7 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
     const service = new JobsService(prisma, {} as any);
     await expect(service.updateJob(other, { recruiterIds: [recruiter, other] }, tenant,
-      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('mapped to your pod');
+      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('eligible');
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
@@ -162,7 +162,7 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
     const service = new JobsService(prisma, { create: jest.fn(), createMany: jest.fn() } as any);
     await expect(service.updateJob(other, { recruiterIds: [recruiter] }, tenant,
-      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('mapped to your pod');
+      { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('own created jobs');
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
