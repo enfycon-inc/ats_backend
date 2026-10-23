@@ -23,7 +23,7 @@ UPDATE ats.system_roles SET permissions = COALESCE(permissions, '[]'::jsonb) - A
 
 UPDATE ats.system_roles SET permissions = (
   SELECT jsonb_agg(DISTINCT permission) FROM jsonb_array_elements_text(
-    COALESCE(permissions, '[]'::jsonb) || '["submission:view","submission:schedule_interview","submission:audit_rounds","submission:audit_l1","submission:audit_l2","submission:audit_l3","submission:final_status","submission:edit"]'::jsonb
+    COALESCE(permissions, '[]'::jsonb) || '["submission:download_resume","submission:view","submission:schedule_interview","submission:audit_rounds","submission:audit_l1","submission:audit_l2","submission:audit_l3","submission:final_status","submission:edit"]'::jsonb
   ) AS item(permission)
 ) WHERE system_key = 'ACCOUNT_MANAGER';
 
@@ -35,7 +35,7 @@ WITH RECURSIVE account_manager_roles(id) AS (
 )
 UPDATE ats.custom_roles cr SET permissions = (
   SELECT jsonb_agg(DISTINCT permission) FROM jsonb_array_elements_text(
-    COALESCE(cr.permissions, '[]'::jsonb) || '["submission:view","submission:schedule_interview","submission:audit_rounds","submission:audit_l1","submission:audit_l2","submission:audit_l3","submission:final_status","submission:edit"]'::jsonb
+    COALESCE(cr.permissions, '[]'::jsonb) || '["submission:download_resume","submission:view","submission:schedule_interview","submission:audit_rounds","submission:audit_l1","submission:audit_l2","submission:audit_l3","submission:final_status","submission:edit"]'::jsonb
   ) AS item(permission)
 ) FROM account_manager_roles am WHERE cr.id = am.id
 AND NOT EXISTS (SELECT 1 FROM ats.system_roles sr WHERE sr.id = cr.system_role_id AND sr.system_key = 'RECRUITER');

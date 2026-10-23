@@ -151,7 +151,7 @@ describe('submission tracker API', () => {
     expect(countSql).toContain('s.tenant_id = $1');
     // The history projection may limit its latest event; record counts must not use page limits.
     expect(countSql).not.toMatch(/LIMIT\s+\$\d+/);
-    expect(countParams).toEqual(['tenant-id', '%Name\\%%']);
+    expect(countParams).toEqual(['tenant-id', 'user-id', '%Name\\%%']);
     const [retrieveSql, ...retrieveParams] = prisma.$queryRawUnsafe.mock.calls[1];
     expect(retrieveSql).toContain("AND s.final_status IN ('SELECTED', 'OFFER')");
     expect(retrieveParams.slice(-2)).toEqual([10, 10]);

@@ -1,6 +1,6 @@
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
-  return [...new Set([...permissions, ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional'] : [])])];
+  return [...new Set([...permissions, ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional'] : [])])];
 }
 import {
   Injectable,
@@ -815,6 +815,7 @@ export class AuthRbacService {
       { id: 'candidate:view', name: 'View Candidates & Resume Bank', group: 'Candidates Management' },
       { id: 'candidate:download_resume', name: 'Download Original Resume', group: 'Candidates Management' },
       { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Sourcing' },
+      { id: 'submission:download_resume', name: 'Download Resume from Approved Submissions', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:view_all', name: 'View Submissions for All Account Manager Jobs', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:edit_all', name: 'Edit Status on Other Account Manager Jobs (requires all-submission access)', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Sourcing' },

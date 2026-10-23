@@ -57,6 +57,7 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  resume?: { available: boolean; filename: string | null; canDownload: boolean };
   statusRecordedDates?: Partial<Record<'finalStatus' | 'l1Status' | 'l2Status' | 'l3Status', string>>;
   currentCompensationAmount?: string | null;
   expectedCompensationAmount?: string | null;

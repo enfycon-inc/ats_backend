@@ -14,7 +14,9 @@ import {
   HttpCode,
   UseGuards,
   ForbiddenException,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth } from '@nestjs/swagger';
 import { RecruiterSubmissionsService, SubmissionDetails } from './recruiter-submissions.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
@@ -220,6 +222,23 @@ export class RecruiterSubmissionsController {
   ) {
     const tid = resolveTenantId(user, tenantId);
     return this.service.deleteCustomRemark(tid, id, user);
+  }
+
+  @Get(':id/resume')
+  @ApiOperation({ summary: 'Download the original resume for an approved, visible submission' })
+  async resume(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Res() response: Response,
+    @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchId?: string,
+  ): Promise<void> {
+    const file = await this.service.resume(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchId));
+    response.setHeader('Cache-Control', 'private, no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.attachment(file.filename.replace(/[\r\n\\/]/g, '_'));
+    response.setHeader('Content-Type', file.mime);
+    response.send(file.data);
   }
 
   @Get(':id/history')
