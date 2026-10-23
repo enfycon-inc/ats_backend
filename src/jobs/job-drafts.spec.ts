@@ -47,18 +47,29 @@ describe('job drafts', () => {
     expect(notifications.createMany).not.toHaveBeenCalled();
   });
 
-  it('updates a draft atomically and rejects a concurrent publication', async () => {
+  it.each([
+    [{ workMode: 'In Office' }, 'In Office'],
+    [{ workMode: 'Remote' }, 'Remote'],
+    [{ workMode: 'Hybrid' }, 'Hybrid'],
+    [{ remoteJob: 'No' }, 'In Office'],
+    [{ remoteJob: 'Yes' }, 'Remote'],
+    [{ workMode: 'Hybrid', remoteJob: 'No' }, 'Hybrid'],
+    [{}, undefined],
+  ])('updates a draft work mode from %j atomically and rejects a concurrent publication', async (fields, expectedMode) => {
     const existing = { ...draft, market: 'IND', updatedAt: new Date('2026-10-11T00:00:00Z') };
     const prisma: any = {
       job: { findFirst: jest.fn().mockResolvedValue(existing), updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
       jobPod: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const service = new JobsService(prisma, {} as any);
-    await expect(service.updateJob(draftId, { status: 'Draft', type: 'Contract', description: '<p onclick="alert(1)">Updated</p>', payRate: 'INR - 50000 to 60000 /mo' }, 'tenant', actor, 'draft')).rejects.toThrow('draft changed');
+    await expect(service.updateJob(draftId, { ...fields, status: 'Draft', type: 'Contract', description: '<p onclick="alert(1)">Updated</p>', payRate: 'INR - 50000 to 60000 /mo' }, 'tenant', actor, 'draft')).rejects.toThrow('draft changed');
     expect(prisma.job.updateMany).toHaveBeenCalledWith({
       where: { id: draftId, tenantId: 'tenant', status: 'Draft', updatedAt: existing.updatedAt },
       data: expect.objectContaining({ status: 'Draft', jobType: 'Contract', jobDescription: '<p>Updated</p>', payRateMin: 50000, payRateMax: 60000 }),
     });
+    const written = prisma.job.updateMany.mock.calls[0][0].data;
+    if (expectedMode) expect(written.workMode).toBe(expectedMode);
+    else expect(written).not.toHaveProperty('workMode');
   });
   it('saves an incomplete contract without publishing or creating a placeholder client', async () => {
     const { service, create, prisma } = setup();

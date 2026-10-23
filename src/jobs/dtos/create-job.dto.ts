@@ -88,6 +88,9 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 'Hybrid', enum: ['In Office', 'Remote', 'Hybrid'], description: 'Work Mode' })
   workMode?: string;
 
+  @ApiPropertyOptional({ description: 'Legacy workMode alias; use workMode for new requests' })
+  remoteJob?: string;
+
   @ApiPropertyOptional({ example: '2026-06-01', description: 'Job start date (YYYY-MM-DD)' })
   startDate?: string;
 

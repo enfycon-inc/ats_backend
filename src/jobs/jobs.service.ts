@@ -1,4 +1,5 @@
 import { validateJobDates } from './job-dates';
+import { normalizeJobWorkMode } from './job-work-mode';
 import { sanitizeJobDescription } from './job-description-html';
 import { normalizeJobTitle, stripJobTitleMarkdown } from './job-description-policy';
 import { assertUnitJobScope, managesCurrentUnit } from './unit-job-scope';
@@ -793,6 +794,9 @@ export class JobsService {
   }
 
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser, draft = false): Promise<JobProfile> {
+    const requestedWorkMode = dto.workMode ?? dto.remoteJob;
+    const workMode = requestedWorkMode === undefined ? 'In Office' : normalizeJobWorkMode(requestedWorkMode);
+    if (!workMode) throw new BadRequestException('Select In Office, Remote, or Hybrid as the work mode.');
     validateJobDates(dto.startDate, dto.endDate);
     positiveInteger(dto.submissionRequired, 'Maximum allowed submissions');
     positiveInteger(dto.noOfPositions, 'Number of positions');
@@ -1109,7 +1113,7 @@ export class JobsService {
           submissionRequired: dto.submissionRequired ?? 1,
           submissionDone: 0,
           urgency: dto.priority || 'Medium',
-          workMode: dto.workMode || (dto as any).remoteJob || 'In Office',
+          workMode,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
           hoursPerWeek: dto.hoursPerWeek || 40,
@@ -2330,7 +2334,11 @@ export class JobsService {
     if (dto.noOfPositions !== undefined) dataToUpdate.noOfPositions = dto.noOfPositions;
     if (dto.submissionRequired !== undefined) dataToUpdate.submissionRequired = dto.submissionRequired;
     if (dto.priority !== undefined) dataToUpdate.urgency = dto.priority;
-    if (dto.remoteJob !== undefined) dataToUpdate.workMode = dto.remoteJob;
+    if (dto.workMode !== undefined || dto.remoteJob !== undefined) {
+      const workMode = normalizeJobWorkMode(dto.workMode ?? dto.remoteJob);
+      if (!workMode) throw new BadRequestException('Select In Office, Remote, or Hybrid as the work mode.');
+      dataToUpdate.workMode = workMode;
+    }
     if (dto.startDate !== undefined) dataToUpdate.startDate = dto.startDate ? new Date(dto.startDate) : null;
     if (dto.endDate !== undefined) dataToUpdate.endDate = dto.endDate ? new Date(dto.endDate) : null;
     if (dto.hoursPerWeek !== undefined) dataToUpdate.hoursPerWeek = dto.hoursPerWeek;

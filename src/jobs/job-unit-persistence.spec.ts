@@ -34,6 +34,18 @@ describe('job operating unit persistence and reviewer routing', () => {
     await expect(service.createJob(dto, id)).rejects.toMatchObject({ status: 400 });
     expect(prisma.job.create).not.toHaveBeenCalled();
   });
+  it.each([
+    [{ workMode: 'In Office' }, 'In Office'],
+    [{ workMode: 'Remote' }, 'Remote'],
+    [{ workMode: 'Hybrid' }, 'Hybrid'],
+    [{ remoteJob: 'No' }, 'In Office'],
+    [{ remoteJob: 'Yes' }, 'Remote'],
+    [{ workMode: 'In Office', remoteJob: 'Yes' }, 'In Office'],
+  ])('persists work mode from %j as %s', async (fields, expected) => {
+    const { service, prisma, dto } = setup();
+    await service.createJob({ ...dto, ...fields }, id, 'creator@example.com');
+    expect(prisma.job.create.mock.calls[0][0].data.workMode).toBe(expected);
+  });
   it('rejects an empty assignment when the unit disallows assign later', async () => {
     const { service, prisma, dto } = setup();
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowUnassigned: false });
