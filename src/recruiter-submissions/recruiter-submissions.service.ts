@@ -148,7 +148,11 @@ export class RecruiterSubmissionsService {
       where.push(`s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1::uuid AND pod_id = (SELECT pod_id FROM ats.users WHERE id = ${userParam}::uuid AND tenant_id = $1::uuid))`);
     } else if (!canViewAll) {
       const userParam = addParam(user.dbId);
-      where.push(`(s.recruiter_id = ${userParam}::uuid OR r.job_reviewer_id = ${userParam}::uuid)`);
+      const reviewerBranchId = filters.branchId || user.branchId;
+      const websiteQueue = user.permissions?.includes('submission:internal_screening') && reviewerBranchId
+        ? ` OR (s.recruiter_id = 'WEBSITE_APPLICANT' AND s.final_status = 'PENDING_APPROVAL' AND j.branch_id = ${addParam(reviewerBranchId)}::uuid${user.businessUnitId ? ` AND j.business_unit_id = ${addParam(user.businessUnitId)}::uuid` : ''})`
+        : '';
+      where.push(`(s.recruiter_id = ${userParam}::uuid OR r.job_reviewer_id = ${userParam}::uuid${websiteQueue})`);
     }
     if (filters.branchId && !unitAdmin && !branchAdmin) {
       const branchParam = addParam(filters.branchId.trim());
@@ -267,7 +271,7 @@ export class RecruiterSubmissionsService {
       jobId: row.job_id,
       jobCode: row.job_code,
       jobTitle: row.job_title,
-      recruiterName: row.recruiter_name,
+      recruiterName: row.recruiter_name || (row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
       interviewer: row.interviewer,
       meetingLink: row.meeting_link,
       timezone: row.job_timezone,
@@ -1673,7 +1677,7 @@ export class RecruiterSubmissionsService {
       jobTitle: row.job_title || row.jobTitle,
       clientName: row.client_name || row.client?.clientName,
       endClientName: row.end_client_name || row.end_client?.clientName,
-      recruiterName: row.recruiter_name || row.recruiterName,
+      recruiterName: row.recruiter_name || row.recruiterName || (row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
       recruiterEmail: row.recruiter_email || row.recruiterEmail || null,
       podHeadName: row.pod_head_name || row.podHeadName,
       accountManagerName: row.am_name || row.accountManagerName,

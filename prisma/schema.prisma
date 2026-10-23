@@ -29,6 +29,7 @@ model SessionRevocation {
 }
 
 model Tenant {
+  publicApiKeys PublicJobsApiKey[]
   developerGrants DeveloperLoginGrant[]
   developerSessions DeveloperLoginSession[]
   roleRequestDeliveries RoleRequestDelivery[]
@@ -227,6 +228,7 @@ model Branch {
   userInvitations            UserInvitation[]
   users                      User[]
   managers                   User[]                 @relation("BranchManagers")
+  publicJobsApiKeys          PublicJobsApiKey[]
 
   @@unique([tenantId, name])
   @@map("branches")
@@ -268,6 +270,7 @@ model BusinessUnit {
   incomingDelegationRequests JobDelegationRequest[] @relation("DelegationTargetUnit")
   pods                       Pod[]
   users                      User[]
+  publicJobsApiKeys          PublicJobsApiKey[]
   admins                     User[]                 @relation("BusinessUnitAdmins")
 
   @@unique([tenantId, branchId, name])
@@ -733,6 +736,9 @@ model Job {
   rejectionReason      String?                @map("rejection_reason")
   jobTimezone          String?                @map("job_timezone") @db.VarChar(100)
         shiftTiming          String?                @map("shift_timing") @db.VarChar(100)
+  publicSlug           String?                @unique @map("public_slug") @db.VarChar(180)
+  publicDescription    String?                @map("public_description")
+  isPubliclyPublished  Boolean                @default(false) @map("is_publicly_published")
     deletedAt            DateTime?              @map("deleted_at") @db.Timestamptz(6)
   createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime               @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -756,6 +762,29 @@ model Job {
   endClientPoc         ClientContact?        @relation("JobEndClientPoc", fields: [endClientPocId], references: [id])
 @@map("jobs")
   @@index([tenantId, createdByUserId], map: "jobs_tenant_created_by_user_idx")
+  @@schema("ats")
+}
+
+model PublicJobsApiKey {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String       @map("tenant_id") @db.Uuid
+  name           String       @db.VarChar(120)
+  keyPrefix      String       @map("key_prefix") @db.VarChar(24)
+  keyHash        String       @unique @map("key_hash") @db.VarChar(64)
+  scope          String       @db.VarChar(20)
+  branchId       String?      @map("branch_id") @db.Uuid
+  businessUnitId String?      @map("business_unit_id") @db.Uuid
+  allowedOrigins String[]     @default([]) @map("allowed_origins")
+  expiresAt      DateTime     @map("expires_at") @db.Timestamptz(6)
+  revokedAt      DateTime?    @map("revoked_at") @db.Timestamptz(6)
+  createdBy      String       @map("created_by") @db.Uuid
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch         Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, revokedAt, expiresAt])
+  @@map("public_jobs_api_keys")
   @@schema("ats")
 }
 

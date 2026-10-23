@@ -21,6 +21,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { DiceModule } from './integrations/dice/dice.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { MarketSegmentsModule } from './market-segments/market-segments.module';
+import { PublicJobsModule } from './public-jobs/public-jobs.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { MarketSegmentsModule } from './market-segments/market-segments.module';
     BranchesModule,
     BusinessUnitsModule,
     MarketSegmentsModule,
+    PublicJobsModule,
     DiceModule,
   ],
   controllers: [AppController],
