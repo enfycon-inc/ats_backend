@@ -1,3 +1,7 @@
+-- ATS: rollback-compatible
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE ats.jobs
   ADD COLUMN IF NOT EXISTS public_slug varchar(180),
   ADD COLUMN IF NOT EXISTS public_description text,
@@ -35,3 +39,5 @@ CREATE TABLE IF NOT EXISTS ats.public_jobs_api_keys (
 
 CREATE INDEX IF NOT EXISTS public_jobs_api_keys_tenant_lifecycle_idx
   ON ats.public_jobs_api_keys(tenant_id, revoked_at, expires_at);
+
+COMMIT;
