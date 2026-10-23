@@ -1,9 +1,10 @@
-import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException, HttpCode, HttpStatus } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException, HttpCode, HttpStatus, Header } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PublicJobsService } from './public-jobs.service';
+import { CareerOauthService } from './career-oauth.service';
 import { PublicJobsKeyGuard } from './public-jobs-key.guard';
 
 @ApiTags('Public Career Site API Key Management')
@@ -63,4 +64,22 @@ export class JobPublicationController {
     if (typeof body?.published !== 'boolean') throw new BadRequestException('published must be true or false.');
     return this.service.setPublished(user, id, body.published, body.publicDescription);
   }
+}
+
+@Controller('api/developer/clients')
+@UseGuards(JwtAuthGuard)
+export class CareerOauthClientController {
+ constructor(private readonly oauth: CareerOauthService) {}
+ @Post() create(@CurrentUser() user: any, @Body() body: any) { return this.oauth.create(user, body); }
+ @Get() list(@CurrentUser() user: any) { return this.oauth.list(user); }
+ @Delete(':id') revoke(@CurrentUser() user: any, @Param('id', ParseUUIDPipe) id: string) { return this.oauth.revoke(user, id); }
+}
+@Controller('api/oauth')
+export class CareerOauthTokenController {
+ constructor(private readonly oauth: CareerOauthService) {}
+ @Post('token')
+ @HttpCode(200)
+ @Header('Cache-Control', 'no-store')
+ @Header('Pragma', 'no-cache')
+ token(@Headers('authorization') authorization: string, @Body() body: any) { return this.oauth.token(authorization, body); }
 }
