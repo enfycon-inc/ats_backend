@@ -781,8 +781,8 @@ model PublicJobsApiKey {
   createdBy      String       @map("created_by") @db.Uuid
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  branch         Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  branch         Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "public_jobs_api_keys_branch_fk")
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "public_jobs_api_keys_business_unit_fk")
   createdByUser  User         @relation("PublicJobsApiKeyCreator", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([tenantId, revokedAt, expiresAt], map: "public_jobs_api_keys_tenant_lifecycle_idx")
