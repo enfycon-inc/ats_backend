@@ -422,6 +422,7 @@ model User {
   @@unique([tenantId, keycloakId])
     createdContacts      ClientContact[]       @relation("ContactCreator")
   jobsCreated          Job[]                 @relation("JobCreator")
+  createdPublicJobsApiKeys PublicJobsApiKey[] @relation("PublicJobsApiKeyCreator")
   jobCreationGrantsOwned JobCreationGrant[]   @relation("JobCreationGrantOwner")
   jobCreationGrantsReceived JobCreationGrant[] @relation("JobCreationGrantDelegate")
   jobCreationGrantsIssued JobCreationGrant[] @relation("JobCreationGrantIssuer")
@@ -779,11 +780,12 @@ model PublicJobsApiKey {
   revokedAt      DateTime?    @map("revoked_at") @db.Timestamptz(6)
   createdBy      String       @map("created_by") @db.Uuid
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  branch         Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  branch         Branch?      @relation(fields: [branchId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  businessUnit   BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  createdByUser  User         @relation("PublicJobsApiKeyCreator", fields: [createdBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@index([tenantId, revokedAt, expiresAt])
+  @@index([tenantId, revokedAt, expiresAt], map: "public_jobs_api_keys_tenant_lifecycle_idx")
   @@map("public_jobs_api_keys")
   @@schema("ats")
 }
