@@ -25,11 +25,19 @@ import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { resolveTenantId } from '../auth/utils/tenant-resolver';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import type { ClientCreationRequest } from './client-creation.contract';
 
 @ApiTags('Clients')
 @Controller('api/clients')
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
+
+  @Get('creation-context')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  creationContext(@CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId?: string, @Headers('x-branch-id') branchId?: string) {
+    return this.clientsService.getCreationContext(resolveTenantId(user, tenantId), user, branchId);
+  }
 
   @Get('visibility-policy')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -53,12 +61,12 @@ export class ClientsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create new client' })
   async create(
-    @Body() dto: any,
+    @Body() dto: ClientCreationRequest,
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
   ) {
     const tid = resolveTenantId(user, tenantId);
-    return this.clientsService.createClient(dto, tid, user?.dbId);
+    return this.clientsService.createClient(dto, tid, user?.dbId, user);
   }
 
   @Get()

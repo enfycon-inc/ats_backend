@@ -3,6 +3,8 @@ import { Injectable, Logger, NotFoundException, ForbiddenException, BadRequestEx
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere, clientJobReadWhere } from './client-visibility';
+import { clientCreationErrors, normalizeClientMarket, normalizeClientName, type ClientCreationContext, type ClientCreationRequest } from './client-creation.contract';
+import { assertClientMarket, resolveClientCreationContext } from './client-market-policy';
 
 @Injectable()
 export class ClientsService {
@@ -133,28 +135,47 @@ export class ClientsService {
     };
   }
 
-  async createClient(dto: any, tenantId: string, createdBy: string) {
+  getCreationContext(tenantId: string, actor: AuthUser, branchId?: string) {
+    return resolveClientCreationContext(this.prisma, tenantId, actor, branchId);
+  }
+
+  async createClient(dto: ClientCreationRequest, tenantId: string, createdBy: string, actor: AuthUser) {
+    this.validateActorId(createdBy);
+    if (createdBy !== actor.dbId) throw new ForbiddenException('Client ownership must match the authenticated user.');
+    if (!dto || typeof dto !== 'object' || Array.isArray(dto)) throw new BadRequestException('Enter valid client details.');
+    const context = await this.getCreationContext(tenantId, actor, dto.branch_id);
+    assertClientMarket(dto, context);
+    if (dto.business_unit_id !== undefined && dto.business_unit_id !== context.businessUnitId) throw new ForbiddenException('The staffing unit has changed. Reload the form.');
+    const errors = clientCreationErrors(dto);
+    if (Object.keys(errors).length) throw new BadRequestException(Object.values(errors)[0]);
+    this.validateActorId(dto.request_id);
+    return this.prisma.$transaction(async tx => {
+      // Stable request UUID handles retries; the name lock serializes duplicate checks.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':' + dto.request_id}, 0))`;
+      const service = new ClientsService(tx as unknown as PrismaService);
+      const saved = await tx.client.findFirst({ where: { id: dto.request_id, tenantId, createdBy, deletedAt: null } });
+      if (saved) {
+        if (saved.clientName !== dto.client_name.trim()) throw new ConflictException('This request has already created another client.');
+        return service.formatClient(saved);
+      }
+      const nameKey = normalizeClientName(dto.client_name);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId + ':client:' + nameKey}, 0))`;
+      return service.createClientRecord({ ...dto, client_name: dto.client_name.trim() }, tenantId, createdBy, context);
+    });
+  }
+
+  private async createClientRecord(dto: ClientCreationRequest, tenantId: string, createdBy: string, context: ClientCreationContext) {
     this.logger.log(`Creating client for tenant ${tenantId}`);
     this.validateActorId(createdBy);
     const creator = await this.prisma.user.findFirst({
       where: { id: createdBy, tenantId },
-      select: { id: true, jobReviewerId: true, roleId: true, assignedRoleIds: true },
+      select: { id: true, jobReviewerId: true },
     });
     if (!creator) throw new ForbiddenException('The authenticated user does not belong to this workspace.');
 
     // --- Duplicate Client Name Check (Fuzzy Matching) ---
     if (dto.client_name) {
-      const normalizeName = (name: string) => {
-        if (!name) return "";
-        return name
-          .toLowerCase()
-          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") // remove punctuation
-          .replace(/\b(inc|llc|corp|corporation|ltd|limited|co|company|pvt|private)\b/g, "") // remove legal suffixes
-          .replace(/\s+/g, "") // remove all spaces for strict similarity (e.g. "Google Inc" -> "google")
-          .trim();
-      };
-
-      const normalizedInput = normalizeName(dto.client_name);
+      const normalizedInput = normalizeClientName(dto.client_name);
 
       const existingClients = await this.prisma.client.findMany({
         where: { tenantId, deletedAt: null },
@@ -162,11 +183,11 @@ export class ClientsService {
       });
 
       const duplicate = existingClients.find(
-        (c) => normalizeName(c.clientName) === normalizedInput
+        (c) => normalizeClientName(c.clientName) === normalizedInput
       );
 
       if (duplicate) {
-        throw new ConflictException(`A similar client "${duplicate.clientName}" already exists in the system.`);
+        throw new ConflictException('A similar client already exists in this workspace. Select the existing account or contact your account manager.');
       }
     }
     // --------------------------------------------------
@@ -177,8 +198,8 @@ export class ClientsService {
       select: { prefixCode: true, name: true, domain: true },
     });
 
-    let clientCode = dto.client_code;
-    if (!clientCode) {
+    let clientCode: string;
+    {
       let prefix = tenant?.prefixCode;
       if (!prefix) {
         const rawName = tenant?.name || '';
@@ -215,10 +236,6 @@ export class ClientsService {
       clientCode = `${prefix}-CL-${paddedSeq}`;
     }
 
-    const endClientName =
-      dto.is_same_as_primary !== false
-        ? dto.end_client_name || dto.client_name
-        : dto.end_client_name || dto.client_name;
 
     // Resolve creator permissions and reviewer for client approval gate
     let initialStatus = 'Active';
@@ -227,44 +244,7 @@ export class ClientsService {
     let approvedBy: string | null = creator.id;
     let approvedAt: Date | null = new Date();
 
-    let roleIds: string[] = [];
-    if (creator.roleId) roleIds.push(creator.roleId);
-    if (creator.assignedRoleIds && creator.assignedRoleIds.length > 0) {
-      roleIds.push(...creator.assignedRoleIds);
-    }
-    roleIds = [...new Set(roleIds)];
-
-    let perms: string[] = [];
-    if (roleIds.length > 0) {
-      const customRoles = await this.prisma.customRole.findMany({
-        where: { id: { in: roleIds } },
-        select: { permissions: true },
-      });
-      const systemRoles = await this.prisma.systemRole.findMany({
-        where: { id: { in: roleIds } },
-        select: { permissions: true },
-      });
-      const allPerms = [...customRoles, ...systemRoles].flatMap((r) => {
-        const p = r.permissions;
-        if (Array.isArray(p)) return p as string[];
-        if (typeof p === 'string') {
-          try {
-            const parsed = JSON.parse(p);
-            return Array.isArray(parsed) ? parsed : [];
-          } catch {
-            return [];
-          }
-        }
-        return [];
-      });
-      perms = [...new Set(allPerms)];
-    }
-
-    const hasDirectAddPerm =
-      perms.includes('client:direct_add') ||
-      perms.includes('client:approve') ||
-      perms.includes('tenant:settings') ||
-      perms.includes('tenant:manage');
+    const hasDirectAddPerm = context.canDirectAdd;
 
     if (!hasDirectAddPerm) {
       initialStatus = 'Pending Approval';
@@ -281,61 +261,27 @@ export class ClientsService {
 
     const created = await this.prisma.client.create({
       data: {
-        tenantId,
-        clientCode,
-        clientName: dto.client_name,
-        contactNumber: dto.contact_number,
-        website: dto.website,
-        industry: dto.industry,
-        state: dto.state,
-        city: dto.city,
-        status: dto.status || initialStatus,
-        category: dto.category,
-        primaryOwner: createdBy,
-        businessUnit: dto.business_unit || tenant?.name || 'Default',
-        branchId: dto.branch_id || null, ownership: dto.ownership,
-        displayOnJobPosting: dto.display_on_job_posting !== undefined ? dto.display_on_job_posting : true,
-        createdBy,
-        federalId: dto.federal_id,
-        emailId: dto.email_id,
-        fax: dto.fax,
-        paymentTerms: dto.payment_terms || 'Net 30',
-        address: dto.address,
-        clientLead: dto.client_lead || dto.contact_person,
-        postalCode: dto.postal_code,
-        country: dto.country,
-        practice: dto.practice,
-        requiredDocuments: dto.required_documents,
-        tag: dto.tag,
-        clientShortName: dto.client_short_name,
-        geopoliticalZone: dto.geopolitical_zone,
-        primaryBusinessUnit: dto.primary_business_unit,
-        facilityManagement: dto.facility_management,
-        modifiedBy: createdBy,
-        aboutCompany: dto.about_company,
-        stopNotifications: dto.stop_notifications || false,
-        market: dto.market || 'US',
-        endClientName,
-        isSameAsPrimary: dto.is_same_as_primary !== undefined ? dto.is_same_as_primary : true,
-        contactPerson: dto.contact_person || dto.contact_name,
-        contactDesignation: dto.contact_designation,
-        gstin: dto.gstin,
-        panNumber: dto.pan_number,
-        currency: dto.currency || (dto.market === 'INDIA' ? 'INR' : 'USD'),
-        tierRating: dto.tier_rating || 'TIER_1',
-        commissionPercentage: dto.commission_percentage ?? dto.commissionPercentage ?? null,
-        creditCheckStatus: dto.credit_check_status || 'APPROVED',
-        fillabilityScore: dto.fillability_score || 'HIGH',
-        vettingNotes: dto.vetting_notes,
-        onboardingStatus: dto.onboarding_status || 'ACTIVE',
-        msaSigned: dto.msa_signed || false,
-        sowExecuted: dto.sow_executed || false,
-        coiReceived: dto.coi_received || false,
-        vendorPortalCreated: dto.vendor_portal_created || false,
-        approvalStatus,
-        assignedApproverId,
-        approvedBy,
-        approvedAt,
+        id: dto.request_id, tenantId, clientCode, clientName: dto.client_name,
+        clientShortName: dto.client_short_name || null, category: dto.category,
+        primaryOwner: context.ownerId, ownership: context.ownerId, createdBy, modifiedBy: createdBy,
+        businessUnit: context.businessUnitName || context.branchName, branchId: context.branchId,
+        market: context.market, currency: context.currency,
+        website: dto.website || null, emailId: dto.email_id || null, industry: dto.industry || null,
+        country: dto.country || null, state: dto.state || null, city: dto.city || null,
+        address: dto.address || null, postalCode: dto.postal_code || null, aboutCompany: dto.about_company || null,
+        paymentTerms: dto.payment_terms || null, commissionPercentage: dto.commission_percentage ?? null,
+        federalId: context.market === 'US' ? dto.federal_id || null : null,
+        gstin: context.market === 'INDIA' ? dto.gstin || null : null,
+        panNumber: context.market === 'INDIA' ? dto.pan_number || null : null,
+        tierRating: dto.tier_rating || null, creditCheckStatus: dto.credit_check_status || 'PENDING_CHECK',
+        fillabilityScore: dto.fillability_score || null, vettingNotes: dto.vetting_notes || null,
+        msaSigned: dto.msa_signed ?? false, sowExecuted: dto.sow_executed ?? false,
+        coiReceived: dto.coi_received ?? false, vendorPortalCreated: dto.vendor_portal_created ?? false,
+        status: initialStatus, approvalStatus, assignedApproverId, approvedBy, approvedAt,
+        ...(dto.contact ? { clientContacts: { create: {
+          tenantId, createdBy, name: dto.contact.name.trim(), email: dto.contact.email.trim(),
+          designation: dto.contact.designation || null, phone: dto.contact.phone || null, isPrimary: true,
+        } } } : {}),
       },
     });
 
@@ -571,6 +517,15 @@ export class ClientsService {
       throw new NotFoundException(`Client with ID ${id} not found`);
     }
 
+    if ((dto.market !== undefined && (!normalizeClientMarket(dto.market) || normalizeClientMarket(dto.market) !== normalizeClientMarket(existing.market))) ||
+        (dto.currency !== undefined && dto.currency !== existing.currency)) {
+      throw new BadRequestException('Client market and currency cannot be changed from the client form.');
+    }
+    if (dto.branch_id !== undefined || dto.branchId !== undefined) {
+      const branchId = dto.branch_id ?? dto.branchId;
+      if (branchId !== existing.branchId) throw new BadRequestException('Client branch transfers require a separate authorized workflow.');
+    }
+
     const data: any = { modifiedBy };
     const fieldMap: Record<string, string> = {
       client_code: 'clientCode', clientCode: 'clientCode',
@@ -601,14 +556,12 @@ export class ClientsService {
       geopolitical_zone: 'geopoliticalZone', geopoliticalZone: 'geopoliticalZone',
       primary_business_unit: 'primaryBusinessUnit', primaryBusinessUnit: 'primaryBusinessUnit',
       facility_management: 'facilityManagement', facilityManagement: 'facilityManagement',
-      market: 'market',
       end_client_name: 'endClientName', endClientName: 'endClientName',
       is_same_as_primary: 'isSameAsPrimary', isSameAsPrimary: 'isSameAsPrimary',
       contact_person: 'contactPerson', contactPerson: 'contactPerson',
       contact_designation: 'contactDesignation', contactDesignation: 'contactDesignation',
       gstin: 'gstin',
       pan_number: 'panNumber', panNumber: 'panNumber',
-      currency: 'currency',
       tier_rating: 'tierRating', tierRating: 'tierRating',
       commission_percentage: 'commissionPercentage', commissionPercentage: 'commissionPercentage',
       credit_check_status: 'creditCheckStatus', creditCheckStatus: 'creditCheckStatus',
