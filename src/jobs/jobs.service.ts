@@ -22,6 +22,9 @@ import { resolveActiveRole } from '../auth/utils/active-role';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
+  isPubliclyPublished: boolean;
+  publicSlug: string | null;
+  publicDescription: string | null;
   clientId?: string | null;
   endClientId?: string | null;
   pocId?: string | null;
@@ -1699,6 +1702,9 @@ export class JobsService {
 
 
     return {
+      isPubliclyPublished: row.is_publicly_published ?? row.isPubliclyPublished ?? false,
+      publicSlug: row.public_slug ?? row.publicSlug ?? null,
+      publicDescription: row.public_description ?? row.publicDescription ?? null,
       id: row.id,
       jobCode: row.job_code ?? row.jobCode,
       jobTitle: row.job_title ?? row.jobTitle,
