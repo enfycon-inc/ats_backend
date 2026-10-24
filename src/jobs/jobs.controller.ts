@@ -373,7 +373,7 @@ export class JobsController {
 
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  async changeStatus(@Param('id') id: string, @Body() dto: { status: string; expectedStatus: string; reason?: string }, @CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId?: string) {
+  async changeStatus(@Param('id') id: string, @Body() dto: { status: string; expectedStatus: string; reason?: string; keepExistingSubmissionsOpen?: boolean }, @CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId?: string) {
     return this.jobsService.changeStatus(id, dto, resolveTenantId(user, tenantId), user);
   }
 

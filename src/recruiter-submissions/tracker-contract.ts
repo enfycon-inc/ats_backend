@@ -59,6 +59,7 @@ export interface SubmissionCapabilities {
 }
 export interface TrackerSubmission {
   jobStatus?: string | null;
+  keepExistingSubmissionsOpen?: boolean;
   workflowPaused?: boolean;
   resume?: { available: boolean; filename: string | null; canDownload: boolean };
   statusRecordedDates?: Partial<Record<'finalStatus' | 'l1Status' | 'l2Status' | 'l3Status', string>>;

@@ -24,6 +24,7 @@ import { resolveActiveRole } from '../auth/utils/active-role';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
+  keepExistingSubmissionsOpen?: boolean;
   capabilities?: { edit: boolean; changeStatus: boolean; findMatches: boolean; managePublication: boolean };
   isPubliclyPublished: boolean;
   publicSlug: string | null;
@@ -1706,6 +1707,7 @@ export class JobsService {
 
 
     return {
+      keepExistingSubmissionsOpen: row.keep_existing_submissions_open ?? row.keepExistingSubmissionsOpen ?? false,
       isPubliclyPublished: row.is_publicly_published ?? row.isPubliclyPublished ?? false,
       publicSlug: row.public_slug ?? row.publicSlug ?? null,
       publicDescription: row.public_description ?? row.publicDescription ?? null,
@@ -2037,7 +2039,7 @@ export class JobsService {
   /**
    * Update job details (including recruiter assignments with permissions validation)
    */
-  async changeStatus(id: string, dto: { status: string; expectedStatus: string; reason?: string }, tenantId: string, user: AuthUser) {
+  async changeStatus(id: string, dto: { status: string; expectedStatus: string; reason?: string; keepExistingSubmissionsOpen?: boolean }, tenantId: string, user: AuthUser) {
     const job = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
     if (!job) throw new NotFoundException('Job not found.');
     assertJobAction(user, job, 'change_status');
@@ -2051,14 +2053,16 @@ export class JobsService {
     if (dto.expectedStatus !== job.status) throw new BadRequestException('Job status changed. Refresh and try again.');
     if (dto.reason !== undefined && (typeof dto.reason !== 'string' || dto.reason.length > 2000)) throw new BadRequestException('Reason must be text of up to 2000 characters.');
     const reason = dto.reason?.trim();
+    if (status === 'Closed' && typeof dto.keepExistingSubmissionsOpen !== 'boolean') throw new BadRequestException('Choose whether existing submissions should remain open.');
+    const keepExistingSubmissionsOpen = status === 'Closed' && dto.keepExistingSubmissionsOpen === true;
     if (status === 'Active' && job.clientId) {
       const client = await this.prisma.client.findFirst({ where: { id: job.clientId, tenantId, deletedAt: null } });
       if (!client || ['PENDING_APPROVAL', 'REJECTED'].includes(client.approvalStatus || '') || ['pending approval', 'rejected'].includes((client.status || '').toLowerCase())) throw new BadRequestException('The client must be approved before activating this job.');
     }
     await this.prisma.$transaction(async tx => {
-      const updated = await tx.job.updateMany({ where: { id, tenantId, status: job.status, updatedAt: job.updatedAt }, data: { status } });
+      const updated = await tx.job.updateMany({ where: { id, tenantId, status: job.status, updatedAt: job.updatedAt }, data: { status, keepExistingSubmissionsOpen } });
       if (!updated.count) throw new BadRequestException('Job changed. Refresh and try again.');
-      await tx.auditLog.create({ data: { tenantId, actorId: user.dbId || user.email, actorEmail: user.email, action: 'JOB_STATUS_CHANGED', targetType: 'job', targetId: id, details: { before: job.status, after: status, ...(reason ? { reason } : {}) } } });
+      await tx.auditLog.create({ data: { tenantId, actorId: user.dbId || user.email, actorEmail: user.email, action: 'JOB_STATUS_CHANGED', targetType: 'job', targetId: id, details: { before: job.status, after: status, previousKeepExistingSubmissionsOpen: job.keepExistingSubmissionsOpen, keepExistingSubmissionsOpen, ...(reason ? { reason } : {}) } } });
     });
     return { status };
   }
@@ -2080,10 +2084,10 @@ export class JobsService {
       if (!original) throw new NotFoundException('Job not found.');
       const statusChanged = dto.status !== original.status && (!normalizeJobStatus(dto.status) || normalizeJobStatus(dto.status) !== normalizeJobStatus(original.status));
       if (statusChanged) {
-        if (!Object.keys(dto).every(key => ['status', 'reason', 'expectedStatus'].includes(key))) throw new BadRequestException('Use Change status to update job status separately from other fields.');
-        await this.changeStatus(id, { status: dto.status, expectedStatus: dto.expectedStatus ?? original.status, reason: dto.reason || 'Updated through job editor' }, tenantId, user);
+        if (!Object.keys(dto).every(key => ['status', 'reason', 'expectedStatus', 'keepExistingSubmissionsOpen'].includes(key))) throw new BadRequestException('Use Change status to update job status separately from other fields.');
+        await this.changeStatus(id, { status: dto.status, expectedStatus: dto.expectedStatus ?? original.status, reason: dto.reason || 'Updated through job editor', keepExistingSubmissionsOpen: dto.keepExistingSubmissionsOpen }, tenantId, user);
       }
-      if (Object.keys(dto).every(key => ['status', 'reason', 'expectedStatus'].includes(key))) return this.findOneJob(id, tenantId, user);
+      if (Object.keys(dto).every(key => ['status', 'reason', 'expectedStatus', 'keepExistingSubmissionsOpen'].includes(key))) return this.findOneJob(id, tenantId, user);
       dto = { ...dto }; delete dto.status;
     }
     // Fetch the job first to verify existence

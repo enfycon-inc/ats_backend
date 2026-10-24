@@ -685,6 +685,7 @@ model Candidate {
 }
 
 model Job {
+  keepExistingSubmissionsOpen Boolean @default(false) @map("keep_existing_submissions_open")
   id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String                 @map("tenant_id") @db.Uuid
   branchId             String?                @map("branch_id") @db.Uuid
