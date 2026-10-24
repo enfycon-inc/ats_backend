@@ -25,7 +25,9 @@ async function main() {
       const tenant = await query.query("SELECT id FROM tenants WHERE domain = 'deb' LIMIT 1");
       const service = new AuthTenantService(query);
       service.logger = { log() {} };
-      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+      const source = await require('sharp')({ create: { width: 480, height: 96, channels: 4, background: '#1a4fa0' } }).png().toBuffer();
+      const png = source.toString('base64');
+      const expected = await require('../dist/auth/utils/logo-storage').optimizeLogo(source, 'site');
       const result = await service.updateTenantSettings(tenant.rows[0].id, {
         siteTitle: 'Branding regression test', logoUrl: 'data:image/png;base64,' + png,
         name: 'Deb Technology',
@@ -34,10 +36,10 @@ async function main() {
       if (!result.logo_url.startsWith('/public/image/logos/')) throw new Error('Logo was not stored as a link');
       if (process.argv.includes('--verify-http')) {
         const response = await fetch(`http://127.0.0.1:5000${result.logo_url}`);
-        if (!response.ok || !Buffer.from(await response.arrayBuffer()).equals(Buffer.from(png, 'base64'))) {
+        if (!response.ok || !Buffer.from(await response.arrayBuffer()).equals(expected)) {
           throw new Error('Public logo URL does not return saved image bytes');
         }
-        console.log('PASS: public logo URL returns the original PNG bytes');
+        console.log('PASS: public logo URL returns the optimized WebP bytes');
       }
       JSON.stringify(result);
       const { AuthUserService } = require('../dist/auth/services/auth-user.service');

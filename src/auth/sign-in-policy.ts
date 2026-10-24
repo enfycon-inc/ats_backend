@@ -15,6 +15,7 @@ export interface SignInPolicy {
   name?: string;
   siteTitle?: string;
   logoUrl?: string;
+  loginLogoUrl?: string;
   microsoftRedirectUri?: string | null;
 }
 export const LOGIN_DESIGN_VARIANTS = ['balanced-split', 'compact-focus', 'editorial', 'bottom-anchored', 'workspace-banner'] as const;

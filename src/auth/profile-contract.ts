@@ -27,7 +27,7 @@ export interface StaffProfile {
   businessUnitName: string | null;
   tenantId: string;
   tenantDomain: string;
-  tenant: { name: string; domain: string; siteTitle: string; logoUrl: string; };
+  tenant: { name: string; domain: string; siteTitle: string; logoUrl: string; loginLogoUrl: string; };
   defaultMarket: string;
 }
 export interface EmailSignature { id: string; name: string; html: string; }

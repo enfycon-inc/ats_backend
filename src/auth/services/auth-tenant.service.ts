@@ -1,3 +1,4 @@
+import type { TenantBrandingUpdate, TenantBrandingSettingsResponse } from '../tenant-branding-contract';
 import { LOGIN_DESIGN_VARIANTS, type SignInPolicy, type SignInPolicyUpdate } from '../sign-in-policy';
 import {
   Injectable,
@@ -470,10 +471,7 @@ export class AuthTenantService {
     jobAssignmentOptions?: any;
       jobCodePattern?: string;
       enforceJobCodePattern?: boolean;
-    siteTitle?: string;
-    logoUrl?: string;
-    name?: string;
-  }) {
+  } & TenantBrandingUpdate): Promise<TenantBrandingSettingsResponse> {
     this.logger.log(`Updating tenant settings for ${tenantId}: ${Object.keys(settings).join(', ')}`);
 
     const fields: string[] = [];
@@ -512,11 +510,15 @@ export class AuthTenantService {
       const logoUrl = await storeTenantLogo(tenantId, settings.logoUrl);
       fields.push(`logo_url = $${paramIndex}`); params.push(logoUrl); paramIndex++;
     }
+    if (settings.loginLogoUrl !== undefined) {
+      const loginLogoUrl = await storeTenantLogo(tenantId, settings.loginLogoUrl, 'login');
+      fields.push(`login_logo_url = $${paramIndex}`); params.push(loginLogoUrl); paramIndex++;
+    }
     if (settings.name !== undefined) { fields.push(`name = $${paramIndex}`); params.push(settings.name); paramIndex++; }
 
     if (fields.length === 0) throw new BadRequestException('No valid setting fields provided.');
 
-    const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING *`;
+    const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING name, site_title, logo_url, login_logo_url`;
     const res = await this.authQuery.query(sql, params);
     return res.rows[0];
   }
@@ -534,7 +536,7 @@ export class AuthTenantService {
       if (!tenantId) throw new NotFoundException('Workspace not found.');
     }
 
-    const tenantRes = await this.authQuery.query('SELECT name, site_title, logo_url FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
+    const tenantRes = await this.authQuery.query('SELECT name, site_title, logo_url, login_logo_url FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
     const tenantData = tenantRes.rows.length > 0 ? tenantRes.rows[0] : null;
     if (!tenantData) throw new NotFoundException('Workspace not found.');
 
@@ -544,7 +546,7 @@ export class AuthTenantService {
         tenantId, loginDesignVariant: 'balanced-split', allowPasswordLogin: true, allowMicrosoftSso: false, allowGoogleSso: false,
         allowDeveloperLogin: false, enforceSsoOnly: false, requireMfa: false, allowPersonalEmails: true, allowedEmailDomains: [],
         microsoftTenantId: null, microsoftClientId: null,
-        name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url,
+        name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url, loginLogoUrl: tenantData?.login_logo_url,
       };
     }
     const row = result.rows[0];
@@ -563,7 +565,7 @@ export class AuthTenantService {
       allowedEmailDomains: row.allowed_email_domains || [],
       microsoftTenantId: row.microsoft_tenant_id || null,
       microsoftClientId: row.microsoft_client_id || null,
-      name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url,
+      name: tenantData?.name, siteTitle: tenantData?.site_title, logoUrl: tenantData?.logo_url, loginLogoUrl: tenantData?.login_logo_url,
     };
   }
 

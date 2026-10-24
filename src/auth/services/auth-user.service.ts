@@ -50,7 +50,7 @@ export class AuthUserService {
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
-              t.site_title, t.logo_url,
+              t.site_title, t.logo_url, t.login_logo_url,
               b.name as branch_name, bu.name as business_unit_name,
               b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
               COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
@@ -80,7 +80,7 @@ export class AuthUserService {
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
-              t.site_title, t.logo_url,
+              t.site_title, t.logo_url, t.login_logo_url,
               b.name as branch_name, bu.name as business_unit_name,
               b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
               COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
@@ -175,7 +175,7 @@ export class AuthUserService {
       candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
       jobAssignmentMode: u.job_assignment_mode || 'AUTO',
       jobAssignmentOptions: u.job_assignment_options || { allowAuto: true, allowAll: true, allowUnassigned: true, allowedPodIds: [] },
-      tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '', siteTitle: u.site_title || '', logoUrl: u.logo_url || '' },
+      tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '', siteTitle: u.site_title || '', logoUrl: u.logo_url || '', loginLogoUrl: u.login_logo_url || '' },
     } satisfies StaffProfile;
   }
 

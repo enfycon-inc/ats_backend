@@ -93,7 +93,7 @@ export class AuthService {
       officeTimezone: null, officeStartTime: null, officeEndTime: null,
       podSystemEnabled: tenant.podSystemEnabled, candidatePoolMode: tenant.candidatePoolMode,
       jobAssignmentMode: tenant.jobAssignmentMode, jobAssignmentOptions: tenant.jobAssignmentOptions,
-      tenant: { name: tenant.name, domain: tenant.domain, siteTitle: tenant.siteTitle, logoUrl: tenant.logoUrl || '' } };
+      tenant: { name: tenant.name, domain: tenant.domain, siteTitle: tenant.siteTitle, logoUrl: tenant.logoUrl || '', loginLogoUrl: tenant.loginLogoUrl || '' } };
   }
   listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) { return this.userService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId); }
   setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: any) { return this.userService.setUserActive(userId, isActive, requesterId, requester); }

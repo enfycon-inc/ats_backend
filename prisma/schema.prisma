@@ -40,6 +40,7 @@ model Tenant {
   id                        String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                      String                 @db.VarChar(255)
   logoUrl                   String?                @map("logo_url") @db.Text
+  loginLogoUrl              String?                @map("login_logo_url") @db.Text
   siteTitle                 String?                @map("site_title") @db.VarChar(255)
   domain                    String?                @unique @db.VarChar(255)
   status                    String                 @default("ACTIVE") @db.VarChar(50)

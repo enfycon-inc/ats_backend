@@ -25,7 +25,8 @@ async function main() {
       if (!tenant.rows.length) throw new Error('deb tenant not found');
       const service = new AuthTenantService({ query: (sql, params) => client.query(sql, params) });
       service.logger = { log() {} };
-      const logoUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+      const logoBytes = await require('sharp')({ create: { width: 480, height: 96, channels: 4, background: '#1a4fa0' } }).png().toBuffer();
+      const logoUrl = 'data:image/png;base64,' + logoBytes.toString('base64');
       const result = await service.updateTenantSettings(tenant.rows[0].id, {
         siteTitle: 'Branding regression test', logoUrl,
       });
