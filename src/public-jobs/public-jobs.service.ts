@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { sanitizeJobDescription } from '../jobs/job-description-html';
+import { careerPublicationDefaults } from '../jobs/career-publication';
 import { submissionCompensation } from '../recruiter-submissions/submission-compensation';
 
 type Scope = 'TENANT' | 'BRANCH' | 'BUSINESS_UNIT';
@@ -70,26 +71,26 @@ export class PublicJobsService {
     return { revoked: true };
   }
 
-  async setPublished(user: any, jobId: string, publish: boolean, inputDescription?: unknown) {
+  async setPublished(user: any, jobId: string, publish: boolean) {
     const permissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
     if (!user?.dbId || !user?.tenantId || !(permissions.includes('job:edit') || permissions.includes('tenant:settings') || permissions.includes('tenant:manage'))) throw new ForbiddenException('Job edit permission is required.');
     const job = await this.prisma.job.findFirst({ where: { id: jobId, tenantId: user.tenantId, deletedAt: null }, select: { id: true, jobTitle: true, jobCode: true, status: true, approvalStatus: true, publicSlug: true, publicDescription: true, branchId: true, businessUnitId: true } });
     if (!job) throw new NotFoundException('Job not found.');
     const tenantWide = permissions.includes('tenant:settings') || permissions.includes('tenant:manage');
     if (!tenantWide && (!user.branchId || job.branchId !== user.branchId || (permissions.includes('unit_admin:manage') && job.businessUnitId !== user.businessUnitId))) throw new ForbiddenException('You cannot publish jobs outside your assigned scope.');
-    if (publish && (job.status.toUpperCase() !== 'ACTIVE' || (job.approvalStatus && job.approvalStatus !== 'APPROVED'))) throw new BadRequestException('Only active, approved jobs can be published.');
-    const cleanPublicDescription = typeof inputDescription === 'string' ? sanitizeJobDescription(inputDescription.slice(0, 30000)) : job.publicDescription;
-    if (publish && (!cleanPublicDescription || !cleanPublicDescription.replace(/<[^>]*>/g, '').trim())) throw new BadRequestException('Add a separate public description before publishing; internal job description is never published automatically.');
-    const titleSlug = job.jobTitle.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 100);
-    const codeSlug = job.jobCode.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
-    const slug = publish ? (job.publicSlug || `${titleSlug}-${codeSlug}`.slice(0, 180)) : job.publicSlug;
-    const updated = await this.prisma.job.update({ where: { id: job.id }, data: { isPubliclyPublished: publish, publicSlug: slug, ...(typeof inputDescription === 'string' ? { publicDescription: cleanPublicDescription } : {}) } as any, select: { id: true, publicSlug: true, isPubliclyPublished: true } });
-    await this.prisma.auditLog.create({ data: { tenantId: user.tenantId, actorId: user.dbId, actorEmail: user.email, action: publish ? 'JOB_PUBLISHED_PUBLICLY' : 'JOB_UNPUBLISHED_PUBLICLY', targetType: 'job', targetId: job.id, details: { publicSlug: slug } } });
+    if (job.status.toUpperCase() !== 'ACTIVE' || (job.approvalStatus && job.approvalStatus !== 'APPROVED')) throw new BadRequestException('Only active, approved jobs can be published or unpublished.');
+    const slug = job.publicSlug || careerPublicationDefaults(job.jobTitle, job.jobCode).publicSlug;
+    const updated = await this.prisma.$transaction(async tx => {
+      const result = await tx.job.updateMany({ where: { id: job.id, tenantId: user.tenantId, deletedAt: null, status: { equals: 'ACTIVE', mode: 'insensitive' }, approvalStatus: job.approvalStatus }, data: { isPubliclyPublished: publish, publicSlug: slug } });
+      if (!result.count) throw new BadRequestException('Job status changed. Refresh and try again.');
+      await tx.auditLog.create({ data: { tenantId: user.tenantId, actorId: user.dbId, actorEmail: user.email, action: publish ? 'JOB_PUBLISHED_PUBLICLY' : 'JOB_UNPUBLISHED_PUBLICLY', targetType: 'job', targetId: job.id, details: { publicSlug: slug } } });
+      return { id: job.id, publicSlug: slug, isPubliclyPublished: publish };
+    });
     return updated;
   }
 
   private scopedWhere(key: KeyContext) {
-    return { tenantId: key.tenantId, isPubliclyPublished: true, deletedAt: null, status: { equals: 'ACTIVE', mode: 'insensitive' as const }, AND: [{ OR: [{ approvalStatus: 'APPROVED' }, { approvalStatus: null }] }, { OR: [{ branchId: null }, { branch: { isActive: true } }] }], ...(key.scope === 'BRANCH' ? { branchId: key.branchId } : {}), ...(key.scope === 'BUSINESS_UNIT' ? { businessUnitId: key.businessUnitId } : {}) };
+    return { tenantId: key.tenantId, isPubliclyPublished: true, deletedAt: null, status: { in: ['ACTIVE', 'CLOSED'], mode: 'insensitive' as const }, AND: [{ OR: [{ approvalStatus: 'APPROVED' }, { approvalStatus: null }] }, { OR: [{ branchId: null }, { branch: { isActive: true } }] }], ...(key.scope === 'BRANCH' ? { branchId: key.branchId } : {}), ...(key.scope === 'BUSINESS_UNIT' ? { businessUnitId: key.businessUnitId } : {}) };
   }
 
   async listJobs(key: KeyContext, query: any) {
@@ -99,17 +100,17 @@ export class PublicJobsService {
     const search = typeof query.search === 'string' ? query.search.trim().slice(0, 100) : '';
     const where: any = this.scopedWhere(key);
     if (search) where.AND.push({ OR: [{ jobTitle: { contains: search, mode: 'insensitive' } }, { city: { contains: search, mode: 'insensitive' } }, { state: { contains: search, mode: 'insensitive' } }, { skillsRequired: { has: search } }] });
-    const rows = await this.prisma.job.findMany({ where, take: limit + 1, ...(cursor ? { skip: 1, cursor: { publicSlug: cursor } } : {}), orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { id: true, publicSlug: true, jobTitle: true, jobType: true, publicDescription: true, skillsRequired: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, createdAt: true } });
+    const rows = await this.prisma.job.findMany({ where, take: limit + 1, ...(cursor ? { skip: 1, cursor: { publicSlug: cursor } } : {}), orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { id: true, publicSlug: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, createdAt: true } });
     const hasMore = rows.length > limit;
-    const jobs = rows.slice(0, limit).map(({ id, publicSlug, publicDescription, ...job }) => ({ ...job, slug: publicSlug, description: publicDescription || '', createdAt: job.createdAt.toISOString() }));
+    const jobs = rows.slice(0, limit).map(({ id, publicSlug, jobDescription, ...job }) => ({ ...job, slug: publicSlug, description: sanitizeJobDescription(jobDescription || ''), acceptsApplications: job.status.toUpperCase() === 'ACTIVE', createdAt: job.createdAt.toISOString() }));
     return { data: jobs, nextCursor: hasMore ? rows[limit - 1].publicSlug : null };
   }
 
   async getJob(key: KeyContext, slug: string) {
-    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { publicSlug: true, jobTitle: true, jobType: true, publicDescription: true, skillsRequired: true, secondarySkills: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, industry: true, degree: true, duration: true, createdAt: true } });
+    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { publicSlug: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, secondarySkills: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, industry: true, degree: true, duration: true, createdAt: true } });
     if (!job) throw new NotFoundException('Published job not found.');
-    const { publicDescription, publicSlug, ...publicJob } = job;
-    return { ...publicJob, slug: publicSlug, description: publicDescription || '', createdAt: job.createdAt.toISOString() };
+    const { jobDescription, publicSlug, ...publicJob } = job;
+    return { ...publicJob, slug: publicSlug, description: sanitizeJobDescription(jobDescription || ''), acceptsApplications: job.status.toUpperCase() === 'ACTIVE', createdAt: job.createdAt.toISOString() };
   }
 
   async apply(key: KeyContext, slug: string, body: any, file: any) {
@@ -146,7 +147,7 @@ export class PublicJobsService {
     if (!/^\d+(?:\.\d{1,2})?$/.test(currentCtcText) || Number(currentCtcText) <= 0 || Number(currentCtcText) > 99999999.99) throw new BadRequestException('Enter a valid positive Current CTC amount (up to two decimal places).');
     const expectedCtcText = String(body?.expectedCompensation ?? '').trim();
     if (!/^\d+(?:\.\d{1,2})?$/.test(expectedCtcText) || Number(expectedCtcText) <= 0 || Number(expectedCtcText) > 99999999.99) throw new BadRequestException('Enter a valid positive Expected CTC amount (up to two decimal places).');
-    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { id: true, branchId: true, businessUnitId: true, market: true, jobType: true } });
+    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), status: { equals: 'ACTIVE', mode: 'insensitive' }, publicSlug: slug }, select: { id: true, branchId: true, businessUnitId: true, market: true, jobType: true } });
     if (!job) throw new NotFoundException('This job is no longer accepting applications.');
     const normalizedCompensation = submissionCompensation(body, job.jobType);
     const submissionId = randomUUID();
@@ -154,6 +155,9 @@ export class PublicJobsService {
     let reference: string;
     try {
       reference = await this.prisma.$transaction(async tx => {
+        // Serialize application creation with job closure and manual unpublishing.
+        const accepting = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM ats.jobs WHERE id = ${job.id}::uuid AND tenant_id = ${key.tenantId}::uuid AND deleted_at IS NULL AND is_publicly_published = true AND UPPER(status) = 'ACTIVE' AND (approval_status = 'APPROVED' OR approval_status IS NULL) FOR UPDATE`;
+        if (!accepting.length) throw new NotFoundException('This job is no longer accepting applications.');
         await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', `${key.tenantId}:${job.id}:${email}`);
         const existing = await tx.candidate.findFirst({ where: { tenantId: key.tenantId, email: { equals: email, mode: 'insensitive' }, deletedAt: null }, select: { id: true } });
         const candidateId = existing?.id || randomUUID();

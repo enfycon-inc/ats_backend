@@ -1,4 +1,5 @@
 import { validateJobDates } from './job-dates';
+import { careerPublicationDefaults } from './career-publication';
 import { normalizeJobWorkMode } from './job-work-mode';
 import { sanitizeJobDescription } from './job-description-html';
 import { normalizeJobTitle, stripJobTitleMarkdown } from './job-description-policy';
@@ -1097,6 +1098,7 @@ export class JobsService {
           tenantId,
           jobCode,
           jobTitle: dto.title,
+          ...careerPublicationDefaults(dto.title, jobCode),
           jobType: dto.type,
           jobDescription: sanitizeJobDescription(dto.description || ''),
           skillsRequired: dto.skillsRequired || [],

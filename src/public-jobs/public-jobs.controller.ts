@@ -62,7 +62,7 @@ export class JobPublicationController {
   @ApiOperation({ summary: 'Publish or unpublish an active, approved job on the public career site' })
   publish(@CurrentUser() user: any, @Param('id', ParseUUIDPipe) id: string, @Body() body: any) {
     if (typeof body?.published !== 'boolean') throw new BadRequestException('published must be true or false.');
-    return this.service.setPublished(user, id, body.published, body.publicDescription);
+    return this.service.setPublished(user, id, body.published);
   }
 }
 
