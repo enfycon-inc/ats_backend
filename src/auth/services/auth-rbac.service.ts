@@ -1,6 +1,7 @@
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
-  return [...new Set([...permissions, ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional'] : [])])];
+  const scopedActions = permissions.includes('job:edit') ? ['job:change_status', 'job:find_matches', ...['edit', 'change_status', 'find_matches'].flatMap(action => ['unit', 'branch', 'tenant'].map(scope => `job:${action}_${scope}`))] : [];
+  return [...new Set([...permissions, ...scopedActions, ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional'] : [])])];
 }
 import {
   Injectable,
@@ -797,7 +798,18 @@ export class AuthRbacService {
       { id: 'job:create', name: 'Create Jobs', group: 'Jobs Management' },
       { id: 'job:grant_creation_delegate', name: 'Grant Colleagues Permission to Create Jobs on Your Behalf', group: 'Jobs Management' },
       { id: 'job:manage_creation_access', name: 'Manage Job Creation Access Within Assigned Scope', group: 'Jobs Management' },
-      { id: 'job:edit', name: 'Edit Jobs', group: 'Jobs Management' },
+      { id: 'job:edit', name: 'Edit own jobs', group: 'Jobs Management' },
+      { id: 'job:edit_unit', name: 'Edit jobs - Current unit', group: 'Jobs Management' },
+      { id: 'job:edit_branch', name: 'Edit jobs - Current branch', group: 'Jobs Management' },
+      { id: 'job:edit_tenant', name: 'Edit jobs - Entire tenant', group: 'Jobs Management' },
+      { id: 'job:change_status', name: 'Change job status - Own jobs', group: 'Jobs Management' },
+      { id: 'job:change_status_unit', name: 'Change job status - Current unit', group: 'Jobs Management' },
+      { id: 'job:change_status_branch', name: 'Change job status - Current branch', group: 'Jobs Management' },
+      { id: 'job:change_status_tenant', name: 'Change job status - Entire tenant', group: 'Jobs Management' },
+      { id: 'job:find_matches', name: 'Find AI matches - Own jobs', group: 'Jobs Management' },
+      { id: 'job:find_matches_unit', name: 'Find AI matches - Current unit', group: 'Jobs Management' },
+      { id: 'job:find_matches_branch', name: 'Find AI matches - Current branch', group: 'Jobs Management' },
+      { id: 'job:find_matches_tenant', name: 'Find AI matches - Entire tenant', group: 'Jobs Management' },
       { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
       { id: 'job:publish_direct', name: 'Publish Jobs Directly (Bypass Approval Gate)', group: 'Jobs Management' },
       { id: 'job:approve', name: 'Approve & Activate Jobs (Publish)', group: 'Jobs Management' },

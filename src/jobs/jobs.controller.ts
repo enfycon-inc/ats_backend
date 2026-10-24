@@ -233,7 +233,7 @@ export class JobsController {
     return this.jobsService.findMatchingCandidates(id, tid, {
       limit: limit ? parseInt(limit, 10) : undefined,
       minScore: minScore ? parseInt(minScore, 10) : undefined,
-    });
+    }, user);
   }
 
   @Get('delegations')
@@ -373,7 +373,6 @@ export class JobsController {
 
   @Patch(':id/status')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:edit')
   async changeStatus(@Param('id') id: string, @Body() dto: { status: string; expectedStatus: string; reason?: string }, @CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId?: string) {
     return this.jobsService.changeStatus(id, dto, resolveTenantId(user, tenantId), user);
   }

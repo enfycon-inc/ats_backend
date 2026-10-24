@@ -1,3 +1,4 @@
+import { assertJobAction, jobCapabilities } from './job-action-policy';
 import { validateJobDates } from './job-dates';
 import { careerPublicationDefaults } from './career-publication';
 import { normalizeJobWorkMode } from './job-work-mode';
@@ -23,6 +24,7 @@ import { resolveActiveRole } from '../auth/utils/active-role';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
+  capabilities?: { edit: boolean; changeStatus: boolean; findMatches: boolean };
   isPubliclyPublished: boolean;
   publicSlug: string | null;
   publicDescription: string | null;
@@ -1555,7 +1557,7 @@ export class JobsService {
       this.logger.log(`findAllJobs SQL: ${sql} | Params: ${JSON.stringify(params)}`);
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
       this.logger.log(`findAllJobs returned ${rows.length} jobs.`);
-      return rows.map((row) => this.mapRowToProfile(row));
+      return rows.map((row) => ({ ...this.mapRowToProfile(row), capabilities: jobCapabilities(user, { tenantId, accountManagerId: row.account_manager_id, branchId: row.branch_id, businessUnitId: row.business_unit_id }) }));
     } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
       return [];
@@ -1660,7 +1662,7 @@ export class JobsService {
         const pod = direct ? null : await this.prisma.pod.findFirst({ where: { tenantId, jobPods: { some: { jobId: rows[0].id } }, OR: [{ podHeadId: user.dbId }, ...((user.permissions || []).some((permission: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)) ? [{ users: { some: { id: user.dbId, tenantId, isActive: true } } }] : [])] }, select: { id: true } });
         if (!direct && !pod) throw new ForbiddenException('This job has not been assigned to you or your lead workspace.');
       }
-      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return this.mapRowToProfile(rows[0]);
+      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0]), capabilities: jobCapabilities(user, { tenantId, accountManagerId: rows[0].account_manager_id, branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id }) };
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
       this.logger.error(`findOneJob failed: ${err.message}`, err.stack);
@@ -2036,14 +2038,11 @@ export class JobsService {
    * Update job details (including recruiter assignments with permissions validation)
    */
   async changeStatus(id: string, dto: { status: string; expectedStatus: string; reason?: string }, tenantId: string, user: AuthUser) {
-    const permissions = user.permissions || [];
-    const global = permissions.some(p => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(p));
-    if (!global && !permissions.includes('job:edit')) throw new ForbiddenException('Missing job:edit permission.');
     const job = await this.prisma.job.findFirst({ where: { id, tenantId, deletedAt: null } });
     if (!job) throw new NotFoundException('Job not found.');
-    assertUnitJobScope(user, job);
-    if (!global && job.branchId && user.branchId !== job.branchId) throw new ForbiddenException('Job is outside your branch scope.');
-    if (!global && user.businessUnitId && job.businessUnitId !== user.businessUnitId) throw new ForbiddenException('Job is outside your unit scope.');
+    assertJobAction(user, job, 'change_status');
+
+
     if (typeof dto.status !== 'string' || typeof dto.expectedStatus !== 'string') throw new BadRequestException('Status and previous status are required.');
     const status = normalizeJobStatus(dto.status);
     if (!status || status === 'Pending Approval') throw new BadRequestException('Select an operational job status.');
@@ -2102,8 +2101,10 @@ export class JobsService {
       if (!user.branchId || !user.businessUnitId || currentJob.branchId !== user.branchId || currentJob.businessUnitId !== user.businessUnitId || (dto.branchId !== undefined && dto.branchId !== user.branchId) || (dto.businessUnitId !== undefined && dto.businessUnitId !== user.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
       if (!user.permissions?.includes('job:assignment_reason_optional') && (typeof dto.assignmentReason !== 'string' || !dto.assignmentReason.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
     }
-    assertUnitJobScope(user, currentJob);
-    assertUnitJobScope(user, { branchId: dto.branchId ?? currentJob.branchId, businessUnitId: dto.businessUnitId ?? currentJob.businessUnitId });
+    if (mode) {
+      assertUnitJobScope(user, currentJob);
+      assertUnitJobScope(user, { branchId: dto.branchId ?? currentJob.branchId, businessUnitId: dto.businessUnitId ?? currentJob.businessUnitId });
+    }
     if (dto.startDate !== undefined || dto.endDate !== undefined) validateJobDates(
       dto.startDate !== undefined ? dto.startDate : currentJob.startDate,
       dto.endDate !== undefined ? dto.endDate : currentJob.endDate,
@@ -2166,19 +2167,13 @@ export class JobsService {
       }
     }
 
-    const _userPermissions = Array.isArray(user?.permissions) ? user.permissions : [];
-    const _isAdmin = _userPermissions.includes('tenant:settings') || _userPermissions.includes('tenant:manage') || _userPermissions.includes('platform:manage') || _userPermissions.includes('*');
-    const _hasEditPerm = _userPermissions.includes('job:edit');
-    const _isOwner = currentJob.accountManagerId === user?.dbId || currentJob.accountManagerId === user?.id || 
-                     currentJob.recruitmentManagerId === user?.dbId || currentJob.recruitmentManagerId === user?.id;
     const isScopedPodLead = isPodScopedRecruiterAssigner(user);
-
-    const assignmentOnlyFields = new Set(['recruiterId', 'recruiterIds', 'recruiter', 'assignedTo']);
-    const isPodLeadAssignmentOnly = isScopedPodLead &&
-      (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) &&
-      Object.keys(dto).every(key => assignmentOnlyFields.has(key));
-    if (!_isAdmin && !_hasEditPerm && !_isOwner && !isPodLeadAssignmentOnly) {
-      throw new ForbiddenException('You do not have permission to edit this job.');
+    const assignmentFields = new Set(['recruiterId', 'recruiterIds', 'recruiter', 'assignedTo', 'podId', 'podIds', 'assignmentReason']);
+    const assignmentOnly = Object.keys(dto).length > 0 && Object.keys(dto).every(key => assignmentFields.has(key));
+    // Staffing-only requests retain their dedicated assignment authorization below.
+    if (!mode && !assignmentOnly) {
+      assertJobAction(user, currentJob, 'edit');
+      assertJobAction(user, { ...currentJob, branchId: dto.branchId ?? currentJob.branchId, businessUnitId: dto.businessUnitId ?? currentJob.businessUnitId }, 'edit');
     }
 
     // If attempting to set status to 'Active', ensure client is approved
@@ -2542,8 +2537,12 @@ export class JobsService {
     jobIdOrCode: string,
     tenantId: string,
     opts: { limit?: number; minScore?: number } = {},
+    user?: AuthUser,
   ): Promise<{ job: JobProfile; matches: CandidateMatch[]; parserOnline: boolean }> {
-    const job = await this.findOneJob(jobIdOrCode, tenantId);
+    const scopedJob = await this.prisma.job.findFirst({ where: { tenantId, deletedAt: null, ...(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobIdOrCode) ? { id: jobIdOrCode } : { jobCode: jobIdOrCode }) } });
+    if (!scopedJob) throw new NotFoundException('Job not found.');
+    assertJobAction(user, scopedJob, 'find_matches');
+    const job = await this.findOneJob(scopedJob.id, tenantId);
     const limit = Math.min(opts.limit ?? 25, 100);
     const minScore = opts.minScore ?? 0;
 
