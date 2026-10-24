@@ -1,3 +1,4 @@
+import { assertPodsEnabled, loadWorkspaceFeatures } from '../auth/workspace-features';
 import { isClosedJob } from '../jobs/job-action-policy';
 import { submissionCompensation, submissionSource, isContractJob } from './submission-compensation';
 import { assertJobSubmissionAccess } from '../jobs/job-submission-access';
@@ -144,6 +145,7 @@ export class RecruiterSubmissionsService {
     if (view === 'my') {
       where.push(isAccountManager ? `j.account_manager_id = ${addParam(user.dbId)}::uuid` : `s.recruiter_id = ${addParam(user.dbId)}::uuid`);
     } else if (view === 'pod') {
+      await assertPodsEnabled(this.prisma, tenantId, user.businessUnitId, user.branchId);
       if (!has('pod:view')) throw new ForbiddenException('Missing pod:view permission.');
       const userParam = addParam(user.dbId);
       where.push(`s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1::uuid AND pod_id = (SELECT pod_id FROM ats.users WHERE id = ${userParam}::uuid AND tenant_id = $1::uuid))`);
@@ -348,7 +350,7 @@ export class RecruiterSubmissionsService {
         include: { customRole: { select: { systemRole: { select: { systemKey: true } } } } },
       });
 
-      if (recruiter && recruiter.customRole?.systemRole?.systemKey === 'RECRUITER' && recruiter.podId) {
+      if (recruiter?.podId && !user?.permissions?.includes('submission:internal_screening') && (await loadWorkspaceFeatures(this.prisma, tenantId, recruiter.businessUnitId, recruiter.branchId)).podsEnabled) {
         finalStatus = 'PENDING_APPROVAL';
       }
     }
@@ -356,6 +358,7 @@ export class RecruiterSubmissionsService {
     const submission = await this.prisma.$transaction(async (tx) => {
       const lockedJob = await tx.$queryRawUnsafe<{ status: string }[]>('SELECT status FROM ats.jobs WHERE id = $1::uuid AND tenant_id = $2::uuid AND deleted_at IS NULL FOR UPDATE', dto.jobId, tenantId);
       if (!lockedJob.length || lockedJob[0].status.toUpperCase() !== 'ACTIVE') throw new BadRequestException('This job is not active. New submissions are blocked.');
+      await assertJobSubmissionAccess(tx as PrismaService, user, tenantId, dto.jobId, dto.recruiterId);
       if (verifiedCandidate) {
         await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', `${tenantId}:${dto.jobId}:${dto.candidateId}`);
         const duplicate = await tx.recruiterSubmission.findFirst({ where: { tenantId, jobId: dto.jobId, candidateId: dto.candidateId }, select: { id: true } });
@@ -414,10 +417,10 @@ export class RecruiterSubmissionsService {
         const reviewTargets = new Set<string>();
         const recruiterUser = await this.prisma.user.findFirst({
           where: { id: dto.recruiterId, tenantId },
-          select: { id: true, fullName: true, podId: true, jobReviewerId: true },
+          select: { id: true, fullName: true, podId: true, jobReviewerId: true, businessUnitId: true, branchId: true },
         });
 
-        if (recruiterUser?.podId) {
+        if (recruiterUser?.podId && (await loadWorkspaceFeatures(this.prisma, tenantId, recruiterUser.businessUnitId, recruiterUser.branchId)).podsEnabled) {
           const pod = await this.prisma.pod.findUnique({
             where: { id: recruiterUser.podId },
             select: { podHeadId: true },
@@ -672,6 +675,7 @@ export class RecruiterSubmissionsService {
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
+      await assertPodsEnabled(this.prisma, tenantId, user.businessUnitId, user.branchId);
       if (!userPerms.includes('pod:view')) throw new ForbiddenException('Missing pod:view permission.');
       baseSql += ` AND s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1 AND pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1))`;
       params.push(user.dbId);

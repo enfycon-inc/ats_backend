@@ -213,7 +213,7 @@ export class JobsController {
 
   @Get(':id/matches')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermissions('job:view')
+  @RequirePermissions('job:view', 'candidate:view')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'AI-ranked candidate matches for a job',

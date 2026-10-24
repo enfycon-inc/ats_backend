@@ -19,7 +19,7 @@ describe('explicit emergency assignment controls', () => {
   });
   it('requires actual lead ownership even when assignment permission is enabled', async () => {
     const id = '11111111-1111-4111-8111-111111111111';
-    const db: any = { pod: { findFirst: jest.fn().mockResolvedValue(null) } };
+    const db: any = { tenant: { findUnique: jest.fn().mockResolvedValue({ podSystemEnabled: true }) }, businessUnit: { findFirst: jest.fn().mockResolvedValue({ allowPods: true }) }, pod: { findFirst: jest.fn().mockResolvedValue(null) } };
     await expect(resolveJobStaffingScope(db, { ...actor, roles: ['POD_LEAD'], permissions: ['job:assign_recruiter'] }, 'tenant', undefined, undefined, 'job:assign_recruiter', id)).rejects.toThrow('not assigned as a Pod Lead');
   });
 });

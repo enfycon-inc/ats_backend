@@ -1,3 +1,6 @@
+import { loadJobActor, rowJobScope } from './job-access-context';
+import { assertPodsEnabled } from '../auth/workspace-features';
+import type { JobCapabilities } from './job-capabilities';
 import { assertJobAction, jobCapabilities } from './job-action-policy';
 import { validateJobDates } from './job-dates';
 import { careerPublicationDefaults } from './career-publication';
@@ -25,7 +28,7 @@ import { commercialFields, displayCommercialRate, positiveInteger } from './job-
 
 export interface JobProfile {
   keepExistingSubmissionsOpen?: boolean;
-  capabilities?: { edit: boolean; changeStatus: boolean; findMatches: boolean; managePublication: boolean };
+  capabilities?: JobCapabilities;
   isPubliclyPublished: boolean;
   publicSlug: string | null;
   publicDescription: string | null;
@@ -894,6 +897,7 @@ export class JobsService {
     if (dto.podId === 'all') throw new BadRequestException('Select individual recruiters instead of a unit pool.');
     if (selectedPods.length) {
       if (!actor) throw new ForbiddenException('Pod assignment requires an authenticated context.');
+      await assertPodsEnabled(this.prisma, tenantId, businessUnitId);
       if (assignmentPolicy?.allowPods === false) throw new BadRequestException('Pod assignment is disabled for this unit.');
       const eligiblePods = await listJobPods(this.prisma, actor, tenantId, branchId || undefined, businessUnitId || undefined);
       if (selectedPods.some(id => !eligiblePods.some(p => p.id === id))) throw new ForbiddenException('The selected pod is outside the job unit.');
@@ -1327,7 +1331,7 @@ export class JobsService {
   /**
    * Get all jobs for a tenant with user name resolution and approval gating
    */
-  private buildJobListQuery(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): { sql: string; params: any[] } | null {
+  private buildJobListQuery(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null, podsEnabled = false): { sql: string; params: any[] } | null {
     this.logger.log(`Fetching jobs for tenant: ${tenantId}`);
 
     let sql = `
@@ -1390,7 +1394,7 @@ export class JobsService {
       sql += ` AND (
         EXISTS (SELECT 1 FROM ats.job_recruiters access_jr WHERE access_jr.job_id = j.id AND access_jr.recruiter_id = $${paramIndex}::uuid)
         OR EXISTS (SELECT 1 FROM ats.job_pods access_jp JOIN ats.pods access_p ON access_p.id = access_jp.pod_id AND access_p.tenant_id = $1
-          WHERE access_jp.job_id = j.id AND (access_p.pod_head_id = $${paramIndex}::uuid OR (${userPermissions.includes('job:view_pod_jobs') || userPermissions.includes('job:submit_pod_jobs') ? 'TRUE' : 'FALSE'} AND access_p.id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1))))
+          WHERE ${podsEnabled ? 'TRUE' : 'FALSE'} AND access_jp.job_id = j.id AND (access_p.pod_head_id = $${paramIndex}::uuid OR (${userPermissions.includes('job:view_pod_jobs') || userPermissions.includes('job:submit_pod_jobs') ? 'TRUE' : 'FALSE'} AND access_p.id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1))))
       )`;
       params.push(user.dbId); paramIndex++;
     }
@@ -1420,7 +1424,7 @@ export class JobsService {
           OR $${paramIndex} = ANY(j.shared_branch_ids)
           OR EXISTS (
             SELECT 1 FROM ats.job_pods jp 
-            WHERE jp.job_id = j.id AND (
+            WHERE ${podsEnabled ? 'TRUE' : 'FALSE'} AND jp.job_id = j.id AND (
               jp.pod_id IN (SELECT pod_id FROM ats.users WHERE id = $${paramIndex + 1}::uuid AND pod_id IS NOT NULL)
               OR jp.pod_id IN (SELECT id FROM ats.pods WHERE pod_head_id = $${paramIndex + 1}::uuid)
             )
@@ -1495,7 +1499,7 @@ export class JobsService {
             SELECT 1 FROM ats.job_pods jp_s
             JOIN ats.pods p_s ON p_s.id = jp_s.pod_id AND p_s.tenant_id = $1
             JOIN ats.users u_s ON u_s.pod_id = p_s.id AND u_s.tenant_id = $1
-            WHERE jp_s.job_id = j.id AND u_s.id = $${paramIndex}::uuid AND u_s.is_active = true AND (${userPermissions.includes('job:view_pod_jobs') || userPermissions.includes('job:submit_pod_jobs') ? 'TRUE' : 'FALSE'} OR p_s.pod_head_id = u_s.id)
+            WHERE ${podsEnabled ? 'TRUE' : 'FALSE'} AND jp_s.job_id = j.id AND u_s.id = $${paramIndex}::uuid AND u_s.is_active = true AND (${userPermissions.includes('job:view_pod_jobs') || userPermissions.includes('job:submit_pod_jobs') ? 'TRUE' : 'FALSE'} OR p_s.pod_head_id = u_s.id)
           )
         )`;
       params.push(user.dbId);
@@ -1534,7 +1538,8 @@ export class JobsService {
 
   async candidateJobLinks(tenantId: string, user: AuthUser, candidateIds: string[], activeBranchId?: string | null): Promise<{ candidateId: string; id: string; jobCode: string; jobTitle: string }[]> {
     if (!candidateIds.length) return [];
-    const scope = this.buildJobListQuery(tenantId, user, activeBranchId);
+    const context = await loadJobActor(this.prisma, user);
+    const scope = this.buildJobListQuery(tenantId, context.actor, activeBranchId, undefined, context.podsEnabled);
     if (!scope) return [];
     // Reuse exactly the catalog's visibility predicates, selecting only link fields.
     const where = scope.sql.slice(scope.sql.indexOf('WHERE j.tenant_id'));
@@ -1548,7 +1553,11 @@ export class JobsService {
   }
 
   async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {
-    const scope = this.buildJobListQuery(tenantId, user, activeBranchId, filter);
+    const context = await loadJobActor(this.prisma, user);
+    user = context.actor;
+    if (filter === 'pod' && !(user?.permissions || []).some((p: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(p))) throw new ForbiddenException('Missing permission to view pod jobs.');
+    if (filter === 'pod' && !context.podsEnabled) throw new ForbiddenException('Recruitment pods are disabled for this workspace or operating unit.');
+    const scope = this.buildJobListQuery(tenantId, user, activeBranchId, filter, context.podsEnabled);
     if (!scope) return [];
     const { params } = scope;
     let { sql } = scope;
@@ -1558,7 +1567,7 @@ export class JobsService {
       this.logger.log(`findAllJobs SQL: ${sql} | Params: ${JSON.stringify(params)}`);
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
       this.logger.log(`findAllJobs returned ${rows.length} jobs.`);
-      return rows.map((row) => ({ ...this.mapRowToProfile(row), capabilities: jobCapabilities(user, { tenantId, approvalStatus: row.approval_status, status: row.status, accountManagerId: row.account_manager_id, branchId: row.branch_id, businessUnitId: row.business_unit_id }) }));
+      return rows.map((row) => ({ ...this.mapRowToProfile(row), capabilities: jobCapabilities(user, rowJobScope(row, tenantId, context)) }));
     } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
       return [];
@@ -1657,13 +1666,15 @@ export class JobsService {
       if (rows.length === 0) {
         throw new NotFoundException(`Job requisition ${idOrCode} not found.`);
       }
+      const context = await loadJobActor(this.prisma, user);
+      user = context.actor;
       assertUnitJobScope(user, { branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id });
       if (user && !(user.permissions || []).some((permission: string) => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage', 'job:create', 'job:override_assignment'].includes(permission))) {
         const direct = await this.prisma.jobRecruiter.findUnique({ where: { jobId_recruiterId: { jobId: rows[0].id, recruiterId: user.dbId } }, select: { jobId: true } });
-        const pod = direct ? null : await this.prisma.pod.findFirst({ where: { tenantId, jobPods: { some: { jobId: rows[0].id } }, OR: [{ podHeadId: user.dbId }, ...((user.permissions || []).some((permission: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)) ? [{ users: { some: { id: user.dbId, tenantId, isActive: true } } }] : [])] }, select: { id: true } });
+        const pod = direct || !context.podsEnabled ? null : await this.prisma.pod.findFirst({ where: { tenantId, jobPods: { some: { jobId: rows[0].id } }, OR: [{ podHeadId: user.dbId }, ...((user.permissions || []).some((permission: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)) ? [{ users: { some: { id: user.dbId, tenantId, isActive: true } } }] : [])] }, select: { id: true } });
         if (!direct && !pod) throw new ForbiddenException('This job has not been assigned to you or your lead workspace.');
       }
-      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0]), capabilities: jobCapabilities(user, { tenantId, approvalStatus: rows[0].approval_status, status: rows[0].status, accountManagerId: rows[0].account_manager_id, branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id }) };
+      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0]), capabilities: jobCapabilities(user, rowJobScope(rows[0], tenantId, context)) };
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
       this.logger.error(`findOneJob failed: ${err.message}`, err.stack);
@@ -2151,6 +2162,7 @@ export class JobsService {
       const currentPods = await this.prisma.jobPod.findMany({ where: { jobId: id }, select: { podId: true } });
       const podsToValidate = automaticPublish ? [] : podChanged ? requestedPods : scopeChanged ? currentPods.map(p => p.podId) : [];
       if ((podChanged || scopeChanged) && (podsToValidate.length || (podChanged && currentPods.length))) {
+        if (podsToValidate.length) await assertPodsEnabled(this.prisma, tenantId, dto.businessUnitId || currentJob.businessUnitId);
         if (podsToValidate.length && policy?.allowPods === false) throw new BadRequestException('Pod assignment is disabled for this unit.');
         if (requestedPods.length && usesAutomaticPods(policy)) throw new BadRequestException('This unit chooses pods automatically. Select automatic pod assignment or direct recruiters.');
         const eligible = await listJobPods(this.prisma, user, tenantId, branchId || undefined, unitId || undefined, id);
@@ -2546,8 +2558,10 @@ export class JobsService {
   ): Promise<{ job: JobProfile; matches: CandidateMatch[]; parserOnline: boolean }> {
     const scopedJob = await this.prisma.job.findFirst({ where: { tenantId, deletedAt: null, ...(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobIdOrCode) ? { id: jobIdOrCode } : { jobCode: jobIdOrCode }) } });
     if (!scopedJob) throw new NotFoundException('Job not found.');
-    assertJobAction(user, scopedJob, 'find_matches');
-    const job = await this.findOneJob(scopedJob.id, tenantId);
+    const context = await loadJobActor(this.prisma, user);
+    user = context.actor;
+    const job = await this.findOneJob(scopedJob.id, tenantId, user);
+    if (!job.capabilities?.findMatches) throw new ForbiddenException('AI matching requires an active, approved job and matching permission within your assignment or management scope.');
     const limit = Math.min(opts.limit ?? 25, 100);
     const minScore = opts.minScore ?? 0;
 
@@ -2569,6 +2583,20 @@ export class JobsService {
     `;
     const queryParams: any[] = [tenantId];
     let paramIndex = 2;
+    const pool = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { candidatePoolMode: true } });
+    if (!pool || !['COMBINED_MARKET', 'STRICT_BRANCH', 'ALL_BRANCHES'].includes(pool.candidatePoolMode)) throw new ForbiddenException('Candidate visibility settings are unavailable.');
+    const permissions = user?.permissions || [];
+    const crossBranch = permissions.some(key => ['candidate:search_all_branches', 'tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(key));
+    if (pool.candidatePoolMode === 'STRICT_BRANCH' && !crossBranch) {
+      if (!user?.branchId) throw new ForbiddenException('A current branch assignment is required to search candidates.');
+      filterSql += ` AND (c.branch_id = $${paramIndex}::uuid OR c.branch_id IS NULL)`;
+      queryParams.push(user.branchId); paramIndex++;
+    }
+    const market = scopedJob.market?.trim().toUpperCase();
+    if (!market) throw new BadRequestException('A job market is required before finding matches.');
+    const markets = ['IN', 'IND', 'INDIA'].includes(market) ? ['IN', 'IND', 'INDIA'] : [market];
+    filterSql += ` AND (UPPER(c.market) = ANY($${paramIndex}::text[])${market === 'US' ? ' OR c.market IS NULL' : ''})`;
+    queryParams.push(markets); paramIndex++;
     const orConditions: string[] = [];
 
     if (semanticEmails.length > 0) {

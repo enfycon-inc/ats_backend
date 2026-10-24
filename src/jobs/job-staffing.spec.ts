@@ -12,7 +12,7 @@ describe('job recruiter staffing permissions and scope', () => {
     permissions: ['job:create', 'job:assign_recruiter'], roles: ['ACCOUNT_MANAGER'] };
   let prisma: any;
   beforeEach(() => {
-    prisma = { businessUnit: { findFirst: jest.fn().mockResolvedValue({ id: unit }) },
+    prisma = { tenant: { findUnique: jest.fn().mockResolvedValue({ podSystemEnabled: true }) }, businessUnit: { findFirst: jest.fn().mockResolvedValue({ id: unit, allowPods: true }) },
       pod: { findFirst: jest.fn().mockResolvedValue(null) },
       $queryRawUnsafe: jest.fn().mockResolvedValue([{ id: recruiter, fullName: 'Recruiter', canRecruit: true, canReview: false }]) };
     prisma.$transaction = jest.fn(callback => callback(prisma));

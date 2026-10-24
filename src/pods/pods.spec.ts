@@ -27,7 +27,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
     isActive: true,
     branchId,
     businessUnitId: unitId,
-    permissions: ['pod:view', 'pod:create', 'pod:edit', 'pod:delete', 'pod:reset_cycle', 'job:view_all_branches'],
+    permissions: ['pod:view', 'pod:create', 'pod:edit', 'pod:delete', 'pod:reset_cycle', 'job:view_all_branches', 'unit_admin:manage'],
   };
 
   const unitAdminUser: AuthUser = {
@@ -58,10 +58,12 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
 
   beforeEach(() => {
     prismaMock = {
+      tenant: { findUnique: jest.fn().mockResolvedValue({ podSystemEnabled: true }) },
       businessUnit: {
         findFirst: jest.fn(async ({ where }) => {
-          if (where.id === unitId) return { id: unitId, branchId };
-          if (where.id === foreignUnitId) return { id: foreignUnitId, branchId: 'other-branch' };
+          if (where.allowPods === true) return { id: unitId, branchId, allowPods: true };
+          if (where.id === unitId) return { id: unitId, branchId, allowPods: true };
+          if (where.id === foreignUnitId) return { id: foreignUnitId, branchId: 'other-branch', allowPods: true };
           return null;
         }),
         findUnique: jest.fn(async ({ where }) => {
@@ -150,6 +152,18 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
   });
 
   describe('Scope Resolution (Unit Scoping)', () => {
+    it('blocks pod endpoints when the tenant disables pods, even for administrators', async () => {
+      prismaMock.tenant.findUnique.mockResolvedValue({ podSystemEnabled: false });
+      await expect(podsController.findAll(tenantAdminUser)).rejects.toThrow('disabled');
+      expect(prismaMock.pod.findMany).not.toHaveBeenCalled();
+    });
+
+    it('blocks pod endpoints when the current operating unit disables pods', async () => {
+      prismaMock.businessUnit.findFirst.mockResolvedValue({ id: unitId, branchId, allowPods: false });
+      await expect(podsController.findAll(unitAdminUser)).rejects.toThrow('disabled');
+      expect(prismaMock.pod.findMany).not.toHaveBeenCalled();
+    });
+
     it('restricts Delivery Head strictly to their assigned unit and ignores branch headers', async () => {
       const scope = await podsService.resolveScope(tenantId, deliveryHeadUser, undefined, 'some-other-branch');
       expect(scope.businessUnitId).toBe(unitId);

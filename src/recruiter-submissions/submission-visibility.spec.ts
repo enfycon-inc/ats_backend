@@ -13,7 +13,7 @@ describe('submission visibility and statistics', () => {
       if (sql.startsWith('SELECT COUNT')) return [{ count: 1n, l1_pending: 1n, l2_pending: 0n, l3_pending: 0n }];
       return [{ id: 'submission-a', recruiter_id: 'recruiter-a', recruiter_email: 'recruiter@example.com' }];
     });
-    service = new RecruiterSubmissionsService({ $queryRawUnsafe: query } as any, {} as any);
+    service = new RecruiterSubmissionsService({ tenant: { findUnique: jest.fn().mockResolvedValue({ podSystemEnabled: true }) }, businessUnit: { findFirst: jest.fn().mockResolvedValue({ allowPods: true }) }, $queryRawUnsafe: query } as any, {} as any);
   });
 
 

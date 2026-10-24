@@ -1,3 +1,4 @@
+import { assertPodsEnabled } from '../auth/workspace-features';
 import {
   Injectable,
   Logger,
@@ -297,17 +298,8 @@ export class PodsService {
     requireUnit = false,
   ): Promise<{ branchId?: string; businessUnitId?: string }> {
     const permissions = user?.permissions || [];
-    const roles = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
-    const sysRole = (user?.systemRole || '').toUpperCase();
 
-    const isTenantAdmin =
-      roles.includes('TENANT_ADMIN') ||
-      roles.includes('SUPER_ADMIN') ||
-      sysRole === 'TENANT_ADMIN' ||
-      sysRole === 'SUPER_ADMIN' ||
-      permissions.includes('tenant:manage') ||
-      permissions.includes('tenant:settings') ||
-      permissions.includes('platform:manage');
+    const isTenantAdmin = permissions.some(key => ['tenant:manage', 'tenant:settings', 'platform:manage', '*'].includes(key));
 
     const cleanReqUnit =
       requestedBusinessUnitId && !['all', 'null', 'undefined', ''].includes(requestedBusinessUnitId.toLowerCase())
@@ -318,6 +310,8 @@ export class PodsService {
       requestedBranchId && !['all', 'null', 'undefined', ''].includes(requestedBranchId.toLowerCase())
         ? requestedBranchId
         : undefined;
+
+    await assertPodsEnabled(this.prisma, tenantId, cleanReqUnit || (isTenantAdmin ? undefined : user.businessUnitId), isTenantAdmin ? cleanReqBranch : user.branchId);
 
     if (isTenantAdmin) {
       let branchId = cleanReqBranch;
@@ -345,16 +339,9 @@ export class PodsService {
     }
 
     // Delivery Head & Unit Admin: strictly scoped to their assigned business unit
-    const isUnitAdmin =
-      roles.includes('UNIT_ADMIN') ||
-      sysRole === 'UNIT_ADMIN' ||
-      permissions.includes('unit_admin:manage');
+    const isUnitAdmin = permissions.includes('unit_admin:manage');
 
-    const isDeliveryHead =
-      roles.includes('DELIVERY_HEAD') ||
-      sysRole === 'DELIVERY_HEAD';
-
-    if (isUnitAdmin || isDeliveryHead) {
+    if (isUnitAdmin) {
       if (!user.businessUnitId) {
         throw new ForbiddenException('You are not assigned to an operating unit.');
       }
@@ -375,10 +362,7 @@ export class PodsService {
     }
 
     // Branch Admin (without delivery head or unit admin roles)
-    const isBranchAdmin =
-      roles.includes('BRANCH_ADMIN') ||
-      sysRole === 'BRANCH_ADMIN' ||
-      permissions.includes('branch_admin:manage');
+    const isBranchAdmin = permissions.includes('branch_admin:manage');
 
     if (isBranchAdmin) {
       if (!user.branchId) {
@@ -432,44 +416,26 @@ export class PodsService {
    * Helper: Asserts that the authenticated user has access to view or mutate a specific pod.
    */
   async assertPodAccess(tenantId: string, user: AuthUser, pod: PodResponse | any): Promise<void> {
+    await assertPodsEnabled(this.prisma, tenantId, pod?.businessUnitId || user.businessUnitId, pod?.branchId || user.branchId);
     if (!pod) {
       throw new NotFoundException('Recruitment pod not found.');
     }
     const permissions = user?.permissions || [];
-    const roles = Array.isArray(user?.roles) ? user.roles.map((r: string) => r.toUpperCase()) : [];
-    const sysRole = (user?.systemRole || '').toUpperCase();
 
-    const isTenantAdmin =
-      roles.includes('TENANT_ADMIN') ||
-      roles.includes('SUPER_ADMIN') ||
-      sysRole === 'TENANT_ADMIN' ||
-      sysRole === 'SUPER_ADMIN' ||
-      permissions.includes('tenant:manage') ||
-      permissions.includes('tenant:settings') ||
-      permissions.includes('platform:manage');
+    const isTenantAdmin = permissions.some(key => ['tenant:manage', 'tenant:settings', 'platform:manage', '*'].includes(key));
 
     if (isTenantAdmin) return;
 
-    const isUnitAdmin =
-      roles.includes('UNIT_ADMIN') ||
-      sysRole === 'UNIT_ADMIN' ||
-      permissions.includes('unit_admin:manage');
+    const isUnitAdmin = permissions.includes('unit_admin:manage');
 
-    const isDeliveryHead =
-      roles.includes('DELIVERY_HEAD') ||
-      sysRole === 'DELIVERY_HEAD';
-
-    if (isUnitAdmin || isDeliveryHead) {
+    if (isUnitAdmin) {
       if (!user.businessUnitId || pod.businessUnitId !== user.businessUnitId) {
         throw new ForbiddenException('You do not have access to pods outside your assigned operating unit.');
       }
       return;
     }
 
-    const isBranchAdmin =
-      roles.includes('BRANCH_ADMIN') ||
-      sysRole === 'BRANCH_ADMIN' ||
-      permissions.includes('branch_admin:manage');
+    const isBranchAdmin = permissions.includes('branch_admin:manage');
 
     if (isBranchAdmin) {
       if (!user.branchId || (pod.branchId && pod.branchId !== user.branchId)) {
@@ -607,7 +573,7 @@ export class PodsService {
    * List all pods for a tenant (scoped to operating unit or branch)
    */
   async findAll(tenantId: string, branchId?: string, businessUnitId?: string): Promise<PodResponse[]> {
-    const where: any = { tenantId };
+    const where: any = { tenantId, businessUnit: { tenantId, allowPods: true } };
     if (businessUnitId && businessUnitId !== 'all') {
       where.businessUnitId = businessUnitId;
     } else if (branchId && branchId !== 'all') {

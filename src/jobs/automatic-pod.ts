@@ -1,3 +1,5 @@
+import { assertPodsEnabled } from '../auth/workspace-features';
+import type { PrismaService } from '../prisma/prisma.service';
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { usesAutomaticPods } from '../business-units/pod-strategy';
@@ -5,6 +7,7 @@ import { usesAutomaticPods } from '../business-units/pod-strategy';
 // The unit row serializes the cycle across simultaneous job publications.
 // Call inside the transaction that also persists the job and its pod mapping.
 export async function allocateAutomaticPod(tx: Prisma.TransactionClient, tenantId: string, branchId: string | null, unitId: string) {
+  await assertPodsEnabled(tx as PrismaService, tenantId, unitId, branchId);
   await tx.$queryRaw`SELECT id FROM ats.business_units WHERE id = ${unitId}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
   const policy = await tx.businessUnit.findFirst({ where: { id: unitId, tenantId, branchId } });
   if (!policy || !usesAutomaticPods(policy)) throw new BadRequestException('The assignment policy changed. Refresh the job form.');

@@ -76,7 +76,7 @@ export class PublicJobsService {
     if (!user?.dbId || !user?.tenantId) throw new ForbiddenException('Authentication is required.');
     const job = await this.prisma.job.findFirst({ where: { id: jobId, tenantId: user.tenantId, deletedAt: null }, select: { id: true, tenantId: true, accountManagerId: true, updatedAt: true, jobTitle: true, jobCode: true, status: true, approvalStatus: true, publicSlug: true, publicDescription: true, branchId: true, businessUnitId: true } });
     if (!job) throw new NotFoundException('Job not found.');
-    assertJobAction(user, job, 'edit');
+    assertJobAction(user, job, 'manage_publication');
     if (job.status.toUpperCase() !== 'ACTIVE' || (job.approvalStatus && job.approvalStatus !== 'APPROVED')) throw new BadRequestException('Only active, approved jobs can be published or unpublished.');
     const slug = job.publicSlug || careerPublicationDefaults(job.jobTitle, job.jobCode).publicSlug;
     const updated = await this.prisma.$transaction(async tx => {

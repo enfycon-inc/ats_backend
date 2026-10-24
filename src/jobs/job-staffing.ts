@@ -1,3 +1,4 @@
+import { assertPodsEnabled } from '../auth/workspace-features';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { resolveBranchId } from '../auth/utils/branch-resolver';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -53,6 +54,7 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
   if (deliveryHead && (!actor.branchId || !actor.businessUnitId || (requestedBranch && requestedBranch !== actor.branchId) || (requestedUnit && requestedUnit !== actor.businessUnitId))) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
 
   if (podLeadAccess) {
+    await assertPodsEnabled(prisma, tenantId, actor.businessUnitId, actor.branchId);
     if (!jobId) throw new ForbiddenException('Pod Leads can only assign recruiters to jobs mapped to their pod.');
     const pod = await prisma.pod.findFirst({
       where: { tenantId, podHeadId: actor.dbId },
@@ -119,6 +121,7 @@ export async function resolveJobStaffingScope(prisma: PrismaService, actor: Auth
 export async function listJobPods(prisma: PrismaService, actor: AuthUser, tenantId: string,
   requestedBranch?: string, requestedUnit?: string, jobId?: string) {
   const { branchId, unitId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_pod', jobId);
+  await assertPodsEnabled(prisma, tenantId, unitId, branchId);
   if (!unitId) throw new BadRequestException('Select an operating unit.');
   const pods = await prisma.pod.findMany({
     where: { tenantId, businessUnitId: unitId, ...(branchId ? { branchId } : {}) },

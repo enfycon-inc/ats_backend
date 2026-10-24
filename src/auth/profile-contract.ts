@@ -25,6 +25,7 @@ export interface StaffProfile {
   podName?: string | null;
   branchName: string | null;
   businessUnitName: string | null;
+  features?: { podsEnabled: boolean };
   tenantId: string;
   tenantDomain: string;
   tenant: { name: string; domain: string; siteTitle: string; logoUrl: string; loginLogoUrl: string; };

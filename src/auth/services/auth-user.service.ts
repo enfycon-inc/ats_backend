@@ -1,3 +1,4 @@
+import { workspaceFeatures } from '../workspace-features';
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 
 import {
@@ -49,7 +50,7 @@ export class AuthUserService {
               u.role_id, u.assigned_role_ids, u.pod_id, p.name as pod_name, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
-              t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
+              t.pod_system_enabled, bu.allow_pods AS unit_allow_pods, EXISTS (SELECT 1 FROM business_units enabled_unit WHERE enabled_unit.tenant_id = u.tenant_id AND enabled_unit.allow_pods = true AND (u.branch_id IS NULL OR enabled_unit.branch_id = u.branch_id)) AS has_enabled_pod_unit, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
               t.site_title, t.logo_url, t.login_logo_url,
               b.name as branch_name, bu.name as business_unit_name,
               b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
@@ -79,7 +80,7 @@ export class AuthUserService {
               u.role_id, u.assigned_role_ids, u.pod_id, p.name as pod_name, u.branch_id,
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
-              t.pod_system_enabled, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
+              t.pod_system_enabled, bu.allow_pods AS unit_allow_pods, EXISTS (SELECT 1 FROM business_units enabled_unit WHERE enabled_unit.tenant_id = u.tenant_id AND enabled_unit.allow_pods = true AND (u.branch_id IS NULL OR enabled_unit.branch_id = u.branch_id)) AS has_enabled_pod_unit, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
               t.site_title, t.logo_url, t.login_logo_url,
               b.name as branch_name, bu.name as business_unit_name,
               b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
@@ -171,7 +172,8 @@ export class AuthUserService {
       officeStartTime: u.office_start_time || null, officeEndTime: u.office_end_time || null,
       businessUnitId: u.business_unit_id, businessUnitName: u.business_unit_name || null,
       jobReviewerId: u.job_reviewer_id || null, jobReviewerName: u.job_reviewer_name || null,
-      podSystemEnabled: u.pod_system_enabled !== false,
+      podSystemEnabled: u.pod_system_enabled === true,
+      features: workspaceFeatures(u.pod_system_enabled, u.unit_allow_pods === true || (!u.business_unit_id && u.has_enabled_pod_unit === true && Array.from(userPerms).some(p => ['tenant:settings', 'tenant:manage', 'branch_admin:manage', 'platform:manage'].includes(p)))),
       candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
       jobAssignmentMode: u.job_assignment_mode || 'AUTO',
       jobAssignmentOptions: u.job_assignment_options || { allowAuto: true, allowAll: true, allowUnassigned: true, allowedPodIds: [] },

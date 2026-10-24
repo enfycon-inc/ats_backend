@@ -6,7 +6,7 @@ describe('job operating unit persistence and reviewer routing', () => {
   const manager = '33333333-3333-4333-8333-333333333333';
   function setup(direct = true) {
     const prisma: any = {
-      tenant: { findUnique: jest.fn().mockResolvedValue({ name: 'Tenant', podSystemEnabled: false }) },
+      tenant: { findUnique: jest.fn().mockResolvedValue({ name: 'Tenant', podSystemEnabled: true }) },
       branch: { findFirst: jest.fn().mockImplementation(async (args: any) => args.select?.managers ? { managers: [{ id: manager }] } : { id, code: 'BBS' }), findUnique: jest.fn().mockResolvedValue({ allowNone: true }) },
       businessUnit: { findFirst: jest.fn().mockResolvedValue({ id: unit }) },
       job: { findUnique: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue({ id }), update: jest.fn() },

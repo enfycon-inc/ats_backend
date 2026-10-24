@@ -42,12 +42,13 @@ describe('candidate list details', () => {
 
 describe('candidate job visibility', () => {
   const setup = () => {
-    const prisma = { $queryRawUnsafe: jest.fn().mockResolvedValue([]) };
+    const prisma = { user: { findFirst: jest.fn().mockResolvedValue({ branchId: 'branch', businessUnitId: 'unit' }) }, tenant: { findUnique: jest.fn().mockResolvedValue({ podSystemEnabled: false }) }, $queryRawUnsafe: jest.fn().mockResolvedValue([]) };
     return { prisma, jobs: new JobsService(prisma as any, {} as any) };
   };
   it('returns no links without job permission or a required branch assignment', async () => {
     const { prisma, jobs } = setup();
     await expect(jobs.candidateJobLinks('tenant', { ...user, permissions: [] }, ['c1'])).resolves.toEqual([]);
+    prisma.user.findFirst.mockResolvedValue({ branchId: undefined, businessUnitId: undefined });
     await expect(jobs.candidateJobLinks('tenant', { ...user, branchId: undefined }, ['c1'])).resolves.toEqual([]);
     expect(prisma.$queryRawUnsafe).not.toHaveBeenCalled();
   });

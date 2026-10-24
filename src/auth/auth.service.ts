@@ -1,3 +1,4 @@
+import { loadWorkspaceFeatures } from './workspace-features';
 import type { SignInPolicyUpdate } from './sign-in-policy';
 import { Injectable } from '@nestjs/common';
 
@@ -91,6 +92,7 @@ export class AuthService {
       userLimit: tenant.userLimit, maxBranches: tenant.maxBranches, branchId: null, branchName: null,
       businessUnitId: null, businessUnitName: null, podId: null, assignedBranchIds: [],
       officeTimezone: null, officeStartTime: null, officeEndTime: null,
+      features: await loadWorkspaceFeatures(this.authQuery.prisma, tenant.id),
       podSystemEnabled: tenant.podSystemEnabled, candidatePoolMode: tenant.candidatePoolMode,
       jobAssignmentMode: tenant.jobAssignmentMode, jobAssignmentOptions: tenant.jobAssignmentOptions,
       tenant: { name: tenant.name, domain: tenant.domain, siteTitle: tenant.siteTitle, logoUrl: tenant.logoUrl || '', loginLogoUrl: tenant.loginLogoUrl || '' } };
