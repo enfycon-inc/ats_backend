@@ -9,6 +9,12 @@ export interface CandidateProfile {
   candidateCode?: string;
   uploadedByUserId?: string | null;
   uploadedByName?: string | null;
+  uploadedByEmail?: string | null;
+  uploadedByAvatar?: string | null;
+  market?: string;
+  updatedAt?: string | null;
+  assignedJobs?: { id: string; jobCode: string; jobTitle: string }[];
+  assignedJobCount?: number;
   applicantId: string;
   fullName: string;
   firstName?: string | null;
@@ -36,6 +42,7 @@ export interface CandidateProfile {
   lastWorkingDay?: string | null;
   panCard?: string | null;
   preferredLocations?: string[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Legacy parser payload has provider-specific fields.
   parsedJson?: any;
 }
 

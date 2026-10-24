@@ -1319,7 +1319,7 @@ export class JobsService {
   /**
    * Get all jobs for a tenant with user name resolution and approval gating
    */
-  async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {
+  private buildJobListQuery(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): { sql: string; params: any[] } | null {
     this.logger.log(`Fetching jobs for tenant: ${tenantId}`);
 
     let sql = `
@@ -1378,7 +1378,7 @@ export class JobsService {
     const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
     const managesJobs = userPermissions.some(permission => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage', 'unit_admin:manage', 'job:create', 'job:override_assignment'].includes(permission));
     if (!managesJobs) {
-      if (!user?.dbId || !userPermissions.includes('job:view')) return [];
+      if (!user?.dbId || !userPermissions.includes('job:view')) return null;
       sql += ` AND (
         EXISTS (SELECT 1 FROM ats.job_recruiters access_jr WHERE access_jr.job_id = j.id AND access_jr.recruiter_id = $${paramIndex}::uuid)
         OR EXISTS (SELECT 1 FROM ats.job_pods access_jp JOIN ats.pods access_p ON access_p.id = access_jp.pod_id AND access_p.tenant_id = $1
@@ -1395,10 +1395,10 @@ export class JobsService {
       userPermissions.includes('platform:manage');
 
     const targetBranchId = canViewAllBranches ? activeBranchId : user?.branchId;
-    if (!canViewAllBranches && !targetBranchId) return [];
+    if (!canViewAllBranches && !targetBranchId) return null;
     const unitScoped = managesCurrentUnit(user);
     if (unitScoped) {
-      if (!user?.businessUnitId || !user?.branchId) return [];
+      if (!user?.businessUnitId || !user?.branchId) return null;
       sql += ' AND j.business_unit_id = $' + paramIndex + ' AND j.branch_id = $' + (paramIndex + 1);
       params.push(user.businessUnitId, user.branchId);
       paramIndex += 2;
@@ -1473,12 +1473,12 @@ export class JobsService {
     if (filter === 'dashboard') {
       // The account-manager dashboard is intentionally narrower than the shared
       // job catalog: it only aggregates jobs owned by the authenticated user.
-      if (!user?.dbId) return [];
+      if (!user?.dbId) return null;
       sql += ` AND j.account_manager_id = $${paramIndex}::uuid`;
       params.push(user.dbId);
       paramIndex++;
     } else if (filter === 'sourcing') {
-      if (!user?.dbId) return [];
+      if (!user?.dbId) return null;
       sql += ` AND UPPER(j.status) = 'ACTIVE'
         AND (j.approval_status = 'APPROVED' OR j.approval_status IS NULL)
         AND (
@@ -1521,6 +1521,29 @@ export class JobsService {
       )`;
     }
 
+    return { sql, params };
+  }
+
+  async candidateJobLinks(tenantId: string, user: AuthUser, candidateIds: string[], activeBranchId?: string | null): Promise<{ candidateId: string; id: string; jobCode: string; jobTitle: string }[]> {
+    if (!candidateIds.length) return [];
+    const scope = this.buildJobListQuery(tenantId, user, activeBranchId);
+    if (!scope) return [];
+    // Reuse exactly the catalog's visibility predicates, selecting only link fields.
+    const where = scope.sql.slice(scope.sql.indexOf('WHERE j.tenant_id'));
+    const params = [...scope.params, candidateIds];
+    return this.prisma.$queryRawUnsafe(
+      `SELECT DISTINCT s.candidate_id AS "candidateId", j.id, j.job_code AS "jobCode", j.job_title AS "jobTitle"
+       FROM ats.jobs j JOIN ats.recruiter_submissions s ON s.job_id = j.id AND s.tenant_id = j.tenant_id
+       ${where} AND s.candidate_id = ANY($${params.length}::uuid[])
+       ORDER BY j.job_code`, ...params,
+    );
+  }
+
+  async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {
+    const scope = this.buildJobListQuery(tenantId, user, activeBranchId, filter);
+    if (!scope) return [];
+    const { params } = scope;
+    let { sql } = scope;
     sql += ' ORDER BY j.created_at DESC';
 
     try {

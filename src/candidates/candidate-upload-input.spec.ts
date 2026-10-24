@@ -4,7 +4,7 @@ describe('candidate upload recruiter overrides', () => {
   function setup() {
     const candidate = { update: jest.fn().mockResolvedValue({ id: 'candidate', fullName: 'Recruiter Name' }), findFirst: jest.fn().mockResolvedValue({ id: 'candidate' }) };
     const prisma: any = { candidate, resume: { create: jest.fn().mockResolvedValue({ id: 'resume' }) } };
-    const service = new CandidatesService(prisma);
+    const service = new CandidatesService(prisma, {} as any);
     jest.spyOn(service as any, 'findByHash').mockResolvedValue({ id: 'candidate', fullName: 'Recruiter Name', email: 'a@example.com', parsedJson: { candidate_name: 'Parser Name', location: 'Wrong location' } });
     jest.spyOn(service as any, 'mapCandidateToProfile').mockImplementation((row: any) => row);
     return { service, candidate };

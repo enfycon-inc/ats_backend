@@ -1,12 +1,13 @@
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import { resolveCandidateName } from './candidate-name';
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
 import * as crypto from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
 import { CandidateQueryDto } from './dtos/candidate-query.dto';
 import { CandidateProfile } from './interfaces/candidate.interface';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { JobsService } from '../jobs/jobs.service';
 
 /** The original CV file bytes plus metadata, for download/preview. */
 export interface StoredResumeFile {
@@ -41,7 +42,7 @@ export class CandidatesService {
   private readonly logger = new Logger(CandidatesService.name);
   private readonly tenantPoolModeCache = new Map<string, { mode: string; expiresAt: number }>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly jobs: JobsService) {}
 
   /**
    * Safe transaction to create a candidate and link their resume record in one step
@@ -213,10 +214,39 @@ export class CandidatesService {
         skip: Number(skip) || 0,
       });
 
-      return candidates.map((row) => this.mapCandidateToProfile(row, true));
+      const uploaderIds = [...new Set(candidates.flatMap(row => row.uploadedByUserId ? [row.uploadedByUserId] : []))];
+      const candidateIds = candidates.map(row => row.id);
+      const [uploaders, links] = await Promise.all([
+        uploaderIds.length ? this.prisma.user.findMany({
+          where: { tenantId, id: { in: uploaderIds } },
+          select: { id: true, fullName: true, email: true, profilePicture: true },
+        }) : [],
+        user ? this.jobs.candidateJobLinks(tenantId, user, candidateIds, query.branchId) : [],
+
+      ]);
+      const uploaderById = new Map<string, { fullName: string | null; email: string; profilePicture: string | null }>(uploaders.map(uploader => [uploader.id, uploader] as const));
+      const jobsByCandidate = new Map<string, CandidateProfile['assignedJobs']>();
+      for (const { candidateId, ...job } of links) {
+        const jobs = jobsByCandidate.get(candidateId) || [];
+        jobs.push(job);
+        jobsByCandidate.set(candidateId, jobs);
+      }
+      return candidates.map(row => {
+        const uploader = row.uploadedByUserId ? uploaderById.get(row.uploadedByUserId) : undefined;
+        const assignedJobs = jobsByCandidate.get(row.id) || [];
+        return {
+          ...this.mapCandidateToProfile(row, true),
+          market: row.market,
+          uploadedByName: uploader?.fullName || row.uploadedByName || null,
+          uploadedByEmail: uploader?.email || null,
+          uploadedByAvatar: uploader?.profilePicture || null,
+          assignedJobs,
+          assignedJobCount: assignedJobs.length,
+        };
+      });
     } catch (err: any) {
       this.logger.error(`Failed to fetch candidates: ${err.message}`, err.stack);
-      return [];
+      throw new InternalServerErrorException('Unable to load candidates. Please try again.');
     }
   }
 
@@ -356,6 +386,7 @@ export class CandidatesService {
       lastName: row.lastName || null,
       currentLocation: row.rawCurrentLocation || locationStr || null,
       currentCompany: row.currentCompany || null,
+      updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
       relevantExperienceYears: row.relevantExperienceYears == null ? null : Number(row.relevantExperienceYears),
       availabilityToStart: row.availabilityToStart || null,
       uploadedByUserId: row.uploadedByUserId || null,
@@ -374,7 +405,7 @@ export class CandidatesService {
       experienceYears: expYears,
       rawText: isList ? '' : (resume?.rawText || ''),
       createdOn: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
-      currentCTC: row.currentCtc ? Number(row.currentCtc) : null,
+      currentCTC: row.currentCtc == null ? null : Number(row.currentCtc),
       expectedCTC: row.expectedCtc ? Number(row.expectedCtc) : null,
       noticePeriodDays: row.noticePeriodDays ? Number(row.noticePeriodDays) : 0,
       servingNotice: !!row.servingNotice,

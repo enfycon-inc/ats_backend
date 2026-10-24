@@ -5,10 +5,12 @@ import { CandidatesService } from './candidates.service';
 import { BulkCvProcessor } from './bulk-cv.processor';
 import { AuthModule } from '../auth/auth.module';
 import { ResumePreviewService } from './resume-preview.service';
+import { JobsModule } from '../jobs/jobs.module';
 
 @Module({
   imports: [
     AuthModule,
+    JobsModule,
     BullModule.registerQueue({ name: 'bulk_cv' }),
   ],
   controllers: [CandidatesController],
