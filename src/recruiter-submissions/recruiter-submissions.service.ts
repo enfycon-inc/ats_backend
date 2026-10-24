@@ -1,3 +1,4 @@
+import { isClosedJob } from '../jobs/job-action-policy';
 import { submissionCompensation, submissionSource, isContractJob } from './submission-compensation';
 import { assertJobSubmissionAccess } from '../jobs/job-submission-access';
 import { verifiedCandidateInput } from './verified-candidate';
@@ -120,7 +121,7 @@ export class RecruiterSubmissionsService {
     if (!['my', 'pod', 'all'].includes(view)) throw new BadRequestException('Invalid submission view.');
 
     const params: any[] = [tenantId];
-    const where = ['s.tenant_id = $1::uuid', 'j.tenant_id = s.tenant_id'];
+    const where = ['s.tenant_id = $1::uuid', 'j.tenant_id = s.tenant_id', "UPPER(COALESCE(j.status, '')) NOT IN ('CLOSED', 'CLOSE')"];
     const addParam = (value: any) => { params.push(value); return `$${params.length}`; };
     const tenantWide = has('tenant:manage', 'tenant:settings', 'platform:manage');
     const unitAdmin = has('unit_admin:manage') && !has('tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage');
@@ -353,6 +354,8 @@ export class RecruiterSubmissionsService {
     }
 
     const submission = await this.prisma.$transaction(async (tx) => {
+      const lockedJob = await tx.$queryRawUnsafe<{ status: string }[]>('SELECT status FROM ats.jobs WHERE id = $1::uuid AND tenant_id = $2::uuid AND deleted_at IS NULL FOR UPDATE', dto.jobId, tenantId);
+      if (!lockedJob.length || lockedJob[0].status.toUpperCase() !== 'ACTIVE') throw new BadRequestException('This job is not active. New submissions are blocked.');
       if (verifiedCandidate) {
         await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', `${tenantId}:${dto.jobId}:${dto.candidateId}`);
         const duplicate = await tx.recruiterSubmission.findFirst({ where: { tenantId, jobId: dto.jobId, candidateId: dto.candidateId }, select: { id: true } });
@@ -575,7 +578,7 @@ export class RecruiterSubmissionsService {
         j.submission_required AS job_submission_required,
         j.submission_done AS job_submission_done,
         j.job_code,
-        j.job_title, j.job_type,
+        j.job_title, j.job_type, j.status AS job_status,
         ${filters.submissionId ? `j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
         concat_ws(', ', j.city, j.state, j.country) AS job_location,
         j.work_mode AS job_work_mode, j.degree AS job_degree, j.notice_period AS job_notice_period,` : ''}
@@ -761,7 +764,7 @@ export class RecruiterSubmissionsService {
     const limit = Math.min(Math.max(1, filters.limit || 20), 100);
     const offset = (page - 1) * limit;
 
-    const bucketConditions = trackerBucketConditions();
+    const bucketConditions = trackerBucketConditions('', 'job_status');
     const bucket = filters.bucket || 'all';
     if (!Object.prototype.hasOwnProperty.call(bucketConditions, bucket)) throw new BadRequestException('Invalid tracker filter.');
     const countSql = `SELECT COUNT(*) FILTER (WHERE ${bucketConditions[bucket]}) as count,
@@ -801,7 +804,7 @@ export class RecruiterSubmissionsService {
     if (!(TRACKER_SORT_KEYS as readonly string[]).includes(sortBy)) throw new BadRequestException('Invalid submission sort column.');
     const direction = filters.sortDirection ?? 'desc';
     if (!['asc', 'desc'].includes(direction)) throw new BadRequestException('Invalid submission sort direction.');
-    const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.')[bucket]} ORDER BY ${sortExpressions[sortBy as TrackerSortKey]} ${direction.toUpperCase()} NULLS LAST, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    const retrieveSql = `${baseSql} AND ${trackerBucketConditions('s.', 'j.status')[bucket]} ORDER BY ${sortExpressions[sortBy as TrackerSortKey]} ${direction.toUpperCase()} NULLS LAST, s.id DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     const retrieveParams = [...params, limit, offset];
 
     try {
@@ -868,13 +871,14 @@ export class RecruiterSubmissionsService {
 
       const total = Number(countRes[0]?.count || 0);
       const data: SubmissionDetails[] = (retrieveRes || []).map((row: any) => {
-        const capabilities = submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId);
+        const capabilities = submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId, row.job_status, row.final_status);
         const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
         const hasAdminScope = (user.permissions || []).some(permission => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(permission));
         const cannotEditOtherManagerJob = isAccountManager && !hasAdminScope && row.am_id !== user.dbId && !(user.permissions || []).includes('submission:edit_all');
         if (cannotEditOtherManagerJob) {
           capabilities.review = false;
           capabilities.schedule = false;
+          capabilities.cancelInterview = false;
           capabilities.results = { l1: false, l2: false, l3: false };
           capabilities.outcome = false;
         }
@@ -1046,7 +1050,7 @@ export class RecruiterSubmissionsService {
         j.submission_required AS job_submission_required,
         j.submission_done AS job_submission_done,
         j.job_code,
-        j.job_title, j.job_type,
+        j.job_title, j.job_type, j.status AS job_status,
         j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
         concat_ws(', ', j.city, j.state, j.country) AS job_location,
         j.work_mode AS job_work_mode, j.degree AS job_degree, j.notice_period AS job_notice_period,
@@ -1227,7 +1231,7 @@ export class RecruiterSubmissionsService {
     const existing = await this.prisma.recruiterSubmission.findFirst({
       where: { id, tenantId },
       include: {
-        job: { select: { id: true, jobCode: true, jobTitle: true, accountManagerId: true } },
+        job: { select: { id: true, jobCode: true, jobTitle: true, accountManagerId: true, status: true } },
         candidate: { select: { id: true, fullName: true, firstName: true, lastName: true, email: true } },
       },
     });
@@ -1254,7 +1258,13 @@ export class RecruiterSubmissionsService {
         return this.findOne(id, tenantId, user, branchId);
       }
     }
-    const caps = submissionCapabilities(user.permissions, visibleSubmission.recruiterJobReviewerId === user.dbId);
+    const cancellationOnly = Object.keys(dto).every(key => ['l1Status', 'l2Status', 'l3Status', 'l1Remarks', 'l2Remarks', 'l3Remarks', 'expectedUpdatedAt', 'requestId'].includes(key))
+      && ['l1', 'l2', 'l3'].some(round => dto[`${round}Status`] === 'CANCELLED')
+      && ['l1', 'l2', 'l3'].every(round => (dto[`${round}Status`] === undefined || dto[`${round}Status`] === 'CANCELLED') && (dto[`${round}Remarks`] === undefined || dto[`${round}Status`] === 'CANCELLED'));
+    const workflowChange = changesStatus || dto.meetingLink !== undefined;
+    const paused = isClosedJob(existing.job?.status) && ['PENDING_APPROVAL', 'SUBMITTED'].includes(existing.finalStatus);
+    if (paused && workflowChange && !cancellationOnly) throw new BadRequestException('This job is closed. Pending workflow actions are paused.');
+    const caps = submissionCapabilities(user.permissions, visibleSubmission.recruiterJobReviewerId === user.dbId, cancellationOnly ? undefined : existing.job?.status, existing.finalStatus);
     validateTrackerUpdate({ ...existing, rejectionFromStatus: visibleSubmission.rejectionFromStatus }, dto, caps);
     if (dto.expectedUpdatedAt && new Date(dto.expectedUpdatedAt).getTime() !== existing.updatedAt.getTime()) {
       throw new ConflictException('This submission was updated by someone else. Reload it before saving.');
@@ -1346,6 +1356,9 @@ export class RecruiterSubmissionsService {
     const version = existing.updatedAt.getTime();
     data.updatedAt = new Date(Math.max(Date.now(), version + 1));
     await this.prisma.$transaction(async tx => {
+      const lockedJob = await tx.$queryRawUnsafe<{ status: string }[]>('SELECT status FROM ats.jobs WHERE id = $1::uuid AND tenant_id = $2::uuid FOR UPDATE', existing.jobId, tenantId);
+      if (!lockedJob.length) throw new NotFoundException('Job not found.');
+      if (isClosedJob(lockedJob[0].status) && ['PENDING_APPROVAL', 'SUBMITTED'].includes(existing.finalStatus) && workflowChange && !cancellationOnly) throw new BadRequestException('This job is closed. Pending workflow actions are paused.');
       let assessment: CandidateAssessment | null = null;
       if (dto.assessmentVersion) {
         const currentVersion = await this.assessmentSourceVersion(tx, existing, tenantId);
@@ -1639,6 +1652,8 @@ export class RecruiterSubmissionsService {
       candidateCurrentCompany: row.candidate_current_company ?? null,
       candidateCtcCurrency: row.candidate_ctc_currency ?? null,
       candidateCtcTerm: row.candidate_ctc_term ?? null,
+      jobStatus: row.job_status ?? null,
+      workflowPaused: isClosedJob(row.job_status) && ['PENDING_APPROVAL', 'SUBMITTED'].includes(row.final_status),
       jobType: row.job_type ?? null,
       recruiterAvatar: row.recruiter_avatar ?? null,
       candidateName: row.candidate_name || row.candidateName,

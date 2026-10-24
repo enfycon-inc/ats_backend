@@ -51,12 +51,15 @@ export const OUTCOME_LABELS: Record<SubmissionOutcome, string> = {
 export interface SubmissionCapabilities {
   review: boolean;
   schedule: boolean;
+  cancelInterview?: boolean;
   results: Record<RoundKey, boolean>;
   outcome: boolean;
   notes: boolean;
   rate: boolean;
 }
 export interface TrackerSubmission {
+  jobStatus?: string | null;
+  workflowPaused?: boolean;
   resume?: { available: boolean; filename: string | null; canDownload: boolean };
   statusRecordedDates?: Partial<Record<'finalStatus' | 'l1Status' | 'l2Status' | 'l3Status', string>>;
   currentCompensationAmount?: string | null;
