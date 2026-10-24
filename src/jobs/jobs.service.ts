@@ -24,7 +24,7 @@ import { resolveActiveRole } from '../auth/utils/active-role';
 import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
-  capabilities?: { edit: boolean; changeStatus: boolean; findMatches: boolean };
+  capabilities?: { edit: boolean; changeStatus: boolean; findMatches: boolean; managePublication: boolean };
   isPubliclyPublished: boolean;
   publicSlug: string | null;
   publicDescription: string | null;
@@ -1557,7 +1557,7 @@ export class JobsService {
       this.logger.log(`findAllJobs SQL: ${sql} | Params: ${JSON.stringify(params)}`);
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
       this.logger.log(`findAllJobs returned ${rows.length} jobs.`);
-      return rows.map((row) => ({ ...this.mapRowToProfile(row), capabilities: jobCapabilities(user, { tenantId, status: row.status, accountManagerId: row.account_manager_id, branchId: row.branch_id, businessUnitId: row.business_unit_id }) }));
+      return rows.map((row) => ({ ...this.mapRowToProfile(row), capabilities: jobCapabilities(user, { tenantId, approvalStatus: row.approval_status, status: row.status, accountManagerId: row.account_manager_id, branchId: row.branch_id, businessUnitId: row.business_unit_id }) }));
     } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
       return [];
@@ -1662,7 +1662,7 @@ export class JobsService {
         const pod = direct ? null : await this.prisma.pod.findFirst({ where: { tenantId, jobPods: { some: { jobId: rows[0].id } }, OR: [{ podHeadId: user.dbId }, ...((user.permissions || []).some((permission: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)) ? [{ users: { some: { id: user.dbId, tenantId, isActive: true } } }] : [])] }, select: { id: true } });
         if (!direct && !pod) throw new ForbiddenException('This job has not been assigned to you or your lead workspace.');
       }
-      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0]), capabilities: jobCapabilities(user, { tenantId, status: rows[0].status, accountManagerId: rows[0].account_manager_id, branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id }) };
+      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0]), capabilities: jobCapabilities(user, { tenantId, approvalStatus: rows[0].approval_status, status: rows[0].status, accountManagerId: rows[0].account_manager_id, branchId: rows[0].branch_id, businessUnitId: rows[0].business_unit_id }) };
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
       this.logger.error(`findOneJob failed: ${err.message}`, err.stack);

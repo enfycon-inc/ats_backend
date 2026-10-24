@@ -2,7 +2,7 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
 export type JobAction = 'edit' | 'change_status' | 'find_matches';
 type Actor = { dbId?: string; tenantId?: string; branchId?: string; businessUnitId?: string; permissions?: string[] };
-type JobScope = { status?: string | null; tenantId?: string; accountManagerId?: string | null; branchId?: string | null; businessUnitId?: string | null };
+type JobScope = { approvalStatus?: string | null; status?: string | null; tenantId?: string; accountManagerId?: string | null; branchId?: string | null; businessUnitId?: string | null };
 
 export function isClosedJob(status?: string | null) {
   return ['CLOSED', 'CLOSE'].includes(status?.trim().toUpperCase() || '');
@@ -29,5 +29,5 @@ export function assertJobAction(actor: Actor | undefined, job: JobScope, action:
 }
 
 export function jobCapabilities(actor: Actor | undefined, job: JobScope) {
-  return { edit: canActOnJob(actor, job, 'edit'), changeStatus: canActOnJob(actor, job, 'change_status'), findMatches: canActOnJob(actor, job, 'find_matches') };
+  return { edit: canActOnJob(actor, job, 'edit'), changeStatus: canActOnJob(actor, job, 'change_status'), findMatches: canActOnJob(actor, job, 'find_matches'), managePublication: canActOnJob(actor, job, 'edit') && job.status?.toUpperCase() === 'ACTIVE' && (!job.approvalStatus || job.approvalStatus === 'APPROVED') };
 }

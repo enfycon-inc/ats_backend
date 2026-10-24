@@ -1,3 +1,4 @@
+import { assertJobAction } from '../jobs/job-action-policy';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -72,16 +73,14 @@ export class PublicJobsService {
   }
 
   async setPublished(user: any, jobId: string, publish: boolean) {
-    const permissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
-    if (!user?.dbId || !user?.tenantId || !(permissions.includes('job:edit') || permissions.includes('tenant:settings') || permissions.includes('tenant:manage'))) throw new ForbiddenException('Job edit permission is required.');
-    const job = await this.prisma.job.findFirst({ where: { id: jobId, tenantId: user.tenantId, deletedAt: null }, select: { id: true, jobTitle: true, jobCode: true, status: true, approvalStatus: true, publicSlug: true, publicDescription: true, branchId: true, businessUnitId: true } });
+    if (!user?.dbId || !user?.tenantId) throw new ForbiddenException('Authentication is required.');
+    const job = await this.prisma.job.findFirst({ where: { id: jobId, tenantId: user.tenantId, deletedAt: null }, select: { id: true, tenantId: true, accountManagerId: true, updatedAt: true, jobTitle: true, jobCode: true, status: true, approvalStatus: true, publicSlug: true, publicDescription: true, branchId: true, businessUnitId: true } });
     if (!job) throw new NotFoundException('Job not found.');
-    const tenantWide = permissions.includes('tenant:settings') || permissions.includes('tenant:manage');
-    if (!tenantWide && (!user.branchId || job.branchId !== user.branchId || (permissions.includes('unit_admin:manage') && job.businessUnitId !== user.businessUnitId))) throw new ForbiddenException('You cannot publish jobs outside your assigned scope.');
+    assertJobAction(user, job, 'edit');
     if (job.status.toUpperCase() !== 'ACTIVE' || (job.approvalStatus && job.approvalStatus !== 'APPROVED')) throw new BadRequestException('Only active, approved jobs can be published or unpublished.');
     const slug = job.publicSlug || careerPublicationDefaults(job.jobTitle, job.jobCode).publicSlug;
     const updated = await this.prisma.$transaction(async tx => {
-      const result = await tx.job.updateMany({ where: { id: job.id, tenantId: user.tenantId, deletedAt: null, status: { equals: 'ACTIVE', mode: 'insensitive' }, approvalStatus: job.approvalStatus }, data: { isPubliclyPublished: publish, publicSlug: slug } });
+      const result = await tx.job.updateMany({ where: { id: job.id, tenantId: user.tenantId, deletedAt: null, accountManagerId: job.accountManagerId, branchId: job.branchId, businessUnitId: job.businessUnitId, updatedAt: job.updatedAt, status: { equals: 'ACTIVE', mode: 'insensitive' }, approvalStatus: job.approvalStatus }, data: { isPubliclyPublished: publish, publicSlug: slug } });
       if (!result.count) throw new BadRequestException('Job status changed. Refresh and try again.');
       await tx.auditLog.create({ data: { tenantId: user.tenantId, actorId: user.dbId, actorEmail: user.email, action: publish ? 'JOB_PUBLISHED_PUBLICLY' : 'JOB_UNPUBLISHED_PUBLICLY', targetType: 'job', targetId: job.id, details: { publicSlug: slug } } });
       return { id: job.id, publicSlug: slug, isPubliclyPublished: publish };
