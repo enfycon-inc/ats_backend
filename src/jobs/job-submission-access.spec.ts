@@ -4,6 +4,16 @@ describe('pod-first submission authorization', () => {
   function setup(direct = false, pod = true) {
     return { user: { findFirst: jest.fn().mockResolvedValue({ branchId: 'branch', businessUnitId: 'unit', podId: 'pod' }) }, tenant: { findUnique: jest.fn().mockResolvedValue({ podSystemEnabled: true }) }, businessUnit: { findFirst: jest.fn().mockResolvedValue({ allowPods: true }) }, job: { findFirst: jest.fn().mockResolvedValue({ id: 'job', status: 'Active', approvalStatus: 'APPROVED' }) }, jobRecruiter: { findUnique: jest.fn().mockResolvedValue(direct ? { jobId: 'job' } : null) }, jobPod: { findUnique: jest.fn().mockResolvedValue(pod ? { jobId: 'job' } : null) } } as any;
   }
+  it('allows owned-job and unit-job permissions without assignment, including when pods are off', async () => {
+    const db = setup(false, false);
+    db.tenant.findUnique.mockResolvedValue({ podSystemEnabled: false });
+    db.job.findFirst.mockResolvedValue({ id: 'job', status: 'Active', approvalStatus: 'APPROVED', accountManagerId: actor.dbId });
+    await expect(assertJobSubmissionAccess(db, { ...actor, permissions: ['submission:create', 'job:submit_owned_jobs'] }, 'tenant', 'job', actor.dbId)).resolves.toBeUndefined();
+    db.job.findFirst.mockResolvedValue({ id: 'job', status: 'Active', approvalStatus: 'APPROVED', accountManagerId: 'other' });
+    await expect(assertJobSubmissionAccess(db, { ...actor, permissions: ['submission:create', 'job:submit_owned_jobs'] }, 'tenant', 'job', actor.dbId)).rejects.toThrow('assign this job');
+    await expect(assertJobSubmissionAccess(db, { ...actor, permissions: ['submission:create', 'job:submit_unit_jobs'] }, 'tenant', 'job', actor.dbId)).resolves.toBeUndefined();
+    await expect(assertJobSubmissionAccess(db, { ...actor, permissions: ['job:submit_unit_jobs'] }, 'tenant', 'job', actor.dbId)).rejects.toThrow('submission:create');
+  });
   it('allows an individually assigned recruiter', async () => { await expect(assertJobSubmissionAccess(setup(true), actor, 'tenant', 'job', 'recruiter')).resolves.toBeUndefined(); });
   it('does not grant submission rights merely through pod membership', async () => { await expect(assertJobSubmissionAccess(setup(), actor, 'tenant', 'job', 'recruiter')).rejects.toThrow('assign this job'); });
   it('allows whole-pod submissions only when explicitly enabled', async () => { await expect(assertJobSubmissionAccess(setup(), { ...actor, permissions: ['submission:create', 'job:submit_pod_jobs'] }, 'tenant', 'job', 'recruiter')).resolves.toBeUndefined(); });

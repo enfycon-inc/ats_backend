@@ -1,7 +1,7 @@
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
   const scopedActions = permissions.includes('job:edit') ? ['job:change_status', 'job:find_matches', ...['edit', 'change_status', 'find_matches'].flatMap(action => ['unit', 'branch', 'tenant'].map(scope => `job:${action}_${scope}`))] : [];
-  return [...new Set([...permissions, ...scopedActions, ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional'] : [])])];
+  return [...new Set([...permissions, ...scopedActions, ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume', 'job:submit_owned_jobs'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional', 'job:submit_unit_jobs'] : [])])];
 }
 import {
   Injectable,
@@ -836,6 +836,8 @@ export class AuthRbacService {
       { id: 'submission:download_resume', name: 'Download Resume from Approved Submissions', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:view_all', name: 'View Submissions for All Account Manager Jobs', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:edit_all', name: 'Edit Status on Other Account Manager Jobs (requires all-submission access)', group: 'Candidate Submissions & Sourcing' },
+      { id: 'job:submit_owned_jobs', name: 'Submit Candidates to Own Account Manager Jobs', group: 'Candidate Submissions & Sourcing' },
+      { id: 'job:submit_unit_jobs', name: 'Submit Candidates to Any Job in Current Unit', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:edit', name: 'Edit Submissions (General Notes & Comments)', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:internal_screening', name: 'Internal Screening Review & Approval Gate', group: 'Internal Screening & Review Gate' },

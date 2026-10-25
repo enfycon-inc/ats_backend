@@ -33,7 +33,7 @@ export function canActOnJob(actor: Actor | undefined, job: JobScope, action: Job
   return sameBranch && (!actor.businessUnitId || sameUnit) && job.accountManagerId === actor.dbId && has(`job:${action}`);
 }
 export function canSubmitToJob(actor: Actor | undefined, job: JobScope): boolean {
-  return Boolean(actor?.dbId && actor.tenantId === job.tenantId && actor.branchId && actor.branchId === job.branchId && actor.businessUnitId && actor.businessUnitId === job.businessUnitId && actor.permissions?.includes('submission:create') && isActiveApprovedJob(job) && (job.directlyAssigned || (job.podsEnabled && job.podAssigned && actor.permissions.includes('job:submit_pod_jobs'))));
+  return Boolean(actor?.dbId && actor.tenantId === job.tenantId && actor.branchId && actor.branchId === job.branchId && actor.businessUnitId && actor.businessUnitId === job.businessUnitId && actor.permissions?.includes('submission:create') && isActiveApprovedJob(job) && (actor.permissions.includes('job:submit_unit_jobs') || (actor.permissions.includes('job:submit_owned_jobs') && job.accountManagerId === actor.dbId) || job.directlyAssigned || (job.podsEnabled && job.podAssigned && actor.permissions.includes('job:submit_pod_jobs'))));
 }
 export function assertJobAction(actor: Actor | undefined, job: JobScope, action: JobAction) {
   if (action !== 'change_status' && isClosedJob(job.status)) throw new BadRequestException('This job is closed. Reopen it before editing, matching or publishing.');

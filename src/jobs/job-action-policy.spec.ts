@@ -4,6 +4,15 @@ import { jobAccessGrants } from '../auth/job-access-grants';
 describe('granular job access', () => {
   const job = { tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit', accountManagerId: 'manager', status: 'Active', approvalStatus: 'APPROVED', directlyAssigned: true, podsEnabled: false };
   const recruiter = { dbId: 'recruiter', tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit', permissions: ['job:view', 'candidate:view', 'submission:create', 'job:find_matches_assigned'] };
+  it('scopes unassigned submission capabilities by explicit ownership or unit grant', () => {
+    const unassigned = { ...job, directlyAssigned: false };
+    const owner = { ...recruiter, dbId: 'manager', permissions: ['submission:create', 'job:submit_owned_jobs'] };
+    expect(canSubmitToJob(owner, unassigned)).toBe(true);
+    expect(canSubmitToJob(owner, { ...unassigned, accountManagerId: 'other' })).toBe(false);
+    const unitActor = { ...recruiter, permissions: ['submission:create', 'job:submit_unit_jobs'] };
+    expect(canSubmitToJob(unitActor, unassigned)).toBe(true);
+    for (const denied of [{ ...unassigned, businessUnitId: 'other' }, { ...unassigned, branchId: 'other' }, { ...unassigned, tenantId: 'other' }, { ...unassigned, status: 'Closed' }]) expect(canSubmitToJob(unitActor, denied)).toBe(false);
+  });
   it('allows assigned matching and submission without granting job or website editing', () => {
     expect(jobCapabilities(recruiter, job)).toEqual({ findMatches: true, submitCandidate: true, edit: false, changeStatus: false, managePublication: false });
   });
