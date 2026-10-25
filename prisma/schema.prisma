@@ -86,6 +86,7 @@ model Tenant {
   tenantEmailDomains        TenantEmailDomain[]
   userInvitations           UserInvitation[]
   passwordResetTokens       PasswordResetToken[]
+  systemEmailDeliveries     SystemEmailDelivery[]
   users                     User[]
 
     clientContacts       ClientContact[]
@@ -412,6 +413,7 @@ model User {
   notifications        Notification[]
   podsAsHead           Pod[]                     @relation("PodHead")
   assignedJobsRecruiter JobRecruiter[] @relation("JobToJobRecruiter")
+  systemEmailDeliveries SystemEmailDelivery[]
   notificationSettings UserNotificationSettings?
   branch               Branch?                   @relation(fields: [branchId], references: [id])
   businessUnit         BusinessUnit?             @relation(fields: [businessUnitId], references: [id])
@@ -1468,8 +1470,10 @@ model SystemEmailDelivery {
   availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
   leaseId String? @map("lease_id") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recipient User @relation(fields: [recipientId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   @@unique([eventId, recipientId, category])
-  @@index([status, availableAt])
+  @@index([status, availableAt], map: "system_email_deliveries_ready")
   @@map("system_email_deliveries")
   @@schema("ats")
 }
