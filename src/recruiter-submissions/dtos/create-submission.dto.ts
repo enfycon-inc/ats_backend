@@ -3,6 +3,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 export class CreateSubmissionDto {
   @ApiPropertyOptional() verifiedCandidate?: Record<string, unknown>;
   @ApiPropertyOptional() updateCandidateSkills?: boolean;
+  @ApiPropertyOptional({ enum: ['SPECIFIC_LOCATIONS', 'REMOTE_ONLY', 'REMOTE_OR_LOCATIONS'] }) preferredLocationMode?: string;
   @ApiPropertyOptional() currentCompensation?: string;
   @ApiPropertyOptional() expectedCompensation?: string;
   @ApiPropertyOptional() compensationCurrency?: string;

@@ -5,7 +5,7 @@ import { submissionCompensation, submissionSource, isContractJob } from './submi
 import { assertJobSubmissionAccess } from '../jobs/job-submission-access';
 import { verifiedCandidateInput } from './verified-candidate';
 import { randomUUID } from 'node:crypto';
-import { assessCandidate, assessmentSourceVersion } from '../jobs/candidate-assessment';
+import { assessCandidate, assessmentSourceVersion, type AssessmentCandidate } from '../jobs/candidate-assessment';
 import { loadAssessmentSkills } from '../jobs/assessment-skill-dictionary';
 import { historySnapshot, historyChanges, historyAuditChanges, saveRequestHash } from './submission-history';
 import { currentTrackerRound, trackerBucketConditions } from './tracker-workflow';
@@ -21,6 +21,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
+import { AssessmentPreviewDto } from './dtos/assessment-preview.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { submissionCapabilities } from './submission-capabilities';
@@ -315,6 +316,9 @@ export class RecruiterSubmissionsService {
     }
 
     const verifiedCandidate = verifiedCandidateInput(dto.verifiedCandidate, dto.updateCandidateSkills, user?.permissions);
+    const preferredLocationMode = dto.preferredLocationMode || (verifiedCandidate?.preferredLocationMode as string | undefined) || 'SPECIFIC_LOCATIONS';
+    if (!['SPECIFIC_LOCATIONS', 'REMOTE_ONLY', 'REMOTE_OR_LOCATIONS'].includes(preferredLocationMode)) throw new BadRequestException('Select a valid preferred location option.');
+    if (verifiedCandidate && verifiedCandidate.preferredLocationMode !== preferredLocationMode) throw new BadRequestException('Candidate location preference does not match the submission preference.');
     const compensation = submissionCompensation(dto, job.jobType);
     const source = submissionSource(dto);
     if (dto.compensationInputUnit !== undefined && !dto.sourceCategory) throw new BadRequestException('Select the candidate source.');
@@ -329,6 +333,7 @@ export class RecruiterSubmissionsService {
     if (!candidate) {
       throw new BadRequestException(`Candidate with ID ${dto.candidateId} not found under active tenant.`);
     }
+    if (preferredLocationMode !== 'REMOTE_ONLY' && !verifiedCandidate && !(candidate.preferredLocations?.length)) throw new BadRequestException('Add a preferred city or select remote-only work.');
 
     // Interview decisions must use the authorized, audited update workflow.
     for (const round of ['l1', 'l2', 'l3']) {
@@ -393,7 +398,8 @@ export class RecruiterSubmissionsService {
           candidateExpectedCtc: dto.compensationInputUnit !== undefined ? null : dto.candidateExpectedCtc ?? candidate.expectedCtc,
           candidateNoticePeriod: dto.candidateNoticePeriod ?? candidate.noticePeriodDays,
           candidateRelevantExperience: dto.candidateRelevantExperience ?? candidate.relevantExperienceYears,
-          candidatePreferredLocations: candidate.preferredLocations || [],
+          candidatePreferredLocations: preferredLocationMode === 'REMOTE_ONLY' ? [] : verifiedCandidate ? String(verifiedCandidate.preferredLocations).split(',').map(value => value.trim()).filter(Boolean) : candidate.preferredLocations || [],
+          candidatePreferredLocationMode: preferredLocationMode,
           
         },
       });
@@ -546,6 +552,7 @@ export class RecruiterSubmissionsService {
         s.candidate_notice_period,
         s.candidate_relevant_experience,
         s.candidate_preferred_locations,
+        s.candidate_preferred_location_mode,
         s.created_at,
         s.updated_at,
         c.full_name AS candidate_name, c.first_name AS candidate_first_name, c.last_name AS candidate_last_name, c.current_company AS candidate_current_company,
@@ -565,6 +572,7 @@ export class RecruiterSubmissionsService {
         COALESCE(s.candidate_notice_period, c.notice_period_days) AS candidate_notice_period,
         COALESCE(s.candidate_relevant_experience, c.relevant_experience_years) AS candidate_relevant_experience,
         COALESCE(s.candidate_preferred_locations, c.preferred_locations) AS candidate_preferred_locations,
+        s.candidate_preferred_location_mode AS candidate_preferred_location_mode,
         (SELECT ev.details -> 'verifiedCandidate' FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id AND ev.kind = 'CREATED' LIMIT 1) AS verified_candidate,
         COALESCE((SELECT ARRAY(SELECT jsonb_array_elements_text(ev.details #> '{verifiedCandidate,skills}'))
           FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
@@ -1035,6 +1043,7 @@ export class RecruiterSubmissionsService {
         s.candidate_notice_period,
         s.candidate_relevant_experience,
         s.candidate_preferred_locations,
+        s.candidate_preferred_location_mode,
         s.created_at,
         s.updated_at,
         c.full_name AS candidate_name, c.first_name AS candidate_first_name, c.last_name AS candidate_last_name, c.current_company AS candidate_current_company,
@@ -1050,6 +1059,7 @@ export class RecruiterSubmissionsService {
         COALESCE(s.candidate_notice_period, c.notice_period_days) AS candidate_notice_period,
         COALESCE(s.candidate_relevant_experience, c.relevant_experience_years) AS candidate_relevant_experience,
         COALESCE(s.candidate_preferred_locations, c.preferred_locations) AS candidate_preferred_locations,
+        s.candidate_preferred_location_mode AS candidate_preferred_location_mode,
         (SELECT ev.details -> 'verifiedCandidate' FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id AND ev.kind = 'CREATED' LIMIT 1) AS verified_candidate,
         COALESCE((SELECT ARRAY(SELECT jsonb_array_elements_text(ev.details #> '{verifiedCandidate,skills}'))
           FROM ats.submission_events ev WHERE ev.submission_id = s.id AND ev.tenant_id = s.tenant_id
@@ -1184,6 +1194,37 @@ export class RecruiterSubmissionsService {
     return { submission, assessment };
   }
 
+  async previewAssessment(dto: AssessmentPreviewDto, tenantId: string, user: AuthUser) {
+    if (!dto || typeof dto.jobId !== 'string' || !dto.jobId || !Array.isArray(dto.skills) || dto.skills.length > 100 || dto.skills.some(skill => typeof skill !== 'string' || skill.length > 100) || !['SPECIFIC_LOCATIONS', 'REMOTE_ONLY', 'REMOTE_OR_LOCATIONS'].includes(dto.preferredLocationMode)) throw new BadRequestException('Enter valid candidate details for the match preview.');
+    if (dto.candidateId !== undefined && (typeof dto.candidateId !== 'string' || !dto.candidateId)) throw new BadRequestException('Select a valid candidate.');
+    if (dto.totalExperienceYears !== undefined && (!Number.isFinite(dto.totalExperienceYears) || dto.totalExperienceYears < 0 || dto.totalExperienceYears > 100)) throw new BadRequestException('Enter valid candidate experience.');
+    if (dto.noticePeriodDays !== undefined && (!Number.isInteger(dto.noticePeriodDays) || dto.noticePeriodDays < 0 || dto.noticePeriodDays > 3650)) throw new BadRequestException('Enter valid candidate availability.');
+    if (dto.currentLocation !== undefined && (typeof dto.currentLocation !== 'string' || dto.currentLocation.length > 300)) throw new BadRequestException('Enter a valid current location.');
+    if (dto.preferredLocations !== undefined && (!Array.isArray(dto.preferredLocations) || dto.preferredLocations.length > 20 || dto.preferredLocations.some(value => typeof value !== 'string' || value.length > 300))) throw new BadRequestException('Enter valid preferred locations.');
+    await assertJobSubmissionAccess(this.prisma, user, tenantId, dto.jobId, user.dbId);
+    const job = await this.prisma.job.findFirst({ where: { id: dto.jobId, tenantId }, select: {
+      id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
+      city: true, state: true, country: true, workMode: true, degree: true, noticePeriod: true,
+    } });
+    if (!job) throw new NotFoundException('Job is unavailable in this workspace.');
+    const saved = dto.candidateId ? await this.prisma.candidate.findFirst({ where: { id: dto.candidateId, tenantId, deletedAt: null }, select: {
+      id: true, updatedAt: true, resumeRecordId: true, resumeRecord: { select: { id: true, fileHash: true } },
+    } }) : null;
+    if (dto.candidateId && !saved) throw new NotFoundException('Candidate is unavailable in this workspace.');
+    const candidate = {
+      ...saved,
+      skills: dto.skills,
+      totalExperienceYears: dto.totalExperienceYears ?? null,
+      rawCurrentLocation: dto.currentLocation?.trim() || null,
+      preferredLocationMode: dto.preferredLocationMode as AssessmentCandidate['preferredLocationMode'],
+      preferredLocations: dto.preferredLocationMode === 'REMOTE_ONLY' ? [] : dto.preferredLocations || [],
+      noticePeriodDays: dto.noticePeriodDays ?? null,
+    };
+    const dictionary = await loadAssessmentSkills(this.prisma);
+    const version = assessmentSourceVersion(job, candidate, dictionary);
+    return assessCandidate(job, candidate, dictionary, version);
+  }
+
   private reviewAssessmentKey(tenantId: string, submissionId: string, version: string) {
     return `${tenantId}:${submissionId}:${version}`;
   }
@@ -1205,7 +1246,7 @@ export class RecruiterSubmissionsService {
     return entry.assessment;
   }
 
-  private async assessmentSourceVersion(db: any, submission: { jobId: string; candidateId: string }, tenantId: string) {
+  private async assessmentSourceVersion(db: any, submission: { jobId: string; candidateId: string; candidatePreferredLocations?: string[] | null; candidatePreferredLocationMode?: string | null }, tenantId: string) {
     const [job, candidate, dictionary] = await Promise.all([
       db.job.findFirst({ where: { id: submission.jobId, tenantId }, select: {
         id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
@@ -1213,16 +1254,19 @@ export class RecruiterSubmissionsService {
       } }),
       db.candidate.findFirst({ where: { id: submission.candidateId, tenantId, deletedAt: null }, select: {
         id: true, updatedAt: true, resumeRecordId: true, skills: true, totalExperienceYears: true,
-        rawCurrentLocation: true, preferredLocations: true, noticePeriodDays: true,
+        rawCurrentLocation: true, preferredLocations: true, preferredLocationMode: true, noticePeriodDays: true,
         resumeRecord: { select: { id: true, fileHash: true } },
       } }),
       loadAssessmentSkills(db),
     ]);
     if (!job || !candidate) throw new NotFoundException('Assessment sources are unavailable in this tenant.');
-    return assessmentSourceVersion(job, candidate, dictionary);
+    return assessmentSourceVersion(job, { ...candidate,
+      preferredLocations: submission.candidatePreferredLocations ?? candidate.preferredLocations,
+      preferredLocationMode: submission.candidatePreferredLocationMode ?? candidate.preferredLocationMode,
+    }, dictionary);
   }
 
-  private async assessSubmission(db: any, submission: { jobId: string; candidateId: string }, tenantId: string) {
+  private async assessSubmission(db: any, submission: { jobId: string; candidateId: string; candidatePreferredLocations?: string[] | null; candidatePreferredLocationMode?: string | null }, tenantId: string) {
     const [job, candidate] = await Promise.all([
       db.job.findFirst({ where: { id: submission.jobId, tenantId }, select: {
         id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, jobDescription: true,
@@ -1230,13 +1274,17 @@ export class RecruiterSubmissionsService {
       } }),
       db.candidate.findFirst({ where: { id: submission.candidateId, tenantId, deletedAt: null }, select: {
         id: true, updatedAt: true, skills: true, totalExperienceYears: true, rawCurrentLocation: true,
-        preferredLocations: true, noticePeriodDays: true, resumeRecord: { select: { id: true, fileHash: true, rawText: true, parsedJson: true } },
+        preferredLocations: true, preferredLocationMode: true, noticePeriodDays: true, resumeRecord: { select: { id: true, fileHash: true, rawText: true, parsedJson: true } },
       } }),
     ]);
     if (!job || !candidate) throw new NotFoundException('Assessment sources are unavailable in this tenant.');
     const dictionary = await loadAssessmentSkills(db);
-    return assessCandidate(job, { ...candidate, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson }, dictionary,
-      assessmentSourceVersion(job, candidate, dictionary));
+    const snapshot = { ...candidate,
+      preferredLocations: submission.candidatePreferredLocations ?? candidate.preferredLocations,
+      preferredLocationMode: submission.candidatePreferredLocationMode ?? candidate.preferredLocationMode,
+    };
+    return assessCandidate(job, { ...snapshot, rawText: candidate.resumeRecord?.rawText, parsedJson: candidate.resumeRecord?.parsedJson }, dictionary,
+      assessmentSourceVersion(job, snapshot, dictionary));
   }
 
   async update(id: string, dto: UpdateSubmissionDto, tenantId: string, user: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
@@ -1686,6 +1734,7 @@ export class RecruiterSubmissionsService {
       candidateNoticePeriod: row.candidate_notice_period ?? row.candidateNoticePeriod ?? null,
       candidateRelevantExperience: row.candidate_relevant_experience != null ? Number(row.candidate_relevant_experience) : null,
       candidatePreferredLocations: row.candidate_preferred_locations || null,
+      candidatePreferredLocationMode: row.candidate_preferred_location_mode || null,
       candidateSkills: row.candidate_skills || null,
       jobDescription: row.job_description ?? null,
       jobExperienceMin: row.job_experience_min ?? null,

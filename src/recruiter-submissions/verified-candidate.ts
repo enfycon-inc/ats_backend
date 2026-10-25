@@ -17,8 +17,12 @@ export function verifiedCandidateInput(value: unknown, updateSkills: unknown, pe
   if (!Array.isArray(input.skills) || !input.skills.length || input.skills.length > 100 || input.skills.some(skill => typeof skill !== 'string' || !skill.trim() || skill.length > 100)) throw new BadRequestException('Enter valid verified primary skills.');
   result.skills = [...new Set((input.skills as string[]).map(skill => skill.trim()))];
   for (const key of ['firstName', 'lastName', 'email', 'phone', 'currentCompany', 'currentLocation', 'preferredLocations']) {
+    if (key === 'preferredLocations' && input.preferredLocationMode === 'REMOTE_ONLY') continue;
     if (!(result[key] as string).length) throw new BadRequestException('Complete required verified candidate details.');
   }
+  const mode = input.preferredLocationMode ?? 'SPECIFIC_LOCATIONS';
+  if (typeof mode !== 'string' || !['SPECIFIC_LOCATIONS', 'REMOTE_ONLY', 'REMOTE_OR_LOCATIONS'].includes(mode)) throw new BadRequestException('Select a valid preferred location option.');
+  result.preferredLocationMode = mode;
   for (const key of ['totalExperienceYears', 'relevantExperienceYears']) {
     if (!/^\d+(?:\.\d+)?$/.test(result[key] as string) || Number(result[key]) > 100) throw new BadRequestException('Enter valid experience years.');
   }

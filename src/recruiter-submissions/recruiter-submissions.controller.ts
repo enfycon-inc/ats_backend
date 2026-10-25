@@ -20,6 +20,7 @@ import type { Response } from 'express';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth } from '@nestjs/swagger';
 import { RecruiterSubmissionsService, SubmissionDetails } from './recruiter-submissions.service';
 import { CreateSubmissionDto } from './dtos/create-submission.dto';
+import { AssessmentPreviewDto } from './dtos/assessment-preview.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -266,6 +267,15 @@ export class RecruiterSubmissionsController {
     @Headers('x-branch-id') branchHeaderId?: string,
   ) {
     return this.service.assessment(id, resolveTenantId(user, tenantId), user, resolveBranchId(user, branchHeaderId));
+  }
+
+  @Post('assessment-preview')
+  async assessmentPreview(
+    @Body() dto: AssessmentPreviewDto,
+    @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string,
+  ) {
+    return this.service.previewAssessment(dto, resolveTenantId(user, tenantId), user);
   }
 
   @Get(':id/people/:kind')

@@ -254,6 +254,7 @@ export class CandidatesController {
     @Body('skills') skills?: string,
     @Body('location') location?: string,
     @Body('preferredLocations') preferredLocations?: string,
+    @Body('preferredLocationMode') preferredLocationMode?: string,
     @Headers('x-tenant-id') tenantId?: string,
     @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean }> {
@@ -277,6 +278,7 @@ export class CandidatesController {
       skills,
       location,
       preferredLocations,
+      preferredLocationMode,
       ...context,
     }, user);
   }

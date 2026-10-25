@@ -417,6 +417,7 @@ export class CandidatesService {
       lastWorkingDay: row.lastWorkingDay || null,
       panCard: row.panCard || null,
       preferredLocations: row.preferredLocations || parsedJsonObj?.preferred_locations || [],
+      preferredLocationMode: row.preferredLocationMode || null,
       parsedJson: isList ? null : parsedJsonObj,
     };
   }
@@ -450,7 +451,7 @@ export class CandidatesService {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { uploadedByUserId?: string; uploadedByName?: string; totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
+    meta: { uploadedByUserId?: string; uploadedByName?: string; totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string; preferredLocationMode?: string } = {},
     user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
@@ -544,10 +545,11 @@ export class CandidatesService {
       ? parsed.experience_years
       : (parsed?.experience_detailed?.length ? Number(parsed.experience_detailed.length) : 0);
     
-    let preferredLocations: string[] = Array.isArray(parsed?.preferred_locations) ? parsed.preferred_locations : [];
+    if (meta.preferredLocationMode && !['SPECIFIC_LOCATIONS', 'REMOTE_ONLY', 'REMOTE_OR_LOCATIONS'].includes(meta.preferredLocationMode)) throw new BadRequestException('Select a valid preferred location option.');
+    let preferredLocations: string[] = meta.preferredLocationMode === 'REMOTE_ONLY' ? [] : Array.isArray(parsed?.preferred_locations) ? parsed.preferred_locations : [];
     if (meta.preferredLocations) {
       const formLocs = meta.preferredLocations.split(',').map((l: string) => l.trim()).filter(Boolean);
-      preferredLocations = [...new Set([...preferredLocations, ...formLocs])];
+      preferredLocations = meta.preferredLocationMode === 'REMOTE_ONLY' ? [] : [...new Set(formLocs)];
     }
     const currentCompany = meta.currentCompany || (parsed?.experience_detailed?.[0]?.organization) || '';
     const rawText = parsed?.raw_text || (parsed?.word_count ? parsed?.raw_text || '' : '') || (existing?.rawText || '');
@@ -596,7 +598,8 @@ export class CandidatesService {
             resumeRecordId: resume.id,
             uploadedByUserId: existingCand.uploadedByUserId || uploaderId,
             uploadedByName: existingCand.uploadedByName || uploaderName,
-            preferredLocations: preferredLocations.length > 0 ? preferredLocations : undefined,
+            preferredLocations: meta.preferredLocationMode === 'REMOTE_ONLY' ? [] : preferredLocations,
+            preferredLocationMode: meta.preferredLocationMode || undefined,
             deletedAt: null,
           },
           include: {
@@ -653,7 +656,8 @@ export class CandidatesService {
               market,
               uploadedByUserId: uploaderId,
               uploadedByName: uploaderName,
-              preferredLocations: preferredLocations.length > 0 ? preferredLocations : undefined,
+              preferredLocations: meta.preferredLocationMode === 'REMOTE_ONLY' ? [] : preferredLocations,
+              preferredLocationMode: meta.preferredLocationMode || undefined,
             },
           });
 

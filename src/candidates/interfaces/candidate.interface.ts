@@ -43,6 +43,7 @@ export interface CandidateProfile {
   lastWorkingDay?: string | null;
   panCard?: string | null;
   preferredLocations?: string[];
+  preferredLocationMode?: 'SPECIFIC_LOCATIONS' | 'REMOTE_ONLY' | 'REMOTE_OR_LOCATIONS' | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Legacy parser payload has provider-specific fields.
   parsedJson?: any;
 }

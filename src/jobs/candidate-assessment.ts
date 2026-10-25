@@ -10,7 +10,7 @@ export interface AssessmentJob {
 }
 export interface AssessmentCandidate {
   skills?: string[]; rawText?: string | null; parsedJson?: unknown; totalExperienceYears?: unknown;
-  rawCurrentLocation?: string | null; preferredLocations?: string[]; noticePeriodDays?: number | null;
+  rawCurrentLocation?: string | null; preferredLocations?: string[]; preferredLocationMode?: 'SPECIFIC_LOCATIONS' | 'REMOTE_ONLY' | 'REMOTE_OR_LOCATIONS' | null; noticePeriodDays?: number | null;
 }
 export function assessmentSourceVersion(job: AssessmentJob & { id?: string; updatedAt?: Date | string | null }, candidate: AssessmentCandidate & {
   id?: string; updatedAt?: Date | string | null; resumeRecordId?: string | null;
@@ -37,6 +37,7 @@ export function assessmentSourceVersion(job: AssessmentJob & { id?: string; upda
       totalExperienceYears: candidate.totalExperienceYears,
       rawCurrentLocation: candidate.rawCurrentLocation,
       preferredLocations: candidate.preferredLocations,
+      preferredLocationMode: candidate.preferredLocationMode,
       noticePeriodDays: candidate.noticePeriodDays,
     },
     dictionary: stableDictionary,
@@ -97,13 +98,18 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   if (location || job.workMode) {
     const city = normalizeTerm(job.city || '');
     const current = normalizeTerm(candidate.rawCurrentLocation || '');
-    const remote = normalizeTerm(job.workMode || '') === 'remote';
+    const jobWorkMode = normalizeTerm(job.workMode || '');
+    const jobRemote = jobWorkMode === 'remote' || jobWorkMode === 'fully remote';
+    const candidateRemoteOnly = candidate.preferredLocationMode === 'REMOTE_ONLY';
+    const candidateRemoteOk = candidateRemoteOnly || candidate.preferredLocationMode === 'REMOTE_OR_LOCATIONS';
     const local = !!city && !!current && new RegExp(`(^|[^a-z0-9])${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(current);
     const preferred = !!city && strings(candidate.preferredLocations).some(place => normalizeTerm(place) === city);
+    const remoteConflict = candidateRemoteOnly && !jobRemote;
+    const remoteMatch = jobRemote && candidateRemoteOk;
     criteria.push({ key: 'location', category: 'location', requirement: [job.workMode, location].filter(Boolean).join(' · '),
-      finding: remote || local || preferred ? 'EVIDENCE_FOUND' : 'NEEDS_CLARIFICATION',
-      evidence: remote ? 'Job is remote; confirm any geographic restrictions.' : local ? `Current location: ${candidate.rawCurrentLocation}; confirm work-mode availability.` : preferred ? 'Job city is listed as a preferred location; confirm relocation.' : 'Location or work-mode availability needs confirmation.' });
-    parts.push({ label: 'Location', weight: 15, score: remote || local ? 100 : preferred ? 90 : null });
+      finding: remoteConflict ? 'DOES_NOT_MEET' : remoteMatch || local || preferred ? 'EVIDENCE_FOUND' : 'NEEDS_CLARIFICATION',
+      evidence: remoteConflict ? 'Candidate prefers remote-only work while this job is not remote.' : remoteMatch ? 'Candidate marked remote work as acceptable; confirm geographic restrictions.' : jobRemote ? 'Job is remote; confirm the candidate’s remote preference and any geographic restrictions.' : local ? `Current location: ${candidate.rawCurrentLocation}; confirm work-mode availability.` : preferred ? 'Job city is listed as a preferred location; confirm relocation.' : 'Location or work-mode availability needs confirmation.' });
+    parts.push({ label: 'Location', weight: 15, score: remoteConflict ? 0 : remoteMatch || local ? 100 : preferred ? 90 : null });
   }
   if (job.degree) criteria.push({ key: 'degree', category: 'education', requirement: `Education: ${job.degree}`, finding: 'NEEDS_CLARIFICATION', evidence: 'Qualification equivalence requires reviewer confirmation.' });
   if (job.noticePeriod) {
@@ -126,6 +132,7 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
       experienceYears: years != null && Number.isFinite(years) && years >= 0 ? years : null,
       noticePeriodDays: candidate.noticePeriodDays != null && Number.isFinite(candidate.noticePeriodDays) && candidate.noticePeriodDays >= 0 ? candidate.noticePeriodDays : null,
       currentLocation: candidate.rawCurrentLocation?.trim() || null,
+      preferredLocationMode: candidate.preferredLocationMode || null,
     },
     limitations: ['Evidence score is not a hiring recommendation.', 'Missing evidence is not a confirmed failure.', 'Salary is excluded because candidate CTC currency and pay period are not established.', 'Semantic scoring is unavailable until parser search supports tenant isolation.'],
   };

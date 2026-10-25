@@ -671,6 +671,7 @@ model Candidate {
   lastWorkingDay        DateTime?             @map("last_working_day") @db.Date
   panCard               String?               @map("pan_card") @db.VarChar(10)
   preferredLocations    String[]              @map("preferred_locations")
+  preferredLocationMode String?               @map("preferred_location_mode") @db.VarChar(30)
   skills                String[]              @default([])
   resumeRecordId        String?               @map("resume_record_id") @db.Uuid
   uploadedByUserId      String?               @map("uploaded_by_user_id") @db.Uuid
@@ -945,6 +946,7 @@ model RecruiterSubmission {
   candidateNoticePeriod Int? @map("candidate_notice_period")
   candidateRelevantExperience Decimal? @map("candidate_relevant_experience") @db.Decimal(4,1)
   candidatePreferredLocations String[] @default([]) @map("candidate_preferred_locations")
+  candidatePreferredLocationMode String? @map("candidate_preferred_location_mode") @db.VarChar(30)
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   candidate        Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)

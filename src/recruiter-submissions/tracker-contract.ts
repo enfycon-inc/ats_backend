@@ -79,6 +79,7 @@ export interface TrackerSubmission {
   candidateCurrentCompany?: string | null;
   candidateRelevantExperience?: number | null;
   candidatePreferredLocations?: string[] | null;
+  candidatePreferredLocationMode?: 'SPECIFIC_LOCATIONS' | 'REMOTE_ONLY' | 'REMOTE_OR_LOCATIONS' | null;
   candidateCurrentCtc?: string | null;
   candidateExpectedCtc?: string | null;
   candidateCtcCurrency?: string | null;
@@ -257,6 +258,7 @@ export interface CandidateAssessment {
     experienceYears: number | null;
     noticePeriodDays: number | null;
     currentLocation: string | null;
+    preferredLocationMode?: 'SPECIFIC_LOCATIONS' | 'REMOTE_ONLY' | 'REMOTE_OR_LOCATIONS' | null;
   };
   candidateQualifications?: string[];
   engine: string;
