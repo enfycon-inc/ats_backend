@@ -72,6 +72,7 @@ export interface ClientCreationRequest {
   currency: 'INR' | 'USD';
   client_short_name?: string;
   email_id?: string;
+  contact_number?: string;
   website?: string;
   industry?: string;
   country?: string;
@@ -107,7 +108,7 @@ export interface CreatedClient {
 export function clientCreationErrors(input: Partial<ClientCreationRequest>): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { form: 'Enter valid client details.' };
-  const lengths: Record<string, number> = { client_name: 255, client_short_name: 100, email_id: 255, website: 255, industry: 100,
+  const lengths: Record<string, number> = { client_name: 255, client_short_name: 100, email_id: 255, contact_number: 100, website: 255, industry: 100,
     country: 100, state: 100, city: 100, address: 2000, postal_code: 50, about_company: 10000, payment_terms: 100,
     gstin: 100, pan_number: 100, federal_id: 100, vetting_notes: 10000, tier_rating: 50, credit_check_status: 50, fillability_score: 50 };
   for (const [key, max] of Object.entries(lengths)) {
@@ -122,6 +123,7 @@ export function clientCreationErrors(input: Partial<ClientCreationRequest>): Rec
   if (!input.client_name?.trim() || input.client_name.trim().length > 255) errors.client_name = 'Enter a legal company name (maximum 255 characters).';
   if (!CLIENT_CATEGORIES.includes(input.category!)) errors.category = 'Select a client category.';
   const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (input.contact_number?.trim() && (!input.contact_number.trim().startsWith('+') || !parsePhoneNumberFromString(input.contact_number.trim())?.isValid())) errors.contact_number = 'Enter a valid company phone number including its country code.';
   if (input.email_id && (!email.test(input.email_id) || input.email_id.length > 255)) errors.email_id = 'Enter a valid company email.';
   if (input.website && !/^https?:\/\/[^\s/]+(?:\/[^\s]*)?$/i.test(input.website)) errors.website = 'Enter a website starting with https:// or http://.';
   if (input.commission_percentage !== undefined && (!Number.isFinite(input.commission_percentage) || input.commission_percentage < 0 || input.commission_percentage > 100)) errors.commission_percentage = 'Commission must be between 0 and 100.';

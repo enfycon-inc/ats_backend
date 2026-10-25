@@ -21,6 +21,13 @@ describe('shared client creation policy', () => {
     db.$transaction = jest.fn(async fn => fn(db));
     return { db, service: new ClientsService(db) };
   }
+  it('validates optional company phone independently from contact person phone and persists it', async () => {
+    for (const phone of ['', '+91 98765 43210', '+14155552671']) expect(clientCreationErrors({ ...request, contact_number: phone })).toEqual({});
+    for (const phone of ['9876543210', '+9198', 'invalid']) expect(clientCreationErrors({ ...request, contact_number: phone })).toHaveProperty('contact_number');
+    const { db, service } = setup();
+    await service.createClient({ ...request, contact_number: '+91 98765 43210' }, tenantId, actor.dbId, actor);
+    expect(db.client.create.mock.calls[0][0].data.contactNumber).toBe('+91 98765 43210');
+  });
   it('uses the India unit market in Kolkata even when the branch is configured for US', async () => {
     const { db } = setup();
     const context = await resolveClientCreationContext(db, tenantId, actor);

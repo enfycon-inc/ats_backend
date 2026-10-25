@@ -267,6 +267,7 @@ export class ClientsService {
         primaryOwner: context.ownerId, ownership: context.ownerId, createdBy, modifiedBy: createdBy,
         businessUnit: context.businessUnitName || context.branchName, branchId: context.branchId,
         market: context.market, currency: context.currency,
+        contactNumber: dto.contact_number?.trim() || null,
         website: dto.website || null, emailId: dto.email_id || null, industry: dto.industry || null,
         country: dto.country || null, state: dto.state || null, city: dto.city || null,
         address: dto.address || null, postalCode: dto.postal_code || null, aboutCompany: dto.about_company || null,
