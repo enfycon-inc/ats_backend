@@ -200,6 +200,20 @@ describe('job recruiter staffing permissions and scope', () => {
     }));
   });
 
+  it('allows own-job direct recruiters with tenant pods off despite a pod-only unit preference', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({ podSystemEnabled: false });
+    prisma.user = { findFirst: jest.fn().mockResolvedValue({ id: recruiter }) };
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: false, allowUnassigned: false });
+    prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, tenantId: tenant, branchId: branch, businessUnitId: unit, accountManagerId: actor.dbId }), update: jest.fn().mockResolvedValue({ id: other }) };
+    prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
+    prisma.jobRecruiter = { count: jest.fn().mockResolvedValue(1), deleteMany: jest.fn(), createMany: jest.fn() };
+    const service = new JobsService(prisma, { create: jest.fn(), createMany: jest.fn() } as any);
+    jest.spyOn(service, 'findOneJob').mockResolvedValue({ id: other } as any);
+    await service.updateJob(other, { recruiterIds: [recruiter] }, tenant, actor);
+    expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith({ data: [{ jobId: other, recruiterId: recruiter }] });
+    expect(prisma.pod.findFirst).not.toHaveBeenCalled();
+  });
+
   it('allows Branch Admin to assign recruiters on any job within the branch', async () => {
     prisma.job = {
       findFirst: jest.fn().mockResolvedValue({ id: other, tenantId: tenant, branchId: branch, businessUnitId: unit, accountManagerId: 'another-am-id', jobCode: 'JOB-BA' }),
@@ -288,14 +302,14 @@ describe('job recruiter staffing permissions and scope', () => {
     prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowUnassigned: false });
     prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: actor.dbId }), update: jest.fn() };
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([]) };
-    await expect(new JobsService(prisma, {} as any).updateJob(other, { podId: 'none', recruiterIds: [] }, tenant,
+    await expect(new JobsService(prisma, {} as any).updateJob(other, { recruiterIds: [] }, tenant,
       { ...actor, permissions: [...actor.permissions, 'job:edit'] })).rejects.toThrow('Select a pod or at least one recruiter');
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
   it('cannot remove an existing pod using recruiter assignment permission', async () => {
     prisma.job = { findFirst: jest.fn().mockResolvedValue({ id: other, branchId: branch, businessUnitId: unit, accountManagerId: actor.dbId }), update: jest.fn() };
     prisma.jobPod = { findMany: jest.fn().mockResolvedValue([{ podId: recruiter }]) };
-    await expect(new JobsService(prisma, {} as any).updateJob(other, { podId: 'none' }, tenant, actor)).rejects.toThrow('Pod assignment permission');
+    await expect(new JobsService(prisma, {} as any).updateJob(other, { podId: 'none' }, tenant, actor)).rejects.toMatchObject({ status: 403 });
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 

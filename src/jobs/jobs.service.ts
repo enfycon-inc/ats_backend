@@ -1,3 +1,4 @@
+import { effectiveJobAssignmentPolicy } from '../auth/job-assignment-policy';
 import { loadJobActor, rowJobScope } from './job-access-context';
 import { assertPodsEnabled } from '../auth/workspace-features';
 import type { JobCapabilities } from './job-capabilities';
@@ -874,6 +875,7 @@ export class JobsService {
       if (!unit) throw new BadRequestException('The operating unit must belong to the selected workspace and branch.');
       assignmentPolicy = { ...unit, market: unit.marketSegment?.code };
     }
+    assignmentPolicy = effectiveJobAssignmentPolicy(assignmentPolicy, tenant?.podSystemEnabled === true);
     const submittedRecruiters = [...new Set([dto.recruiterId, ...(dto.recruiterIds || [])].filter((id): id is string => !!id))];
     const selectedPods = [...new Set([dto.podId, ...(dto.podIds || [])].filter((id): id is string => !!id && !['none', 'off'].includes(id)))];
     if (selectedPods.includes('all')) throw new BadRequestException('Select individual recruiters instead of a unit pool.');
@@ -1171,7 +1173,8 @@ export class JobsService {
         }
         if (!draft && businessUnitId && !automaticPods) {
           await tx.$queryRaw`SELECT id FROM ats.business_units WHERE id = ${businessUnitId}::uuid AND tenant_id = ${tenantId}::uuid FOR UPDATE`;
-          const currentPolicy = await tx.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } });
+          const liveTenant = await tx.tenant.findUnique({ where: { id: tenantId }, select: { podSystemEnabled: true } });
+          const currentPolicy = effectiveJobAssignmentPolicy(await tx.businessUnit.findFirst({ where: { id: businessUnitId, tenantId, branchId } }), liveTenant?.podSystemEnabled === true);
           if (!currentPolicy || usesAutomaticPods(currentPolicy) !== usesAutomaticPods(assignmentPolicy) || currentPolicy.allowPods !== assignmentPolicy.allowPods || currentPolicy.allowNone !== assignmentPolicy.allowNone || currentPolicy.allowUnassigned !== assignmentPolicy.allowUnassigned) {
             throw new BadRequestException('The assignment policy changed. Refresh the job form.');
           }
@@ -2129,8 +2132,11 @@ export class JobsService {
 
     const publishUnitId = dto.businessUnitId ?? currentJob.businessUnitId;
     const publishBranchId = dto.branchId ?? currentJob.branchId;
-    const publishPolicy = mode === 'publish' && publishUnitId
+    const assignmentPolicyNeeded = mode === 'publish' || ['podId', 'podIds', 'recruiterId', 'recruiterIds', 'businessUnitId', 'branchId'].some(key => dto[key] !== undefined);
+    const assignmentTenant = assignmentPolicyNeeded ? await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { podSystemEnabled: true } }) : null;
+    const rawPublishPolicy = mode === 'publish' && publishUnitId
       ? await this.prisma.businessUnit.findFirst({ where: { id: publishUnitId, tenantId, branchId: publishBranchId } }) : null;
+    const publishPolicy = effectiveJobAssignmentPolicy(rawPublishPolicy, assignmentTenant?.podSystemEnabled === true);
     const publishingRecruiters = dto.recruiterIds !== undefined || dto.recruiterId !== undefined
       ? (dto.recruiterIds || (dto.recruiterId ? [dto.recruiterId] : []))
       : mode === 'publish' && usesAutomaticPods(publishPolicy) ? (await this.prisma.jobRecruiter.findMany({ where: { jobId: id }, select: { recruiterId: true } })).map(mapping => mapping.recruiterId) : [];
@@ -2153,7 +2159,7 @@ export class JobsService {
     if (dto.podId !== undefined || dto.podIds !== undefined || dto.recruiterId !== undefined || dto.recruiterIds !== undefined || dto.businessUnitId !== undefined || dto.branchId !== undefined) {
       const unitId = dto.businessUnitId ?? currentJob.businessUnitId;
       const branchId = dto.branchId ?? currentJob.branchId;
-      const policy = unitId ? await this.prisma.businessUnit.findFirst({ where: { id: unitId, tenantId, branchId } }) : null;
+      const policy = effectiveJobAssignmentPolicy(unitId ? await this.prisma.businessUnit.findFirst({ where: { id: unitId, tenantId, branchId } }) : null, assignmentTenant?.podSystemEnabled === true);
       if (unitId && !policy) throw new ForbiddenException('The job unit is outside this workspace.');
       const podChanged = dto.podId !== undefined || dto.podIds !== undefined;
       const scopeChanged = unitId !== currentJob.businessUnitId || branchId !== currentJob.branchId;
@@ -2433,6 +2439,8 @@ export class JobsService {
 
     if (dto.recruiterIds !== undefined || dto.recruiterId !== undefined) {
       await this.prisma.$transaction(async tx => {
+        const liveTenant = await tx.tenant.findUnique({ where: { id: tenantId }, select: { podSystemEnabled: true } });
+        if (liveTenant?.podSystemEnabled !== assignmentTenant?.podSystemEnabled) throw new BadRequestException('The assignment policy changed. Refresh the job form.');
         await tx.jobRecruiter.deleteMany({ where: { jobId: id, ...(podLeadPodId ? { recruiter: { tenantId, podId: podLeadPodId } } : {}) } });
         if (targetRecruiterIds.length > 0) await tx.jobRecruiter.createMany({ data: targetRecruiterIds.map(recruiterId => ({ jobId: id, recruiterId })) });
         if (user.permissions?.includes('job:override_assignment')) await tx.auditLog.create({ data: { tenantId, actorId: user.dbId, action: 'JOB_ASSIGNMENT_OVERRIDE', targetType: 'job', targetId: id, details: { ...(typeof dto.assignmentReason === 'string' && dto.assignmentReason.trim() ? { reason: dto.assignmentReason.trim() } : {}), recruiterIds: targetRecruiterIds, podIds: dto.podIds || [] } } });

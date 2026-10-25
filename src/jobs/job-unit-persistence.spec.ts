@@ -28,6 +28,22 @@ describe('job operating unit persistence and reviewer routing', () => {
     expect(prisma.job.create.mock.calls[0][0].data).toMatchObject({ businessUnitId: unit, assignedApproverId: manager, approvalStatus: direct ? 'APPROVED' : 'PENDING_APPROVAL' });
     expect(prisma.$queryRawUnsafe.mock.calls[0][0]).not.toContain('b.manager_id');
   });
+  it('creates with direct recruiters when tenant pods are disabled over a pod-only unit', async () => {
+    const { service, prisma, dto } = setup();
+    prisma.tenant.findUnique.mockResolvedValue({ name: 'Tenant', podSystemEnabled: false });
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone: false, allowUnassigned: false, podDistributionStrategy: 'AUTO' });
+    prisma.$queryRawUnsafe.mockResolvedValue([{ id, canRecruit: true, permissions: ['job:publish_direct'] }]);
+    prisma.jobRecruiter = { createMany: jest.fn() };
+    prisma.auditLog = { create: jest.fn() };
+    prisma.pod = { findMany: jest.fn() };
+    service.assertCanCreateFor = jest.fn();
+    await service.createJob({ ...dto, recruiterIds: [id] }, id, 'creator@example.com', id,
+      { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter'] });
+    expect(prisma.job.create).toHaveBeenCalled();
+    expect(prisma.jobRecruiter.createMany).toHaveBeenCalledWith(expect.objectContaining({ data: [{ jobId: id, recruiterId: id }] }));
+    expect(prisma.pod.findMany).not.toHaveBeenCalled();
+  });
+
   it('rejects a foreign unit before saving', async () => {
     const { service, prisma, dto } = setup();
     prisma.businessUnit.findFirst.mockResolvedValue(null);
@@ -122,9 +138,9 @@ describe('job operating unit persistence and reviewer routing', () => {
       details: { recruiterIds: [manager, second] },
     } });
   });
-  it.each([false, undefined])('rejects direct recruiters when unit policy is not enabled (%s)', async allowNone => {
+  it.each([false, undefined])('rejects direct recruiters when pods are enabled and direct policy is not enabled (%s)', async allowNone => {
     const { service, prisma, dto } = setup();
-    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowNone });
+    prisma.businessUnit.findFirst.mockResolvedValue({ id: unit, allowPods: true, allowNone });
     await expect(service.createJob({ ...dto, recruiterId: manager, recruiterIds: [manager] }, id, id, id,
       { dbId: id, tenantId: id, branchId: id, businessUnitId: unit, permissions: ['job:create', 'job:assign_recruiter', 'job:override_assignment'] }))
       .rejects.toThrow('Direct recruiter assignment is disabled');
