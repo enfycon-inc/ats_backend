@@ -1,6 +1,7 @@
+import { candidateMarket, candidateAdminScope } from './candidate-workspace';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import { resolveCandidateName } from './candidate-name';
-import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException, ForbiddenException } from '@nestjs/common';
 import * as crypto from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCandidateDto } from './dtos/create-candidate.dto';
@@ -93,6 +94,8 @@ export class CandidatesService {
             workAuthorization: dto.workAuthorization,
             resumeRecordId: resume.id,
             tenantId,
+            market: candidateMarket(dto.market),
+            branchId: dto.branchId || null,
             uploadedByUserId: user?.dbId || null,
             uploadedByName: user?.fullName || user?.email || 'System Upload',
           },
@@ -152,9 +155,10 @@ export class CandidatesService {
     const isAllBranches = query.allBranches === true || String(query.allBranches).toLowerCase() === 'true';
 
     if (query.market && !isAllMarkets) {
-      const effectiveMarket = query.market.toUpperCase();
+      const effectiveMarket = candidateMarket(query.market);
+      const aliases = effectiveMarket === 'IN' ? ['IN', 'IND', 'INDIA'] : effectiveMarket === 'US' ? ['US', 'USIT', 'USA'] : [effectiveMarket];
       where.OR = [
-        { market: { equals: effectiveMarket, mode: 'insensitive' } },
+        ...aliases.map(market => ({ market: { equals: market, mode: 'insensitive' } })),
         ...(effectiveMarket === 'US' ? [{ market: null }] : []),
       ];
     }
@@ -253,7 +257,7 @@ export class CandidatesService {
   /**
    * Retrieves a single candidate with joined resumes details, scoped by tenant
    */
-  async findOne(id: string, tenantId: string): Promise<CandidateProfile> {
+  async findOne(id: string, tenantId: string, actor?: AuthUser): Promise<CandidateProfile> {
     this.logger.log(`Fetching candidate detail for ID=${id} and tenant=${tenantId}`);
 
     const candidate = await this.prisma.candidate.findFirst({
@@ -273,7 +277,7 @@ export class CandidatesService {
       throw new NotFoundException(`Candidate profile with ID ${id} was not found.`);
     }
 
-    return this.mapCandidateToProfile(candidate);
+    return { ...this.mapCandidateToProfile(candidate), capabilities: { edit: !!actor && candidateAdminScope(actor, candidate, 'candidate:edit'), changeMarket: !!actor && candidateAdminScope(actor, candidate, 'candidate:change_market') } };
   }
 
   /**
@@ -382,6 +386,7 @@ export class CandidatesService {
       resumeFilename: resume?.filename || null,
       resumeUploadedAt: resume?.createdAt ? new Date(resume.createdAt).toISOString() : null,
       candidateCode,
+      market: row.market,
       firstName: row.firstName || null,
       lastName: row.lastName || null,
       currentLocation: row.rawCurrentLocation || locationStr || null,
@@ -445,7 +450,7 @@ export class CandidatesService {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
+    meta: { uploadedByUserId?: string; uploadedByName?: string; totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string } = {},
     user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
@@ -459,8 +464,8 @@ export class CandidatesService {
       if (amount != null && amount !== '' && !/^\d+(?:\.\d{1,2})?$/.test(amount)) throw new BadRequestException('Invalid compensation amount.');
     }
 
-    const uploaderId = user?.dbId || null;
-    const uploaderName = user?.fullName || user?.email || (meta.source === 'Bulk Upload Benchmark' ? 'System Benchmark' : 'System');
+    const uploaderId = user?.dbId || meta.uploadedByUserId || null;
+    const uploaderName = user?.fullName || user?.email || meta.uploadedByName || (meta.source === 'Bulk Upload Benchmark' ? 'System Benchmark' : 'System');
 
     const fileHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
 
@@ -605,6 +610,7 @@ export class CandidatesService {
       }
     }
 
+    const market = candidateMarket(meta.market);
     // 4. Create new candidate
     // Save resume first outside interactive transaction to prevent transaction timeout (P2028) on large file writes
     const resume = await this.prisma.resume.create({
@@ -644,7 +650,7 @@ export class CandidatesService {
               resumeRecordId: resume.id,
               tenantId,
               branchId: meta.branchId || null,
-              market: meta.market || 'US',
+              market,
               uploadedByUserId: uploaderId,
               uploadedByName: uploaderName,
               preferredLocations: preferredLocations.length > 0 ? preferredLocations : undefined,
@@ -1205,7 +1211,7 @@ export class CandidatesService {
     }
   }
 
-  async updateCandidate(id: string, dto: any, tenantId: string): Promise<CandidateProfile> {
+  async updateCandidate(id: string, dto: any, tenantId: string, actor?: AuthUser): Promise<CandidateProfile> {
     this.logger.log(`Updating candidate details for ID=${id} and tenant=${tenantId}`);
 
     const existing = await this.prisma.candidate.findFirst({
@@ -1215,7 +1221,15 @@ export class CandidatesService {
       throw new NotFoundException(`Candidate profile with ID ${id} was not found.`);
     }
 
+    if (!actor || actor.tenantId !== tenantId || !candidateAdminScope(actor, existing, 'candidate:edit')) throw new ForbiddenException('Candidate profile editing requires scoped administration permission.');
     const data: any = {};
+    if (dto.market !== undefined) {
+      if (!candidateAdminScope(actor, existing, 'candidate:change_market')) throw new ForbiddenException('Missing candidate:change_market permission.');
+      const market = candidateMarket(dto.market);
+      const aliases = market === 'IN' ? ['IN', 'IND', 'INDIA'] : market === 'US' ? ['US', 'USIT', 'USA'] : [market];
+      if (!await this.prisma.marketSegment.findFirst({ where: { isActive: true, code: { in: aliases }, OR: [{ tenantId }, { tenantId: null }] }, select: { id: true } })) throw new BadRequestException('Select an active staffing market.');
+      data.market = market;
+    }
     if (dto.fullName !== undefined) data.fullName = dto.fullName;
     if (dto.email !== undefined) data.email = dto.email;
     if (dto.phone !== undefined) data.phone = dto.phone;
@@ -1233,12 +1247,13 @@ export class CandidatesService {
     if (dto.servingNotice !== undefined) data.servingNotice = Boolean(dto.servingNotice);
 
     if (Object.keys(data).length > 0) {
-      await this.prisma.candidate.update({
-        where: { id },
-        data,
+      await this.prisma.$transaction(async tx => {
+        const changed = await tx.candidate.updateMany({ where: { id, tenantId, updatedAt: existing.updatedAt }, data });
+        if (!changed.count) throw new BadRequestException('Candidate changed. Refresh and try again.');
+        await tx.auditLog.create({ data: { tenantId, actorId: actor.dbId, actorEmail: actor.email, action: 'CANDIDATE_PROFILE_UPDATED', targetType: 'candidate', targetId: id, details: { fields: Object.keys(data), previousMarket: existing.market, market: data.market ?? existing.market } } });
       });
     }
 
-    return this.findOne(id, tenantId);
+    return this.findOne(id, tenantId, actor);
   }
 }

@@ -828,6 +828,8 @@ export class AuthRbacService {
       { id: 'job:delegate', name: 'Delegate Jobs to Same-Market Units in Other Branches', group: 'Jobs Management' },
       { id: 'job:accept_delegation', name: 'Accept Delegated Jobs for Your Operating Unit', group: 'Jobs Management' },
       { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates Management' },
+      { id: 'candidate:edit', name: 'Edit Candidate Profiles', group: 'Candidates Management' },
+      { id: 'candidate:change_market', name: 'Change Candidate Staffing Market', group: 'Candidates Management' },
       { id: 'candidate:view', name: 'View Candidates & Resume Bank', group: 'Candidates Management' },
       { id: 'candidate:download_resume', name: 'Download Original Resume', group: 'Candidates Management' },
       { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Sourcing' },

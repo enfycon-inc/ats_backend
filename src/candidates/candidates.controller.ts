@@ -1,3 +1,4 @@
+import { resolveCandidateWorkspace } from './candidate-workspace';
 import { Controller, Get, Post, Delete, Patch, Body, Query, Param, Headers, ParseUUIDPipe, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, UseGuards, Res, BadRequestException } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
@@ -51,7 +52,8 @@ export class CandidatesController {
     if (activeBranchId && !dto.branchId) {
       dto.branchId = activeBranchId;
     }
-    return this.candidatesService.createCandidate(dto, activeTenantId, user);
+    const context = await resolveCandidateWorkspace(this.prisma, user, activeTenantId, activeBranchId);
+    return this.candidatesService.createCandidate({ ...dto, ...context }, activeTenantId, user);
   }
 
   @Get()
@@ -100,7 +102,7 @@ export class CandidatesController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<CandidateProfile> {
     const activeTenantId = resolveTenantId(user, tenantId);
-    return this.candidatesService.findOne(id, activeTenantId);
+    return this.candidatesService.findOne(id, activeTenantId, user);
   }
 
   @Patch(':id')
@@ -125,7 +127,7 @@ export class CandidatesController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<CandidateProfile> {
     const activeTenantId = resolveTenantId(user, tenantId);
-    return this.candidatesService.updateCandidate(id, dto, activeTenantId);
+    return this.candidatesService.updateCandidate(id, dto, activeTenantId, user);
   }
 
   @Patch(':id/restore')
@@ -236,6 +238,7 @@ export class CandidatesController {
     @UploadedFile() file: any,
     @CurrentUser() user: AuthUser,
     @Body('source') source?: string,
+    @Body('jobId') jobId?: string,
     @Body('fullName') fullName?: string,
     @Body('firstName') firstName?: string,
     @Body('lastName') lastName?: string,
@@ -256,6 +259,7 @@ export class CandidatesController {
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean }> {
     const activeTenantId = resolveTenantId(user, tenantId);
     const activeBranchId = resolveBranchId(user, branchHeaderId);
+    const context = await resolveCandidateWorkspace(this.prisma, user, activeTenantId, activeBranchId, jobId);
     return this.candidatesService.saveUploadedCv(file, activeTenantId, { 
       source,
       fullName,
@@ -273,8 +277,7 @@ export class CandidatesController {
       skills,
       location,
       preferredLocations,
-      branchId: activeBranchId || undefined,
-      market: user?.defaultMarket || 'US',
+      ...context,
     }, user);
   }
 
@@ -412,9 +415,11 @@ export class CandidatesController {
     @UploadedFiles() files: any[],
     @CurrentUser() user: AuthUser,
     @Headers('x-tenant-id') tenantId?: string,
+    @Headers('x-branch-id') branchHeaderId?: string,
   ): Promise<{ bulkUploadId: string }> {
     const activeTenantId = resolveTenantId(user, tenantId);
-    const createdBy = user?.fullName || user?.email || 'System';
+    const uploadContext = await resolveCandidateWorkspace(this.prisma, user, activeTenantId, resolveBranchId(user, branchHeaderId));
+    const createdBy = uploadContext.uploadedByName;
 
     if (!files || files.length === 0) {
       throw new Error('No files uploaded.');
@@ -467,6 +472,7 @@ export class CandidatesController {
         filePath: tempFilePath,
         tenantId: activeTenantId,
         createdBy,
+        uploadContext,
         filename: file.originalname,
       });
     }

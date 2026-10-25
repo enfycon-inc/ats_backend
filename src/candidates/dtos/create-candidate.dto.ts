@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateCandidateDto {
+  market?: string;
   @ApiProperty({ example: 'Manoj Duggi', description: 'The full name of the candidate' })
   fullName: string;
 

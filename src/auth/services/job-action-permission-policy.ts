@@ -1,4 +1,5 @@
 import { jobAccessGrants } from '../job-access-grants';
+import { applyCandidateProfilePermissions } from './candidate-profile-permission-policy';
 import { PrismaClient } from '@prisma/client';
 
 // A versioned configuration update, not a schema migration. Audit markers ensure
@@ -29,6 +30,7 @@ async function applyOwnJobActionsV1(prisma: PrismaClient) {
 
 // Each completed version runs once. Later deliberate permission removals are retained.
 export async function applyJobActionPermissions(prisma: PrismaClient) {
+  await applyCandidateProfilePermissions(prisma);
   await applyOwnJobActionsV1(prisma);
   await prisma.$transaction(async tx => {
     await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtextextended('job-access-v2', 0))");

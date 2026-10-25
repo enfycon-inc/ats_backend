@@ -23,6 +23,8 @@ export enum Permission {
   JOB_APPROVE = 'job:approve',
   JOB_REJECT = 'job:reject',
   CANDIDATE_CREATE = 'candidate:create',
+  CANDIDATE_EDIT = 'candidate:edit',
+  CANDIDATE_CHANGE_MARKET = 'candidate:change_market',
   CANDIDATE_VIEW = 'candidate:view',
   SUBMISSION_CREATE = 'submission:create',
   SUBMISSION_EDIT = 'submission:edit',

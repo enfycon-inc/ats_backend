@@ -2,6 +2,7 @@
  * Represents the structured profile for a Candidate returned from the Candidates Module
  */
 export interface CandidateProfile {
+  capabilities?: { edit: boolean; changeMarket: boolean };
   id: string;
   dbId?: string;
   resumeFilename?: string | null;

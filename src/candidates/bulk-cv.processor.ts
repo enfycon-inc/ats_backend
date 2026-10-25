@@ -19,7 +19,7 @@ export class BulkCvProcessor extends WorkerHost {
 
   async process(job: Job<any, any, string>): Promise<any> {
     if (job.name === 'parse_cv') {
-      const { itemId, filePath, tenantId, createdBy, filename } = job.data;
+      const { itemId, filePath, tenantId, createdBy, filename, uploadContext } = job.data;
       this.logger.log(`[BULK CV PROCESSOR] Starting processing for job ${job.id}, file: ${filename}`);
 
       // 1. Update item status to processing
@@ -60,9 +60,11 @@ export class BulkCvProcessor extends WorkerHost {
           size: fileBuffer.length,
         };
 
+        if (!uploadContext?.market || !uploadContext?.uploadedByUserId) throw new Error('This upload predates staffing context validation. Upload the batch again.');
         // 3. Save CV using candidatesService (Option A de-duplication integrated)
         const result = await this.candidatesService.saveUploadedCv(mockFile, tenantId, {
           source: 'Bulk Upload',
+          ...uploadContext,
         });
 
         // 4. Update item status to completed
