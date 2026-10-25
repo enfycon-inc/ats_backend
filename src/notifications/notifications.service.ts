@@ -1,4 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { emailPreferencePolicy } from './email-preference-policy';
+import type { AuthUser } from '../auth/interfaces/auth-user.interface';
+import { DEFAULT_NOTIFICATION_PREFERENCES, SOUND_PRESETS, EMAIL_OPTIONS, type EmailCategory, type ActivityCategory } from './notification-preferences';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 
@@ -249,49 +252,46 @@ export class NotificationsService {
   /**
    * Retrieve notification sound and alert preferences for a user.
    */
-  async getUserSettings(userId: string) {
-    const settings = await this.prisma.userNotificationSettings.findUnique({
-      where: { userId },
-    });
-
-    if (!settings) {
-      return {
-        soundEnabled: true,
-        soundPreset: 'CLASSIC_CHIME',
-        toastEnabled: true,
-        jobAlerts: true,
-        reviewAlerts: true,
-        submissionAlerts: true,
-      };
-    }
-
-    return settings;
+  async getUserSettings(userId: string, actor?: AuthUser) {
+    const saved = await this.prisma.userNotificationSettings.findUnique({ where: { userId } });
+    const policy = actor ? await emailPreferencePolicy(this.prisma, actor.tenantId, userId) : { eligible: [] as EmailCategory[], activities: [] as ActivityCategory[] };
+    return { ...DEFAULT_NOTIFICATION_PREFERENCES, ...saved, emailPreferences: (saved?.emailPreferences || {}) as Record<string, boolean>, eligibleEmails: policy.eligible, eligibleActivities: policy.activities };
   }
 
-  /**
-   * Update notification preferences for a user.
-   */
-  async updateUserSettings(userId: string, settings: any) {
-    return await this.prisma.userNotificationSettings.upsert({
-      where: { userId },
-      create: {
-        userId,
-        soundEnabled: settings.soundEnabled !== false,
-        soundPreset: settings.soundPreset || 'CLASSIC_CHIME',
-        toastEnabled: settings.toastEnabled !== false,
-        jobAlerts: settings.jobAlerts !== false,
-        reviewAlerts: settings.reviewAlerts !== false,
-        submissionAlerts: settings.submissionAlerts !== false,
-      },
-      update: {
-        soundEnabled: settings.soundEnabled !== false,
-        soundPreset: settings.soundPreset || 'CLASSIC_CHIME',
-        toastEnabled: settings.toastEnabled !== false,
-        jobAlerts: settings.jobAlerts !== false,
-        reviewAlerts: settings.reviewAlerts !== false,
-        submissionAlerts: settings.submissionAlerts !== false,
-      },
+  async updateUserSettings(userId: string, input: any, actor?: AuthUser) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new BadRequestException('Invalid notification settings.');
+    const booleans = ['soundEnabled', 'toastEnabled', 'jobAlerts', 'reviewAlerts', 'submissionAlerts'];
+    const data: any = {};
+    let emailPatch: Record<string, boolean> | undefined;
+    for (const key of Object.keys(input)) {
+      if (![...booleans, 'soundPreset', 'emailPreferences'].includes(key)) throw new BadRequestException('Unknown notification setting.');
+      if (booleans.includes(key)) {
+        if (typeof input[key] !== 'boolean') throw new BadRequestException('Notification switches must be true or false.');
+        data[key] = input[key];
+      }
+    }
+    if (input.soundPreset !== undefined) {
+      if (!SOUND_PRESETS.includes(input.soundPreset)) throw new BadRequestException('Select a valid notification sound.');
+      data.soundPreset = input.soundPreset;
+    }
+    if (['jobAlerts', 'reviewAlerts', 'submissionAlerts'].some(key => key in data) && actor) {
+      const current = await this.getUserSettings(userId, actor);
+      for (const key of ['jobAlerts', 'reviewAlerts', 'submissionAlerts']) if (key in data && !current.eligibleActivities.includes(key as ActivityCategory)) throw new BadRequestException('This activity alert is unavailable for your current access.');
+    }
+    if (input.emailPreferences !== undefined) {
+      if (!input.emailPreferences || typeof input.emailPreferences !== 'object' || Array.isArray(input.emailPreferences)) throw new BadRequestException('Invalid email preferences.');
+      const current = await this.getUserSettings(userId, actor);
+      for (const [key, value] of Object.entries(input.emailPreferences)) {
+        if (!EMAIL_OPTIONS.some(option => option.key === key) || typeof value !== 'boolean') throw new BadRequestException('Invalid email notification option.');
+        if (!current.eligibleEmails.includes(key as any)) throw new BadRequestException('This email notification is unavailable for your current access.');
+      }
+      emailPatch = input.emailPreferences;
+    }
+    await this.prisma.$transaction(async tx => {
+      await tx.userNotificationSettings.upsert({ where: { userId }, create: { userId, ...data }, update: data });
+      if (emailPatch) await tx.$executeRawUnsafe("UPDATE ats.user_notification_settings SET email_preferences = email_preferences || $1::jsonb, updated_at = NOW() WHERE user_id = $2::uuid", JSON.stringify(emailPatch), userId);
     });
+    return this.getUserSettings(userId, actor);
   }
 
   /**

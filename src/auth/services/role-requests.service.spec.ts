@@ -53,6 +53,7 @@ describe('durable role request notifications', () => {
     options: { user?: any; reviewers?: any[]; jobs?: any[] } = {},
   ) {
     const query = jest.fn(async (sql: string) => {
+      if (sql.includes('system_email_deliveries')) return [];
       if (sql.startsWith('WITH ready')) return options.jobs || [];
       if (sql.includes('FROM ats.users u JOIN ats.custom_roles'))
         return options.reviewers || [reviewer];

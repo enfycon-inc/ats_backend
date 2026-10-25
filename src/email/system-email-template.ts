@@ -29,6 +29,7 @@ export type SystemEmailTemplate = Context &
         passwordSetupUrl?: string;
         temporaryPassword?: string;
       }
+    | { event: 'role_approval_update'; requesterName: string; requesterEmail: string; role: string; approverName: string; approverEmail: string; approvedAt: string; branch?: string; unit?: string }
     | { event: 'registration_received' }
     | { event: 'role_requested'; requesterName: string; requesterEmail: string; role: string; branch?: string; unit?: string; reviewUrl: string; approveUrl: string; rejectUrl: string }
     | { event: 'workspace_activated'; loginUrl: string }
@@ -134,6 +135,12 @@ export function renderSystemEmail(
     welcomeInstructions = '',
     welcomeMethods = '';
   switch (input.event) {
+    case 'role_approval_update':
+      title = 'Role request approved';
+      preview = `${input.requesterName} was approved for ${input.role}.`;
+      copy = 'This access request has been approved. No further review is required.';
+      details.push(['Requester', input.requesterName], ['Requester email', input.requesterEmail], ['Approved role', input.role], ['Approved by', input.approverName], ['Approver email', input.approverEmail], ['Approved at (UTC)', input.approvedAt], ...(input.branch ? [['Branch', input.branch] as [string, string]] : []), ...(input.unit ? [['Unit', input.unit] as [string, string]] : []), ['Status', 'Approved']);
+      break;
     case 'role_requested':
       title = 'Role request awaiting your review';
       preview = `${input.requesterName} requested the ${input.role} role.`;
@@ -338,6 +345,7 @@ export function renderSystemEmail(
       break;
   }
   const subject = {
+    role_approval_update: 'Role request approved',
     role_requested: input.event === 'role_requested' ? `Role request: ${input.requesterName} — ${input.role}` : '',
     registration_received: 'Registration received',
     workspace_activated: 'Your workspace is ready',

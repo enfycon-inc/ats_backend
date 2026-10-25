@@ -1,3 +1,4 @@
+import type { EmailCategory } from '../notifications/notification-preferences';
 export type EmailDispatchMode =
   'DEFAULT_SUBDOMAIN' | 'DIRECT_ACCOUNT' | 'CUSTOM_DOMAIN';
 export interface EmailNotification {
@@ -5,6 +6,8 @@ export interface EmailNotification {
   message?: string;
 }
 export interface SystemEmailRequest {
+  emailCategory?: EmailCategory;
+  recipientUserId?: string;
   tenantId: string;
   to: string;
   subject: string;
@@ -16,9 +19,9 @@ export interface SystemEmailRequest {
 }
 export interface EmailDispatchResult {
   success: true;
-  provider: 'brevo' | 'microsoft' | 'smtp' | 'custom_domain_brevo';
+  provider: 'brevo' | 'microsoft' | 'smtp' | 'custom_domain_brevo' | 'suppressed';
   from: string;
-  status: 'accepted';
+  status: 'accepted' | 'disabled';
   messageId?: string;
 }
 export interface EmailDnsRecord {

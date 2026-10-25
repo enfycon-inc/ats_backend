@@ -28,7 +28,7 @@ export interface StaffProfile {
   features?: { podsEnabled: boolean };
   tenantId: string;
   tenantDomain: string;
-  tenant: { name: string; domain: string; siteTitle: string; logoUrl: string; loginLogoUrl: string; };
+  tenant: { name: string; domain: string; siteTitle: string; logoUrl: string; loginLogoUrl: string; compactLogoUrl?: string; };
   defaultMarket: string;
 }
 export interface EmailSignature { id: string; name: string; html: string; }

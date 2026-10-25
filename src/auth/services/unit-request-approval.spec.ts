@@ -5,12 +5,12 @@ describe('current-unit request review', () => {
   const actor: any = { tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit', permissions: ['unit_admin:manage', 'user:manage', 'candidate:view'], roles: [] };
   const pending = { tenant_id: 'tenant', branch_id: 'branch', business_unit_id: 'unit', is_approved: false, is_active: true, requested_role: 'Recruiter' };
   function setup(permissions: string[], target = pending) {
-    const query = jest.fn(async (sql: string) => {
+    const query = jest.fn(async (sql: string, ...params: any[]) => {
       if (sql.includes('SELECT u.id, u.email, u.full_name')) return { rows: [target] };
       if (sql.includes('cr.permissions')) return { rows: [{ id: roleId, permissions, branch_id: 'branch', business_unit_id: 'unit' }] };
       return { rows: [] };
     });
-    const service = new AuthUserService({ query } as any, { checkSeatLimit: jest.fn() } as any, {} as any, {} as any);
+    const service = new AuthUserService({ query, prisma: { $transaction: async fn => fn({ $queryRawUnsafe: async (sql, ...params) => (await query(sql, ...params)).rows }) } } as any, { checkSeatLimit: jest.fn() } as any, {} as any, {} as any, undefined, { enqueueApproval: jest.fn() } as any);
     return { service, query };
   }
   it('rejects roles with permissions beyond the reviewing manager', async () => {

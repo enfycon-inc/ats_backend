@@ -9,7 +9,7 @@ export const MAX_LOGO_BYTES = 200 * 1024;
 export const logoDirectory = () => process.env.LOGO_STORAGE_DIR || join(process.cwd(), 'public', 'image', 'logos');
 
 // Use only inert raster formats. Never use an uploaded filename as a disk path.
-export async function storeTenantLogo(tenantId: string, input: string, purpose: 'site' | 'login' = 'site'): Promise<string> {
+export async function storeTenantLogo(tenantId: string, input: string, purpose: 'site' | 'login' | 'compact' = 'site'): Promise<string> {
   if (!/^[0-9a-f-]{36}$/i.test(tenantId)) throw new BadRequestException('Invalid company identifier.');
   if (typeof input !== 'string') throw new BadRequestException('Invalid logo.');
   if (input === '') return '';
@@ -36,7 +36,7 @@ export async function storeTenantLogo(tenantId: string, input: string, purpose: 
 }
 
 // Maintenance also uses this path for legacy images (up to the former 2 MB limit).
-export async function storeOptimizedLogo(tenantId: string, bytes: Buffer, purpose: 'site' | 'login'): Promise<string> {
+export async function storeOptimizedLogo(tenantId: string, bytes: Buffer, purpose: 'site' | 'login' | 'compact'): Promise<string> {
   if (!/^[0-9a-f-]{36}$/i.test(tenantId) || !bytes.length || bytes.length > 2 * 1024 * 1024) {
     throw new BadRequestException('Invalid existing company logo.');
   }
@@ -56,12 +56,12 @@ export async function storeOptimizedLogo(tenantId: string, bytes: Buffer, purpos
 }
 
 // Decode fully, strip metadata, and bound both decoded pixels and served bytes.
-export async function optimizeLogo(bytes: Buffer, purpose: 'site' | 'login'): Promise<Buffer> {
+export async function optimizeLogo(bytes: Buffer, purpose: 'site' | 'login' | 'compact'): Promise<Buffer> {
   try {
     const metadata = await sharp(bytes, { limitInputPixels: 16_000_000, failOn: 'warning' }).metadata();
     if ((metadata.pages || 1) > 1) throw new BadRequestException('Choose a non-animated logo.');
     const image = sharp(bytes, { limitInputPixels: 16_000_000, failOn: 'warning' }).rotate()
-      .resize({ width: purpose === 'site' ? 480 : 360, height: 96, fit: 'inside', withoutEnlargement: true });
+      .resize({ width: purpose === 'compact' ? 128 : purpose === 'site' ? 480 : 360, height: purpose === 'compact' ? 128 : 96, fit: 'inside', withoutEnlargement: true });
     let result = await image.clone().webp({ lossless: true, effort: 4 }).toBuffer();
     if (result.length > 30 * 1024) {
       const compressed = await image.clone().webp({ quality: 90, alphaQuality: 100, effort: 4 }).toBuffer();

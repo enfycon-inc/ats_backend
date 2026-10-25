@@ -516,9 +516,13 @@ export class AuthTenantService {
     }
     if (settings.name !== undefined) { fields.push(`name = $${paramIndex}`); params.push(settings.name); paramIndex++; }
 
+    if (settings.compactLogoUrl !== undefined) {
+      const compactLogoUrl = await storeTenantLogo(tenantId, settings.compactLogoUrl, 'compact');
+      fields.push(`compact_logo_url = $${paramIndex}`); params.push(compactLogoUrl); paramIndex++;
+    }
     if (fields.length === 0) throw new BadRequestException('No valid setting fields provided.');
 
-    const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING name, site_title, logo_url, login_logo_url`;
+    const sql = `UPDATE tenants SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $1 RETURNING name, site_title, logo_url, login_logo_url, compact_logo_url`;
     const res = await this.authQuery.query(sql, params);
     return res.rows[0];
   }

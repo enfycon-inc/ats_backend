@@ -24,7 +24,7 @@ describe('versioned role request decisions', () => {
     email: 'reviewer@example.com',
   };
   function setup(user: any = target) {
-    const query = jest.fn(async (sql: string) => {
+    const query = jest.fn(async (sql: string, ...params: any[]) => {
       if (sql.includes('UPDATE users')) return { rows: [{ id }] };
       if (
         sql.includes('SELECT u.id, u.email') ||
@@ -41,8 +41,9 @@ describe('versioned role request decisions', () => {
         .mockResolvedValue({ status: 'accepted' }),
     };
     const review = jest.fn().mockResolvedValue({});
+    const enqueueApproval = jest.fn();
     const service = new AuthUserService(
-      { query } as any,
+      { query, prisma: { $transaction: async fn => fn({ $queryRawUnsafe: async (sql, ...params) => (await query(sql, ...params)).rows }) } } as any,
       { checkSeatLimit: jest.fn() } as any,
       {
         provisionUserInKeycloak: jest.fn().mockResolvedValue(undefined),
@@ -50,9 +51,9 @@ describe('versioned role request decisions', () => {
       } as any,
       mail as any,
       undefined,
-      { review } as any,
+      { review, enqueueApproval } as any,
     );
-    return { service, query, mail, review };
+    return { service, query, mail, review, enqueueApproval };
   }
   it.each(['missing', 'replaced'])(
     'rejects %s request versions before writing approval',
@@ -74,7 +75,7 @@ describe('versioned role request decisions', () => {
     },
   );
   it('consumes approval exactly once and sends no second welcome email under competing decisions', async () => {
-    const { service, query, mail } = setup();
+    const { service, query, mail, enqueueApproval } = setup();
     let writes = 0;
     const original = query.getMockImplementation()!;
     query.mockImplementation(async (sql) =>
@@ -93,7 +94,8 @@ describe('versioned role request decisions', () => {
     );
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
-    expect(mail.sendRoleApprovalWelcomeEmail).toHaveBeenCalledTimes(1);
+    expect(enqueueApproval).toHaveBeenCalledTimes(1);
+    expect(mail.sendRoleApprovalWelcomeEmail).not.toHaveBeenCalled();
     const write = query.mock.calls.find(([sql]) =>
       sql.includes('UPDATE users'),
     )!;

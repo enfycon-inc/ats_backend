@@ -69,7 +69,7 @@ export class NotificationsController {
   @Get('settings')
   @ApiOperation({ summary: 'Get current user notification sound & alert preferences' })
   async getUserSettings(@CurrentUser() user: AuthUser) {
-    return this.notificationsService.getUserSettings(user.dbId);
+    return this.notificationsService.getUserSettings(user.dbId, user);
   }
 
   // ─── PUT /api/notifications/settings ─────────────────────────
@@ -79,6 +79,7 @@ export class NotificationsController {
     @CurrentUser() user: AuthUser,
     @Body()
     body: {
+      emailPreferences?: Record<string, boolean>;
       soundEnabled?: boolean;
       soundPreset?: string;
       toastEnabled?: boolean;
@@ -87,7 +88,7 @@ export class NotificationsController {
       submissionAlerts?: boolean;
     },
   ) {
-    return this.notificationsService.updateUserSettings(user.dbId, body);
+    return this.notificationsService.updateUserSettings(user.dbId, body, user);
   }
 
   // ─── GET /api/notifications/admin/all ─────────────────────────

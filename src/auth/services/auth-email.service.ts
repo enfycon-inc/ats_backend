@@ -38,6 +38,7 @@ export class AuthEmailService {
     const approve = new URL(review); approve.searchParams.set('action', 'approve');
     const reject = new URL(review); reject.searchParams.set('action', 'reject');
     return this.systemMail.send({
+      emailCategory: 'roleRequests',
       tenantId: options.tenantId, to: options.to,
       ...renderSystemEmail({
         event: 'role_requested', workspace: options.tenantName, recipient: options.to, fullName: options.fullName,
@@ -134,12 +135,19 @@ export class AuthEmailService {
     fullName: string;
     tenantName: string;
     subdomain: string;
-    roleName?: string;
+    roleName?: string; approverName?: string; approverEmail?: string; approvedAt?: string;
   }) {
     return this.sendAccountWelcomeEmail({
       ...options,
-      message: 'Your access request was approved. Your account is ready to use.',
+      message: `Your access request was approved. Your account is ready to use.${options.approverName ? ` Approved by ${options.approverName} (${options.approverEmail}) at ${options.approvedAt}.` : ''}`,
     });
+  }
+
+  async sendRoleApprovalReviewerEmail(options: { tenantId: string; to: string; fullName: string; recipientUserId: string; tenantName: string; target: { full_name: string; email: string }; roleName: string; approverName: string; approverEmail: string; approvedAt: string; branch?: string; unit?: string }) {
+    return this.systemMail.send({ tenantId: options.tenantId, to: options.to, recipientUserId: options.recipientUserId, emailCategory: 'roleApprovals',
+      ...renderSystemEmail({ event: 'role_approval_update', workspace: options.tenantName, recipient: options.to, fullName: options.fullName,
+        tenantBranding: await this.getTenantBranding(options.tenantId, options.tenantName), requesterName: options.target.full_name, requesterEmail: options.target.email,
+        role: options.roleName, approverName: options.approverName, approverEmail: options.approverEmail, approvedAt: options.approvedAt, branch: options.branch, unit: options.unit }) });
   }
 
   async sendTenantStatusEmail(options: {
@@ -289,6 +297,7 @@ export class AuthEmailService {
   }) {
     const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     return this.systemMail.send({
+      emailCategory: 'podAssignments',
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
@@ -318,6 +327,7 @@ export class AuthEmailService {
   }) {
     const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     return this.systemMail.send({
+      emailCategory: 'roleChanges',
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({

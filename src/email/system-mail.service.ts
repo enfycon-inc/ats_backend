@@ -1,3 +1,4 @@
+import { emailPreferencePolicy } from '../notifications/email-preference-policy';
 import {
   BadRequestException,
   Injectable,
@@ -414,6 +415,10 @@ export class SystemMailService {
   }
 
   async send(request: SystemEmailRequest): Promise<EmailDispatchResult> {
+    if (request.emailCategory) {
+      const policy = await emailPreferencePolicy(this.prisma, request.tenantId, request.recipientUserId, request.to);
+      if (!policy.eligible.includes(request.emailCategory) || policy.preferences[request.emailCategory] === false) return { success: true, status: 'disabled', provider: 'suppressed', from: '' };
+    }
     const tenant = await this.tenant(request.tenantId);
     this.email(request.to, 'Recipient');
     if (request.replyTo) this.email(request.replyTo, 'Reply-To');

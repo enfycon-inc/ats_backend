@@ -323,6 +323,59 @@ export class RoleRequestsService
     };
   }
 
+  async enqueueApproval(db: Db, target: PendingUser, roleIds: string[], approver: AuthUser, approvedBranch?: string | null, approvedUnit?: string | null) {
+    const requestedRole = await this.resolveRole(db, target.tenant_id, target.requested_role!, target);
+    const finalTarget = { ...target, branch_id: approvedBranch || null, business_unit_id: approvedUnit || null };
+    const reviewers = await this.reviewers(db, finalTarget, requestedRole);
+    const rows = await db.$queryRawUnsafe<{ role_names: string; tenant_name: string; domain: string; branch_name: string; unit_name: string }[]>(
+      `SELECT t.name AS tenant_name, t.domain,
+        (SELECT string_agg(name, ', ' ORDER BY name) FROM ats.custom_roles WHERE tenant_id = t.id AND id = ANY($2::uuid[])) AS role_names,
+        (SELECT name FROM ats.branches WHERE id = $3::uuid AND tenant_id = t.id) AS branch_name,
+        (SELECT name FROM ats.business_units WHERE id = $4::uuid AND tenant_id = t.id) AS unit_name
+       FROM ats.tenants t WHERE t.id = $1::uuid`, target.tenant_id, roleIds.length ? roleIds : [requestedRole.id], approvedBranch || null, approvedUnit || null);
+    const details = rows[0];
+    if (!details) throw new Error('Approval email context is unavailable');
+    const payload = { target: finalTarget, requestedRoleId: requestedRole.id, roleName: details.role_names || requestedRole.name, tenantName: details.tenant_name, subdomain: details.domain,
+      branch: details.branch_name, unit: details.unit_name, approverName: approver.fullName, approverEmail: approver.email, approvedAt: new Date().toISOString() };
+    const eventId = target.role_request_version || randomUUID();
+    const recipients = [{ id: target.id, category: 'accountApproval' }, ...reviewers.map(reviewer => ({ id: reviewer.id, category: 'roleApprovals' }))];
+    for (const recipient of recipients) await db.$executeRawUnsafe(
+      `INSERT INTO ats.system_email_deliveries (tenant_id, recipient_id, event_id, category, payload)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::jsonb)
+       ON CONFLICT (event_id, recipient_id, category) DO NOTHING`, target.tenant_id, recipient.id, eventId, recipient.category, JSON.stringify(payload));
+  }
+
+  private async dispatchApprovalEmails() {
+    const lease = randomUUID();
+    const jobs = await this.prisma.$queryRawUnsafe<any[]>(
+      `WITH ready AS (SELECT id FROM ats.system_email_deliveries WHERE status IN ('pending', 'sending') AND available_at <= NOW()
+        ORDER BY available_at, id LIMIT 8 FOR UPDATE SKIP LOCKED)
+       UPDATE ats.system_email_deliveries d SET status = 'sending', lease_id = $1::uuid, attempts = attempts + 1, available_at = NOW() + INTERVAL '5 minutes'
+       FROM ready WHERE d.id = ready.id RETURNING d.id, d.tenant_id, d.recipient_id, d.category, d.attempts, d.payload`, lease);
+    await Promise.allSettled(jobs.map(async job => {
+      const finish = (status: string) => this.prisma.$executeRawUnsafe('UPDATE ats.system_email_deliveries SET status = $1, lease_id = NULL WHERE id = $2::uuid AND lease_id = $3::uuid', status, job.id, lease);
+      try {
+        if (job.attempts > 5) return finish('failed');
+        const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
+        if (payload.target.tenant_id !== job.tenant_id) return finish('cancelled');
+        const recipient = await this.prisma.user.findFirst({ where: { id: job.recipient_id, tenantId: job.tenant_id, isActive: true, isApproved: true }, select: { email: true, fullName: true } });
+        if (!recipient) return finish('cancelled');
+        if (job.category === 'accountApproval' && job.recipient_id === payload.target.id) {
+          await this.mail.sendRoleApprovalWelcomeEmail({ tenantId: job.tenant_id, to: recipient.email, fullName: recipient.fullName || '', tenantName: payload.tenantName, subdomain: payload.subdomain, roleName: payload.roleName, approverName: payload.approverName, approverEmail: payload.approverEmail, approvedAt: payload.approvedAt });
+        } else if (job.category === 'roleApprovals') {
+          const role = await this.resolveRole(this.prisma, job.tenant_id, payload.requestedRoleId, payload.target);
+          if (!(await this.reviewers(this.prisma, payload.target, role, job.recipient_id)).length) return finish('cancelled');
+          const sent = await this.mail.sendRoleApprovalReviewerEmail({ ...payload, tenantId: job.tenant_id, to: recipient.email, fullName: recipient.fullName || '', recipientUserId: job.recipient_id });
+          if (sent?.status === 'disabled') return finish('disabled');
+        } else return finish('cancelled');
+        return finish('accepted');
+      } catch {
+        await this.prisma.$executeRawUnsafe(`UPDATE ats.system_email_deliveries SET status = $1, lease_id = NULL, available_at = NOW() + ($2::integer * INTERVAL '1 minute') WHERE id = $3::uuid AND lease_id = $4::uuid`, job.attempts >= 5 ? 'failed' : 'pending', Math.min(60, 2 ** job.attempts), job.id, lease);
+        this.logger.warn(`Approval email ${job.id} was not accepted (attempt ${job.attempts}).`);
+      }
+    }));
+  }
+
   async dispatchPending() {
     if (this.processing) return;
     this.processing = true;
@@ -338,6 +391,7 @@ export class RoleRequestsService
         lease,
       );
       await Promise.allSettled(jobs.map((job) => this.deliver(job)));
+      await this.dispatchApprovalEmails();
     } catch {
       this.logger.warn(
         'Role-request delivery worker could not read pending work. Check database availability and migrations.',
@@ -392,7 +446,7 @@ export class RoleRequestsService
       });
       const path = `/auth/role-request?${query}`;
       if (job.channel === 'email') {
-        await this.mail.sendRoleRequestEmail({
+        const sent = await this.mail.sendRoleRequestEmail({
           tenantId: user.tenant_id,
           to: recipient.email,
           fullName: recipient.full_name,
@@ -405,6 +459,7 @@ export class RoleRequestsService
           subdomain: user.domain,
           reviewPath: path,
         });
+        if (sent?.status === 'disabled') return this.finish(job, 'disabled');
       } else {
         const notification = await this.notifications.create(
           user.tenant_id,

@@ -51,7 +51,7 @@ export class AuthUserService {
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, bu.allow_pods AS unit_allow_pods, EXISTS (SELECT 1 FROM business_units enabled_unit WHERE enabled_unit.tenant_id = u.tenant_id AND enabled_unit.allow_pods = true AND (u.branch_id IS NULL OR enabled_unit.branch_id = u.branch_id)) AS has_enabled_pod_unit, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
-              t.site_title, t.logo_url, t.login_logo_url,
+              t.site_title, t.logo_url, t.login_logo_url, t.compact_logo_url,
               b.name as branch_name, bu.name as business_unit_name,
               b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
               COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
@@ -81,7 +81,7 @@ export class AuthUserService {
               u.business_unit_id, u.job_reviewer_id, rev.full_name as job_reviewer_name,
               t.name as tenant_name, t.default_market, t.domain as tenant_domain, t.user_limit as user_limit,
               t.pod_system_enabled, bu.allow_pods AS unit_allow_pods, EXISTS (SELECT 1 FROM business_units enabled_unit WHERE enabled_unit.tenant_id = u.tenant_id AND enabled_unit.allow_pods = true AND (u.branch_id IS NULL OR enabled_unit.branch_id = u.branch_id)) AS has_enabled_pod_unit, t.candidate_pool_mode, t.job_assignment_mode, t.job_assignment_options,
-              t.site_title, t.logo_url, t.login_logo_url,
+              t.site_title, t.logo_url, t.login_logo_url, t.compact_logo_url,
               b.name as branch_name, bu.name as business_unit_name,
               b.city as branch_city, COALESCE(bu.timezone, b.timezone) as office_timezone,
               COALESCE(bu.work_start_time, b.work_start_time) as office_start_time,
@@ -177,7 +177,7 @@ export class AuthUserService {
       candidatePoolMode: u.candidate_pool_mode || 'COMBINED_MARKET',
       jobAssignmentMode: u.job_assignment_mode || 'AUTO',
       jobAssignmentOptions: u.job_assignment_options || { allowAuto: true, allowAll: true, allowUnassigned: true, allowedPodIds: [] },
-      tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '', siteTitle: u.site_title || '', logoUrl: u.logo_url || '', loginLogoUrl: u.login_logo_url || '' },
+      tenant: { name: u.tenant_name || '', domain: u.tenant_domain || '', siteTitle: u.site_title || '', logoUrl: u.logo_url || '', loginLogoUrl: u.login_logo_url || '', compactLogoUrl: u.compact_logo_url || '' },
     } satisfies StaffProfile;
   }
 
@@ -849,7 +849,9 @@ async approveTenantUser(
       }
     }
     await rejectManualPodLeadRoles(this.authQuery, requester.tenantId!, assignedRoleIds);
-    const approvalWrite = await this.authQuery.query(
+    if (!this.roleRequests) throw new Error('Approval notification queue is unavailable');
+    const approvalWrite = await this.authQuery.prisma.$transaction(async tx => {
+      const rows = await tx.$queryRawUnsafe<any[]>(
       `UPDATE users
        SET is_approved = true,
            is_active = true,
@@ -866,8 +868,12 @@ async approveTenantUser(
          AND tenant_id = $8::uuid AND branch_id IS NOT DISTINCT FROM $10::uuid AND business_unit_id IS NOT DISTINCT FROM $11::uuid
          AND (NOT $7::boolean OR (tenant_id = $8::uuid AND branch_id = $3::uuid AND business_unit_id = $4::uuid AND is_approved = false))
        RETURNING id`,
-      [assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId, targetUser.requested_role ?? null, isCurrentUnitManager(requester), targetUser.tenant_id, targetUser.role_request_version || null, targetUser.branch_id || null, targetUser.business_unit_id || null]
+      ...[assignedRoleId || null, assignedRoleIds.length > 0 ? assignedRoleIds : null, branchId || null, businessUnitId || null, userId, targetUser.requested_role ?? null, isCurrentUnitManager(requester), targetUser.tenant_id, targetUser.role_request_version || null, targetUser.branch_id || null, targetUser.business_unit_id || null]
     );
+      if (!rows.length) throw new ConflictException('This approval request has already changed. Refresh and try again.');
+      if (targetUser.requested_role) await this.roleRequests!.enqueueApproval(tx, { ...targetUser, id: userId }, assignedRoleIds.length ? assignedRoleIds : assignedRoleId ? [assignedRoleId] : [], requester, branchId, businessUnitId);
+      return { rows };
+    });
     if (approvalWrite.rows.length === 0) {
       throw new ConflictException('This approval request has already changed. Refresh the user list and try again.');
     }
@@ -889,28 +895,7 @@ async approveTenantUser(
       this.logger.warn(`Keycloak provisioning on approval failed (non-blocking): ${err.message}`);
     });
 
-    let emailNotification: { status: 'accepted' | 'failed' | 'not_applicable'; message?: string } = { status: 'not_applicable' };
-    if (targetUser.requested_role) {
-      try {
-        if (!this.emailService) throw new Error('Approval email service unavailable');
-        const approvedRoleName = assignedRoleId ? (await this.authQuery.query('SELECT name FROM custom_roles WHERE id = $1 LIMIT 1', [assignedRoleId]).catch(() => undefined))?.rows?.[0]?.name : undefined;
-        await this.emailService.sendRoleApprovalWelcomeEmail({
-          tenantId: targetUser.tenant_id,
-          to: targetUser.email,
-          fullName: targetUser.full_name || 'Team Member',
-          tenantName: targetUser.tenant_name || 'Workspace',
-          subdomain: targetUser.tenant_domain || '',
-          roleName: approvedRoleName || targetUser.requested_role,
-        });
-        emailNotification = { status: 'accepted' };
-      } catch (err: any) {
-        this.logger.warn(`User approval succeeded but welcome email was not accepted: ${err.message}`);
-        emailNotification = {
-          status: 'failed',
-          message: 'The user was approved, but the welcome email could not be sent. Check workspace email settings.',
-        };
-      }
-    }
+    const emailNotification = { status: targetUser.requested_role ? 'queued' : 'not_applicable' };
 
     return {
       success: true,

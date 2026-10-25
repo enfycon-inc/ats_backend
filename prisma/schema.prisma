@@ -40,6 +40,7 @@ model Tenant {
   id                        String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                      String                 @db.VarChar(255)
   logoUrl                   String?                @map("logo_url") @db.Text
+  compactLogoUrl             String?                @map("compact_logo_url") @db.Text
   loginLogoUrl              String?                @map("login_logo_url") @db.Text
   siteTitle                 String?                @map("site_title") @db.VarChar(255)
   domain                    String?                @unique @db.VarChar(255)
@@ -990,6 +991,7 @@ model Notification {
 }
 
 model UserNotificationSettings {
+  emailPreferences Json @default("{}") @map("email_preferences")
   userId           String   @id @map("user_id") @db.Uuid
   soundEnabled     Boolean  @default(true) @map("sound_enabled")
   soundPreset      String   @default("CLASSIC_CHIME") @map("sound_preset") @db.VarChar(50)
@@ -1452,4 +1454,22 @@ model CareerOauthToken {
  @@index([expiresAt])
  @@map("career_oauth_tokens")
  @@schema("ats")
+}
+
+model SystemEmailDelivery {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  recipientId String @map("recipient_id") @db.Uuid
+  eventId String @map("event_id") @db.Uuid
+  category String @db.VarChar(50)
+  payload Json
+  status String @default("pending") @db.VarChar(16)
+  attempts Int @default(0)
+  availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
+  leaseId String? @map("lease_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@unique([eventId, recipientId, category])
+  @@index([status, availableAt])
+  @@map("system_email_deliveries")
+  @@schema("ats")
 }
