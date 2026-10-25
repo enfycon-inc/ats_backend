@@ -593,6 +593,7 @@ export class RecruiterSubmissionsService {
         r.full_name AS recruiter_name,
         r.email AS recruiter_email, r.profile_picture AS recruiter_avatar,
         r.job_reviewer_id AS recruiter_job_reviewer_id,
+        j.created_by_user_id AS job_creator_id, j.business_unit_id AS job_unit_id,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
         am.id AS am_id,
@@ -652,6 +653,12 @@ export class RecruiterSubmissionsService {
       userPerms.includes('branch_admin:manage') ||
       userPerms.includes('unit_admin:manage');
 
+    const creatorMember = userPerms.includes('submission:internal_screening_created_jobs')
+      ? await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } }) : null;
+    const creatorView = filters.view || (isAccountManager ? 'my' : 'all');
+    const creatorScopeSql = (creatorView === 'my' || (creatorView === 'all' && !canViewAll)) && creatorMember?.branchId && creatorMember.businessUnitId
+      ? ` OR (j.created_by_user_id = $${paramIndex}::uuid AND j.branch_id = $${paramIndex + 1}::uuid AND j.business_unit_id = $${paramIndex + 2}::uuid)` : '';
+    if (creatorScopeSql) { params.push(user.dbId, creatorMember!.branchId, creatorMember!.businessUnitId); paramIndex += 3; }
     const view = filters.view || (isAccountManager ? 'my' : 'all');
     if (!['my', 'pod', 'all'].includes(view)) {
       throw new BadRequestException('Invalid submission view.');
@@ -670,8 +677,8 @@ export class RecruiterSubmissionsService {
 
     if (view === 'my') {
       baseSql += isAccountManager
-        ? ` AND j.account_manager_id = $${paramIndex}`
-        : ` AND s.recruiter_id = $${paramIndex}`;
+        ? ` AND (j.account_manager_id = $${paramIndex}${creatorScopeSql})`
+        : ` AND (s.recruiter_id = $${paramIndex}${creatorScopeSql})`;
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
@@ -681,7 +688,7 @@ export class RecruiterSubmissionsService {
       params.push(user.dbId);
       paramIndex++;
     } else if (!canViewAll) {
-      baseSql += ` AND (s.recruiter_id = $${paramIndex} OR r.job_reviewer_id = $${paramIndex})`;
+      baseSql += ` AND (s.recruiter_id = $${paramIndex} OR r.job_reviewer_id = $${paramIndex}${creatorScopeSql})`;
       params.push(user.dbId);
       paramIndex++;
     }
@@ -875,12 +882,13 @@ export class RecruiterSubmissionsService {
 
       const total = Number(countRes[0]?.count || 0);
       const data: SubmissionDetails[] = (retrieveRes || []).map((row: any) => {
-        const capabilities = submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId, row.job_status, row.final_status, row.keep_existing_submissions_open === true);
+        const creatorReview = Boolean(creatorMember?.branchId && creatorMember.businessUnitId && row.job_creator_id === user.dbId && row.branch_id === creatorMember.branchId && row.job_unit_id === creatorMember.businessUnitId);
+        const capabilities = submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId, row.job_status, row.final_status, row.keep_existing_submissions_open === true, creatorReview, Boolean(user.dbId && row.job_creator_id === user.dbId && row.recruiter_id === user.dbId));
         const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
         const hasAdminScope = (user.permissions || []).some(permission => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(permission));
         const cannotEditOtherManagerJob = isAccountManager && !hasAdminScope && row.am_id !== user.dbId && !(user.permissions || []).includes('submission:edit_all');
         if (cannotEditOtherManagerJob) {
-          capabilities.review = false;
+          if (!creatorReview) capabilities.review = false;
           capabilities.schedule = false;
           capabilities.cancelInterview = false;
           capabilities.results = { l1: false, l2: false, l3: false };
@@ -1235,7 +1243,7 @@ export class RecruiterSubmissionsService {
     const existing = await this.prisma.recruiterSubmission.findFirst({
       where: { id, tenantId },
       include: {
-        job: { select: { id: true, jobCode: true, jobTitle: true, accountManagerId: true, status: true, keepExistingSubmissionsOpen: true } },
+        job: { select: { id: true, jobCode: true, jobTitle: true, accountManagerId: true, createdByUserId: true, branchId: true, businessUnitId: true, status: true, keepExistingSubmissionsOpen: true } },
         candidate: { select: { id: true, fullName: true, firstName: true, lastName: true, email: true } },
       },
     });
@@ -1250,7 +1258,11 @@ export class RecruiterSubmissionsService {
     const changesStatus = dto.finalStatus !== undefined || ['l1', 'l2', 'l3'].some(round =>
       ['Status', 'Date', 'Remarks', 'Interviewer', 'Color'].some(suffix => dto[`${round}${suffix}`] !== undefined),
     );
-    if (isOtherManagerJob && changesStatus && !(user.permissions || []).includes('submission:edit_all')) {
+    const reviewerMembership = user.permissions?.includes('submission:internal_screening_created_jobs')
+      ? await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } }) : null;
+    const creatorReview = Boolean(reviewerMembership?.branchId && reviewerMembership.businessUnitId && existing.job?.createdByUserId === user.dbId && existing.job.branchId === reviewerMembership.branchId && existing.job.businessUnitId === reviewerMembership.businessUnitId);
+    const creatorInternalDecision = creatorReview && existing.finalStatus === 'PENDING_APPROVAL' && ['SUBMITTED', 'REJECTED'].includes(dto.finalStatus || '') && !['l1', 'l2', 'l3'].some(round => ['Status', 'Date', 'Remarks', 'Interviewer', 'Color'].some(suffix => dto[`${round}${suffix}`] !== undefined));
+    if (isOtherManagerJob && changesStatus && !creatorInternalDecision && !(user.permissions || []).includes('submission:edit_all')) {
       throw new ForbiddenException('Editing status for another account manager’s job is not enabled for this role.');
     }
 
@@ -1265,7 +1277,7 @@ export class RecruiterSubmissionsService {
     const workflowChange = changesStatus || dto.meetingLink !== undefined || dto.resetFollowingRounds === true;
     const paused = isClosedJob(existing.job?.status) && !existing.job?.keepExistingSubmissionsOpen;
     if (paused && workflowChange) throw new BadRequestException('Job closed - workflow paused. Activate the job to edit submission status.');
-    const caps = submissionCapabilities(user.permissions, visibleSubmission.recruiterJobReviewerId === user.dbId, existing.job?.status, existing.finalStatus, existing.job?.keepExistingSubmissionsOpen);
+    const caps = submissionCapabilities(user.permissions, visibleSubmission.recruiterJobReviewerId === user.dbId, existing.job?.status, existing.finalStatus, existing.job?.keepExistingSubmissionsOpen, creatorReview, Boolean(user.dbId && existing.job?.createdByUserId === user.dbId && existing.recruiterId === user.dbId));
     validateTrackerUpdate({ ...existing, rejectionFromStatus: visibleSubmission.rejectionFromStatus }, dto, caps);
     if (dto.expectedUpdatedAt && new Date(dto.expectedUpdatedAt).getTime() !== existing.updatedAt.getTime()) {
       throw new ConflictException('This submission was updated by someone else. Reload it before saving.');

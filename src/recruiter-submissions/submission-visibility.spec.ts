@@ -34,6 +34,32 @@ describe('submission visibility and statistics', () => {
     expect(query.mock.calls[0][0]).toContain('cr.tenant_id = s.tenant_id');
   });
 
+  it.each(['my', 'all'])('allows creator review visibility in %s using current membership and bound parameters', async view => {
+    const db: any = { user: { findFirst: jest.fn().mockResolvedValue({ branchId: 'branch-a', businessUnitId: 'unit-a' }) }, $queryRawUnsafe: query };
+    service = new RecruiterSubmissionsService(db, {} as any);
+    query.mockImplementation(async (sql: string, ...params: any[]) => {
+      const placeholders = [...sql.matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
+      expect(Math.max(...placeholders)).toBe(params.length);
+      if (sql.startsWith('SELECT COUNT')) return [{ count: 1n }];
+      return [{ id: 'submission-a', recruiter_id: 'other', job_creator_id: user.dbId, branch_id: 'branch-a', job_unit_id: 'unit-a', final_status: 'PENDING_APPROVAL', job_status: 'Active' }];
+    });
+    const result = await service.findAll('tenant-a', { ...user, permissions: ['submission:view', 'submission:internal_screening_created_jobs'] }, { view });
+    expect(query.mock.calls[0][0]).toContain('j.created_by_user_id = $2::uuid');
+    expect(query.mock.calls[0].slice(2, 5)).toEqual([user.dbId, 'branch-a', 'unit-a']);
+    expect(result.data[0].capabilities.review).toBe(true);
+    expect(db.user.findFirst).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['other', 'branch-a', 'unit-a', 'other-recruiter'],
+    ['recruiter-a', 'other-branch', 'unit-a', 'other-recruiter'],
+    ['recruiter-a', 'branch-a', 'other-unit', 'other-recruiter'],
+    ['recruiter-a', 'branch-a', 'unit-a', 'recruiter-a'],
+  ])('does not grant creator review outside ownership/scope or for self review', async (creator, branch, unit, recruiter) => {
+    service = new RecruiterSubmissionsService({ user: { findFirst: jest.fn().mockResolvedValue({ branchId: 'branch-a', businessUnitId: 'unit-a' }) }, $queryRawUnsafe: query } as any, {} as any);
+    query.mockImplementation(async (sql: string) => sql.startsWith('SELECT COUNT') ? [{ count: 1n }] : [{ id: 'submission-a', recruiter_id: recruiter, job_creator_id: creator, branch_id: branch, job_unit_id: unit, final_status: 'PENDING_APPROVAL', job_status: 'Active' }]);
+    const result = await service.findAll('tenant-a', { ...user, permissions: ['submission:view', 'submission:internal_screening_created_jobs'] }, { view: 'my' });
+    expect(result.data[0].capabilities.review).toBe(false);
+  });
   it('binds the authenticated owner for My even with broad viewing permissions', async () => {
     const result = await service.findAll('tenant-a', user, { view: 'my' });
     expect(query.mock.calls[0][0]).toContain('s.recruiter_id = $2');

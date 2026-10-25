@@ -177,3 +177,18 @@ describe('submission tracker permissions and transitions', () => {
   });
 
 });
+
+describe('job creator internal review permission', () => {
+  it('requires explicit permission and verified creator scope', () => {
+    expect(submissionCapabilities(['submission:internal_screening_created_jobs'], false, 'Active', 'PENDING_APPROVAL', false, true).review).toBe(true);
+    expect(submissionCapabilities([], false, 'Active', 'PENDING_APPROVAL', false, true).review).toBe(false);
+    expect(submissionCapabilities(['submission:internal_screening_created_jobs']).review).toBe(false);
+  });
+  it('keeps manager access, blocks creator self review and paused jobs, and grants no other actions', () => {
+    expect(submissionCapabilities([], true).review).toBe(true);
+    expect(submissionCapabilities(['submission:internal_screening'], true, 'Active', 'PENDING_APPROVAL', false, true, true).review).toBe(false);
+    expect(submissionCapabilities(['submission:internal_screening_created_jobs'], false, 'Closed', 'PENDING_APPROVAL', false, true).review).toBe(false);
+    const caps = submissionCapabilities(['submission:internal_screening_created_jobs'], false, 'Active', 'PENDING_APPROVAL', false, true);
+    expect(caps).toMatchObject({ schedule: false, outcome: false, notes: false, rate: false, results: { l1: false, l2: false, l3: false } });
+  });
+});

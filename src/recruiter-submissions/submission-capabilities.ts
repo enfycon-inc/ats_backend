@@ -1,11 +1,11 @@
 import { isClosedJob } from '../jobs/job-action-policy';
 import type { SubmissionCapabilities } from './tracker-contract';
 
-export function submissionCapabilities(permissions: string[] = [], isAssignedManager = false, jobStatus?: string | null, finalStatus?: string | null, keepExistingSubmissionsOpen = false): SubmissionCapabilities {
+export function submissionCapabilities(permissions: string[] = [], isAssignedManager = false, jobStatus?: string | null, finalStatus?: string | null, keepExistingSubmissionsOpen = false, creatorReview = false, creatorSelfReview = false): SubmissionCapabilities {
   const paused = isClosedJob(jobStatus) && !keepExistingSubmissionsOpen;
   const has = (permission: string) => permissions.includes('*') || permissions.includes(permission);
   return {
-    review: !paused && (has('submission:internal_screening') || isAssignedManager),
+    review: !paused && !creatorSelfReview && (has('submission:internal_screening') || isAssignedManager || (creatorReview && has('submission:internal_screening_created_jobs'))),
     schedule: !paused && has('submission:schedule_interview'),
     cancelInterview: !paused && has('submission:schedule_interview'),
     results: {
