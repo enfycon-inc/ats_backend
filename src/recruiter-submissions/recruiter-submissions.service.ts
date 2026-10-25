@@ -1,3 +1,4 @@
+import { recruiterDashboard } from './recruiter-dashboard';
 import { assertPodsEnabled, loadWorkspaceFeatures } from '../auth/workspace-features';
 import { isClosedJob } from '../jobs/job-action-policy';
 import { submissionCompensation, submissionSource, isContractJob } from './submission-compensation';
@@ -107,6 +108,8 @@ export class RecruiterSubmissionsService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
   ) {}
+
+  async dashboard(tenantId: string, user: AuthUser, month: string, range: number) { return recruiterDashboard(this.prisma, user, tenantId, month, range); }
 
   async findEligibleForInterview(tenantId: string, user: AuthUser, filters: { page?: number; limit?: number; view?: string; search?: string; branchId?: string }): Promise<EligibleInterviewResponse> {
     if (!user.dbId) throw new ForbiddenException('Missing authenticated database user.');

@@ -274,3 +274,21 @@ export interface SubmissionHistoryResponse {
   total: number;
   totalPages: number;
 }
+
+/** Personal recruiter dashboard. Counts cover the full scope, not displayed pages. */
+export interface RecruiterDashboardData {
+  rangeDays: 0 | 7 | 30 | 90;
+  pendingJobs: number;
+  totalActiveJobs: number;
+  jobs: Array<{ id: string; jobTitle: string; jobCode: string; jobType: string; market: string; client: string; priority: string; assignedAt: string; submissionDone: number; submissionRequired: number; canSubmit: boolean; canMatch: boolean }>;
+  metrics: { jobs: number; submissions: number; rejected: number; selected: number; interviews: number };
+  submissionStages: Array<{ label: string; count: number }>;
+  interviewOutcomes: Array<{ label: string; count: number }>;
+  calendar: RecruiterInterview[];
+  calendarTruncated: boolean;
+  upcoming: RecruiterInterview[];
+}
+export interface RecruiterInterview {
+  id: string; submissionId: string; candidateName: string; jobTitle: string; round: string; status: string;
+  date: string; timezone: string | null; interviewer: string | null; meetingLink: string | null;
+}

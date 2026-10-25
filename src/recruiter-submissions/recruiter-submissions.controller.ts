@@ -123,6 +123,11 @@ export class RecruiterSubmissionsController {
     return this.service.getTrackerStats(tid, user, { view, branchId: bid || undefined, rangeDays: parsedRange });
   }
 
+  @Get('dashboard')
+  async dashboard(@CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId?: string, @Query('month') month?: string, @Query('rangeDays') range?: string) {
+    return this.service.dashboard(resolveTenantId(user, tenantId), user, month || new Date().toISOString().slice(0, 7), range === undefined ? 30 : Number(range));
+  }
+
   @Get('calendar-events')
   @ApiOperation({ summary: 'List interview events visible in the authenticated user’s submission scope' })
   async calendarEvents(
