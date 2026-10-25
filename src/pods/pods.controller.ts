@@ -25,7 +25,7 @@ export class PodsController {
     @Query('branchId') queryBranchId?: string, @Query('businessUnitId') queryBusinessUnitId?: string) {
     const tid = resolveTenantId(user, tenantId);
     const scope = await this.podsService.resolveScope(tid, user, dto.businessUnitId || queryBusinessUnitId, dto.branchId || queryBranchId || headerBranchId, true);
-    return this.podsService.create({ ...dto, ...scope }, tid, scope.branchId, scope.businessUnitId);
+    return this.podsService.create({ ...dto, ...scope }, tid, scope.branchId, scope.businessUnitId, user);
   }
 
   @Get()
@@ -73,7 +73,7 @@ export class PodsController {
     const pod = await this.podsService.findOne(id, tid);
     await this.podsService.assertPodAccess(tid, user, pod);
     const scope = await this.podsService.resolveScope(tid, user, dto.businessUnitId || pod.businessUnitId || undefined, dto.branchId || pod.branchId || undefined, true);
-    return this.podsService.update(id, { ...dto, ...scope }, tid);
+    return this.podsService.update(id, { ...dto, ...scope }, tid, user);
   }
 
   @Delete(':id')

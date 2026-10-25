@@ -1,6 +1,11 @@
 import type { SystemEmailRequest } from './system-email.types';
 
+export type EmailActor = { fullName?: string | null; email: string };
+export type EmailActorAction = 'Updated' | 'Approved' | 'Assigned' | 'Invited' | 'Created' | 'Activated' | 'Requested' | 'Sent';
 type Context = {
+  actor?: EmailActor;
+  actorAction?: EmailActorAction;
+  actionAt?: string;
   workspace: string;
   recipient: string;
   fullName?: string;
@@ -126,6 +131,17 @@ export function renderSystemEmail(
   input: SystemEmailTemplate,
 ): Pick<SystemEmailRequest, 'subject' | 'html' | 'text' | 'systemGenerated'> {
   const e = escapeEmailText;
+  const actor = input.actor || (input.event === 'role_approval_update'
+    ? { fullName: input.approverName, email: input.approverEmail }
+    : input.event === 'role_requested' ? { fullName: input.requesterName, email: input.requesterEmail } : undefined);
+  const actorName = actor?.fullName?.trim() || actor?.email?.trim();
+  const byActor = actorName ? ` by ${actorName}` : '';
+  const actorActions: Partial<Record<SystemEmailTemplate['event'], EmailActorAction>> = {
+    role_approval_update: 'Approved', role_requested: 'Requested', role_changed_alert: 'Updated',
+    pod_lead_assigned: 'Assigned', admin_temp_password_notice: 'Updated', password_changed_alert: 'Updated',
+    workspace_activated: 'Activated', role_approved: 'Approved', team_invitation: 'Invited', account_created: 'Created', delivery_test: 'Sent',
+  };
+  const actorAction = input.actorAction || actorActions[input.event];
   const details: [string, string][] = [['Workspace', input.workspace]];
   let title: string,
     preview: string,
@@ -138,8 +154,8 @@ export function renderSystemEmail(
     case 'role_approval_update':
       title = 'Role request approved';
       preview = `${input.requesterName} was approved for ${input.role}.`;
-      copy = 'This access request has been approved. No further review is required.';
-      details.push(['Requester', input.requesterName], ['Requester email', input.requesterEmail], ['Approved role', input.role], ['Approved by', input.approverName], ['Approver email', input.approverEmail], ['Approved at (UTC)', input.approvedAt], ...(input.branch ? [['Branch', input.branch] as [string, string]] : []), ...(input.unit ? [['Unit', input.unit] as [string, string]] : []), ['Status', 'Approved']);
+      copy = `This access request has been approved${byActor}. No further review is required.`;
+      details.push(['Requester', input.requesterName], ['Requester email', input.requesterEmail], ['Approved role', input.role], ['Approved at (UTC)', input.approvedAt], ...(input.branch ? [['Branch', input.branch] as [string, string]] : []), ...(input.unit ? [['Unit', input.unit] as [string, string]] : []), ['Status', 'Approved']);
       break;
     case 'role_requested':
       title = 'Role request awaiting your review';
@@ -211,7 +227,7 @@ export function renderSystemEmail(
       title = 'Your workspace is ready';
       preview = `${input.workspace} is active and ready to use.`;
       copy =
-        'Your workspace is active. Sign in with your existing credentials to get started.';
+        `Your workspace has been activated${byActor}. Sign in with your existing credentials to get started.`;
       details.push(
         ['Status', 'Active'],
         ['Workspace URL', applicationEmailUrl(input.loginUrl)],
@@ -223,7 +239,7 @@ export function renderSystemEmail(
       title = 'Your access request was approved';
       preview = `Your access request for ${input.workspace} was approved.`;
       copy =
-        'Your request to join this workspace has been approved. Sign in with your existing credentials to get started.';
+        `Your request to join this workspace has been approved${byActor}. Sign in with your existing credentials to get started.`;
       details.push(
         ['Status', 'Approved'],
         ['Login email', input.recipient],
@@ -235,7 +251,7 @@ export function renderSystemEmail(
       title = 'Join your team on EnfySync';
       preview = `You have been invited to join ${input.workspace}.`;
       copy =
-        'You have been invited to join your team. Set up your account using the secure invitation link below.';
+        `You have been invited to join your team${byActor}. Set up your account using the secure invitation link below.`;
       details.push(
         ['Role', input.role || 'Team Member'],
         ['Login email', input.recipient],
@@ -249,7 +265,7 @@ export function renderSystemEmail(
       title = 'Your account is ready';
       preview = `Your account has been created for ${input.workspace}.`;
       copy =
-        'Your workspace account has been created. Use your account credentials to sign in.';
+        `Your workspace account has been created${byActor}. Use your account credentials to sign in.`;
       details.push(
         ['Role', input.role || 'Team Member'],
         ['Login email', input.recipient],
@@ -266,7 +282,7 @@ export function renderSystemEmail(
       title = 'Email delivery test';
       preview = 'Check receipt from your selected workspace email sender.';
       copy =
-        'This message tests your selected workspace system email sender. If you are reading it, this test reached your inbox.';
+        `This test message was sent${byActor} using your selected workspace system email sender. If you are reading it, this test reached your inbox.`;
       details.push(['Purpose', 'System email verification']);
       note = 'This test does not guarantee delivery of future messages.';
       break;
@@ -287,7 +303,7 @@ export function renderSystemEmail(
       title = 'Password successfully changed';
       preview = `Security alert: Your password for ${input.workspace} was updated.`;
       copy =
-        'The password for your EnfySync account was successfully updated. You can now use your new password to sign in.';
+        `The password for your EnfySync account was successfully updated${byActor}. You can now use your new password to sign in.`;
       details.push(
         ['Account email', input.recipient],
         ['Status', 'Password changed'],
@@ -300,9 +316,9 @@ export function renderSystemEmail(
       break;
     case 'admin_temp_password_notice':
       title = 'Your password was reset';
-      preview = `An administrator updated your password for ${input.workspace}.`;
+      preview = `Your password for ${input.workspace} was updated${byActor}.`;
       copy =
-        'Your workspace administrator has reset your password and assigned a temporary credential. Sign in and change your password immediately.';
+        `Your password has been reset${byActor} and a temporary credential assigned. Sign in and change your password immediately.`;
       details.push(
         ['Account email', input.recipient],
         ['Temporary password', input.temporaryPassword],
@@ -316,7 +332,7 @@ export function renderSystemEmail(
       title = 'Assigned as Pod Lead';
       preview = `You have been appointed as Pod Lead for ${input.podName} at ${input.workspace}.`;
       copy =
-        `You have been assigned as the Pod Lead for ${input.podName}. You now have team leadership and recruitment oversight permissions for this pod.`;
+        `You have been assigned as the Pod Lead for ${input.podName}${byActor}. You now have team leadership and recruitment oversight permissions for this pod.`;
       details.push(
         ['Assigned role', 'Pod Lead'],
         ['Pod name', input.podName],
@@ -331,7 +347,7 @@ export function renderSystemEmail(
       title = 'Your role has been updated';
       preview = `Your workspace access role for ${input.workspace} has been updated to ${input.newRoles}.`;
       copy =
-        'Your access permissions and role assignments in EnfySync have been updated by your workspace administrator.';
+        `Your access permissions and role assignments in EnfySync have been updated${byActor}.`;
       details.push(
         ['New role', input.newRoles],
         ...(input.previousRoles ? ([['Previous role', input.previousRoles]] as [string, string][]) : []),
@@ -344,6 +360,8 @@ export function renderSystemEmail(
         'If you did not expect this role update, please contact your workspace administrator immediately.';
       break;
   }
+  if (actor?.email?.trim() && actorAction) details.push([`${actorAction} by`, actor.fullName?.trim() ? `${actor.fullName.trim()} (${actor.email.trim()})` : actor.email.trim()]);
+  if (input.actionAt && actorAction) details.push([`${actorAction} at (UTC)`, input.actionAt]);
   const subject = {
     role_approval_update: 'Role request approved',
     role_requested: input.event === 'role_requested' ? `Role request: ${input.requesterName} — ${input.role}` : '',
@@ -365,6 +383,7 @@ export function renderSystemEmail(
       /[\r\n]/g,
       ' ',
     );
+  const copyHtml = actorName ? e(copy).replace(input.event === 'role_requested' ? e(actorName) : `by ${e(actorName)}`, () => input.event === 'role_requested' ? `<strong>${e(actorName)}</strong>` : `by <strong>${e(actorName)}</strong>`) : e(copy);
   const rows = details
     .map(
       ([label, value]) =>
@@ -407,7 +426,7 @@ export function renderSystemEmail(
     ? `<tr><td style="padding:0 20px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0"><tr><td style="padding:16px 18px"><h2 style="font-size:16px;margin:0 0 4px;color:#0f172a">How would you like to sign in?</h2><p style="font-size:12px;line-height:1.5;color:#475569;margin:0 0 8px">${e(welcomeInstructions)}</p>${welcomeMethods}</td></tr>${button ? `<tr><td style="padding:0 18px">${button}</td></tr>` : ''}${setupButton ? `<tr><td style="padding:0 18px">${setupButton}</td></tr>` : ''}</table></td></tr>`
     : '';
   const emailWidth = welcomeEmail ? 680 : 600;
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(title)}</title></head><body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a"><div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all">${e(preview)}</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f1f5f9"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="${emailWidth}" cellpadding="0" cellspacing="0" style="width:100%;max-width:${emailWidth}px;background:#ffffff;border:1px solid #e2e8f0;border-top:4px solid #1e4e98">${brandHeader}<tr><td style="padding:${welcomeEmail ? '24px 20px 16px' : '12px 24px 28px'};font-size:15px;line-height:1.6"><h1 style="font-size:24px;line-height:1.3;margin:0 0 16px">${e(displayTitle)}</h1><p>Hi ${e(input.fullName || 'there')},</p><p>${e(copy)}</p>${welcomeEmail ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0;font-size:13px;margin:18px 0 20px">${rows}</table>` : `${welcomeInstructions ? `<p>${e(welcomeInstructions)}</p>` : ''}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0;font-size:14px;margin:20px 0">${rows}</table>${button}${setupButton}`}${welcomeSignInPanel}${note ? `<p style="font-size:13px;color:#475569">${e(note)}</p>` : ''}</td></tr><tr><td style="padding:20px 24px;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#64748b"><strong style="color:#1e4e98">EnfySync AI Recruitment Platform</strong><br>${e(input.workspace)}<p style="margin:10px 0">${DISCLAIMER_HTML}${REPLY_MARKER}</p><span>© ${new Date().getFullYear()} EnfySync</span></td></tr></table></td></tr></table></body></html>`;
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(title)}</title></head><body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a"><div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all">${e(preview)}</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f1f5f9"><tr><td align="center" style="padding:24px 12px"><table role="presentation" width="${emailWidth}" cellpadding="0" cellspacing="0" style="width:100%;max-width:${emailWidth}px;background:#ffffff;border:1px solid #e2e8f0;border-top:4px solid #1e4e98">${brandHeader}<tr><td style="padding:${welcomeEmail ? '24px 20px 16px' : '12px 24px 28px'};font-size:15px;line-height:1.6"><h1 style="font-size:24px;line-height:1.3;margin:0 0 16px">${e(displayTitle)}</h1><p>Hi ${e(input.fullName || 'there')},</p><p>${copyHtml}</p>${welcomeEmail ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0;font-size:13px;margin:18px 0 20px">${rows}</table>` : `${welcomeInstructions ? `<p>${e(welcomeInstructions)}</p>` : ''}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f8fafc" style="border:1px solid #e2e8f0;font-size:14px;margin:20px 0">${rows}</table>${button}${setupButton}`}${welcomeSignInPanel}${note ? `<p style="font-size:13px;color:#475569">${e(note)}</p>` : ''}</td></tr><tr><td style="padding:20px 24px;border-top:1px solid #e2e8f0;font-size:12px;line-height:1.6;color:#64748b"><strong style="color:#1e4e98">EnfySync AI Recruitment Platform</strong><br>${e(input.workspace)}<p style="margin:10px 0">${DISCLAIMER_HTML}${REPLY_MARKER}</p><span>© ${new Date().getFullYear()} EnfySync</span></td></tr></table></td></tr></table></body></html>`;
   const text = [
     title,
     `Hi ${input.fullName || 'there'},`,

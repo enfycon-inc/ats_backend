@@ -492,8 +492,9 @@ Validates email + password and returns a signed JWT access token.
   async approveUser(
     @Param('id') userId: string,
     @Body() body: { market: string; subdomain?: string; userLimit?: number; maxBranches?: number },
+    @CurrentUser() actor: AuthUser,
   ) {
-    return this.authService.approveUser(userId, body.market, body.subdomain, body.userLimit, body.maxBranches);
+    return this.authService.approveUser(userId, body.market, body.subdomain, body.userLimit, body.maxBranches, actor);
   }
 
   @Post('tenants/manual')
@@ -516,8 +517,9 @@ Validates email + password and returns a signed JWT access token.
       maxBranches?: number;
       defaultMarket?: string;
     },
+    @CurrentUser() actor: AuthUser,
   ) {
-    return this.authService.createManualTenant(body);
+    return this.authService.createManualTenant(body, actor);
   }
 
   // â”€â”€â”€ GET /api/auth/tenants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

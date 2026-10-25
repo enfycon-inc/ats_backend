@@ -1,3 +1,4 @@
+import type { EmailActor, EmailActorAction } from '../../email/system-email-template';
 import { Injectable, Optional } from '@nestjs/common';
 import { SystemMailService } from '../../email/system-mail.service';
 import { AuthQueryService } from './auth-query.service';
@@ -29,6 +30,7 @@ export class AuthEmailService {
   }
 
   async sendRoleRequestEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string; to: string; fullName: string; requesterName: string; requesterEmail: string;
     roleName: string; branch?: string; unit?: string; tenantName: string; subdomain: string; reviewPath: string;
   }) {
@@ -41,6 +43,7 @@ export class AuthEmailService {
       emailCategory: 'roleRequests',
       tenantId: options.tenantId, to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'role_requested', workspace: options.tenantName, recipient: options.to, fullName: options.fullName,
         tenantBranding: await this.getTenantBranding(options.tenantId, options.tenantName),
         requesterName: options.requesterName, requesterEmail: options.requesterEmail, role: options.roleName,
@@ -51,6 +54,7 @@ export class AuthEmailService {
   }
 
   async sendAccountWelcomeEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -111,6 +115,7 @@ export class AuthEmailService {
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'account_welcome',
         workspace: options.tenantName,
         tenantBranding,
@@ -130,6 +135,7 @@ export class AuthEmailService {
   }
 
   async sendRoleApprovalWelcomeEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -139,18 +145,24 @@ export class AuthEmailService {
   }) {
     return this.sendAccountWelcomeEmail({
       ...options,
-      message: `Your access request was approved. Your account is ready to use.${options.approverName ? ` Approved by ${options.approverName} (${options.approverEmail}) at ${options.approvedAt}.` : ''}`,
+      actor: options.actor || (options.approverEmail ? { fullName: options.approverName, email: options.approverEmail } : undefined),
+      actorAction: 'Approved',
+      actionAt: options.approvedAt,
+      message: `Your access request was approved${options.approverName ? ` by ${options.approverName}` : ''}. Your account is ready to use.`,
     });
   }
 
-  async sendRoleApprovalReviewerEmail(options: { tenantId: string; to: string; fullName: string; recipientUserId: string; tenantName: string; target: { full_name: string; email: string }; roleName: string; approverName: string; approverEmail: string; approvedAt: string; branch?: string; unit?: string }) {
+  async sendRoleApprovalReviewerEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string; tenantId: string; to: string; fullName: string; recipientUserId: string; tenantName: string; target: { full_name: string; email: string }; roleName: string; approverName: string; approverEmail: string; approvedAt: string; branch?: string; unit?: string }) {
     return this.systemMail.send({ tenantId: options.tenantId, to: options.to, recipientUserId: options.recipientUserId, emailCategory: 'roleApprovals',
-      ...renderSystemEmail({ event: 'role_approval_update', workspace: options.tenantName, recipient: options.to, fullName: options.fullName,
+      ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt, event: 'role_approval_update', workspace: options.tenantName, recipient: options.to, fullName: options.fullName,
         tenantBranding: await this.getTenantBranding(options.tenantId, options.tenantName), requesterName: options.target.full_name, requesterEmail: options.target.email,
         role: options.roleName, approverName: options.approverName, approverEmail: options.approverEmail, approvedAt: options.approvedAt, branch: options.branch, unit: options.unit }) });
   }
 
   async sendTenantStatusEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -160,6 +172,7 @@ export class AuthEmailService {
   }) {
     const tenantBranding = await this.getTenantBranding(options.tenantId, options.tenantName);
     const context = {
+      actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
       workspace: options.tenantName,
       recipient: options.to,
       fullName: options.fullName,
@@ -180,6 +193,7 @@ export class AuthEmailService {
   }
 
   async sendWelcomeEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -191,11 +205,13 @@ export class AuthEmailService {
   }) {
     return this.sendAccountWelcomeEmail({
       ...options,
-      message: `You have been invited to join ${options.tenantName}. Your account is ready.`,
+      actorAction: 'Invited',
+      message: `You have been invited to join ${options.tenantName}${options.actor ? ` by ${options.actor.fullName?.trim() || options.actor.email}` : ''}. Your account is ready.`,
     });
   }
 
   async sendMemberCredentialsEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -206,11 +222,13 @@ export class AuthEmailService {
   }) {
     return this.sendAccountWelcomeEmail({
       ...options,
-      message: 'Your account has been created and is ready to use.',
+      actorAction: 'Created',
+      message: `Your account has been created${options.actor ? ` by ${options.actor.fullName?.trim() || options.actor.email}` : ''} and is ready to use.`,
     });
   }
 
   async sendPasswordResetEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -229,6 +247,7 @@ export class AuthEmailService {
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'password_reset_request',
         workspace: options.tenantName,
         tenantBranding,
@@ -240,6 +259,7 @@ export class AuthEmailService {
   }
 
   async sendPasswordChangedAlert(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -251,6 +271,7 @@ export class AuthEmailService {
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'password_changed_alert',
         workspace: options.tenantName,
         tenantBranding,
@@ -262,6 +283,7 @@ export class AuthEmailService {
   }
 
   async sendAdminPasswordResetNotice(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -274,6 +296,7 @@ export class AuthEmailService {
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'admin_temp_password_notice',
         workspace: options.tenantName,
         tenantBranding,
@@ -286,6 +309,7 @@ export class AuthEmailService {
   }
 
   async sendPodLeadAssignedEmail(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -301,6 +325,7 @@ export class AuthEmailService {
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'pod_lead_assigned',
         workspace: options.tenantName,
         tenantBranding,
@@ -315,6 +340,7 @@ export class AuthEmailService {
   }
 
   async sendRoleChangedAlert(options: {
+    actor?: EmailActor; actorAction?: EmailActorAction; actionAt?: string;
     tenantId: string;
     to: string;
     fullName: string;
@@ -331,6 +357,7 @@ export class AuthEmailService {
       tenantId: options.tenantId,
       to: options.to,
       ...renderSystemEmail({
+        actor: options.actor, actorAction: options.actorAction, actionAt: options.actionAt,
         event: 'role_changed_alert',
         workspace: options.tenantName,
         tenantBranding,

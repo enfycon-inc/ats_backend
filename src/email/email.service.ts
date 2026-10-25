@@ -1,3 +1,4 @@
+import type { EmailActor } from './system-email-template';
 import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { randomBytes, createHash } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -697,10 +698,10 @@ export class EmailService {
   }
 
   /** Shared tenant-aware dispatcher for system messages and delivery tests. */
-  async sendSystemTestEmail(tenantId: string, to: string): Promise<EmailDispatchResult> {
+  async sendSystemTestEmail(tenantId: string, to: string, actor?: EmailActor): Promise<EmailDispatchResult> {
     const tenant = await this.systemMail.tenant(tenantId);
     return this.systemMail.send({ tenantId, to, ...renderSystemEmail({
-      event: 'delivery_test',
+      event: 'delivery_test', actor,
       workspace: tenant.name,
       recipient: to,
       tenantBranding: {

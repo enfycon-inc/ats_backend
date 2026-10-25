@@ -209,6 +209,6 @@ export class EmailController {
   ) {
     const tid = this.settingsTenant(user, tenantId);
     const targetEmail = dto.recipientEmail || user.email;
-    return this.emailService.sendSystemTestEmail(tid, targetEmail);
+    return this.emailService.sendSystemTestEmail(tid, targetEmail, user);
   }
 }

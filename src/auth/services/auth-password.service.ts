@@ -235,6 +235,7 @@ export class AuthPasswordService {
 
     // Send security alert email to the user
     this.emailService.sendPasswordChangedAlert({
+      actor: { fullName: row.full_name, email: row.email },
       tenantId: row.tenant_id,
       to: row.email,
       fullName: row.full_name || 'Team Member',

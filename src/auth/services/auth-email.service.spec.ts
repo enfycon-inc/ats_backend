@@ -110,4 +110,14 @@ describe('AuthEmailService password reset links', () => {
     const delivered = systemMail.send.mock.calls[0][0];
     expect(delivered.html).not.toContain('/auth/setup-password');
   });
+
+  it('keeps the approver email out of welcome prose and combines it in the approval row', async () => {
+    const service = new AuthEmailService(systemMail as any);
+    await service.sendRoleApprovalWelcomeEmail({ tenantId: 'tenant', to: 'recipient@example.com', fullName: 'Recipient', tenantName: 'Example', subdomain: 'example', approverName: 'Sahadeb Barman', approverEmail: 'actor@example.com', approvedAt: '2026-10-25T07:00:00Z' });
+    const sent = systemMail.send.mock.calls[0][0];
+    expect(sent.html).toContain('approved by <strong>Sahadeb Barman</strong>');
+    expect(sent.text).toContain('Approved by: Sahadeb Barman (actor@example.com)');
+    expect(sent.text).toContain('Approved at (UTC): 2026-10-25T07:00:00Z');
+    expect(sent.html.match(/<p>Hi .*?<\/p><p>(.*?)<\/p>/)?.[1]).not.toContain('actor@example.com');
+  });
 });

@@ -1,3 +1,4 @@
+import type { AuthUser } from '../interfaces/auth-user.interface';
 import type { TenantBrandingUpdate, TenantBrandingSettingsResponse } from '../tenant-branding-contract';
 import { LOGIN_DESIGN_VARIANTS, type SignInPolicy, type SignInPolicyUpdate } from '../sign-in-policy';
 import {
@@ -160,7 +161,7 @@ export class AuthTenantService {
     }));
   }
 
-  async approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number) {
+  async approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number, actor?: AuthUser) {
     const userResult = await this.authQuery.query('SELECT tenant_id FROM users WHERE id = $1 LIMIT 1', [userId]);
     if (userResult.rows.length === 0) throw new NotFoundException(`User with ID ${userId} was not found.`);
     const tenantId = (userResult.rows[0] as any).tenant_id;
@@ -186,7 +187,7 @@ export class AuthTenantService {
       const context = await this.authQuery.query(
         'SELECT u.email, u.full_name, t.name, t.domain FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1 AND u.tenant_id = $2 LIMIT 1', [userId, tenantId]);
       const recipient = context.rows[0] as any;
-      emailNotification = recipient ? await this.notifyTenant({ tenantId, to: recipient.email, fullName: recipient.full_name, tenantName: recipient.name, subdomain: recipient.domain, pending: false }) : { status: 'failed', message: 'Workspace activated, but the onboarding recipient was unavailable.' };
+      emailNotification = recipient ? await this.notifyTenant({ tenantId, to: recipient.email, fullName: recipient.full_name, tenantName: recipient.name, subdomain: recipient.domain, pending: false, actor }) : { status: 'failed', message: 'Workspace activated, but the onboarding recipient was unavailable.' };
     }
     return { message: 'User approved and tenant activated successfully.', tenantId, emailNotification };
   }
@@ -201,7 +202,7 @@ export class AuthTenantService {
     userLimit?: number;
     maxBranches?: number;
     defaultMarket?: string;
-  }) {
+  }, actor?: AuthUser) {
     const companyName = dto.companyName.trim();
     const email = dto.adminEmail.trim().toLowerCase();
     if (!dto.adminPassword || dto.adminPassword.length < 8) {
@@ -263,7 +264,7 @@ export class AuthTenantService {
 
     await this.keycloakService.provisionUserInKeycloak({ email: user.email, password, fullName: user.full_name, tenantId: tenant.id });
 
-    const emailNotification = await this.notifyTenant({ tenantId: tenant.id, to: user.email, fullName: user.full_name, tenantName: tenant.name, subdomain: tenant.domain, pending: false });
+    const emailNotification = await this.notifyTenant({ tenantId: tenant.id, to: user.email, fullName: user.full_name, tenantName: tenant.name, subdomain: tenant.domain, pending: false, actor });
     return {
       emailNotification,
       message: `Tenant "${companyName}" created and activated successfully!`,

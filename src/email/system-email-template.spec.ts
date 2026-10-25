@@ -236,4 +236,31 @@ describe('corporate system email templates', () => {
       'http://localhost:3000/auth/login?subdomain=deb',
     );
   });
+
+  it.each([
+    ['role_changed_alert', 'Updated', { newRoles: 'Recruiter', loginUrl: 'https://deb.enfyjobs.com/auth/login' }],
+    ['pod_lead_assigned', 'Assigned', { podName: 'India', loginUrl: 'https://deb.enfyjobs.com/auth/login' }],
+    ['admin_temp_password_notice', 'Updated', { temporaryPassword: 'temporary', loginUrl: 'https://deb.enfyjobs.com/auth/login' }],
+    ['password_changed_alert', 'Updated', {}],
+    ['workspace_activated', 'Activated', { loginUrl: 'https://deb.enfyjobs.com/auth/login' }],
+    ['team_invitation', 'Invited', { setupUrl: 'https://deb.enfyjobs.com/auth/setup-password?token=sample' }],
+    ['account_created', 'Created', { loginUrl: 'https://deb.enfyjobs.com/auth/login' }],
+    ['delivery_test', 'Sent', {}],
+  ])('attributes %s with name in prose and combined identity in one row', (event, action, extra) => {
+    const rendered = renderSystemEmail({ ...context, event, ...extra, actor: { fullName: 'Sahadeb Barman', email: 'actor@example.com' } } as SystemEmailTemplate);
+    expect(rendered.html).toContain('by <strong>Sahadeb Barman</strong>');
+    expect(rendered.text).toContain(`${action} by: Sahadeb Barman (actor@example.com)`);
+    const prose = rendered.html.match(/<p>Hi .*?<\/p><p>(.*?)<\/p>/)?.[1];
+    expect(prose).not.toContain('actor@example.com');
+  });
+  it('escapes actor markup and uses email alone when a display name is unavailable', () => {
+    const base = { ...context, event: 'role_changed_alert' as const, newRoles: 'Recruiter', loginUrl: 'https://deb.enfyjobs.com/auth/login' };
+    const rendered = renderSystemEmail({ ...base, actor: { fullName: '<script>actor</script>', email: 'actor@example.com' } });
+    expect(rendered.html).not.toContain('<script>actor</script>');
+    expect(rendered.html).toContain('&lt;script&gt;actor&lt;/script&gt; (actor@example.com)');
+    expect(renderSystemEmail({ ...base, actor: { fullName: ' ', email: 'actor@example.com' } }).text).toContain('Updated by: actor@example.com');
+  });
+  it('does not invent an updater for automatic registration messages', () => {
+    expect(renderSystemEmail({ ...context, event: 'registration_received' }).text).not.toMatch(/Updated by:|Created by:|Activated by:/);
+  });
 });

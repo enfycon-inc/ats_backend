@@ -51,6 +51,7 @@ export class PodsService {
   ) {}
 
   private async notifyPodLeadAssigned(params: {
+    actor?: AuthUser;
     podHeadId: string;
     podName: string;
     tenantId: string;
@@ -85,6 +86,7 @@ export class PodsService {
       if (!user?.email || !tenant?.name) return;
 
       await this.emailService.sendPodLeadAssignedEmail({
+        actor: params.actor,
         tenantId: params.tenantId,
         to: user.email,
         fullName: user.fullName || 'Team Member',
@@ -459,7 +461,7 @@ export class PodsService {
   /**
    * Create a new recruitment pod
    */
-  async create(dto: CreatePodDto, tenantId: string, branchId?: string, businessUnitId?: string): Promise<PodResponse> {
+  async create(dto: CreatePodDto, tenantId: string, branchId?: string, businessUnitId?: string, actor?: AuthUser): Promise<PodResponse> {
     this.logger.log(`Creating pod "${dto.name}" for tenant ${tenantId}`);
 
     let effectiveBusinessUnitId = dto.businessUnitId || businessUnitId || null;
@@ -556,6 +558,7 @@ export class PodsService {
     }).then(async (podId) => {
       if (dto.podHeadId) {
         this.notifyPodLeadAssigned({
+          actor,
           podHeadId: dto.podHeadId,
           podName: dto.name.trim(),
           tenantId,
@@ -806,7 +809,7 @@ export class PodsService {
   /**
    * Update a pod
    */
-  async update(id: string, dto: UpdatePodDto, tenantId: string): Promise<PodResponse> {
+  async update(id: string, dto: UpdatePodDto, tenantId: string, actor?: AuthUser): Promise<PodResponse> {
     const existingPod = await this.prisma.pod.findFirst({
       where: { id, tenantId },
       include: { users: { select: { id: true } } },
@@ -944,6 +947,7 @@ export class PodsService {
     }).then(async (podId) => {
       if (dto.podHeadId && dto.podHeadId !== existingPod.podHeadId) {
         this.notifyPodLeadAssigned({
+          actor,
           podHeadId: dto.podHeadId,
           podName: effectivePodName,
           tenantId,

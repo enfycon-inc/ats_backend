@@ -577,7 +577,7 @@ export class AuthCoreService {
         const tRes = await this.authQuery.query('SELECT name, domain FROM tenants WHERE id = $1 LIMIT 1', [tenantId]);
         const tenant = tRes.rows[0] as any;
         if (!tenant) throw new Error('Workspace not found');
-        await this.emailService.sendMemberCredentialsEmail({ to: email, fullName, tenantName: tenant.name, subdomain: tenant.domain, tenantId, temporaryPassword: password, roleName: primaryRoleName });
+        await this.emailService.sendMemberCredentialsEmail({ actor: requesterUser, to: email, fullName, tenantName: tenant.name, subdomain: tenant.domain, tenantId, temporaryPassword: password, roleName: primaryRoleName });
         emailNotification = { status: 'accepted' };
       } catch {
         this.logger.warn('Member account saved, but account email was not accepted.');

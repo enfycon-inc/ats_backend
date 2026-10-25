@@ -208,7 +208,7 @@ export class AuthInviteService {
     if (dto.sendEmailInvite !== false) {
       try {
         await this.emailService.sendWelcomeEmail({ tenantId, to: cleanEmail, fullName, tenantName,
-          subdomain: tenantDomain, invitationToken, roleName: roleNames.join(', ') || undefined });
+          actor: requester.email ? { fullName: requester.fullName, email: requester.email } : undefined, subdomain: tenantDomain, invitationToken, roleName: roleNames.join(', ') || undefined });
         emailNotification = { status: 'accepted' };
       } catch {
         this.logger.warn('Invitation saved, but invitation email was not accepted.');

@@ -383,6 +383,7 @@ export class AuthUserService {
     fullName: string;
     newRoleIds: string[];
     prevRoleIds: string[];
+    actor?: Pick<AuthUser, 'fullName' | 'email'>;
     branchId?: string | null;
     businessUnitId?: string | null;
   }) {
@@ -418,6 +419,7 @@ export class AuthUserService {
         fullName: params.fullName || 'Team Member',
         tenantName: tenantRow.name,
         subdomain: tenantRow.domain || '',
+        actor: params.actor,
         newRoles: newRoleNames,
         previousRoles: prevRoleNames || undefined,
         branchName,
@@ -428,7 +430,7 @@ export class AuthUserService {
     }
   }
 
-  async updateUserRoles(userId: string, roles: string[], requesterRoles: string[]) {
+  async updateUserRoles(userId: string, roles: string[], requesterRoles: string[], requester?: AuthUser) {
     const normalized = roles.map((r) => r.toUpperCase());
 
     const userRes = await this.authQuery.query(
@@ -482,6 +484,7 @@ export class AuthUserService {
         tenantId,
         to: targetUser.email,
         fullName: targetUser.full_name,
+        actor: requester,
         newRoleIds: Array.from(nextIds) as string[],
         prevRoleIds: Array.from(prevIds) as string[],
         branchId: targetUser.branch_id,
@@ -680,6 +683,7 @@ export class AuthUserService {
           tenantId: user.tenant_id,
           to: email,
           fullName,
+          actor: requester,
           newRoleIds: Array.from(nextIds) as string[],
           prevRoleIds: Array.from(prevIds) as string[],
           branchId,
@@ -703,6 +707,7 @@ export class AuthUserService {
             fullName,
             tenantName: tRow.name || 'EnfySync Workspace',
             subdomain: tRow.domain || '',
+            actor: requester,
             temporaryPassword: dto.password!,
           });
         }).catch((mailErr: any) => {

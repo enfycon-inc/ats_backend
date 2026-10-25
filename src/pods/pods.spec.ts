@@ -381,6 +381,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
         tenantId,
         branchId,
         unitId,
+        unitAdminUser,
       );
     });
   });
@@ -685,7 +686,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
       prismaMock.pod.update.mockResolvedValue({});
       prismaMock.user.update.mockResolvedValue({});
 
-      await serviceWithEmail.update(podId, { podHeadId: newLeadId }, tenantId);
+      await serviceWithEmail.update(podId, { podHeadId: newLeadId }, tenantId, unitAdminUser);
 
       expect(emailServiceMock.sendPodLeadAssignedEmail).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -693,6 +694,7 @@ describe('PodsService & PodsController - Unit Scoping & Recruiter Eligibility', 
           to: 'newlead@enfycon.com',
           fullName: 'New Lead',
           podName: 'Backend Pod',
+          actor: unitAdminUser,
           tenantName: 'Enfycon',
         }),
       );

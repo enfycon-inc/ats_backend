@@ -100,7 +100,7 @@ export class AuthService {
   listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) { return this.userService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId); }
   setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: any) { return this.userService.setUserActive(userId, isActive, requesterId, requester); }
   deleteUser(userId: string, requester: any) { return this.userService.deleteUser(userId, requester); }
-  updateUserRoles(userId: string, roles: string[], requesterRoles: string[]) { return this.userService.updateUserRoles(userId, roles, requesterRoles); }
+  updateUserRoles(userId: string, roles: string[], requesterRoles: string[], requester?: AuthUser) { return this.userService.updateUserRoles(userId, roles, requesterRoles, requester); }
   updateUserDetails(userId: string, dto: any, requester: any) { return this.userService.updateUserDetails(userId, dto, requester); }
   bulkSetJobReviewer(tenantId: string, userIds: string[], reviewerId: string | null, requester?: AuthUser) { return this.userService.bulkSetJobReviewer(tenantId, userIds, reviewerId, requester); }
   requestRole(userId: string, role: string, branchId?: string, businessUnitId?: string, city?: import('./user-city-contract').UserCity | null) { return this.userService.requestRole(userId, role, branchId, businessUnitId, city); }
@@ -111,8 +111,8 @@ export class AuthService {
   // ─── Tenant Lifecycle ────────────────────────────────────────────────────────
   registerTenant(dto: RegisterTenantDto) { return this.tenantService.registerTenant(dto); }
   listPendingApprovals() { return this.tenantService.listPendingApprovals(); }
-  approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number) { return this.tenantService.approveUser(userId, market, subdomain, userLimit, maxBranches); }
-  createManualTenant(dto: any) { return this.tenantService.createManualTenant(dto); }
+  approveUser(userId: string, market: string, subdomain?: string, userLimit?: number, maxBranches?: number, actor?: AuthUser) { return this.tenantService.approveUser(userId, market, subdomain, userLimit, maxBranches, actor); }
+  createManualTenant(dto: any, actor?: AuthUser) { return this.tenantService.createManualTenant(dto, actor); }
   updateTenant(tenantId: string, dto: any) { return this.tenantService.updateTenant(tenantId, dto); }
   listTenants() { return this.tenantService.listTenants(); }
   getTenantDetails(tenantId: string) { return this.tenantService.getTenantDetails(tenantId); }
