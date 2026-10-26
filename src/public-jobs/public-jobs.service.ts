@@ -99,14 +99,14 @@ export class PublicJobsService {
     const search = typeof query.search === 'string' ? query.search.trim().slice(0, 100) : '';
     const where: any = this.scopedWhere(key);
     if (search) where.AND.push({ OR: [{ jobTitle: { contains: search, mode: 'insensitive' } }, { city: { contains: search, mode: 'insensitive' } }, { state: { contains: search, mode: 'insensitive' } }, { skillsRequired: { has: search } }] });
-    const rows = await this.prisma.job.findMany({ where, take: limit + 1, ...(cursor ? { skip: 1, cursor: { publicSlug: cursor } } : {}), orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { id: true, publicSlug: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, createdAt: true } });
+    const rows = await this.prisma.job.findMany({ where, take: limit + 1, ...(cursor ? { skip: 1, cursor: { publicSlug: cursor } } : {}), orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], select: { id: true, publicSlug: true, jobCode: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, createdAt: true } });
     const hasMore = rows.length > limit;
     const jobs = rows.slice(0, limit).map(({ id, publicSlug, jobDescription, ...job }) => ({ ...job, slug: publicSlug, description: sanitizeJobDescription(jobDescription || ''), acceptsApplications: job.status.toUpperCase() === 'ACTIVE', createdAt: job.createdAt.toISOString() }));
     return { data: jobs, nextCursor: hasMore ? rows[limit - 1].publicSlug : null };
   }
 
   async getJob(key: KeyContext, slug: string) {
-    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { publicSlug: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, secondarySkills: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, industry: true, degree: true, duration: true, createdAt: true } });
+    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { publicSlug: true, jobCode: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, secondarySkills: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, industry: true, degree: true, duration: true, createdAt: true } });
     if (!job) throw new NotFoundException('Published job not found.');
     const { jobDescription, publicSlug, ...publicJob } = job;
     return { ...publicJob, slug: publicSlug, description: sanitizeJobDescription(jobDescription || ''), acceptsApplications: job.status.toUpperCase() === 'ACTIVE', createdAt: job.createdAt.toISOString() };
