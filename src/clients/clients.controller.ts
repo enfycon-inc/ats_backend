@@ -19,6 +19,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { ClientsService } from './clients.service';
+import { canDeleteClient } from './client-delete-policy';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -184,13 +185,7 @@ export class ClientsController {
   ) {
     const tid = resolveTenantId(user, tenantId);
 
-    const userPermissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
-    const canDelete = 
-      userPermissions.includes('client:delete') ||
-      userPermissions.includes('tenant:settings') ||
-      userPermissions.includes('tenant:manage');
-
-    if (!canDelete) {
+    if (!canDeleteClient(user)) {
       throw new ForbiddenException('You do not have permission (client:delete) to delete client accounts.');
     }
 

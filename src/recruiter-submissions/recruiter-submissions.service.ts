@@ -25,6 +25,7 @@ import { AssessmentPreviewDto } from './dtos/assessment-preview.dto';
 import { UpdateSubmissionDto } from './dtos/update-submission.dto';
 import { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { submissionCapabilities } from './submission-capabilities';
+import { submissionCreationReview } from './submission-auto-approval';
 import { canDownloadSubmissionResume, RESUME_HANDOFF_STATUSES } from './submission-resume';
 import { validateTrackerUpdate } from './validate-tracker-update';
 import {
@@ -342,8 +343,8 @@ export class RecruiterSubmissionsService {
       }
     }
     if (dto.finalStatus && !['SUBMITTED', 'PENDING_APPROVAL'].includes(dto.finalStatus)) throw new BadRequestException('A new submission must start in progress or awaiting internal approval.');
-    // 3. Initialize the rounds; existing internal-review routing follows below.
-    let finalStatus = dto.finalStatus || 'SUBMITTED';
+    // Approval is derived from the active request role, never from a client-supplied status.
+    const { finalStatus, automaticInternalReview } = submissionCreationReview(user);
     let l1Status = dto.l1Status || 'PENDING';
     let l2Status = dto.l2Status || 'PENDING';
     let l3Status = dto.l3Status || 'PENDING';
@@ -351,27 +352,13 @@ export class RecruiterSubmissionsService {
     let l2Date = dto.l2Date ? new Date(dto.l2Date) : null;
     let l3Date = dto.l3Date ? new Date(dto.l3Date) : null;
 
-    if (['SUBMITTED', 'PENDING_APPROVAL'].includes(finalStatus)) {
-      // Check recruiter role and pod for PENDING_APPROVAL workflow
-      const recruiter = await this.prisma.user.findFirst({
-        where: { id: dto.recruiterId, tenantId },
-        include: { customRole: { select: { systemRole: { select: { systemKey: true } } } } },
-      });
-
-      if (recruiter?.podId && !user?.permissions?.includes('submission:internal_screening') && (await loadWorkspaceFeatures(this.prisma, tenantId, recruiter.businessUnitId, recruiter.branchId)).podsEnabled) {
-        finalStatus = 'PENDING_APPROVAL';
-      }
-    }
-
     const submission = await this.prisma.$transaction(async (tx) => {
       const lockedJob = await tx.$queryRawUnsafe<{ status: string }[]>('SELECT status FROM ats.jobs WHERE id = $1::uuid AND tenant_id = $2::uuid AND deleted_at IS NULL FOR UPDATE', dto.jobId, tenantId);
       if (!lockedJob.length || lockedJob[0].status.toUpperCase() !== 'ACTIVE') throw new BadRequestException('This job is not active. New submissions are blocked.');
       await assertJobSubmissionAccess(tx as PrismaService, user, tenantId, dto.jobId, dto.recruiterId);
-      if (verifiedCandidate) {
-        await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', `${tenantId}:${dto.jobId}:${dto.candidateId}`);
-        const duplicate = await tx.recruiterSubmission.findFirst({ where: { tenantId, jobId: dto.jobId, candidateId: dto.candidateId }, select: { id: true } });
-        if (duplicate) throw new ConflictException('This candidate has already been submitted to this job.');
-      }
+      await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', `${tenantId}:${dto.jobId}:${dto.candidateId}`);
+      const duplicate = await tx.recruiterSubmission.findFirst({ where: { tenantId, jobId: dto.jobId, candidateId: dto.candidateId }, select: { id: true } });
+      if (duplicate) throw new ConflictException('This candidate has already been submitted to this job.');
       if (dto.updateCandidateSkills && verifiedCandidate) {
         await tx.candidate.update({ where: { id: candidate.id, tenantId }, data: { skills: verifiedCandidate.skills as string[] } });
       }
@@ -412,7 +399,7 @@ export class RecruiterSubmissionsService {
       await tx.submissionEvent.create({ data: {
         tenantId, submissionId: sub.id, actorId: user?.dbId || user?.email || user?.fullName || null,
         actorName: user?.fullName || user?.email || user?.dbId || null, kind: 'CREATED', sequence: 0,
-        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub), ...(verifiedCandidate ? { verifiedCandidate, candidateSkillsUpdated: dto.updateCandidateSkills === true } : {}), ...(user?.email ? { actorEmail: user.email } : {}) },
+        requestId: 'created', requestHash: '', details: { snapshot: historySnapshot(sub), ...(automaticInternalReview ? { automaticInternalReview } : {}), ...(verifiedCandidate ? { verifiedCandidate, candidateSkillsUpdated: dto.updateCandidateSkills === true } : {}), ...(user?.email ? { actorEmail: user.email } : {}) },
       } });
       return sub;
     }, { maxWait: 15000, timeout: 30000 });

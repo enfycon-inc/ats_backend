@@ -1,3 +1,4 @@
+import { applySubmissionAutoApprovalPermissions } from './submission-auto-approval-permission-policy';
 import { applySubmissionScopePermissions } from './submission-scope-permission-policy';
 import { jobAccessGrants } from '../job-access-grants';
 import { applyCandidateProfilePermissions } from './candidate-profile-permission-policy';
@@ -31,6 +32,7 @@ async function applyOwnJobActionsV1(prisma: PrismaClient) {
 
 // Each completed version runs once. Later deliberate permission removals are retained.
 export async function applyJobActionPermissions(prisma: PrismaClient) {
+  await applySubmissionAutoApprovalPermissions(prisma);
   await applyCandidateProfilePermissions(prisma);
   await applySubmissionScopePermissions(prisma);
   await applyOwnJobActionsV1(prisma);

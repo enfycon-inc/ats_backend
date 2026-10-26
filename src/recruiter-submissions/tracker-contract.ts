@@ -1,3 +1,4 @@
+import type { SubmissionAutoApprovalAudit } from './submission-auto-approval';
 // Canonical submission tracker contract. Run node ats_frontend_main/scripts/sync-submission-contract.cjs
 // from the workspace root to update the frontend's generated contract.
 export type TrackerBucket = 'all' | 'review' | 'interviews' | 'offers' | 'closed';
@@ -235,6 +236,7 @@ export interface SubmissionHistoryEvent {
   createdAt: string;
   details: {
     actorEmail?: string | null;
+    automaticInternalReview?: SubmissionAutoApprovalAudit;
     assessment?: CandidateAssessment;
     reviewOverrides?: Record<string, string>;
     changes?: Record<string, { before: string | null; after: string | null }>;

@@ -1,7 +1,8 @@
+import { SUBMISSION_AUTO_APPROVAL_PERMISSION, submissionAutoApprovalDefaults } from '../../recruiter-submissions/submission-auto-approval';
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
   const scopedActions = permissions.includes('job:edit') ? ['job:change_status', 'job:find_matches', ...['edit', 'change_status', 'find_matches'].flatMap(action => ['unit', 'branch', 'tenant'].map(scope => `job:${action}_${scope}`))] : [];
-  return [...new Set([...permissions, ...scopedActions, ...(permissions.includes('job:create') ? ['submission:internal_screening_created_jobs'] : []), ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume', 'job:submit_owned_jobs'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional', 'job:submit_unit_jobs'] : [])])];
+  return [...new Set([...permissions, ...submissionAutoApprovalDefaults(key), ...scopedActions, ...(permissions.includes('job:create') ? ['submission:internal_screening_created_jobs'] : []), ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume', 'job:submit_owned_jobs'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional', 'job:submit_unit_jobs'] : [])])];
 }
 import {
   Injectable,
@@ -41,7 +42,8 @@ export class AuthRbacService {
       const systemKey = sysRole.system_key;
       const roleName = sysRole.name;
       const systemRoleId = sysRole.id;
-      let perms: string[] = typeof sysRole.permissions === 'string' ? JSON.parse(sysRole.permissions) : sysRole.permissions;
+      const storedPerms: string[] = typeof sysRole.permissions === 'string' ? JSON.parse(sysRole.permissions) : sysRole.permissions;
+      const perms = [...new Set([...storedPerms, ...submissionAutoApprovalDefaults(systemKey)])];
 
       // Removed restriction
 
@@ -296,7 +298,7 @@ export class AuthRbacService {
     let resolvedPermissions = permissions || [];
     if (resolvedPermissions.length === 0 ||
       (resolvedPermissions.length === 2 && resolvedPermissions.includes('job:view') && resolvedPermissions.includes('candidate:view'))) {
-      resolvedPermissions = DEFAULT_PERMS[resolvedSystemRole] || ['job:view', 'candidate:view'];
+      resolvedPermissions = [...new Set([...(DEFAULT_PERMS[resolvedSystemRole] || ['job:view', 'candidate:view']), ...submissionAutoApprovalDefaults(resolvedSystemRole)])];
     }
     resolvedPermissions = resolvedPermissions.filter(p => allowedBaseCeiling.has(p));
 
@@ -842,6 +844,7 @@ export class AuthRbacService {
       { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:edit', name: 'Edit Submissions (General Notes & Comments)', group: 'Candidate Submissions & Sourcing' },
       { id: 'submission:internal_screening', name: 'Internal Screening Review & Approval Gate', group: 'Internal Screening & Review Gate' },
+      { id: SUBMISSION_AUTO_APPROVAL_PERMISSION, name: 'Auto-approve internal review when I submit', description: 'Applies when you submit using this role. Skips internal review and starts the candidate at L1 pending. Switching roles later does not change existing submissions.', group: 'Internal Screening & Review Gate' },
       { id: 'submission:edit_rate', name: 'Edit Candidate Pay Rate & CTC Margins', group: 'Internal Screening & Review Gate' },
       { id: 'submission:audit_rounds', name: 'Interview Stages (Master L1, L2, L3 Audits & Remarks)', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
       { id: 'submission:audit_l1', name: 'Round 1 (L1) Screening & Interview Audit', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },

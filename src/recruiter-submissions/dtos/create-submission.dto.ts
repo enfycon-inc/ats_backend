@@ -71,9 +71,10 @@ export class CreateSubmissionDto {
   l3Date?: string;
 
   @ApiPropertyOptional({
-    example: 'SUBMITTED',
-    enum: ['PENDING_APPROVAL', 'SUBMITTED', 'REJECTED', 'OFFER', 'JOIN'],
-    description: 'Final status of candidate submission',
+    example: 'PENDING_APPROVAL',
+    enum: ['PENDING_APPROVAL', 'SUBMITTED'],
+    deprecated: true,
+    description: 'Legacy hint only. Initial status is determined by the active role auto-approval permission.',
   })
   finalStatus?: string;
 
