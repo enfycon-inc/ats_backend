@@ -104,10 +104,14 @@ export class UserManagementService {
     if (!hasCapability(actor, 'user:login_logs:view')) rows.forEach(row => { row.lastLoginAt = null; });
     for (const row of rows) {
       const actions = userManagementActions(actor, { id: row.id, tenantId: row.__tenantId, branchId: row.__branchId, businessUnitId: row.__unitId, permissions: row.management_permissions || [] });
-      row.allowedActions = { edit: row.kind === 'user' && actions.editProfile,
+        row.allowedActions = { edit: row.kind === 'user' && actions.editProfile,
         changeAccess: row.kind === 'user' && row.isApproved && actions.changeStatus,
         review: row.kind === 'user' && !!row.requestedRole && actions.reviewRequest,
-        resendInvitation: row.kind === 'user' && !!row.invitationStatus && row.isActive && actions.editProfile };
+          resendInvitation: row.kind === 'user' && !!row.invitationStatus && row.isActive && actions.editProfile,
+          assignManager: row.kind === 'user' && actions.assignManager,
+          resetPassword: row.kind === 'user' && actions.resetPassword,
+          endSessions: row.kind === 'user' && actions.endSessions,
+          deleteUser: row.kind === 'user' && actions.deleteUser };
       delete row.__tenantId; delete row.__branchId; delete row.__unitId; delete row.management_permissions;
     }
     return { items: rows, total: totalRows[0].count, page, pageSize: size,
