@@ -67,7 +67,7 @@ model SessionMembership {
 model SessionNetworkObservation {
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   membershipId String @map("membership_id") @db.Uuid
-  ipAddress Unsupported("inet")? @map("ip_address")
+  ipAddress String? @map("ip_address") @db.Inet
   observedAt DateTime @default(now()) @map("observed_at") @db.Timestamptz(6)
   membership SessionMembership @relation(fields: [membershipId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   @@index([membershipId, observedAt(sort: Desc)], map: "session_network_latest")
@@ -84,7 +84,7 @@ model UserSecurityEvent {
   eventKey String? @unique @map("event_key") @db.VarChar(255)
   action String @db.VarChar(80)
   outcome String @db.VarChar(32)
-  ipAddress Unsupported("inet")? @map("ip_address")
+  ipAddress String? @map("ip_address") @db.Inet
   details Json @default("{}")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   tenant Tenant? @relation("SecurityEventTenant", fields: [tenantId], references: [id], onDelete: NoAction, onUpdate: NoAction)
