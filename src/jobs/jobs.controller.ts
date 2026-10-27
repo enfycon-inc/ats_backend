@@ -413,6 +413,16 @@ export class JobsController {
     return this.jobsService.restoreJob(id, tid);
   }
 
+  @Delete(':id/permanent')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete a job, its submissions and their history' })
+  async permanentlyRemove(@Param('id') id: string, @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string): Promise<void> {
+    await this.jobsService.permanentlyDeleteJob(id, resolveTenantId(user, tenantId), user);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard, PermissionsGuard)

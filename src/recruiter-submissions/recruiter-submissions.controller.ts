@@ -329,6 +329,14 @@ export class RecruiterSubmissionsController {
     return this.service.update(id, dto, tid, user, resolveBranchId(user, branchHeaderId));
   }
 
+  @Delete(':id/permanent')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Permanently delete a submission and its history' })
+  async permanentlyRemove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string) {
+    return this.service.permanentlyRemove(id, resolveTenantId(user, tenantId), user);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

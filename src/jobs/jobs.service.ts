@@ -1,3 +1,4 @@
+import { assertPermanentDeletion } from '../auth/utils/permanent-deletion';
 import { effectiveJobAssignmentPolicy } from '../auth/job-assignment-policy';
 import { jobExportWorkbook, type ExportCell } from './job-export-workbook';
 import { JOB_EXPORT_PERMISSION, JOB_EXPORT_MAX_JOBS, JOB_EXPORT_MAX_SUBMISSIONS, parseJobExportRequest, type JobExportManager, type JobExportResponse } from './job-export-contract';
@@ -3230,6 +3231,20 @@ export class JobsService {
     };
 
     return this.createJob(duplicateDto, tenantId, user?.dbId || user?.email, branchId, user);
+  }
+
+  async permanentlyDeleteJob(id: string, tenantId: string, actor: AuthUser): Promise<void> {
+    assertPermanentDeletion(actor, tenantId);
+    await this.prisma.$transaction(async tx => {
+      // Cascading FKs remove job assignments, submissions and submission events.
+      const submissions = await tx.recruiterSubmission.findMany({ where: { tenantId, jobId: id }, select: { id: true } });
+      await tx.$queryRawUnsafe("SELECT set_config('ats.permanent_delete_tenant',$1,true), set_config('ats.permanent_delete_submissions',$2,true)", tenantId, submissions.map(s => s.id).join(','));
+      await tx.auditLog.deleteMany({ where: { tenantId, OR: [
+        { targetType: 'job', targetId: id },
+        { targetType: { in: ['submission', 'recruiter_submission'] }, targetId: { in: submissions.map(s => s.id) } },
+      ] } });
+      await tx.job.deleteMany({ where: { id, tenantId } });
+    });
   }
 
   async deleteJob(id: string, tenantId: string): Promise<boolean> {

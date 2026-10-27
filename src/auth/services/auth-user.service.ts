@@ -1,3 +1,4 @@
+import { assertPermanentDeletion } from '../utils/permanent-deletion';
 import { workspaceFeatures } from '../workspace-features';
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 
@@ -334,40 +335,59 @@ export class AuthUserService {
     return { message: `User ${isActive ? 'activated' : 'deactivated'} successfully.` };
   }
 
-  async deleteUser(userId: string, requester: any) {
+  async deleteUser(userId: string, requester: AuthUser) {
+    assertPermanentDeletion(requester, requester.tenantId!);
     if (userId === requester.dbId || userId === requester.keycloakId) throw new BadRequestException('You cannot delete your own account.');
-
-    const userRes = await this.authQuery.query('SELECT id, email, tenant_id, full_name, is_active, branch_id FROM users WHERE id = $1 LIMIT 1', [userId]);
-    if (userRes.rows.length === 0) throw new NotFoundException('User not found.');
-    const targetUser: any = userRes.rows[0];
-
-    const requesterRoles = requester.roles || [];
-    if (!requesterRoles.includes('SUPER_ADMIN') && targetUser.tenant_id !== requester.tenantId) {
-      throw new ForbiddenException('You are not authorized to delete users in another company tenant.');
-    }
-
-    // Branch isolation: branch admins can only delete users in their assigned branches
-    if (requester.dbId && targetUser.branch_id) {
-      // requester may be a full AuthUser if passed properly; do branch check if permissions indicate branch admin
-      const perms: string[] = Array.isArray(requester.permissions) ? requester.permissions : [];
-      if (perms.includes('branch_admin:manage') && !perms.includes('tenant:settings')) {
-        validateBranchAccess(requester as AuthUser, targetUser.branch_id, 'delete users');
+    const tenantId = requester.tenantId!;
+    const target = await this.authQuery.prisma.$transaction(async tx => {
+      // Serialize permanent account deletion within the tenant to protect its last admin.
+      await tx.$queryRawUnsafe('SELECT id FROM ats.tenants WHERE id=$1::uuid FOR UPDATE', tenantId);
+      if (!requester.dbId || !(await tx.user.count({ where: { id: requester.dbId, tenantId, isActive: true } }))) {
+        throw new ForbiddenException('Use an administrator membership in this tenant to permanently delete users.');
       }
+      const user = await tx.user.findFirst({ where: { id: userId, tenantId }, select: { id: true, email: true, fullName: true, keycloakId: true } });
+      if (!user) throw new NotFoundException('User not found in your tenant.');
+      const admins = await tx.$queryRawUnsafe<{ id: string }[]>(`SELECT u.id FROM ats.users u
+        WHERE u.tenant_id=$1::uuid AND u.is_active=true AND u.is_approved=true AND EXISTS (
+          SELECT 1 FROM ats.custom_roles cr LEFT JOIN ats.system_roles sr ON sr.id=cr.system_role_id
+          WHERE cr.tenant_id=u.tenant_id AND cr.id=ANY(array_remove(ARRAY[u.role_id] || u.assigned_role_ids,NULL))
+          AND (sr.system_key='TENANT_ADMIN' OR cr.permissions ? 'tenant:settings' OR cr.permissions ? 'tenant:manage'))`, tenantId);
+      if (admins.some(admin => admin.id === userId) && admins.length <= 1) {
+        throw new BadRequestException('You cannot delete the last active Tenant Admin.');
+      }
+      const memberships = await tx.sessionMembership.findMany({ where: { userId, tenantId }, select: { id: true, sessionId: true } });
+      const membershipIds = memberships.map(m => m.id);
+      await tx.userSecurityEvent.deleteMany({ where: { tenantId, OR: [{ userId }, { actorId: userId }, { membershipId: { in: membershipIds } }] } });
+      await tx.userAccessDecision.deleteMany({ where: { tenantId, OR: [{ userId }, { actorId: userId }] } });
+      await tx.officeLocationCheck.deleteMany({ where: { tenantId, userId } });
+      await tx.sessionNetworkObservation.deleteMany({ where: { membershipId: { in: membershipIds } } });
+      await tx.sessionMembership.updateMany({ where: { tenantId, revokedBy: userId }, data: { revokedBy: null } });
+      await tx.sessionMembership.deleteMany({ where: { tenantId, userId } });
+      await tx.applicationSession.deleteMany({ where: { id: { in: memberships.map(m => m.sessionId) }, memberships: { none: {} } } });
+      await tx.systemEmailDelivery.deleteMany({ where: { tenantId, recipientId: userId } });
+      await tx.auditLog.deleteMany({ where: { tenantId, OR: [{ actorId: userId }, { targetType: 'user', targetId: userId }] } });
+      // Retain independent client/office configuration, transferring required creator references.
+      await tx.clientContact.updateMany({ where: { tenantId, createdBy: userId }, data: { createdBy: requester.dbId! } });
+      await tx.publicJobsApiKey.deleteMany({ where: { tenantId, createdBy: userId } });
+      await tx.careerOauthClient.deleteMany({ where: { tenantId, createdBy: userId } });
+      await tx.$executeRawUnsafe('UPDATE ats.branch_networks SET verified_by=$1::uuid WHERE tenant_id=$2::uuid AND verified_by=$3::uuid', requester.dbId, tenantId, userId);
+      await tx.$executeRawUnsafe('UPDATE ats.branch_geofences SET updated_by=$1::uuid WHERE tenant_id=$2::uuid AND updated_by=$3::uuid', requester.dbId, tenantId, userId);
+      await tx.$executeRawUnsafe('UPDATE ats.business_unit_geofences SET updated_by=$1::uuid WHERE tenant_id=$2::uuid AND updated_by=$3::uuid', requester.dbId, tenantId, userId);
+      await tx.user.updateMany({ where: { tenantId, jobReviewerId: userId }, data: { jobReviewerId: null } });
+      await tx.pod.updateMany({ where: { tenantId, podHeadId: userId }, data: { podHeadId: null } });
+      await tx.userInvitation.deleteMany({ where: { tenantId, email: { equals: user.email, mode: 'insensitive' } } });
+      await tx.user.delete({ where: { id: userId } });
+      const sharedIdentity = await tx.user.findFirst({ where: { OR: [
+        { email: { equals: user.email, mode: 'insensitive' } }, ...(user.keycloakId ? [{ keycloakId: user.keycloakId }] : []),
+      ] }, select: { id: true } });
+      return { ...user, sharedIdentity: !!sharedIdentity };
+    }, { timeout: 30000 });
+    if (!target.sharedIdentity) {
+      this.keycloakService.deleteKeycloakUser(target.email).catch(() => {
+        this.logger.warn('Workspace user deleted; identity-provider cleanup requires retry.');
+      });
     }
-
-    await this.rbacService.verifyLastAdminProtection(targetUser.tenant_id, userId, 'delete');
-
-    await this.authQuery.query('UPDATE users SET job_reviewer_id = NULL WHERE job_reviewer_id = $1', [userId]).catch(() => {});
-    await this.authQuery.query('UPDATE branches SET manager_id = NULL WHERE manager_id = $1', [userId]).catch(() => {});
-    await this.authQuery.query('UPDATE pods SET pod_head_id = NULL WHERE pod_head_id = $1', [userId]).catch(() => {});
-    await this.authQuery.query('DELETE FROM user_invitations WHERE LOWER(email) = LOWER($1) AND tenant_id = $2', [targetUser.email, targetUser.tenant_id]).catch(() => {});
-    await this.authQuery.query('DELETE FROM users WHERE id = $1', [userId]);
-
-    this.keycloakService.deleteKeycloakUser(targetUser.email).catch((err: any) => {
-      this.logger.warn(`Keycloak delete error note for ${targetUser.email}: ${err.message}`);
-    });
-
-    return { success: true, message: `User ${targetUser.full_name} (${targetUser.email}) has been permanently deleted.` };
+    return { success: true, message: `User ${target.fullName} and account history permanently deleted.` };
   }
 
   async logoutUserSessions(userId: string, requester: AuthUser) {

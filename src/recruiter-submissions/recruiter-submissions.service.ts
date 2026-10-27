@@ -1,3 +1,4 @@
+import { assertPermanentDeletion } from '../auth/utils/permanent-deletion';
 import { recruiterDashboard } from './recruiter-dashboard';
 import { assertPodsEnabled, loadWorkspaceFeatures } from '../auth/workspace-features';
 import { isClosedJob } from '../jobs/job-action-policy';
@@ -1596,6 +1597,21 @@ export class RecruiterSubmissionsService {
   /**
    * Delete a recruiter submission, scoped by tenant
    */
+  async permanentlyRemove(id: string, tenantId: string, actor: AuthUser): Promise<{ message: string }> {
+    assertPermanentDeletion(actor, tenantId);
+    await this.prisma.$transaction(async tx => {
+      // Lock the record so concurrent/retried requests cannot decrement twice.
+      const rows = await tx.$queryRawUnsafe<{ job_id: string }[]>(
+        'SELECT job_id FROM ats.recruiter_submissions WHERE id=$1::uuid AND tenant_id=$2::uuid FOR UPDATE', id, tenantId);
+      if (!rows.length) return;
+      await tx.$queryRawUnsafe("SELECT set_config('ats.permanent_delete_tenant',$1,true), set_config('ats.permanent_delete_submissions',$2,true)", tenantId, id);
+      await tx.auditLog.deleteMany({ where: { tenantId, targetType: { in: ['submission', 'recruiter_submission'] }, targetId: id } });
+      await tx.recruiterSubmission.delete({ where: { id } });
+      await tx.$executeRawUnsafe('UPDATE ats.jobs SET submission_done=GREATEST(0,submission_done-1) WHERE id=$1::uuid AND tenant_id=$2::uuid', rows[0].job_id, tenantId);
+    });
+    return { message: 'Submission and its history permanently deleted.' };
+  }
+
   async remove(id: string, tenantId: string): Promise<{ message: string }> {
     this.logger.log(`Removing submission ID=${id} for tenant: ${tenantId}`);
 
