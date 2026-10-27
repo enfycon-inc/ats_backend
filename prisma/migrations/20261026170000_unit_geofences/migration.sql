@@ -1,4 +1,4 @@
--- Unit-specific geofence policies. Branch-level networks remain unchanged.
+-- ATS: rollback-compatible. Unit-specific geofence policies. Branch-level networks remain unchanged.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 CREATE TABLE ats.business_unit_geofences (
