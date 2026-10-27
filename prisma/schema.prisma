@@ -28,6 +28,147 @@ model SessionRevocation {
   @@schema("ats")
 }
 
+model ApplicationSession {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerSubject String @map("provider_subject") @db.VarChar(255)
+  providerSession String @map("provider_session") @db.VarChar(255)
+  providerClient String @map("provider_client") @db.VarChar(255)
+  startedAt DateTime @map("started_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  loginMethod String @default("Not recorded") @map("login_method") @db.VarChar(64)
+  device String @default("Unknown device") @db.VarChar(160)
+  verifiedLogin Boolean @default(false) @map("verified_login")
+  @@unique([providerSubject, providerSession, providerClient])
+  @@map("application_sessions")
+  @@schema("ats")
+}
+
+model SessionMembership {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId String @map("session_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedBy String? @map("revoked_by") @db.Uuid
+  @@unique([sessionId, userId])
+  @@index([tenantId, userId, sessionId], map: "session_memberships_user")
+  @@map("session_memberships")
+  @@schema("ats")
+}
+
+model SessionNetworkObservation {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  membershipId String @map("membership_id") @db.Uuid
+  ipAddress Unsupported("inet")? @map("ip_address")
+  observedAt DateTime @default(now()) @map("observed_at") @db.Timestamptz(6)
+  @@index([membershipId, observedAt(sort: Desc)], map: "session_network_latest")
+  @@map("session_network_observations")
+  @@schema("ats")
+}
+
+model UserSecurityEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String? @map("tenant_id") @db.Uuid
+  userId String? @map("user_id") @db.Uuid
+  actorId String? @map("actor_id") @db.Uuid
+  membershipId String? @map("membership_id") @db.Uuid
+  eventKey String? @unique @map("event_key") @db.VarChar(255)
+  action String @db.VarChar(80)
+  outcome String @db.VarChar(32)
+  ipAddress Unsupported("inet")? @map("ip_address")
+  details Json @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@index([tenantId, userId, createdAt(sort: Desc), id], map: "user_security_events_user")
+  @@map("user_security_events")
+  @@schema("ats")
+}
+
+model UserAccessDecision {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  actorId String @map("actor_id") @db.Uuid
+  action String @db.VarChar(16)
+  reason String @db.VarChar(500)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@index([tenantId, userId, createdAt(sort: Desc)], map: "user_access_decisions_user")
+  @@map("user_access_decisions")
+  @@schema("ats")
+}
+
+model UserSecurityOutbox {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  room String @db.VarChar(255)
+  event String @db.VarChar(80)
+  payload Json
+  status String @default("pending") @db.VarChar(16)
+  attempts Int @default(0)
+  leaseId String? @map("lease_id") @db.Uuid
+  availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  @@index([status, availableAt], map: "user_security_outbox_ready")
+  @@map("user_security_outbox")
+  @@schema("ats")
+}
+
+model BranchNetwork {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+  network Unsupported("cidr")
+  kind String @db.VarChar(16)
+  verifiedBy String @map("verified_by") @db.Uuid
+  verifiedAt DateTime @default(now()) @map("verified_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  @@unique([tenantId, branchId, network])
+  @@index([tenantId, expiresAt], map: "branch_networks_tenant")
+  @@map("branch_networks")
+  @@schema("ats")
+}
+
+model BranchGeofence {
+  branchId String @id @map("branch_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  latitude Float
+  longitude Float
+  radiusMetres Int @map("radius_metres")
+  updatedBy String @map("updated_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  @@map("branch_geofences")
+  @@schema("ats")
+}
+
+model BusinessUnitGeofence {
+  businessUnitId String @id @map("business_unit_id") @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  latitude Float
+  longitude Float
+  radiusMetres Int @map("radius_metres")
+  updatedBy String @map("updated_by") @db.Uuid
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  businessUnit BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  @@index([tenantId], map: "business_unit_geofences_tenant")
+  @@map("business_unit_geofences")
+  @@schema("ats")
+}
+
+model OfficeLocationCheck {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+  businessUnitId String? @map("business_unit_id") @db.Uuid
+  result String @db.VarChar(16)
+  accuracyMetres Float @map("accuracy_metres")
+  sampledAt DateTime @map("sampled_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  businessUnit BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
+  @@index([tenantId, userId, createdAt(sort: Desc)], map: "office_location_checks_user")
+  @@map("office_location_checks")
+  @@schema("ats")
+}
+
 model Tenant {
   careerOauthClients CareerOauthClient[]
   publicApiKeys PublicJobsApiKey[]
@@ -278,6 +419,8 @@ model BusinessUnit {
   users                      User[]
   publicJobsApiKeys          PublicJobsApiKey[]
   admins                     User[]                 @relation("BusinessUnitAdmins")
+  geofence                   BusinessUnitGeofence?
+  locationChecks             OfficeLocationCheck[]
 
   @@unique([tenantId, branchId, name])
   @@index([tenantId, branchId])
@@ -407,6 +550,7 @@ model User {
   jobReviewerId        String?                   @map("job_reviewer_id") @db.Uuid
   podId                String?                   @map("pod_id") @db.Uuid
   lastLoginAt          DateTime?                 @map("last_login_at") @db.Timestamptz(6)
+  sessionValidAfter    DateTime?                 @map("session_valid_after") @db.Timestamptz(6)
   createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime                  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   requestedRole        String?                   @map("requested_role") @db.VarChar(128)
@@ -517,6 +661,8 @@ model UserInvitation {
   branchId        String?     @map("branch_id") @db.Uuid
   podId           String?     @map("pod_id") @db.Uuid
   invitationToken String      @unique @map("invitation_token") @db.VarChar(255)
+  acceptanceLease String? @map("acceptance_lease") @db.Uuid
+  acceptingAt DateTime? @map("accepting_at") @db.Timestamptz(6)
   tokenExpiresAt  DateTime    @map("token_expires_at") @db.Timestamptz(6)
   createdBy            String?                @map("created_by") @db.Uuid
   isAccepted      Boolean     @default(false) @map("is_accepted")

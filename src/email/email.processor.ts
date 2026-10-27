@@ -17,6 +17,10 @@ export class EmailProcessor extends WorkerHost {
 
   async process(job: Job<any, any, string>): Promise<any> {
     if (job.name === 'send_email') {
+      if (process.env.LOCAL_DISABLE_OUTBOUND_EMAILS === 'true') {
+        this.logger.warn('Skipping outbound email because local delivery is disabled.');
+        return { skipped: true };
+      }
       const { recipientId, campaignId, accountId, subject, body, toEmail, firstName, lastName, metadata } = job.data;
       
       try {

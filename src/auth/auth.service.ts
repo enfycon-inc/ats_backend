@@ -98,7 +98,7 @@ export class AuthService {
       tenant: { name: tenant.name, domain: tenant.domain, siteTitle: tenant.siteTitle, logoUrl: tenant.logoUrl || '', loginLogoUrl: tenant.loginLogoUrl || '', compactLogoUrl: tenant.compactLogoUrl || '' } };
   }
   listUsers(tenantId: string, scopedBranchId?: string | string[] | null, scopedBusinessUnitId?: string | null) { return this.userService.listUsers(tenantId, scopedBranchId, scopedBusinessUnitId); }
-  setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: any) { return this.userService.setUserActive(userId, isActive, requesterId, requester); }
+  setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: any, reason?: string) { return this.userService.setUserActive(userId, isActive, requesterId, requester, reason); }
   deleteUser(userId: string, requester: any) { return this.userService.deleteUser(userId, requester); }
   updateUserRoles(userId: string, roles: string[], requesterRoles: string[], requester?: AuthUser) { return this.userService.updateUserRoles(userId, roles, requesterRoles, requester); }
   updateUserDetails(userId: string, dto: any, requester: any) { return this.userService.updateUserDetails(userId, dto, requester); }

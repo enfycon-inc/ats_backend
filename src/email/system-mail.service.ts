@@ -415,6 +415,10 @@ export class SystemMailService {
   }
 
   async send(request: SystemEmailRequest): Promise<EmailDispatchResult> {
+    if (process.env.LOCAL_DISABLE_OUTBOUND_EMAILS === 'true') {
+      this.logger.warn('Skipping outbound email because local delivery is disabled.');
+      return { success: true, status: 'disabled', provider: 'suppressed', from: '' };
+    }
     if (request.emailCategory) {
       const policy = await emailPreferencePolicy(this.prisma, request.tenantId, request.recipientUserId, request.to);
       if (!policy.eligible.includes(request.emailCategory) || policy.preferences[request.emailCategory] === false) return { success: true, status: 'disabled', provider: 'suppressed', from: '' };

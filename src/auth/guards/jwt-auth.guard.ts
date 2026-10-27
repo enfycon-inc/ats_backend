@@ -6,6 +6,7 @@ import {
   ForbiddenException,
   NotFoundException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
 import * as https from 'https';
@@ -13,6 +14,7 @@ import * as http from 'http';
 import { AuthService } from '../auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveActiveRole } from '../utils/active-role';
+import { SessionTrackingService } from '../../user-management/session-tracking.service';
 
 const DEFAULT_TENANT_ID = process.env.DEFAULT_TENANT_ID as string;
 
@@ -41,6 +43,7 @@ export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly authService: AuthService,
     private readonly prisma: PrismaService,
+    @Optional() private readonly sessionTracking?: SessionTrackingService,
   ) {
     const issuer = process.env.KEYCLOAK_ISSUER || 'http://keycloak:8080/realms/enfycon-ats';
     const internalIssuer = process.env.KEYCLOAK_INTERNAL_URL
@@ -64,6 +67,12 @@ export class JwtAuthGuard implements CanActivate {
     return this.validateToken(request);
   }
 
+  /** Shared HTTP/socket authentication; caller supplies server-constructed request context. */
+  async authenticateRequest(request: any) {
+    await this.validateToken(request);
+    return request.user;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Token verification (Supports Keycloak RS256 JWKS and Internal tokens)
   // ─────────────────────────────────────────────────────────────────────────
@@ -78,6 +87,7 @@ export class JwtAuthGuard implements CanActivate {
     const header = this.decodeBase64Json(parts[0]);
 
     if (header.kid) {
+      if (header.alg !== 'RS256') throw new UnauthorizedException('Unsupported authentication token algorithm.');
       // ── Keycloak RS256 token ──
       const publicKey = await this.getPublicKey(header.kid);
       const data = `${parts[0]}.${parts[1]}`;
@@ -89,6 +99,7 @@ export class JwtAuthGuard implements CanActivate {
       }
 
       const decoded = this.decodeBase64Json(parts[1]);
+      if (decoded.iss && process.env.KEYCLOAK_ISSUER && decoded.iss.replace(/\/$/, '') !== process.env.KEYCLOAK_ISSUER.replace(/\/$/, '')) throw new UnauthorizedException('Authentication token issuer is invalid.');
       this.checkExpiry(decoded.exp, 'Session');
       // Never cache this check: an administrator logout must apply on the next
       // request, including requests handled by another backend replica.
@@ -246,6 +257,7 @@ export class JwtAuthGuard implements CanActivate {
         permissions: dbUser.permissions || [],
         podId: dbUser.pod_id || null,
         branchId: dbUser.branch_id || null,
+        assignedBranchIds: dbUser.assigned_branch_ids || [],
         businessUnitId: dbUser.business_unit_id || null,
         defaultMarket: dbUser.default_market || 'US',
         tenantDomain: dbUser.tenant_domain || '',
@@ -278,6 +290,8 @@ export class JwtAuthGuard implements CanActivate {
         }
       }
 
+      request.authClaims = decoded;
+      await this.sessionTracking?.observe(request.user, decoded, request);
       return true;
     }
 

@@ -4,6 +4,7 @@ function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
   const scopedActions = permissions.includes('job:edit') ? ['job:change_status', 'job:find_matches', ...['edit', 'change_status', 'find_matches'].flatMap(action => ['unit', 'branch', 'tenant'].map(scope => `job:${action}_${scope}`))] : [];
   return [...new Set([...permissions, ...submissionAutoApprovalDefaults(key), ...scopedActions, ...(permissions.includes('job:create') ? ['submission:internal_screening_created_jobs'] : []), ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume', 'job:submit_owned_jobs'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional', 'job:submit_unit_jobs'] : [])])];
 }
+import { MANAGEMENT_PERMISSIONS } from '../../user-management/user-management.contract';
 import {
   Injectable,
   Logger,
@@ -880,6 +881,7 @@ export class AuthRbacService {
       { id: 'candidate:search_all_markets', name: 'Search Candidates Across All Markets (US + India)', group: 'Branch & Multi-Office Management' },
       { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
       { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
+      ...MANAGEMENT_PERMISSIONS.map(([id, name]) => ({ id, name, group: 'User Security & Presence' })),
       { id: 'platform:manage', name: 'Platform Super Administration', group: 'Administration' },
     ];
   }

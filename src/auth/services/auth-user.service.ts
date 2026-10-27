@@ -277,7 +277,9 @@ export class AuthUserService {
     });
   }
 
-  async setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: AuthUser) {
+  async setUserActive(userId: string, isActive: boolean, requesterId: string, requester?: AuthUser, reason?: string) {
+    if (typeof isActive !== 'boolean') throw new BadRequestException('Account access must be enabled or disabled.');
+    if (reason !== undefined && (typeof reason !== 'string' || reason.trim().length < 3 || reason.length > 500)) throw new BadRequestException('Provide a reason between 3 and 500 characters.');
     if (userId === requesterId) {
       if (!isActive) throw new BadRequestException('You cannot deactivate your own account.');
     }
@@ -286,6 +288,7 @@ export class AuthUserService {
     const user: any = userRes.rows[0];
 
     if (!requester) throw new ForbiddenException('User management identity is required.');
+    if (user.is_approved === false) throw new BadRequestException('Review the outstanding request before changing account access.');
     assertMemberAction(requester, { ...user, id: userId }, 'changeStatus');
 
     // Branch isolation: branch admins can only change status of users in their assigned branches
@@ -307,8 +310,27 @@ export class AuthUserService {
       await this.rbacService.verifyLastAdminProtection(user.tenant_id, userId, 'deactivate');
     }
 
-    await this.authQuery.query(`UPDATE users SET is_active = $1, is_approved = true, updated_at = NOW() WHERE id = $2`, [isActive, userId]);
-    this.keycloakService.setKeycloakUserStatus(user.email, isActive).catch(() => {});
+    if (process.env.USER_MANAGEMENT_TELEMETRY_ENABLED === 'true') {
+      await this.authQuery.prisma.$transaction(async tx => {
+        await tx.$queryRawUnsafe('SELECT id FROM ats.tenants WHERE id=$1::uuid FOR UPDATE', user.tenant_id);
+        if (isActive) await this.rbacService.checkSeatLimit(user.tenant_id);
+        else await this.rbacService.verifyLastAdminProtection(user.tenant_id, userId, 'deactivate');
+        const changed = await tx.$executeRawUnsafe(`UPDATE ats.users SET is_active=$1,updated_at=NOW(),
+          session_valid_after=CASE WHEN $1=false THEN NOW() ELSE session_valid_after END
+          WHERE id=$2::uuid AND tenant_id=$3::uuid AND is_active<>$1`, isActive, userId, user.tenant_id);
+        if (!changed) return;
+        if (!isActive) await tx.$executeRawUnsafe('UPDATE ats.session_memberships SET revoked_at=NOW(),revoked_by=$2::uuid WHERE user_id=$1::uuid AND tenant_id=$3::uuid AND revoked_at IS NULL', userId, requesterId, user.tenant_id);
+        await tx.$executeRawUnsafe(`INSERT INTO ats.user_access_decisions(tenant_id,user_id,actor_id,action,reason)
+          VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5)`, user.tenant_id, userId, requesterId, isActive ? 'unblock' : 'block', reason?.trim() || 'Reason not recorded (legacy action)');
+        await tx.$executeRawUnsafe(`INSERT INTO ats.user_security_events(tenant_id,user_id,actor_id,action,outcome)
+          VALUES($1::uuid,$2::uuid,$3::uuid,$4,'success')`, user.tenant_id, userId, requesterId, isActive ? 'account.unblocked' : 'account.blocked');
+        if (!isActive) await tx.$executeRawUnsafe(`INSERT INTO ats.user_security_outbox(room,event,payload) VALUES($1,'account_blocked',$2::jsonb)`, `user:${user.tenant_id}:${userId}`, JSON.stringify({ userId, tenantId: user.tenant_id }));
+      });
+    } else {
+      await this.authQuery.query(`UPDATE users SET is_active = $1, updated_at = NOW() WHERE id = $2`, [isActive, userId]);
+    }
+    // Account access belongs to this workspace. Disabling the shared provider identity
+    // would also disable memberships in unrelated workspaces.
     return { message: `User ${isActive ? 'activated' : 'deactivated'} successfully.` };
   }
 

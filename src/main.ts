@@ -19,6 +19,8 @@ if (typeof dns.setDefaultResultOrder === 'function') {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const trustedProxies = process.env.TRUSTED_PROXY_CIDRS?.split(',').map(value => value.trim()).filter(Boolean);
+  if (trustedProxies?.length) app.getHttpAdapter().getInstance().set('trust proxy', trustedProxies);
 
   // Enable CORS so the recruiter dashboard front-end can communicate with backend endpoints
   app.enableCors({

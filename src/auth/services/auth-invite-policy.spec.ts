@@ -13,6 +13,18 @@ describe('invitation sign-in policy', () => {
     );
     return { query, provisionUserInKeycloak, service };
   };
+  it('rejects invitation replay before touching provider credentials', async () => {
+    const { query, provisionUserInKeycloak, service } = dependencies();
+    query.mockResolvedValue({ rows: [{ id: 'used', is_accepted: true }] });
+    await expect(service.acceptInvite({ token: 'used-token', password: 'valid-password' })).rejects.toThrow('already been accepted');
+    expect(provisionUserInKeycloak).not.toHaveBeenCalled();
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+  it('does not accept a stored token digest as a bearer invitation', async () => {
+    const { query, service } = dependencies();
+    await expect(service.getInvitationDetails('sha256:' + 'a'.repeat(64))).rejects.toThrow('invalid');
+    expect(query).not.toHaveBeenCalled();
+  });
 
   it('returns enabled tenant sign-in methods without exposing a role', async () => {
     const { query, service } = dependencies();

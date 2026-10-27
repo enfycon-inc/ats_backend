@@ -17,6 +17,8 @@ import {
   Headers,
   BadRequestException,
   ForbiddenException,
+  Req,
+  Optional,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -48,6 +50,8 @@ import type { AuthUser } from './interfaces/auth-user.interface';
 import { resolveTenantId } from './utils/tenant-resolver';
 import { AuditService } from '../audit/audit.service';
 import type { RoleRequestDecision } from './role-request-contract';
+import { SessionTrackingService } from '../user-management/session-tracking.service';
+import { AuthInviteService } from './services/auth-invite.service';
 
 @ApiTags('Auth & Identity')
 @Controller('api/auth')
@@ -56,6 +60,8 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
     private readonly developerAccess: DeveloperAccessService,
+    @Optional() private readonly sessionTracking?: SessionTrackingService,
+    @Optional() private readonly invites?: AuthInviteService,
   ) {}
 
   // â”€â”€â”€ POST /api/auth/login â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -76,16 +82,20 @@ Validates email + password and returns a signed JWT access token.
   })
   @ApiResponse({ status: 200, description: 'Login successful â€” returns JWT access token.' })
   @ApiResponse({ status: 401, description: 'Invalid credentials.' })
-  async login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  async login(@Body() dto: LoginDto, @Req() req?: any) {
+    const result = await this.authService.login(dto);
+    await this.sessionTracking?.loginResult(result, req || {}, 'Password');
+    return result;
   }
 
   // â”€â”€â”€ POST /api/auth/refresh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('developer-login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  async developerLogin(@Body() dto: LoginDto) {
-    return this.authService.developerLogin(dto);
+  async developerLogin(@Body() dto: LoginDto, @Req() req?: any) {
+    const result = await this.authService.developerLogin(dto);
+    await this.sessionTracking?.loginResult(result, req || {}, 'Developer password');
+    return result;
   }
 
   @Get('developer-access/accounts')
@@ -124,6 +134,13 @@ Validates email + password and returns a signed JWT access token.
   }
 
   // â”€â”€â”€ GET /api/auth/diagnostic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  @Post('users/:id/resend-invitation')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  async resendInvitation(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.invites!.resendInvitation(id, user);
+  }
+
   @Get('diagnostic')
   @UseGuards(JwtAuthGuard)
   async diagnostic() {
@@ -323,10 +340,10 @@ Validates email + password and returns a signed JWT access token.
   @ApiResponse({ status: 403, description: 'ADMIN role required.' })
   async setUserStatus(
     @Param('id') userId: string,
-    @Body() body: { isActive: boolean },
+    @Body() body: { isActive: boolean; reason?: string },
     @CurrentUser() currentUser: AuthUser,
   ) {
-    return this.authService.setUserActive(userId, body.isActive, currentUser.dbId, currentUser);
+    return this.authService.setUserActive(userId, body.isActive, currentUser.dbId, currentUser, body.reason);
   }
 
   @Post('users/:id/logout-sessions')
@@ -942,8 +959,10 @@ Validates email + password and returns a signed JWT access token.
   })
   @ApiResponse({ status: 200, description: 'SSO Login successful â€” returns ATS JWT access token.' })
   @ApiResponse({ status: 401, description: 'Access denied: user is not invited or account is deactivated.' })
-  async ssoLogin(@Body() dto: SsoLoginDto) {
-    return this.authService.ssoLogin(dto);
+  async ssoLogin(@Body() dto: SsoLoginDto, @Req() req?: any) {
+    const result = await this.authService.ssoLogin(dto);
+    await this.sessionTracking?.loginResult(result, req || {}, dto.provider === 'keycloak' ? 'Microsoft SSO' : `${dto.provider} SSO`);
+    return result;
   }
 
   // â”€â”€â”€ POST /api/auth/invite â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

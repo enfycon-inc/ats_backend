@@ -7,6 +7,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { managementScope, requireCapability } from '../../user-management/management-policy';
 import { AuthQueryService } from './auth-query.service';
 import { AuthKeycloakService } from './auth-keycloak.service';
 import { AuthEmailService } from './auth-email.service';
@@ -193,7 +194,7 @@ export class AuthInviteService {
            invitation_token = EXCLUDED.invitation_token,
            token_expires_at = EXCLUDED.token_expires_at,
            is_accepted = FALSE`,
-        [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, invitationToken, expiresAt, requester.dbId || null]
+        [tenantId, cleanEmail, fullName, roleId, systemRoleId, dto.branchId || null, dto.podId || null, this.inviteDigest(invitationToken), expiresAt, requester.dbId || null]
       );
     } catch (error) {
       await this.authQuery.query('DELETE FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid', [newUser.id, tenantId]).catch(() => undefined);
@@ -429,8 +430,8 @@ export class AuthInviteService {
        FROM user_invitations ui
        JOIN tenants t ON ui.tenant_id = t.id
        LEFT JOIN tenant_auth_settings tas ON tas.tenant_id = ui.tenant_id
-       WHERE ui.invitation_token = $1 LIMIT 1`,
-      [token]
+       WHERE ui.invitation_token IN ($1,$2) LIMIT 1`,
+      [token, this.inviteDigest(token)]
     );
     if (res.rows.length === 0) throw new NotFoundException('Invitation token is invalid or does not exist.');
     const row: any = res.rows[0];
@@ -458,11 +459,12 @@ export class AuthInviteService {
        FROM user_invitations ui
        JOIN tenants t ON ui.tenant_id = t.id
        LEFT JOIN tenant_auth_settings tas ON tas.tenant_id = ui.tenant_id
-       WHERE ui.invitation_token = $1 LIMIT 1`,
-      [dto.token]
+       WHERE ui.invitation_token IN ($1,$2) LIMIT 1`,
+      [dto.token, this.inviteDigest(dto.token)]
     );
     if (res.rows.length === 0) throw new NotFoundException('Invitation token is invalid.');
     const invite: any = res.rows[0];
+    if (invite.is_accepted) throw new BadRequestException('This invitation has already been accepted. Sign in or request a password reset.');
     if (new Date(invite.token_expires_at).getTime() < Date.now()) {
       throw new BadRequestException('Invitation has expired. Please contact your administrator for a new invite.');
     }
@@ -470,20 +472,26 @@ export class AuthInviteService {
       throw new ForbiddenException('Password sign-in is disabled for this tenant. Use an enabled SSO provider or contact your administrator.');
     }
 
-    await this.authQuery.query(
-      `UPDATE users SET is_active = true, is_approved = true, updated_at = NOW()
-       WHERE LOWER(email) = LOWER($1) AND tenant_id = $2`,
-      [invite.email, invite.tenant_id]
-    );
-
-    await this.keycloakService.provisionUserInKeycloak({
+    const lease = crypto.randomUUID();
+    const claimed = await this.authQuery.query(`UPDATE ats.user_invitations SET acceptance_lease=$2::uuid,accepting_at=NOW()
+      WHERE id=$1::uuid AND invitation_token IN ($3,$4) AND is_accepted=false AND token_expires_at>NOW()
+      AND (accepting_at IS NULL OR accepting_at<NOW()-INTERVAL '10 minutes')
+      AND EXISTS(SELECT 1 FROM ats.users u WHERE u.tenant_id=ats.user_invitations.tenant_id AND LOWER(u.email)=LOWER(ats.user_invitations.email) AND u.is_active=true)
+      RETURNING id`, [invite.id, lease, dto.token, this.inviteDigest(dto.token)]);
+    if (!claimed.rows.length) throw new BadRequestException('This invitation is unavailable or already being accepted. Contact your administrator.');
+    try {
+    const provisioned = await this.keycloakService.provisionUserInKeycloak({
       email: invite.email,
       password: dto.password,
       fullName: invite.full_name,
       tenantId: invite.tenant_id,
     });
-
-    await this.authQuery.query(`UPDATE user_invitations SET is_accepted = true WHERE id = $1`, [invite.id]);
+    if (!provisioned) throw new BadRequestException('Unable to finish setting up access. Please try again.');
+    await this.authQuery.query(`UPDATE ats.user_invitations SET is_accepted=true,acceptance_lease=NULL,accepting_at=NULL WHERE id=$1::uuid AND acceptance_lease=$2::uuid`, [invite.id, lease]);
+    } catch (error) {
+      await this.authQuery.query('UPDATE ats.user_invitations SET acceptance_lease=NULL,accepting_at=NULL WHERE id=$1::uuid AND acceptance_lease=$2::uuid', [invite.id, lease]);
+      throw error;
+    }
 
     return {
       success: true,
@@ -491,5 +499,28 @@ export class AuthInviteService {
       email: invite.email,
       subdomain: invite.tenant_domain,
     };
+  }
+
+  private inviteDigest(token: string) {
+    if (typeof token !== 'string' || token.startsWith('sha256:') || token.length > 256) throw new BadRequestException('Invitation token is invalid.');
+    return `sha256:${crypto.createHash('sha256').update(token).digest('hex')}`;
+  }
+
+  async resendInvitation(userId: string, requester: AuthUser) {
+    requireCapability(requester, 'user:manage');
+    const scope = managementScope(requester, 'u', 2);
+    const res = await this.authQuery.query(`SELECT i.id,i.email,i.full_name,t.name AS tenant_name,t.domain AS tenant_domain
+      FROM ats.users u JOIN ats.user_invitations i ON i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email)
+      JOIN ats.tenants t ON t.id=u.tenant_id WHERE u.id=$1::uuid AND ${scope.sql} AND u.is_active=true AND i.is_accepted=false`, [userId, ...scope.values]);
+    const invite = res.rows[0] as any;
+    if (!invite) throw new NotFoundException('Pending invitation not found in your authorised scope.');
+    const token = crypto.randomBytes(32).toString('base64url');
+    const rotated = await this.authQuery.query(`UPDATE ats.user_invitations SET invitation_token=$2,token_expires_at=NOW()+INTERVAL '24 hours',acceptance_lease=NULL,accepting_at=NULL
+      WHERE id=$1::uuid AND is_accepted=false AND (accepting_at IS NULL OR accepting_at<NOW()-INTERVAL '10 minutes') RETURNING id`, [invite.id, this.inviteDigest(token)]);
+    if (!rotated.rows.length) throw new BadRequestException('This invitation is already being accepted.');
+    await this.emailService.sendWelcomeEmail({ tenantId: requester.tenantId, to: invite.email, fullName: invite.full_name || invite.email,
+      tenantName: invite.tenant_name, subdomain: invite.tenant_domain, invitationToken: token,
+      actor: { fullName: requester.fullName, email: requester.email } });
+    return { success: true, message: 'A new invitation has been queued. The previous link is invalid.' };
   }
 }

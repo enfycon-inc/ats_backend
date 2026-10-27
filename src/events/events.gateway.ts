@@ -1,221 +1,112 @@
-import {
-  WebSocketGateway,
-  WebSocketServer,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
-  SubscribeMessage,
-  MessageBody,
-  ConnectedSocket,
-} from '@nestjs/websockets';
+import { WebSocketGateway, WebSocketServer, OnGatewayConnection, OnGatewayDisconnect, SubscribeMessage, ConnectedSocket, MessageBody } from '@nestjs/websockets';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { Server, Socket } from 'socket.io';
-import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SessionTrackingService } from '../user-management/session-tracking.service';
+import { hasCapability, managementScope } from '../user-management/management-policy';
 
 @Injectable()
-@WebSocketGateway({
-  cors: {
-    origin: '*',
-  },
-})
-export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+@WebSocketGateway({ cors: { origin: (origin, callback) => {
+  const allowed = (process.env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim());
+  callback(null, !origin || allowed.includes(origin) || /^https:\/\/([a-z0-9-]+\.)?(enfyjobs\.com|enfycon\.com)$/.test(origin) || (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)));
+} } })
+export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EventsGateway.name);
-
-  @WebSocketServer()
-  server: Server;
-
-  constructor(private readonly prisma: PrismaService) {}
-
-  // Maps userId / userEmail -> Set of active socket IDs
-  private userSockets = new Map<string, Set<string>>();
-
-  private broadcastOnlineUsers() {
+  @WebSocketServer() server: Server;
+  private timer?: ReturnType<typeof setInterval>;
+  constructor(private readonly prisma: PrismaService, private readonly modules: ModuleRef, private readonly tracking: SessionTrackingService) {}
+  async onModuleInit() {
+    void this.tracking.subscribe((room, event, payload) => {
+      void this.deliverLocally(room, event, payload).catch(() => this.logger.warn('Realtime event could not be delivered.'));
+    }).catch(() => this.logger.error('Realtime messaging unavailable.'));
+    this.timer = setInterval(() => {
+      for (const socket of this.server?.sockets.sockets.values() || []) void this.refresh(socket).catch(() => socket.disconnect(true));
+    }, 30_000);
+    this.timer.unref();
+  }
+  onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
+  private async refresh(client: Socket) {
+    if (!client.data.request) throw new Error('Unauthenticated connection');
+    const guard = this.modules.get(JwtAuthGuard, { strict: false });
+    client.data.actor = await guard.authenticateRequest(client.data.request);
+    const actor = client.data.actor;
+    const desired = new Set([`user:${actor.tenantId}:${actor.dbId}`, `tenant:${actor.tenantId}`]);
+    if (actor.permissions?.some((p: string) => ['user:manage', 'tenant:settings', 'tenant:manage', '*', 'platform:manage'].includes(p))) desired.add(`admins:${actor.tenantId}`);
+    for (const room of client.rooms) if (room !== client.id && !desired.has(room)) await client.leave(room);
+    for (const room of desired) await client.join(room);
+    return client.data.actor;
+  }
+  private async deliverLocally(room: string, event: string, payload: any) {
+    for (const socket of this.server?.sockets.sockets.values() || []) {
+      if (!socket.rooms.has(room)) continue;
+      if ((event === 'session_revoked' && socket.data.actor?.sessionMembershipId === payload.membershipId) || event === 'account_blocked') { socket.disconnect(true); continue; }
+      try { await this.refresh(socket); if (socket.rooms.has(room)) socket.emit(event, payload); }
+      catch { socket.disconnect(true); }
+    }
+  }
+  async handleConnection(client: Socket) {
     try {
-      const onlineKeys = Array.from(this.userSockets.keys());
-      this.server?.emit('online_users_list', onlineKeys);
-    } catch (e) {
-      this.logger.error('Failed to broadcast online users list', e);
-    }
+      const auth = client.handshake.auth || {};
+      if (typeof auth.token !== 'string' || auth.token.length > 16384) throw new Error('Missing token');
+      const request = { headers: { authorization: `Bearer ${auth.token}`, host: client.handshake.headers.host,
+        ...(typeof auth.tenantDomain === 'string' ? { 'x-tenant-domain': auth.tenantDomain } : {}),
+        ...(typeof auth.activeRoleId === 'string' ? { 'x-active-role-id': auth.activeRoleId } : {}),
+        'user-agent': client.handshake.headers['user-agent'] }, skipNetworkObservation: true, socket: { remoteAddress: client.handshake.address } };
+      client.data.request = request;
+      const actor = await this.refresh(client);
+      await client.join(`user:${actor.tenantId}:${actor.dbId}`);
+      await client.join(`tenant:${actor.tenantId}`);
+      if (actor.permissions?.some((p: string) => ['user:manage', 'tenant:settings', 'tenant:manage', '*', 'platform:manage'].includes(p))) await client.join(`admins:${actor.tenantId}`);
+      await this.tracking.heartbeat(actor, client.id, false);
+      await this.handleGetOnlineUsers(client);
+    } catch { client.disconnect(true); }
   }
-
-  handleConnection(client: Socket) {
-    const userId = (client.handshake.auth?.userId || client.handshake.query?.userId) as string;
-    const userEmail = (client.handshake.auth?.email || client.handshake.query?.email) as string;
-
-    this.logger.log(`[WS] Connection attempt: socket ${client.id}, userId: ${userId}, email: ${userEmail}`);
-
-    if (userId) {
-      const key = String(userId).toLowerCase();
-      if (!this.userSockets.has(key)) {
-        this.userSockets.set(key, new Set());
-      }
-      this.userSockets.get(key)?.add(client.id);
-    }
-
-    if (userEmail) {
-      const emailKey = String(userEmail).toLowerCase();
-      if (!this.userSockets.has(emailKey)) {
-        this.userSockets.set(emailKey, new Set());
-      }
-      this.userSockets.get(emailKey)?.add(client.id);
-    }
-
-    this.logger.log(`[WS] Client connected: ${client.id}`);
-    this.broadcastOnlineUsers();
+  async handleDisconnect(client: Socket) {
+    if (client.data.actor) await this.tracking.disconnect(client.data.actor, client.id).catch(() => {});
   }
-
-  handleDisconnect(client: Socket) {
-    const userId = (client.handshake.auth?.userId || client.handshake.query?.userId) as string;
-    const userEmail = (client.handshake.auth?.email || client.handshake.query?.email) as string;
-
-    if (userId) {
-      const key = String(userId).toLowerCase();
-      if (this.userSockets.has(key)) {
-        this.userSockets.get(key)?.delete(client.id);
-        if ((this.userSockets.get(key)?.size ?? 0) === 0) {
-          this.userSockets.delete(key);
-        }
-      }
-    }
-
-    if (userEmail) {
-      const emailKey = String(userEmail).toLowerCase();
-      if (this.userSockets.has(emailKey)) {
-        this.userSockets.get(emailKey)?.delete(client.id);
-        if ((this.userSockets.get(emailKey)?.size ?? 0) === 0) {
-          this.userSockets.delete(emailKey);
-        }
-      }
-    }
-
-    this.logger.log(`[WS] Client disconnected: ${client.id}`);
-    this.broadcastOnlineUsers();
+  @SubscribeMessage('ping') async handlePing(@ConnectedSocket() client: Socket) {
+    try { await this.refresh(client); client.emit('pong', { time: new Date().toISOString() }); }
+    catch { client.disconnect(true); }
   }
-
-  @SubscribeMessage('ping')
-  handlePing(@ConnectedSocket() client: Socket) {
-    client.emit('pong', { time: new Date().toISOString() });
+  @SubscribeMessage('presence_heartbeat') async heartbeat(@ConnectedSocket() client: Socket, @MessageBody() body: any) {
+    if (Date.now() - (client.data.lastHeartbeat || 0) < 10_000) return;
+    client.data.lastHeartbeat = Date.now();
+    try {
+      const actor = await this.refresh(client);
+      await this.tracking.heartbeat(actor, client.id, body?.active === true);
+      await this.handleGetOnlineUsers(client);
+    } catch { client.disconnect(true); }
   }
-
-  @SubscribeMessage('get_online_users')
-  handleGetOnlineUsers(@ConnectedSocket() client: Socket) {
-    client.emit('online_users_list', Array.from(this.userSockets.keys()));
+  @SubscribeMessage('get_online_users') async handleGetOnlineUsers(@ConnectedSocket() client: Socket) {
+    if (Date.now() - (client.data.lastOnlineRead || 0) < 10_000) return;
+    client.data.lastOnlineRead = Date.now();
+    try {
+      const actor = await this.refresh(client);
+      if (!hasCapability(actor, 'user:presence:view')) { client.emit('online_users_list', []); return; }
+      const scope = managementScope(actor);
+      const rows = await this.prisma.$queryRawUnsafe<any[]>(`SELECT u.id FROM ats.users u WHERE ${scope.sql} AND u.is_active=true ORDER BY u.id LIMIT 1000`, ...scope.values);
+      const presence = await this.tracking.presences(actor.tenantId, rows.map(u => u.id));
+      client.emit('online_users_list', rows.filter(u => ['active', 'away'].includes(presence.get(u.id) || '')).map(u => u.id));
+    } catch { client.emit('online_users_list', []); }
   }
-
-  /**
-   * Send a real-time event to a specific user by their UUID or email.
-   */
   async sendToUser(userIdOrEmail: string, event: string, payload: any) {
     if (!userIdOrEmail) return;
-    const targetKeys = new Set<string>();
-    targetKeys.add(String(userIdOrEmail).toLowerCase());
-
-    try {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userIdOrEmail);
-      const user = await this.prisma.user.findFirst({
-        where: {
-          OR: [
-            ...(isUuid ? [{ id: userIdOrEmail }] : []),
-            { email: { equals: userIdOrEmail, mode: 'insensitive' } },
-          ],
-        },
-        select: { id: true, email: true },
-      });
-      if (user) {
-        if (user.id) targetKeys.add(String(user.id).toLowerCase());
-        if (user.email) targetKeys.add(String(user.email).toLowerCase());
-      }
-    } catch {}
-
-    const targetSocketIds = new Set<string>();
-    for (const key of targetKeys) {
-      const sockets = this.userSockets.get(key);
-      if (sockets && sockets.size > 0) {
-        for (const socketId of sockets) {
-          targetSocketIds.add(socketId);
-        }
-      }
-    }
-
-    let sent = false;
-    for (const socketId of targetSocketIds) {
-      this.server?.to(socketId).emit(event, payload);
-      sent = true;
-    }
-
-    if (!sent) {
-      this.logger.debug(`[WS] sendToUser: user ${userIdOrEmail} is not currently connected.`);
-    }
+    const uuid = /^[0-9a-f-]{36}$/i.test(userIdOrEmail);
+    const users = await this.prisma.user.findMany({ where: uuid ? { id: userIdOrEmail } : { email: { equals: userIdOrEmail, mode: 'insensitive' } }, select: { id: true, tenantId: true }, take: 2 });
+    if (users.length !== 1) return;
+    const user = users[0];
+    await this.deliver(`user:${user.tenantId}:${user.id}`, event, payload);
   }
-
-  /**
-   * Broadcast an event to multiple user IDs or emails.
-   */
   async sendToUsers(userIds: string[], event: string, payload: any) {
-    const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
-    for (const id of uniqueUserIds) {
-      await this.sendToUser(id, event, payload);
-    }
+    await Promise.all([...new Set(userIds.filter(Boolean))].map(id => this.sendToUser(id, event, payload)));
   }
-
-  /**
-   * Broadcast to all connected users belonging to a specific branch.
-   */
   async sendToBranch(tenantId: string, branchId: string, event: string, payload: any) {
-    try {
-      const users = await this.prisma.user.findMany({
-        where: {
-          tenantId,
-          isActive: true,
-          branchId,
-        },
-        select: { id: true, email: true },
-      });
-      const userKeys = users.flatMap(u => [u.id, u.email]);
-      this.sendToUsers(userKeys, event, payload);
-    } catch (e: any) {
-      this.logger.error(`Failed to broadcast to branch ${branchId}: ${e.message}`);
-    }
+    const users = await this.prisma.user.findMany({ where: { tenantId, branchId, isActive: true }, select: { id: true } });
+    await this.sendToUsers(users.map(user => user.id), event, payload);
   }
-
-  /**
-   * Broadcast to all connected users who are Administrators / Tenant Admins.
-   */
-  async sendToAdmins(tenantId: string, event: string, payload: any) {
-    try {
-      const rows = await this.prisma.$queryRawUnsafe<any[]>(
-        `SELECT u.id, u.email 
-         FROM ats.users u
-         LEFT JOIN ats.custom_roles cr ON cr.id = u.role_id
-         LEFT JOIN ats.system_roles sr ON cr.system_role_id = sr.id
-         WHERE u.tenant_id = $1 AND u.is_active = true
-           AND (
-             sr.system_key IN ('TENANT_ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR
-             UPPER(cr.name) IN ('TENANT_ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN') OR
-             EXISTS (
-               SELECT 1 FROM ats.custom_roles sub_cr
-               LEFT JOIN ats.system_roles sub_sr ON sub_cr.system_role_id = sub_sr.id
-               WHERE (sub_cr.id = u.role_id OR sub_cr.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-                 AND (sub_sr.system_key IN ('TENANT_ADMIN', 'BRANCH_ADMIN', 'SUPER_ADMIN') OR UPPER(sub_cr.name) IN ('TENANT_ADMIN', 'SUPER_ADMIN', 'BRANCH_ADMIN', 'BRANCH ADMIN'))
-             ) OR
-             EXISTS (
-               SELECT 1 FROM ats.custom_roles cr2 
-               WHERE (cr2.id = u.role_id OR cr2.id = ANY(COALESCE(u.assigned_role_ids, '{}')))
-                 AND cr2.permissions ?| array['tenant:settings', 'branch_admin:manage', 'user:manage']
-             )
-           )`,
-        tenantId
-      );
-      const adminKeys = rows.flatMap(u => [u.id, u.email]);
-      this.sendToUsers(adminKeys, event, payload);
-    } catch (e: any) {
-      this.logger.error(`Failed to broadcast to admins: ${e.message}`);
-    }
-  }
-
-  /**
-   * Global broadcast to all connected users in a tenant.
-   */
-  broadcastAll(tenantId: string, event: string, payload: any) {
-    this.server.emit(event, { ...payload, tenantId });
-  }
+  async sendToAdmins(tenantId: string, event: string, payload: any) { await this.deliver(`admins:${tenantId}`, event, payload); }
+  broadcastAll(tenantId: string, event: string, payload: any) { void this.deliver(`tenant:${tenantId}`, event, payload).catch(() => this.logger.error('Realtime delivery failed.')); }
+  private async deliver(room: string, event: string, payload: any) { await this.tracking.publish(event, payload, room); }
 }

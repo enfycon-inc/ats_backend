@@ -27,6 +27,8 @@ export interface AuthUser {
   podId?: string;
   /** Assigned branch ID */
   branchId?: string;
+  /** Additional branches explicitly assigned to this staff member. */
+  assignedBranchIds?: string[];
 
   /** User's base system role e.g. 'BRANCH_ADMIN', 'RECRUITER' */
   systemRole?: string;
