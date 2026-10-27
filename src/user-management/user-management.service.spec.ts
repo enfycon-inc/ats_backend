@@ -51,4 +51,19 @@ describe('Security activity authorization and redaction', () => {
     await expect(service.list(admin, { state: 'all-tenants' })).rejects.toThrow('view');
     expect(db.$queryRawUnsafe).not.toHaveBeenCalled();
   });
+  it('returns roster fields from one scoped directory query without per-user lookups', async () => {
+    const { db, service } = setup(false);
+    db.$queryRawUnsafe
+      .mockResolvedValueOnce([{ active: 1, pending: 0, blocked: 0 }])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ count: 1 }])
+      .mockResolvedValueOnce([{ id: 'member', kind: 'user', fullName: 'A User', email: 'a@example.test', avatar: null, city: null, managerName: 'Manager', assignedRoles: ['Recruiter', 'Account Manager'], roleName: 'Recruiter', isActive: true, isApproved: true, __tenantId: 'tenant', __branchId: 'branch', __unitId: 'unit', management_permissions: [] }]);
+    const result = await service.list({ ...actor, permissions: ['user:manage', 'tenant:manage'] }, { state: 'active' });
+    expect(result.items[0]).toMatchObject({ avatar: null, managerName: 'Manager', assignedRoles: ['Recruiter', 'Account Manager'] });
+    const directorySql = db.$queryRawUnsafe.mock.calls[3][0];
+    expect(directorySql).toContain('u.tenant_id = $1::uuid');
+    expect(directorySql).toContain('LEFT JOIN LATERAL');
+    expect(directorySql).toContain('rev.full_name AS "managerName"');
+    expect(db.$queryRawUnsafe).toHaveBeenCalledTimes(4);
+  });
 });

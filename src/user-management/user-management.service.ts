@@ -42,7 +42,9 @@ export class UserManagementService {
       active: 'u.is_approved=true AND u.is_active=true AND NOT EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false)', blocked: 'u.is_approved=true AND u.is_active=false',
       pending: '(u.is_approved=false AND u.requested_role IS NOT NULL) OR EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false AND u.is_active=true)', activity: 'true',
     };
-    const base = `SELECT u.id,'user'::text AS kind,u.full_name AS "fullName",u.email,
+    const base = `SELECT u.id,'user'::text AS kind,u.full_name AS "fullName",u.email,u.profile_picture AS avatar,
+      to_jsonb(u)->>'city' AS city,rev.full_name AS "managerName",
+      COALESCE(assigned_roles.names,ARRAY_REMOVE(ARRAY[r.name],NULL)) AS "assignedRoles",
       b.name AS "branchName",bu.name AS "businessUnitName",r.name AS "roleName",
       u.is_active AS "isActive",u.is_approved AS "isApproved",u.requested_role AS "requestedRole",
       u.last_login_at AS "lastLoginAt",u.created_at AS "createdAt",
@@ -51,6 +53,11 @@ export class UserManagementService {
       FROM ats.users u LEFT JOIN ats.branches b ON b.id=u.branch_id
       LEFT JOIN ats.business_units bu ON bu.id=u.business_unit_id
       LEFT JOIN ats.custom_roles r ON r.id=u.role_id
+      LEFT JOIN ats.users rev ON rev.id=u.job_reviewer_id AND rev.tenant_id=u.tenant_id
+      LEFT JOIN LATERAL (
+        SELECT ARRAY_AGG(DISTINCT cr.name ORDER BY cr.name) AS names FROM ats.custom_roles cr
+        WHERE cr.id=ANY(ARRAY_REMOVE(ARRAY[u.role_id] || u.assigned_role_ids,NULL)) AND cr.tenant_id=u.tenant_id
+      ) assigned_roles ON TRUE
       WHERE ${scope.sql} AND (${conditions[state as UserView]})
       AND (u.full_name ILIKE ${searchParam} OR u.email ILIKE ${searchParam})`;
     let combined = base;
@@ -58,7 +65,7 @@ export class UserManagementService {
       const shift = values.length;
       const shiftedScope = inviteSql.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + shift}`);
       values.push(...invitationScope.values);
-      combined += ` UNION ALL SELECT i.id,'invitation',COALESCE(i.full_name,i.email),i.email,b.name,NULL,r.name,
+      combined += ` UNION ALL SELECT i.id,'invitation',COALESCE(i.full_name,i.email),i.email,NULL,NULL,NULL,NULL,NULL,NULL,b.name,NULL,r.name,
         false,false,NULL,NULL,i.created_at,CASE WHEN i.token_expires_at<NOW() THEN 'expired' ELSE 'invited' END,i.tenant_id,i.branch_id,NULL::uuid,ARRAY[]::text[]
         FROM ats.user_invitations i LEFT JOIN ats.branches b ON b.id=i.branch_id LEFT JOIN ats.custom_roles r ON r.id=i.role_id
         WHERE ${shiftedScope} AND i.is_accepted=false AND (i.full_name ILIKE ${searchParam} OR i.email ILIKE ${searchParam})

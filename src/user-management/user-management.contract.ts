@@ -2,6 +2,7 @@ export type Presence = 'active' | 'away' | 'offline' | 'unknown';
 export type UserView = 'active' | 'pending' | 'blocked' | 'activity';
 export interface ManagementRow {
   id: string; kind: 'user' | 'invitation'; fullName: string; email: string;
+  avatar: string | null; city: string | null; managerName: string | null; assignedRoles: string[];
   branchName: string | null; businessUnitName: string | null; roleName: string | null;
   isActive: boolean; isApproved: boolean; requestedRole: string | null;
   lastLoginAt: string | null; createdAt: string; invitationStatus?: 'invited' | 'expired';
