@@ -1,6 +1,9 @@
+-- ATS: rollback-compatible
+-- Older backends do not set the transaction-local authorization values, so history remains protected.
 -- Preserve append-only history except for explicitly authorized permanent deletion.
 -- The backend sets both values locally in the same transaction after authorization.
 BEGIN;
+SET LOCAL lock_timeout = '5s';
 CREATE OR REPLACE FUNCTION ats.protect_submission_history() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE'
