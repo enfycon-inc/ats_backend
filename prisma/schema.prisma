@@ -38,6 +38,7 @@ model ApplicationSession {
   loginMethod String @default("Not recorded") @map("login_method") @db.VarChar(64)
   device String @default("Unknown device") @db.VarChar(160)
   verifiedLogin Boolean @default(false) @map("verified_login")
+  memberships SessionMembership[]
   @@unique([providerSubject, providerSession, providerClient])
   @@map("application_sessions")
   @@schema("ats")
@@ -51,6 +52,12 @@ model SessionMembership {
   lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz(6)
   revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
   revokedBy String? @map("revoked_by") @db.Uuid
+  session ApplicationSession @relation(fields: [sessionId], references: [id], onDelete: NoAction)
+  user User @relation("SessionMembershipUser", fields: [userId], references: [id], onDelete: NoAction)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: NoAction)
+  revoker User? @relation("SessionMembershipRevoker", fields: [revokedBy], references: [id], onDelete: NoAction)
+  networkObservations SessionNetworkObservation[]
+  securityEvents UserSecurityEvent[]
   @@unique([sessionId, userId])
   @@index([tenantId, userId, sessionId], map: "session_memberships_user")
   @@map("session_memberships")
@@ -62,6 +69,7 @@ model SessionNetworkObservation {
   membershipId String @map("membership_id") @db.Uuid
   ipAddress Unsupported("inet")? @map("ip_address")
   observedAt DateTime @default(now()) @map("observed_at") @db.Timestamptz(6)
+  membership SessionMembership @relation(fields: [membershipId], references: [id], onDelete: NoAction)
   @@index([membershipId, observedAt(sort: Desc)], map: "session_network_latest")
   @@map("session_network_observations")
   @@schema("ats")
@@ -79,6 +87,10 @@ model UserSecurityEvent {
   ipAddress Unsupported("inet")? @map("ip_address")
   details Json @default("{}")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant Tenant? @relation("SecurityEventTenant", fields: [tenantId], references: [id], onDelete: NoAction)
+  user User? @relation("SecurityEventSubject", fields: [userId], references: [id], onDelete: NoAction)
+  actor User? @relation("SecurityEventActor", fields: [actorId], references: [id], onDelete: NoAction)
+  membership SessionMembership? @relation(fields: [membershipId], references: [id], onDelete: NoAction)
   @@index([tenantId, userId, createdAt(sort: Desc), id], map: "user_security_events_user")
   @@map("user_security_events")
   @@schema("ats")
@@ -92,6 +104,9 @@ model UserAccessDecision {
   action String @db.VarChar(16)
   reason String @db.VarChar(500)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenant Tenant @relation("AccessDecisionTenant", fields: [tenantId], references: [id], onDelete: NoAction)
+  user User @relation("AccessDecisionSubject", fields: [userId], references: [id], onDelete: NoAction)
+  actor User @relation("AccessDecisionActor", fields: [actorId], references: [id], onDelete: NoAction)
   @@index([tenantId, userId, createdAt(sort: Desc)], map: "user_access_decisions_user")
   @@map("user_access_decisions")
   @@schema("ats")
@@ -121,6 +136,9 @@ model BranchNetwork {
   verifiedBy String @map("verified_by") @db.Uuid
   verifiedAt DateTime @default(now()) @map("verified_at") @db.Timestamptz(6)
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: NoAction)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: NoAction)
+  verifier User @relation(fields: [verifiedBy], references: [id], onDelete: NoAction)
   @@unique([tenantId, branchId, network])
   @@index([tenantId, expiresAt], map: "branch_networks_tenant")
   @@map("branch_networks")
@@ -135,6 +153,9 @@ model BranchGeofence {
   radiusMetres Int @map("radius_metres")
   updatedBy String @map("updated_by") @db.Uuid
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: NoAction)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: NoAction)
+  updater User @relation(fields: [updatedBy], references: [id], onDelete: NoAction)
   @@map("branch_geofences")
   @@schema("ats")
 }
@@ -148,6 +169,8 @@ model BusinessUnitGeofence {
   updatedBy String @map("updated_by") @db.Uuid
   updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
   businessUnit BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: NoAction)
+  updater User @relation(fields: [updatedBy], references: [id], onDelete: NoAction)
   @@index([tenantId], map: "business_unit_geofences_tenant")
   @@map("business_unit_geofences")
   @@schema("ats")
@@ -164,6 +187,9 @@ model OfficeLocationCheck {
   sampledAt DateTime @map("sampled_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   businessUnit BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: NoAction)
+  user User @relation(fields: [userId], references: [id], onDelete: NoAction)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: NoAction)
   @@index([tenantId, userId, createdAt(sort: Desc)], map: "office_location_checks_user")
   @@map("office_location_checks")
   @@schema("ats")
@@ -178,6 +204,13 @@ model Tenant {
   staffProfiles             UserProfile[]
   staffPhotos               UserPhoto[]
   staffSignatures           EmailSignature[]
+  sessionMemberships SessionMembership[]
+  securityEvents UserSecurityEvent[] @relation("SecurityEventTenant")
+  accessDecisions UserAccessDecision[] @relation("AccessDecisionTenant")
+  branchNetworks BranchNetwork[]
+  branchGeofences BranchGeofence[]
+  businessUnitGeofences BusinessUnitGeofence[]
+  officeLocationChecks OfficeLocationCheck[]
   id                        String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                      String                 @db.VarChar(255)
   logoUrl                   String?                @map("logo_url") @db.Text
@@ -332,6 +365,9 @@ model TenantDiceIntegration {
 
 model Branch {
   careerOauthClients CareerOauthClient[]
+  networks BranchNetwork[]
+  geofence BranchGeofence?
+  officeLocationChecks OfficeLocationCheck[]
   id                         String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId                   String                 @map("tenant_id") @db.Uuid
   name                       String                 @db.VarChar(255)
@@ -530,6 +566,16 @@ model User {
   personalProfile      UserProfile?
   uploadedPhoto        UserPhoto?
   emailSignatures      EmailSignature[]
+  sessionMemberships SessionMembership[] @relation("SessionMembershipUser")
+  revokedSessionMemberships SessionMembership[] @relation("SessionMembershipRevoker")
+  securityEvents UserSecurityEvent[] @relation("SecurityEventSubject")
+  actedSecurityEvents UserSecurityEvent[] @relation("SecurityEventActor")
+  accessDecisions UserAccessDecision[] @relation("AccessDecisionSubject")
+  issuedAccessDecisions UserAccessDecision[] @relation("AccessDecisionActor")
+  verifiedBranchNetworks BranchNetwork[]
+  updatedBranchGeofences BranchGeofence[]
+  updatedBusinessUnitGeofences BusinessUnitGeofence[]
+  officeLocationChecks OfficeLocationCheck[]
   id                   String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String                    @map("tenant_id") @db.Uuid
   keycloakId           String?                   @map("keycloak_id") @db.VarChar(255)
@@ -572,6 +618,7 @@ model User {
 
   @@unique([tenantId, email])
   @@unique([tenantId, keycloakId])
+  @@index([tenantId, isApproved, isActive, fullName, id], map: "users_management_state")
     createdContacts      ClientContact[]       @relation("ContactCreator")
   jobsCreated          Job[]                 @relation("JobCreator")
   createdPublicJobsApiKeys PublicJobsApiKey[] @relation("PublicJobsApiKeyCreator")
@@ -675,6 +722,7 @@ model UserInvitation {
   tenant          Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, email])
+  @@index([tenantId, isAccepted, createdAt(sort: Desc)], map: "invitations_management_state")
   @@map("user_invitations")
   @@schema("ats")
 }
