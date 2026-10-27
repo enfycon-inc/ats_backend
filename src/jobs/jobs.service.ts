@@ -1,5 +1,6 @@
 import { effectiveJobAssignmentPolicy } from '../auth/job-assignment-policy';
 import { jobExportWorkbook, type ExportCell } from './job-export-workbook';
+import { JOB_EXPORT_PERMISSION, JOB_EXPORT_MAX_JOBS, JOB_EXPORT_MAX_SUBMISSIONS, parseJobExportRequest, type JobExportManager, type JobExportResponse } from './job-export-contract';
 import { loadJobActor, rowJobScope } from './job-access-context';
 import { assertPodsEnabled } from '../auth/workspace-features';
 import type { JobCapabilities } from './job-capabilities';
@@ -1556,39 +1557,64 @@ export class JobsService {
     );
   }
 
-  async exportJobs(tenantId: string, user: AuthUser, ids: unknown, activeBranchId?: string | null) {
+  private async exportScope(tenantId: string, user: AuthUser, activeBranchId?: string | null) {
     const context = await loadJobActor(this.prisma, user);
     const permissions = context.actor?.permissions || [];
-    if (!permissions.some(p => ['job:export', '*', 'platform:manage'].includes(p))) throw new ForbiddenException('Job export permission is required.');
-    if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) throw new BadRequestException('Select between 1 and 500 jobs.');
-    const jobIds = [...new Set(ids as string[])];
+    if (!permissions.some(p => [JOB_EXPORT_PERMISSION, '*', 'platform:manage'].includes(p))) throw new ForbiddenException('Job export permission is required.');
     const scope = this.buildJobListQuery(tenantId, context.actor, activeBranchId, undefined, context.podsEnabled);
-    if (!scope) throw new ForbiddenException('The selected jobs are unavailable.');
-    const params = [...scope.params, jobIds];
-    const where = scope.sql.slice(scope.sql.indexOf('WHERE j.tenant_id'));
+    return scope ? { where: scope.sql.slice(scope.sql.indexOf('WHERE j.tenant_id')), params: scope.params } : null;
+  }
+
+  async exportManagers(tenantId: string, user: AuthUser, activeBranchId?: string | null): Promise<JobExportManager[]> {
+    const scope = await this.exportScope(tenantId, user, activeBranchId);
+    if (!scope) return [];
+    // Only names and IDs of owners of jobs in the caller's catalog scope.
+    return this.prisma.$queryRawUnsafe<JobExportManager[]>(`SELECT DISTINCT u.id, u.full_name AS name
+      FROM ats.jobs j JOIN ats.users u ON u.id = j.account_manager_id AND u.tenant_id = j.tenant_id
+      ${scope.where} ORDER BY name, u.id`, ...scope.params);
+  }
+
+  async exportJobs(tenantId: string, user: AuthUser, input: unknown, activeBranchId?: string | null): Promise<JobExportResponse> {
+    const scope = await this.exportScope(tenantId, user, activeBranchId);
+    let filter: ReturnType<typeof parseJobExportRequest>;
+    try { filter = parseJobExportRequest(input); } catch (error) { throw new BadRequestException((error as Error).message); }
+    if (!scope) throw new BadRequestException('No jobs match this period and account manager.');
+    const params = [...scope.params, new Date(filter.from), new Date(filter.to)];
+    let where = `${scope.where} AND j.created_at >= $${params.length - 1}::timestamptz AND j.created_at < $${params.length}::timestamptz`;
+    if (filter.accountManagerId) {
+      params.push(filter.accountManagerId);
+      where += ` AND j.account_manager_id = $${params.length}::uuid`;
+    }
     // Reuse catalog visibility predicates and explicitly select exportable fields only.
     const jobs = await this.prisma.$queryRawUnsafe<any[]>(`SELECT j.id, j.job_code, j.job_title, cl.client_name,
       j.city, j.state, j.country, j.job_type, j.status, j.skills_required, j.exp_min, j.exp_max,
       j.no_of_positions, j.submission_required, j.created_at, j.work_mode, j.market
       FROM ats.jobs j LEFT JOIN ats.clients cl ON cl.id = j.client_id AND cl.tenant_id = j.tenant_id
-      ${where} AND j.id = ANY($${params.length}::uuid[]) ORDER BY j.job_code`, ...params);
-    if (jobs.length !== jobIds.length) throw new ForbiddenException('One or more selected jobs are unavailable. Refresh the jobs list.');
-    const submissions = await this.prisma.recruiterSubmission.findMany({
-      where: { tenantId, jobId: { in: jobIds }, candidate: { tenantId } },
+      ${where} ORDER BY j.job_code LIMIT ${JOB_EXPORT_MAX_JOBS + 1}`, ...params);
+    if (!jobs.length) throw new BadRequestException('No jobs match this period and account manager.');
+    if (jobs.length > JOB_EXPORT_MAX_JOBS) throw new BadRequestException(`This export exceeds ${JOB_EXPORT_MAX_JOBS} jobs. Choose a shorter period or one account manager.`);
+    const jobIds = jobs.map(j => j.id as string);
+    const submissionWhere = { tenantId, jobId: { in: jobIds }, candidate: { tenantId } };
+    const submissions = filter.includeSubmissions ? await this.prisma.recruiterSubmission.findMany({
+      where: submissionWhere,
       select: { id: true, jobId: true, recruiterId: true, createdAt: true, finalStatus: true,
         l1Status: true, l2Status: true, l3Status: true,
         candidateCurrentCtc: true, candidateExpectedCtc: true, candidateCtcCurrency: true, candidateCtcTerm: true,
         currentCompensationAmount: true, expectedCompensationAmount: true, compensationCurrency: true, compensationPeriod: true, compensationInputUnit: true,
         candidateRelevantExperience: true,
         candidate: { select: { id: true, fullName: true, firstName: true, lastName: true, rawCurrentLocation: true, totalExperienceYears: true, currentCtc: true, expectedCtc: true } } },
-      orderBy: [{ jobId: 'asc' }, { createdAt: 'asc' }], take: 50001,
-    });
-    if (submissions.length > 50000) throw new BadRequestException('Select fewer jobs; this export exceeds 50,000 submissions.');
+      orderBy: [{ jobId: 'asc' }, { createdAt: 'asc' }], take: JOB_EXPORT_MAX_SUBMISSIONS + 1,
+    }) : [];
+    if (submissions.length > JOB_EXPORT_MAX_SUBMISSIONS) throw new BadRequestException('This export exceeds 50,000 submissions. Choose a shorter period or one account manager.');
     const recruiterIds = [...new Set(submissions.map(s => s.recruiterId))].filter(id => /^[0-9a-f-]{36}$/i.test(id));
-    const recruiters = await this.prisma.user.findMany({ where: { tenantId, id: { in: recruiterIds } }, select: { id: true, fullName: true } });
+    const recruiters = recruiterIds.length ? await this.prisma.user.findMany({ where: { tenantId, id: { in: recruiterIds } }, select: { id: true, fullName: true } }) : [];
     const names = new Map(recruiters.map(r => [r.id, r.fullName]));
     const counts = new Map<string, number>();
     submissions.forEach(s => counts.set(s.jobId, (counts.get(s.jobId) || 0) + 1));
+    if (!filter.includeSubmissions) {
+      const totals = await this.prisma.recruiterSubmission.groupBy({ by: ['jobId'], where: submissionWhere, _count: { _all: true } });
+      totals.forEach(row => counts.set(row.jobId, row._count._all));
+    }
     const byId = new Map(jobs.map(j => [j.id, j]));
     const location = (j: any) => [j.city, j.state, j.country].filter(Boolean).join(', ');
     const num = (v: unknown): ExportCell => v == null ? null : Number(v);
@@ -1596,9 +1622,9 @@ export class JobsService {
       ...jobs.map(j => [j.id, j.job_code, j.job_title, j.client_name, location(j), j.job_type, j.status, j.market, j.work_mode, (j.skills_required || []).join(', '), j.exp_min, j.exp_max, j.no_of_positions, j.submission_required, counts.get(j.id) || 0, j.created_at.toISOString()])];
     const detail: ExportCell[][] = [['Job code', 'Job title', 'Client name', 'Job location', 'Job type', 'Job status', 'Required submissions', 'Submissions done', 'Submission ID', 'Candidate ID', 'Candidate name', 'Current location', 'Total experience (years)', 'Relevant experience (years)', 'Current compensation', 'Expected compensation', 'Currency', 'Pay period', 'Input unit', 'Submission status', 'L1 status', 'L2 status', 'L3 status', 'Submitted by', 'Submission date (UTC)'],
       ...submissions.map(s => { const j = byId.get(s.jobId)!; return [j.job_code, j.job_title, j.client_name, location(j), j.job_type, j.status, j.submission_required, counts.get(j.id) || 0, s.id, s.candidate.id, s.candidate.fullName || [s.candidate.firstName, s.candidate.lastName].filter(Boolean).join(' '), s.candidate.rawCurrentLocation, num(s.candidate.totalExperienceYears), num(s.candidateRelevantExperience), num(s.currentCompensationAmount ?? s.candidateCurrentCtc ?? s.candidate.currentCtc), num(s.expectedCompensationAmount ?? s.candidateExpectedCtc ?? s.candidate.expectedCtc), s.compensationCurrency ?? s.candidateCtcCurrency, s.compensationPeriod ?? s.candidateCtcTerm, s.compensationInputUnit, s.finalStatus, s.l1Status, s.l2Status, s.l3Status, names.get(s.recruiterId) || (s.recruiterId === 'WEBSITE_APPLICANT' ? 'Website Applicant' : 'Unavailable'), s.createdAt.toISOString()]; })];
-    const workbook = jobExportWorkbook([{ name: 'Jobs Summary', rows: summary }, { name: 'Job Submissions', rows: detail }]);
-    await this.prisma.auditLog.create({ data: { tenantId, actorId: user.dbId, actorEmail: user.email, action: 'JOB_DATA_EXPORTED', targetType: 'job', details: { jobIds, submissionCount: submissions.length } } });
-    return { filename: `selected_jobs_${new Date().toISOString().slice(0, 10)}.xlsx`, content: workbook.toString('base64') };
+    const workbook = jobExportWorkbook([{ name: 'Jobs Summary', rows: summary }, ...(filter.includeSubmissions ? [{ name: 'Job Submissions', rows: detail }] : [])]);
+    await this.prisma.auditLog.create({ data: { tenantId, actorId: user.dbId, actorEmail: user.email, action: 'JOB_DATA_EXPORTED', targetType: 'job', details: { jobIds, ...filter, submissionCount: submissions.length } } });
+    return { filename: `job_report_${filter.from.slice(0, 10)}.xlsx`, content: workbook.toString('base64') };
   }
 
   async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {

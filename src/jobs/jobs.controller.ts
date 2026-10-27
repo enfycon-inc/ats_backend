@@ -6,6 +6,7 @@ import {
   ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBearerAuth,
 } from '@nestjs/swagger';
 import { JobsService, JobProfile, CandidateMatch } from './jobs.service';
+import type { JobExportRequest } from './job-export-contract';
 import { CreateJobDto } from './dtos/create-job.dto';
 import { DelegateJobDto, AcceptDelegationDto, RejectDelegationDto } from './dtos/delegate-job.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -26,9 +27,18 @@ export class JobsController {
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('job:export')
   @ApiBearerAuth()
-  async exportJobs(@CurrentUser() user: AuthUser, @Body() body: { jobIds: string[] },
+  async exportJobs(@CurrentUser() user: AuthUser, @Body() body: JobExportRequest,
     @Headers('x-tenant-id') tenantId?: string, @Headers('x-branch-id') branchId?: string) {
-    return this.jobsService.exportJobs(resolveTenantId(user, tenantId), user, body?.jobIds, resolveBranchId(user, branchId));
+    return this.jobsService.exportJobs(resolveTenantId(user, tenantId), user, body, resolveBranchId(user, branchId));
+  }
+
+  @Get('export/managers')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:export')
+  @ApiBearerAuth()
+  async exportManagers(@CurrentUser() user: AuthUser,
+    @Headers('x-tenant-id') tenantId?: string, @Headers('x-branch-id') branchId?: string) {
+    return this.jobsService.exportManagers(resolveTenantId(user, tenantId), user, resolveBranchId(user, branchId));
   }
 
   @Get('pod-options')
