@@ -120,7 +120,9 @@ export function validateTrackerUpdate(existing: Record<string, any>, dto: Record
           (dto.finalStatus === 'JOIN' && !['OFFER', 'JOIN'].includes(existing.finalStatus));
         if (dto.finalStatus !== existing.finalStatus && bypass && !dto.bypassReason?.trim()) throw new BadRequestException('Record a reason for the direct outcome or unfinished interview.');
       }
-      if (['NOT_SELECTED', 'WITHDRAWN', 'REJECTED'].includes(dto.finalStatus) && dto.finalStatus !== existing.finalStatus && !dto.remarks?.trim()) throw new BadRequestException('Add remarks for the final outcome.');
+      const internalReviewRejection = existing.finalStatus === 'PENDING_APPROVAL' && dto.finalStatus === 'REJECTED';
+      if (internalReviewRejection && !dto.reviewFeedback?.trim()) throw new BadRequestException('Add remarks for the review decision.');
+      if (!internalReviewRejection && ['NOT_SELECTED', 'WITHDRAWN', 'REJECTED'].includes(dto.finalStatus) && dto.finalStatus !== existing.finalStatus && !dto.remarks?.trim()) throw new BadRequestException('Add remarks for the final outcome.');
     }
   }
   const outcome = dto.finalStatus ?? existing.finalStatus;

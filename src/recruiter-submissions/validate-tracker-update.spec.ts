@@ -92,8 +92,11 @@ describe('submission tracker permissions and transitions', () => {
   });
   it('allows only approval or rejection during internal review', () => {
     const caps = submissionCapabilities(['submission:internal_screening']);
-    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'PENDING_APPROVAL' }, { finalStatus: 'SUBMITTED' }, caps)).not.toThrow();
-    expect(() => validateTrackerUpdate({ ...existing, finalStatus: 'PENDING_APPROVAL' }, { finalStatus: 'JOIN' }, caps)).toThrow(BadRequestException);
+    const pending = { ...existing, finalStatus: 'PENDING_APPROVAL' };
+    expect(() => validateTrackerUpdate(pending, { finalStatus: 'SUBMITTED' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate(pending, { finalStatus: 'REJECTED', reviewFeedback: 'Does not meet role requirements.' }, caps)).not.toThrow();
+    expect(() => validateTrackerUpdate(pending, { finalStatus: 'REJECTED', reviewFeedback: '   ' }, caps)).toThrow('Add remarks for the review decision.');
+    expect(() => validateTrackerUpdate(pending, { finalStatus: 'JOIN' }, caps)).toThrow(BadRequestException);
   });
   it('prevents an early joining bypass even with authority and a reason', () => {
     const dto = { finalStatus: 'JOIN', bypassReason: 'Client hired after L1' };
