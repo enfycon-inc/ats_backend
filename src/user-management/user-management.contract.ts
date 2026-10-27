@@ -11,7 +11,7 @@ export interface ManagementRow {
   presence?: Presence; lastSeenAt?: string | null; sessions?: number;
   blockReason?: string | null;
   officeNetwork?: string; officeObservedAt?: string | null;
-  allowedActions?: { edit: boolean; changeAccess: boolean; review: boolean; resendInvitation: boolean };
+  allowedActions?: { edit: boolean; changeAccess: boolean; review: boolean; resendInvitation: boolean; assignManager?: boolean; resetPassword?: boolean; endSessions?: boolean; deleteUser?: boolean };
 }
 export interface DirectoryPage {
   items: ManagementRow[]; total: number; page: number; pageSize: number;
