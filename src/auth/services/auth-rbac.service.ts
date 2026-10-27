@@ -818,6 +818,7 @@ export class AuthRbacService {
       { id: 'job:find_matches_branch', name: 'Find AI matches - Current branch', group: 'Jobs Management' },
       { id: 'job:find_matches_tenant', name: 'Find AI matches - Entire tenant', group: 'Jobs Management' },
       { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
+      { id: 'job:export', name: 'Export Job Details and Candidate Submissions', group: 'Jobs Management' },
       { id: 'job:publish_direct', name: 'Publish Jobs Directly (Bypass Approval Gate)', group: 'Jobs Management' },
       { id: 'job:approve', name: 'Approve & Activate Jobs (Publish)', group: 'Jobs Management' },
       { id: 'job:reject', name: 'Reject Job Postings with Feedback', group: 'Jobs Management' },
