@@ -23,7 +23,7 @@ describe('active role authorization', () => {
     expect(selected.businessUnitId).toBe('unit');
   });
   it('defaults to the primary assigned role and supports switching back', async () => {
-    expect((await resolveActiveRole(prisma as any, actor, undefined)).permissions).toEqual(['tenant:settings']);
+    expect((await resolveActiveRole(prisma as any, actor, undefined)).permissions).toEqual(expect.arrayContaining(['tenant:settings', 'user:presence:view', 'unit:geofence:manage']));
     expect((await resolveActiveRole(prisma as any, actor, adminId)).activeRoleId).toBe(adminId);
   });
   it('rejects forged, malformed, revoked, and foreign-tenant roles', async () => {

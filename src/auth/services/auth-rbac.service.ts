@@ -1,10 +1,10 @@
-import { SUBMISSION_AUTO_APPROVAL_PERMISSION, submissionAutoApprovalDefaults } from '../../recruiter-submissions/submission-auto-approval';
+import { submissionAutoApprovalDefaults } from '../../recruiter-submissions/submission-auto-approval';
 import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-role-policy';
 function assignmentPermissionCeiling(key: string, permissions: string[] = []) {
   const scopedActions = permissions.includes('job:edit') ? ['job:change_status', 'job:find_matches', ...['edit', 'change_status', 'find_matches'].flatMap(action => ['unit', 'branch', 'tenant'].map(scope => `job:${action}_${scope}`))] : [];
   return [...new Set([...permissions, ...submissionAutoApprovalDefaults(key), ...scopedActions, ...(permissions.includes('job:create') ? ['submission:internal_screening_created_jobs'] : []), ...(key === 'ACCOUNT_MANAGER' ? ['submission:download_resume', 'job:submit_owned_jobs'] : []), ...(['TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN'].includes(key) ? ['candidate:download_resume'] : []), 'job:view_pod_jobs', 'job:submit_pod_jobs', ...(key === 'POD_LEAD' ? ['job:assign_recruiter'] : []), ...(['DELIVERY_HEAD', 'UNIT_ADMIN', 'BRANCH_ADMIN', 'TENANT_ADMIN'].includes(key) ? ['job:override_assignment'] : []), ...(key === 'DELIVERY_HEAD' ? ['job:assignment_reason_optional', 'job:submit_unit_jobs'] : [])])];
 }
-import { MANAGEMENT_PERMISSIONS } from '../../user-management/user-management.contract';
+import { tenantPermissionCatalog } from '../tenant-permission-catalog';
 import {
   Injectable,
   Logger,
@@ -796,96 +796,7 @@ export class AuthRbacService {
     return { message: `Removed user from role "${role.name}".`, remainingAssigned };
   }
 
-  listAllPermissions() {
-    return [
-      { id: 'job:create', name: 'Create Jobs', group: 'Jobs Management' },
-      { id: 'job:grant_creation_delegate', name: 'Grant Colleagues Permission to Create Jobs on Your Behalf', group: 'Jobs Management' },
-      { id: 'job:manage_creation_access', name: 'Manage Job Creation Access Within Assigned Scope', group: 'Jobs Management' },
-      { id: 'job:edit', name: 'Edit own jobs', group: 'Jobs Management' },
-      { id: 'job:edit_unit', name: 'Edit jobs - Current unit', group: 'Jobs Management' },
-      { id: 'job:edit_branch', name: 'Edit jobs - Current branch', group: 'Jobs Management' },
-      { id: 'job:edit_tenant', name: 'Edit jobs - Entire tenant', group: 'Jobs Management' },
-      { id: 'job:change_status', name: 'Change job status - Own jobs', group: 'Jobs Management' },
-      { id: 'job:change_status_unit', name: 'Change job status - Current unit', group: 'Jobs Management' },
-      { id: 'job:change_status_branch', name: 'Change job status - Current branch', group: 'Jobs Management' },
-      { id: 'job:change_status_tenant', name: 'Change job status - Entire tenant', group: 'Jobs Management' },
-      { id: 'job:find_matches_assigned', name: 'Find AI matches - Assigned jobs only', group: 'Jobs Management' },
-      { id: 'job:manage_publication_unit', name: 'Manage website publication - Current unit administrators', group: 'Jobs Management' },
-      { id: 'job:manage_publication_branch', name: 'Manage website publication - Current branch administrators', group: 'Jobs Management' },
-      { id: 'job:manage_publication_tenant', name: 'Manage website publication - Tenant administrators', group: 'Jobs Management' },
-      { id: 'job:find_matches', name: 'Find AI matches - Own jobs', group: 'Jobs Management' },
-      { id: 'job:find_matches_unit', name: 'Find AI matches - Current unit', group: 'Jobs Management' },
-      { id: 'job:find_matches_branch', name: 'Find AI matches - Current branch', group: 'Jobs Management' },
-      { id: 'job:find_matches_tenant', name: 'Find AI matches - Entire tenant', group: 'Jobs Management' },
-      { id: 'job:view', name: 'View Jobs', group: 'Jobs Management' },
-      { id: 'job:export', name: 'Export Job Details and Candidate Submissions', group: 'Jobs Management' },
-      { id: 'job:publish_direct', name: 'Publish Jobs Directly (Bypass Approval Gate)', group: 'Jobs Management' },
-      { id: 'job:approve', name: 'Approve & Activate Jobs (Publish)', group: 'Jobs Management' },
-      { id: 'job:reject', name: 'Reject Job Postings with Feedback', group: 'Jobs Management' },
-      { id: 'job:assign', name: 'Assign Unassigned Jobs', group: 'Jobs Management' },
-      { id: 'job:assign_recruiter', name: 'Assign Job to Specific Recruiter', group: 'Jobs Management' },
-      { id: 'job:view_pod_jobs', name: 'View All Jobs Assigned to Own Pod', group: 'Jobs Management' },
-      { id: 'job:submit_pod_jobs', name: 'Submit to Own Pod Jobs Without Individual Assignment', group: 'Jobs Management' },
-      { id: 'job:override_assignment', name: 'Override Job Assignment Within Current Unit', group: 'Jobs Management' },
-      { id: 'job:assignment_reason_optional', name: 'Skip Emergency Assignment Justification', group: 'Jobs Management' },
-      { id: 'job:assign_pod', name: 'Assign Pod to Job', group: 'Jobs Management' },
-      { id: 'job:delegate', name: 'Delegate Jobs to Same-Market Units in Other Branches', group: 'Jobs Management' },
-      { id: 'job:accept_delegation', name: 'Accept Delegated Jobs for Your Operating Unit', group: 'Jobs Management' },
-      { id: 'candidate:create', name: 'Create Candidates', group: 'Candidates Management' },
-      { id: 'candidate:edit', name: 'Edit Candidate Profiles', group: 'Candidates Management' },
-      { id: 'candidate:change_market', name: 'Change Candidate Staffing Market', group: 'Candidates Management' },
-      { id: 'candidate:view', name: 'View Candidates & Resume Bank', group: 'Candidates Management' },
-      { id: 'candidate:download_resume', name: 'Download Original Resume', group: 'Candidates Management' },
-      { id: 'submission:view', name: 'View Submissions Tracker & Candidate Pipeline', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:download_resume', name: 'Download Resume from Approved Submissions', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:view_all', name: 'View Submissions for All Account Manager Jobs', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:edit_all', name: 'Edit Status on Other Account Manager Jobs (requires all-submission access)', group: 'Candidate Submissions & Sourcing' },
-      { id: 'job:submit_owned_jobs', name: 'Submit Candidates to Own Account Manager Jobs', group: 'Candidate Submissions & Sourcing' },
-      { id: 'job:submit_unit_jobs', name: 'Submit Candidates to Any Job in Current Unit', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:internal_screening_created_jobs', name: 'Internally Review Submissions for Jobs I Created', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:create', name: 'Submit Candidate CV to Job Requisitions', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:edit', name: 'Edit Submissions (General Notes & Comments)', group: 'Candidate Submissions & Sourcing' },
-      { id: 'submission:internal_screening', name: 'Internal Screening Review & Approval Gate', group: 'Internal Screening & Review Gate' },
-      { id: SUBMISSION_AUTO_APPROVAL_PERMISSION, name: 'Auto-approve internal review when I submit', description: 'Applies when you submit using this role. Skips internal review and starts the candidate at L1 pending. Switching roles later does not change existing submissions.', group: 'Internal Screening & Review Gate' },
-      { id: 'submission:edit_rate', name: 'Edit Candidate Pay Rate & CTC Margins', group: 'Internal Screening & Review Gate' },
-      { id: 'submission:audit_rounds', name: 'Interview Stages (Master L1, L2, L3 Audits & Remarks)', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'submission:audit_l1', name: 'Round 1 (L1) Screening & Interview Audit', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'submission:audit_l2', name: 'Round 2 (L2) Technical Interview & Vetting', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'submission:audit_l3', name: 'Round 3 (L3) Commercial & Final Readiness Audit', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'submission:schedule_interview', name: 'Schedule Client & Internal Interviews', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'submission:final_status', name: 'Final Placement Status (Offer & Join Outcome)', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'submission:approve_client', name: 'Approve Client Submission', group: 'Interview Rounds & Quality Audits (L1, L2, L3)' },
-      { id: 'client:bdm_access', name: 'Use BDM Client Access Policy', group: 'Clients & Placements' },
-      { id: 'client:view', name: 'View Clients Directory', group: 'Clients & Placements' },
-      { id: 'client:create', name: 'Create New Clients (Pending Approval)', group: 'Clients & Placements' },
-      { id: 'client:direct_add', name: 'Direct Add Clients (Bypass Approval Gate)', group: 'Clients & Placements' },
-      { id: 'client:edit', name: 'Edit Client Profiles & Terms', group: 'Clients & Placements' },
-      { id: 'client:approve', name: 'Approve & Activate Client Accounts', group: 'Clients & Placements' },
-      { id: 'client:reject', name: 'Reject Client Accounts with Feedback', group: 'Clients & Placements' },
-      { id: 'client:delete', name: 'Delete Client Accounts', group: 'Clients & Placements' },
-      { id: 'placement:view', name: 'View Placements & Revenue Margins', group: 'Clients & Placements' },
-      { id: 'placement:create', name: 'Create & Finalize Placements', group: 'Clients & Placements' },
-      { id: 'report:view', name: 'View Analytics & Performance Reports', group: 'Clients & Placements' },
-      { id: 'pod:create', name: 'Create Pods', group: 'Pods Management' },
-      { id: 'pod:edit', name: 'Edit Pods & Assign Unassigned Jobs', group: 'Pods Management' },
-      { id: 'pod:delete', name: 'Delete Pods', group: 'Pods Management' },
-      { id: 'pod:view', name: 'View Pods', group: 'Pods Management' },
-      { id: 'pod:reset_cycle', name: 'Reset Assignment Cycle', group: 'Pods Management' },
-      { id: 'pod:overlap', name: 'Authorize Pod Assignment Overlaps', group: 'Pods Management' },
-      { id: 'branch:create', name: 'Create New Branch Locations', group: 'Branch & Multi-Office Management' },
-      { id: 'branch:edit', name: 'Edit Branch Operating Hours, Timezone & Policies', group: 'Branch & Multi-Office Management' },
-      { id: 'branch:delete', name: 'Delete Branch Office Locations', group: 'Branch & Multi-Office Management' },
-      { id: 'branch_admin:manage', name: 'Manage Branch Office & Staff', group: 'Branch & Multi-Office Management' },
-      { id: 'unit_admin:manage', name: 'Manage Operating Unit & Unit Staff', group: 'Branch & Multi-Office Management' },
-      { id: 'candidate:search_all_branches', name: 'Search Candidates Across All Branches', group: 'Branch & Multi-Office Management' },
-      { id: 'job:view_all_branches', name: 'View Jobs Across All Branches', group: 'Branch & Multi-Office Management' },
-      { id: 'candidate:search_all_markets', name: 'Search Candidates Across All Markets (US + India)', group: 'Branch & Multi-Office Management' },
-      { id: 'tenant:settings', name: 'Manage Company Settings', group: 'Administration' },
-      { id: 'user:manage', name: 'Manage Staff & Roles', group: 'Administration' },
-      ...MANAGEMENT_PERMISSIONS.map(([id, name]) => ({ id, name, group: 'User Security & Presence' })),
-      { id: 'platform:manage', name: 'Platform Super Administration', group: 'Administration' },
-    ];
-  }
+  listAllPermissions() { return tenantPermissionCatalog(); }
 
   // ─── Shared helpers used by multiple sub-services ───────────────────────────
 

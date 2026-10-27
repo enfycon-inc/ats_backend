@@ -80,7 +80,7 @@ export class AuthService {
     let profile = await this.userService.getProfile(userId);
     if (context) {
       const permissions: string[] = context.permissions || [];
-      profile = { ...profile, permissions, roles: context.roles,
+      profile = { ...profile, permissions, assignedRoles: profile.assignedRoles?.map(role => role.id === context.activeRoleId ? { ...role, permissions } : role), roles: context.roles,
         roleId: context.activeRoleId ?? profile.roleId, roleName: context.roleName ?? profile.roleName,
         systemRole: context.systemRole, activeRoleId: context.activeRoleId,
         canReview: permissions.some(p => ['submission:internal_screening', 'job:approve', 'job:reject', 'job:publish_direct'].includes(p)) } as typeof profile;

@@ -1,3 +1,4 @@
+import { effectiveTenantPermissions } from '../tenant-permission-catalog';
 import { ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -27,6 +28,6 @@ export async function resolveActiveRole(prisma: PrismaService, actor: any, selec
   }
   return { ...actor, activeRoleId: role.id, roleName: role.name,
     roles: [role.systemRole?.systemKey || role.name], systemRole: role.systemRole?.systemKey || null,
-    permissions: Array.isArray(role.permissions) ? role.permissions.filter((p): p is string => typeof p === 'string') : [],
+    permissions: effectiveTenantPermissions(Array.isArray(role.permissions) ? role.permissions.filter((p): p is string => typeof p === 'string') : []),
     branchId: member.branchId, businessUnitId: member.businessUnitId, podId: member.podId };
 }
