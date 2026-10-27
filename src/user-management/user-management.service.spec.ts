@@ -66,4 +66,25 @@ describe('Security activity authorization and redaction', () => {
     expect(directorySql).toContain('rev.full_name AS "managerName"');
     expect(db.$queryRawUnsafe).toHaveBeenCalledTimes(4);
   });
+  it('keeps approved accounts out of pending even when an outstanding invite exists', async () => {
+    const { db, service } = setup(false);
+    db.$queryRawUnsafe
+      .mockResolvedValueOnce([{ active: 1, pending: 2, blocked: 0 }])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ count: 1 }])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.list({ ...actor, permissions: ['user:manage', 'tenant:manage'] }, { state: 'pending' });
+    const countsSql = db.$queryRawUnsafe.mock.calls[0][0];
+    const pendingSql = db.$queryRawUnsafe.mock.calls[2][0];
+    const directorySql = db.$queryRawUnsafe.mock.calls[3][0];
+
+    expect(countsSql).toContain('u.is_approved=false AND u.requested_role IS NOT NULL');
+    expect(countsSql).not.toMatch(/pending,?[\s\S]{0,500}EXISTS\(SELECT 1 FROM ats\.user_invitations/);
+    expect(pendingSql).toContain("i.is_accepted=false AND i.token_expires_at>NOW()");
+    expect(pendingSql).toContain('NOT EXISTS');
+    expect(directorySql).toContain('u.is_approved=false AND u.requested_role IS NOT NULL');
+    expect(directorySql).not.toContain('EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id');
+    expect(result.items).toEqual([]);
+  });
 });

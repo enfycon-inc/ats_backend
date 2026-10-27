@@ -29,23 +29,24 @@ export class UserManagementService {
       invitationScope.values = [actor.tenantId, actor.dbId];
     }
     const counts = await this.db.$queryRawUnsafe<any[]>(`SELECT
-      COUNT(*) FILTER (WHERE u.is_approved=true AND u.is_active=true AND NOT EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false))::int AS active,
-      COUNT(*) FILTER (WHERE (u.is_approved=false AND u.requested_role IS NOT NULL) OR EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false AND u.is_active=true))::int AS pending,
+      COUNT(*) FILTER (WHERE u.is_approved=true AND u.is_active=true)::int AS active,
+      COUNT(*) FILTER (WHERE u.is_approved=false AND u.requested_role IS NOT NULL)::int AS pending,
       COUNT(*) FILTER (WHERE u.is_approved=true AND u.is_active=false)::int AS blocked
       FROM ats.users u WHERE ${scope.sql}`, ...scope.values);
     const invited = await this.db.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS count FROM ats.user_invitations i
-      WHERE ${inviteSql} AND i.is_accepted=false AND NOT EXISTS
+      WHERE ${inviteSql} AND i.is_accepted=false AND i.token_expires_at>NOW() AND NOT EXISTS
       (SELECT 1 FROM ats.users u WHERE u.tenant_id=i.tenant_id AND LOWER(u.email)=LOWER(i.email))`, ...invitationScope.values);
     const values = [...scope.values];
     const searchParam = `$${values.push('%' + search.replace(/[\\%_]/g, '\\$&') + '%')}`;
     const conditions: Record<UserView, string> = {
-      active: 'u.is_approved=true AND u.is_active=true AND NOT EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false)', blocked: 'u.is_approved=true AND u.is_active=false',
-      pending: '(u.is_approved=false AND u.requested_role IS NOT NULL) OR EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false AND u.is_active=true)', activity: 'true',
+      active: 'u.is_approved=true AND u.is_active=true', blocked: 'u.is_approved=true AND u.is_active=false',
+      pending: 'u.is_approved=false AND u.requested_role IS NOT NULL', activity: 'true',
     };
     const base = `SELECT u.id,'user'::text AS kind,u.full_name AS "fullName",u.email,u.profile_picture AS avatar,
       to_jsonb(u)->>'city' AS city,rev.full_name AS "managerName",
       COALESCE(assigned_roles.names,ARRAY_REMOVE(ARRAY[r.name],NULL)) AS "assignedRoles",
-      b.name AS "branchName",bu.name AS "businessUnitName",r.name AS "roleName",
+      ARRAY_REMOVE(ARRAY[u.role_id] || u.assigned_role_ids,NULL) AS "assignedRoleIds",u.job_reviewer_id AS "jobReviewerId",
+      u.branch_id AS "branchId",u.business_unit_id AS "businessUnitId",b.name AS "branchName",bu.name AS "businessUnitName",r.name AS "roleName",
       u.is_active AS "isActive",u.is_approved AS "isApproved",u.requested_role AS "requestedRole",
       u.last_login_at AS "lastLoginAt",u.created_at AS "createdAt",
       (SELECT CASE WHEN i.token_expires_at<NOW() THEN 'expired' ELSE 'invited' END FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false LIMIT 1) AS "invitationStatus",
@@ -65,10 +66,10 @@ export class UserManagementService {
       const shift = values.length;
       const shiftedScope = inviteSql.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + shift}`);
       values.push(...invitationScope.values);
-      combined += ` UNION ALL SELECT i.id,'invitation',COALESCE(i.full_name,i.email),i.email,NULL,NULL,NULL,NULL,NULL,NULL,b.name,NULL,r.name,
+      combined += ` UNION ALL SELECT i.id,'invitation',COALESCE(i.full_name,i.email),i.email,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,b.name,NULL,r.name,
         false,false,NULL,NULL,i.created_at,CASE WHEN i.token_expires_at<NOW() THEN 'expired' ELSE 'invited' END,i.tenant_id,i.branch_id,NULL::uuid,ARRAY[]::text[]
         FROM ats.user_invitations i LEFT JOIN ats.branches b ON b.id=i.branch_id LEFT JOIN ats.custom_roles r ON r.id=i.role_id
-        WHERE ${shiftedScope} AND i.is_accepted=false AND (i.full_name ILIKE ${searchParam} OR i.email ILIKE ${searchParam})
+      WHERE ${shiftedScope} AND i.is_accepted=false AND i.token_expires_at>NOW() AND (i.full_name ILIKE ${searchParam} OR i.email ILIKE ${searchParam})
         AND NOT EXISTS(SELECT 1 FROM ats.users u WHERE u.tenant_id=i.tenant_id AND LOWER(u.email)=LOWER(i.email))`;
     }
     const totalRows = await this.db.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS count FROM (${combined}) matches`, ...values);
