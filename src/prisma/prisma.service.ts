@@ -6,10 +6,20 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly logger = new Logger(PrismaService.name);
 
   constructor() {
+    let url = process.env.DATABASE_URL || '';
+    if (url && !url.includes('search_path')) {
+      const sep = url.includes('?') ? '&' : '?';
+      if (!url.includes('schema=')) {
+        url = `${url}${sep}schema=ats&options=-csearch_path%3Dats%2Cmass_mail%2Cpublic`;
+      } else {
+        url = `${url}${sep}options=-csearch_path%3Dats%2Cmass_mail%2Cpublic`;
+      }
+    }
+
     super({
       datasources: {
         db: {
-          url: process.env.DATABASE_URL,
+          url,
         },
       },
       log: [
