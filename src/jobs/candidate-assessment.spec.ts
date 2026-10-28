@@ -85,4 +85,20 @@ describe('shared evidence assessment', () => {
     expect(assessCandidate({ skillsRequired: ['Python'] }, { skills: ['Python'] }).version).not.toBe(first.version);
     expect(assessCandidate({ skillsRequired: ['Python'] }, { parsedJson: '{broken' }).version).toBe(first.version);
   });
+  it('prevents false 100% score when candidate has zero matching required skills', () => {
+    const job = { skillsRequired: ['Java'], expMin: 0, expMax: 10, country: 'India', workMode: 'In Office', noticePeriod: '15 Days' };
+    const candidate = { skills: ['Python', 'SQL', 'Pandas', 'NumPy'], totalExperienceYears: 4, rawCurrentLocation: 'Kolkata, West Bengal, India' };
+    const result = assessCandidate(job, candidate);
+    expect(result.score).toBe(25);
+    expect(result.score).not.toBe(100);
+    expect(result.criteria.find(c => c.category === 'primary')?.finding).toBe('NO_EVIDENCE');
+  });
+
+  it('returns null score when job has empty skillsRequired array', () => {
+    const job = { skillsRequired: [], expMin: 0, expMax: 10, country: 'India', workMode: 'In Office' };
+    const candidate = { skills: ['Python', 'SQL'], totalExperienceYears: 4 };
+    const result = assessCandidate(job, candidate);
+    expect(result.score).toBeNull();
+    expect(result.criteria.find(c => c.key === 'primary:none')?.finding).toBe('NEEDS_CLARIFICATION');
+  });
 });

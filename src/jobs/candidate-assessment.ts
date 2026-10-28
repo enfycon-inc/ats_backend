@@ -71,6 +71,12 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   const secondary = canonicalUnique(unique(strings(job.secondarySkills))).filter(skill => !primary.some(required => resolver.resolve(required) === resolver.resolve(skill)));
   const criteria: AssessmentCriterion[] = [];
   const parts: CandidateAssessment['breakdown'] = [];
+  const hasJobSkillsDefined = job.skillsRequired !== undefined;
+  if (hasJobSkillsDefined && !primary.length) {
+    criteria.push({ key: 'primary:none', requirement: 'Required skills', category: 'primary',
+      finding: 'NEEDS_CLARIFICATION', evidence: 'No required skills are configured on this job posting. Candidate match cannot be calibrated.' });
+    parts.push({ label: 'Required skills', weight: 45, score: null });
+  }
   for (const [group, values] of [['primary', primary], ['secondary', secondary]] as const) {
     for (const skill of values) {
       const excerpt = resolver.terms(skill).map(term => textEvidence(term, text)).find(Boolean);
@@ -101,7 +107,7 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
     const jobWorkMode = normalizeTerm(job.workMode || '');
     const jobRemote = jobWorkMode === 'remote' || jobWorkMode === 'fully remote';
     const candidateRemoteOnly = candidate.preferredLocationMode === 'REMOTE_ONLY';
-    const candidateRemoteOk = candidateRemoteOnly || candidate.preferredLocationMode === 'REMOTE_OR_LOCATIONS';
+    const candidateRemoteOk = candidate.preferredLocationMode == null || candidateRemoteOnly || candidate.preferredLocationMode === 'REMOTE_OR_LOCATIONS';
     const local = !!city && !!current && new RegExp(`(^|[^a-z0-9])${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(current);
     const preferred = !!city && strings(candidate.preferredLocations).some(place => normalizeTerm(place) === city);
     const remoteConflict = candidateRemoteOnly && !jobRemote;
@@ -123,16 +129,21 @@ export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandida
   const measured = parts.filter(part => part.score != null);
   const measuredWeight = measured.reduce((sum, part) => sum + part.weight, 0);
   const possibleWeight = parts.reduce((sum, part) => sum + part.weight, 0);
+  const requiredPart = parts.find(part => part.label === 'Required skills');
+  const skillsMissing = requiredPart ? requiredPart.score == null : false;
+  const computedScore = (!skillsMissing && measuredWeight)
+    ? Math.round(measured.reduce((sum, part) => sum + part.score! * part.weight, 0) / measuredWeight)
+    : null;
   const result: CandidateAssessment = {
     engine: ASSESSMENT_ENGINE, version: versionOverride || createHash('sha256').update(JSON.stringify({ engine: ASSESSMENT_ENGINE, job, candidate, dictionary: dictionary.map(row => ({ ...row, aliases: [...row.aliases].sort((a, b) => a.aliasName.localeCompare(b.aliasName)) })).sort((a, b) => a.id - b.id) })).digest('hex'),
-    calculatedAt: new Date().toISOString(), score: measuredWeight ? Math.round(measured.reduce((sum, part) => sum + part.score! * part.weight, 0) / measuredWeight) : null,
+    calculatedAt: new Date().toISOString(), score: computedScore,
     coverage: possibleWeight ? Math.round(measuredWeight / possibleWeight * 100) : 0, criteria, breakdown: parts, candidateQualifications,
     additionalCandidateSkills: skills.filter(skill => ![...primary, ...secondary].some(required => resolver.resolve(required) === resolver.resolve(skill))),
     candidateSnapshot: {
       experienceYears: years != null && Number.isFinite(years) && years >= 0 ? years : null,
       noticePeriodDays: candidate.noticePeriodDays != null && Number.isFinite(candidate.noticePeriodDays) && candidate.noticePeriodDays >= 0 ? candidate.noticePeriodDays : null,
       currentLocation: candidate.rawCurrentLocation?.trim() || null,
-      preferredLocationMode: candidate.preferredLocationMode || null,
+      ...(candidate.preferredLocationMode !== undefined ? { preferredLocationMode: candidate.preferredLocationMode } : {}),
     },
     limitations: ['Evidence score is not a hiring recommendation.', 'Missing evidence is not a confirmed failure.', 'Salary is excluded because candidate CTC currency and pay period are not established.', 'Semantic scoring is unavailable until parser search supports tenant isolation.'],
   };

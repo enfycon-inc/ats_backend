@@ -24,7 +24,7 @@ export function submissionSource(dto: any) {
   if (dto.sourceCategory === undefined) return {};
   if (!['Bench', 'Market'].includes(dto.sourceCategory)) throw new BadRequestException('Select Bench or Market.');
   if (dto.sourceCategory === 'Bench') return { sourceCategory: 'Bench', sourceChannel: null, sourceDetail: null };
-  if (!['LinkedIn', 'Job Portal', 'Employee Referral', 'Recruitment Agency / Vendor', 'Direct Application', 'Existing Talent Pool', 'Other'].includes(dto.sourceChannel)) throw new BadRequestException('Select a source channel.');
+  if (!['LinkedIn', 'Naukri', 'Job Portal', 'Employee Referral', 'Recruitment Agency / Vendor', 'Direct Application', 'Existing Talent Pool', 'Other'].includes(dto.sourceChannel)) throw new BadRequestException('Select a source channel.');
   const detail = typeof dto.sourceDetail === 'string' ? dto.sourceDetail.trim() : '';
   if (detail.length > 255 || (['Job Portal', 'Other'].includes(dto.sourceChannel) && !detail)) throw new BadRequestException('Enter the portal name or source details.');
   return { sourceCategory: 'Market', sourceChannel: dto.sourceChannel, sourceDetail: detail || null };

@@ -2,11 +2,18 @@ import { Injectable, BadRequestException, ServiceUnavailableException } from '@n
 import { createHash } from 'node:crypto';
 import type { StoredResumeFile } from './candidates.service';
 
+type UploadedPreviewFile = { buffer: Buffer; originalname: string; mimetype: string };
+
 @Injectable()
 export class ResumePreviewService {
   private cache = new Map<string, { expires: number; value: Buffer | { pages: number }; bytes: number }>();
   private pending = new Map<string, Promise<Buffer | { pages: number }>>();
   private bytes = 0;
+  async renderUploaded(file: UploadedPreviewFile, page: number): Promise<Buffer | { pages: number }> {
+    const extension = file.originalname.toLowerCase().match(/\.(pdf|docx)$/)?.[0];
+    if (!extension) throw new BadRequestException('Only PDF and DOCX files can be previewed.');
+    return this.render({ data: file.buffer, mime: file.mimetype, filename: file.originalname }, 'upload-preview', page);
+  }
   async render(file: StoredResumeFile, tenantId: string, page: number): Promise<Buffer | { pages: number }> {
     if (!Number.isInteger(page) || page < 0 || page > 30 || file.data.length > 10 * 1024**2) throw new BadRequestException('Invalid resume page or file size.');
     const host = process.env.PYTHON_PARSER_URL || 'http://localhost:8000';

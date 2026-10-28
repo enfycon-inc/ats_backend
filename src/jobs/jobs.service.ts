@@ -1104,6 +1104,27 @@ export class JobsService {
       }
 
 
+    
+      let resolvedSkillsRequired = dto.skillsRequired || [];
+      let resolvedSecondarySkills = dto.secondarySkills || [];
+      if (!resolvedSkillsRequired.length) {
+        const textForExtraction = `${dto.title || ''}\n${dto.description || ''}`.trim();
+        if (textForExtraction.length > 0) {
+          try {
+            const dbDict = await this.getDbSkillDictionary();
+            const parsed = this.fallbackParseJd(textForExtraction, dbDict);
+            if (parsed?.primarySkills?.length) {
+              resolvedSkillsRequired = parsed.primarySkills;
+            }
+            if (parsed?.secondarySkills?.length && !resolvedSecondarySkills.length) {
+              resolvedSecondarySkills = parsed.secondarySkills;
+            }
+          } catch (err: any) {
+            this.logger.debug(`createJob skill fallback note: ${err.message}`);
+          }
+        }
+      }
+
     try {
       const data = {
           ...(draft && dto.draftId ? { id: dto.draftId } : {}),
@@ -1113,8 +1134,8 @@ export class JobsService {
           ...careerPublicationDefaults(dto.title, jobCode),
           jobType: dto.type,
           jobDescription: sanitizeJobDescription(dto.description || ''),
-          skillsRequired: dto.skillsRequired || [],
-          secondarySkills: dto.secondarySkills || [],
+          skillsRequired: resolvedSkillsRequired,
+          secondarySkills: resolvedSecondarySkills,
           status: initialJobStatus,
           
           state: dto.state || '',
@@ -2842,7 +2863,7 @@ export class JobsService {
       const cleanFastApiSecondary = (fastApiResult.secondarySkills || [])
         .filter((s: string) => s && !junkSkills.has(s.trim().toLowerCase()) && s.trim().length > 1);
 
-      const mergedPrimary = Array.from(new Set([...fallback.primarySkills, ...cleanFastApiPrimary]));
+      const mergedPrimary = Array.from(new Set([...fallback.primarySkills, ...cleanFastApiPrimary.filter((skill: string) => !fallback.secondarySkills.some((preferred: string) => preferred.toLowerCase() === skill.toLowerCase()))]));
       const mergedSecondary = Array.from(new Set([...fallback.secondarySkills, ...cleanFastApiSecondary]))
         .filter((s: string) => !mergedPrimary.includes(s));
 
@@ -2862,7 +2883,7 @@ export class JobsService {
   }
 
   private fallbackParseJd(text: string, dbDict?: { name: string; aliases: string[] }[]): any {
-    const rawText = text || '';
+    const rawText = (text || '').replace(/&nbsp;/g, ' ').replace(/\u00a0/g, ' ');
     const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
 
     // 1. Extract Job Title from explicit labels or top lines
@@ -3013,17 +3034,16 @@ export class JobsService {
 
     let requiredSectionText = '';
     let preferredSectionText = '';
-    let generalText = rawText;
-
-    const reqMatch = rawText.match(/(?:Required\s*Skills|Key\s*Responsibilities|Qualifications|Requirements|Must\s*Have)([\s\S]*?)(?:Preferred\s*Skills|Nice\s*to\s*Have|Good\s*to\s*Have|Education|Work\s*Mode|$)/i);
-    if (reqMatch) {
-      requiredSectionText = reqMatch[1];
+    let section: 'required' | 'preferred' | 'other' = 'required';
+    for (const line of rawText.split('\n')) {
+      const heading = line.replace(/^[#*\s]+/, '').replace(/[:*]+$/, '').trim();
+      if (/^(preferred(?: skills| qualifications| requirements)?|nice[ -]to[ -]have|good[ -]to[ -]have|desired(?: skills| qualifications)?|secondary skills|bonus skills)$/i.test(heading)) { section = 'preferred'; continue; }
+      if (/^(required(?: skills| qualifications)?|technical skills(?: required)?|mandatory skills|technical stack|key skills|key responsibilities|qualifications|requirements|must[ -]have)$/i.test(heading)) { section = 'required'; continue; }
+      if (/^(education|selection process|benefits|work mode|employment type)$/i.test(heading)) { section = 'other'; continue; }
+      if (section === 'required') requiredSectionText += '\n' + line;
+      if (section === 'preferred') preferredSectionText += '\n' + line;
     }
-
-    const prefMatch = rawText.match(/(?:Preferred\s*Skills|Nice\s*to\s*Have|Good\s*to\s*Have|Desired\s*Qualifications)([\s\S]*?)(?:Education|Work\s*Mode|Employment\s*Type|$)/i);
-    if (prefMatch) {
-      preferredSectionText = prefMatch[1];
-    }
+    const generalText = requiredSectionText;
 
     const matchedPrimary: string[] = [];
     const matchedSecondary: string[] = [];
@@ -3033,7 +3053,11 @@ export class JobsService {
       const regexStr = patterns.map(p => `\\b${p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).join('|');
       const reg = new RegExp(regexStr, 'i');
 
-      if (preferredSectionText && reg.test(preferredSectionText)) {
+      if (jobTitle && reg.test(jobTitle)) {
+        if (!matchedPrimary.includes(skillObj.name)) {
+          matchedPrimary.unshift(skillObj.name);
+        }
+      } else if (preferredSectionText && reg.test(preferredSectionText) && !reg.test(requiredSectionText)) {
         if (!matchedSecondary.includes(skillObj.name)) {
           matchedSecondary.push(skillObj.name);
         }

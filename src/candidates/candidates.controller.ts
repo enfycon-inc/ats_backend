@@ -330,6 +330,20 @@ export class CandidatesController {
     else res.json(result);
   }
 
+  @Post('resume-preview/upload')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  async previewUploadedResume(@UploadedFile() file: any, @Query('page') requestedPage: string | undefined, @Res() res: Response, @CurrentUser() user: AuthUser) {
+    if (!user.permissions?.includes('candidate:create')) throw new ForbiddenException('Candidate creation permission is required.');
+    const page = requestedPage === undefined ? 0 : /^\d+$/.test(requestedPage) ? Number(requestedPage) : -1;
+    if (!file?.buffer) throw new BadRequestException('Select a PDF or DOCX resume to preview.');
+    const result = await this.resumePreview.renderUploaded(file, page);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (Buffer.isBuffer(result)) res.type('image/png').send(result);
+    else res.json(result);
+  }
+
   @Get('dictionary/pending')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('SUPER_ADMIN')

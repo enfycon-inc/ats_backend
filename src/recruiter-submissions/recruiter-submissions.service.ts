@@ -1191,7 +1191,7 @@ export class RecruiterSubmissionsService {
     if (dto.preferredLocations !== undefined && (!Array.isArray(dto.preferredLocations) || dto.preferredLocations.length > 20 || dto.preferredLocations.some(value => typeof value !== 'string' || value.length > 300))) throw new BadRequestException('Enter valid preferred locations.');
     await assertJobSubmissionAccess(this.prisma, user, tenantId, dto.jobId, user.dbId);
     const job = await this.prisma.job.findFirst({ where: { id: dto.jobId, tenantId }, select: {
-      id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
+      id: true, updatedAt: true, jobTitle: true, jobDescription: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
       city: true, state: true, country: true, workMode: true, degree: true, noticePeriod: true,
     } });
     if (!job) throw new NotFoundException('Job is unavailable in this workspace.');
@@ -1209,8 +1209,25 @@ export class RecruiterSubmissionsService {
       noticePeriodDays: dto.noticePeriodDays ?? null,
     };
     const dictionary = await loadAssessmentSkills(this.prisma);
-    const version = assessmentSourceVersion(job, candidate, dictionary);
-    return assessCandidate(job, candidate, dictionary, version);
+    let resolvedJobSkills = job.skillsRequired || [];
+    let resolvedJobSecondary = job.secondarySkills || [];
+    if (!resolvedJobSkills.length) {
+      const title = (job as any).jobTitle || '';
+      const desc = (job as any).jobDescription || '';
+      const combo = `${title}\n${desc}`.trim();
+      if (combo.length > 0) {
+        for (const s of dictionary) {
+          const escaped = s.canonicalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const pattern = new RegExp(`(^|[^a-z0-9+#])${escaped}([^a-z0-9+#]|$)`, 'i');
+          if (pattern.test(combo) && !resolvedJobSkills.includes(s.canonicalName)) {
+            resolvedJobSkills.push(s.canonicalName);
+          }
+        }
+      }
+    }
+    const evaluatedJob = { ...job, skillsRequired: resolvedJobSkills, secondarySkills: resolvedJobSecondary };
+    const version = assessmentSourceVersion(evaluatedJob, candidate, dictionary);
+    return assessCandidate(evaluatedJob, candidate, dictionary, version);
   }
 
   private reviewAssessmentKey(tenantId: string, submissionId: string, version: string) {
