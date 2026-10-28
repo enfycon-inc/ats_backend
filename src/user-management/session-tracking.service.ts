@@ -47,20 +47,26 @@ export class SessionTrackingService implements OnModuleDestroy {
   async observe(actor: AuthUser, claims: any, req: any, method?: string, bestEffortCapture = false) {
     if ((actor as any).homeTenantId) return;
     const sid = claims.sid || claims.session_state;
-    if (!sid || !claims.sub || !Number.isFinite(claims.exp) || !Number.isFinite(claims.auth_time || claims.iat)) {
-      if (!this.enabled) return;
-      throw new UnauthorizedException('The sign-in session cannot be verified. Please sign in again.');
+    const authTime = claims.auth_time || claims.iat;
+    // Brokered SSO tokens (e.g. Microsoft AAD via Keycloak identity broker) may omit
+    // auth_time and/or use session_state instead of sid. Rather than failing hard and
+    // blocking authentication, gracefully skip telemetry for incomplete tokens.
+    // The revocation and is_active checks below remain strictly fail-closed.
+    if (!sid || !claims.sub || !Number.isFinite(claims.exp) || !Number.isFinite(authTime)) {
+      this.logger.warn('Session observation skipped: incomplete session metadata in token (brokered SSO?).');
+      return;
     }
     const client = claims.azp || process.env.KEYCLOAK_CLIENT_ID;
     if (!client) throw new UnauthorizedException('The sign-in client is missing.');
     const access = await this.db.$queryRawUnsafe<any[]>('SELECT is_active,session_valid_after FROM ats.users WHERE id=$1::uuid AND tenant_id=$2::uuid', actor.dbId, actor.tenantId);
-    if (!access[0]?.is_active || (access[0].session_valid_after && (claims.auth_time || claims.iat) * 1000 <= new Date(access[0].session_valid_after).getTime())) {
+    if (!access[0]?.is_active || (access[0].session_valid_after && authTime * 1000 <= new Date(access[0].session_valid_after).getTime())) {
       throw new UnauthorizedException('Workspace access has changed. A new sign-in is required.');
     }
     const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT m.id, m.revoked_at, m.last_seen_at
       FROM ats.session_memberships m JOIN ats.application_sessions s ON s.id=m.session_id
       WHERE s.provider_subject=$1 AND s.provider_session=$2 AND s.provider_client=$3
       AND m.user_id=$4::uuid AND m.tenant_id=$5::uuid`, claims.sub, sid, client, actor.dbId, actor.tenantId);
+    // Note: rows[0] being absent is safe — it means no tracked session yet, not a revocation.
     if (rows[0]?.revoked_at) throw new UnauthorizedException('This workspace session has been ended. Please sign in again.');
     // Disabling collection must never reactivate sessions revoked while it was enabled.
     if (!this.enabled) { (actor as any).sessionMembershipId = rows[0]?.id; return; }
@@ -78,7 +84,7 @@ export class SessionTrackingService implements OnModuleDestroy {
           login_method=CASE WHEN EXCLUDED.verified_login THEN EXCLUDED.login_method ELSE ats.application_sessions.login_method END,
           device=CASE WHEN ats.application_sessions.device LIKE 'Unknown browser%' THEN EXCLUDED.device ELSE ats.application_sessions.device END,
           verified_login=ats.application_sessions.verified_login OR EXCLUDED.verified_login
-          RETURNING id`, claims.sub, sid, client, claims.auth_time || claims.iat, 12 * 60 * 60,
+          RETURNING id`, claims.sub, sid, client, authTime, 12 * 60 * 60,
           method || 'Not recorded', deviceLabel(String(req.headers?.['user-agent'] || '').slice(0, 1024)), !!method);
         const members = await tx.$queryRawUnsafe<any[]>(`INSERT INTO ats.session_memberships(session_id,user_id,tenant_id)
           SELECT $1::uuid,u.id,u.tenant_id FROM ats.users u WHERE u.id=$2::uuid AND u.tenant_id=$3::uuid AND u.is_active=true
@@ -94,7 +100,7 @@ export class SessionTrackingService implements OnModuleDestroy {
           await tx.$executeRawUnsafe(`INSERT INTO ats.user_security_events(tenant_id,user_id,actor_id,membership_id,event_key,action,outcome,ip_address)
             VALUES($1::uuid,$2::uuid,$2::uuid,$3::uuid,$4,'login.succeeded','success',$5::inet)
             ON CONFLICT(event_key) DO NOTHING`, actor.tenantId, actor.dbId, members[0].id, `login:${members[0].id}`, ip);
-          await tx.$executeRawUnsafe('UPDATE ats.users SET last_login_at=GREATEST(COALESCE(last_login_at, to_timestamp(0)),to_timestamp($2)) WHERE id=$1::uuid', actor.dbId, claims.auth_time || claims.iat);
+          await tx.$executeRawUnsafe('UPDATE ats.users SET last_login_at=GREATEST(COALESCE(last_login_at, to_timestamp(0)),to_timestamp($2)) WHERE id=$1::uuid', actor.dbId, authTime);
         }
           return members[0];
         });

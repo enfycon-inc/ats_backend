@@ -14,6 +14,21 @@ describe('Session tracking and presence failures', () => {
     const db: any = { $queryRawUnsafe: jest.fn().mockResolvedValueOnce([{ is_active: true }]).mockResolvedValueOnce([{ id: 'membership', revoked_at: new Date() }]) };
     await expect(new SessionTrackingService(db, {} as any).observe(actor, claims, {})).rejects.toThrow('ended');
   });
+  it('gracefully skips observation for brokered SSO tokens that omit auth_time and sid', async () => {
+    // Microsoft AAD tokens brokered via Keycloak may omit auth_time (and use session_state or
+    // neither). observe() must NOT throw — it must silently skip and allow the SSO login to proceed.
+    const ssoActor: any = { dbId: 'user-id', tenantId: 'tenant-id' };
+    const msftBrokeredClaims = { sub: 'identity', azp: 'app', exp: 2000000000 }; // no auth_time, no sid, no session_state
+    const service = new SessionTrackingService({} as any, {} as any);
+    await expect(service.observe(ssoActor, msftBrokeredClaims, {})).resolves.toBeUndefined();
+  });
+  it('gracefully skips when sid is absent but session_state is also absent (brokered SSO)', async () => {
+    const ssoActor: any = { dbId: 'user-id', tenantId: 'tenant-id' };
+    const claimsWithIatOnly = { sub: 'identity', azp: 'app', exp: 2000000000, iat: 1700000000 }; // has iat but no sid/session_state
+    const service = new SessionTrackingService({} as any, {} as any);
+    await expect(service.observe(ssoActor, claimsWithIatOnly, {})).resolves.toBeUndefined();
+  });
+
   it('reports unknown, rather than offline, when Redis fails', async () => {
     const queue: any = { client: Promise.resolve({ pipeline: () => { throw new Error('Redis unavailable'); } }) };
     const result = await new SessionTrackingService({} as any, queue).presences('tenant', ['one', 'two']);
