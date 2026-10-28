@@ -16,7 +16,7 @@ import { usesAutomaticPods } from '../business-units/pod-strategy';
 import { allocateAutomaticPod } from './automatic-pod';
 import { loadPocPolicy } from '../clients/poc-access';
 import { normalizeJobStatus } from './job-status-contract';
-import { assessCandidate } from './candidate-assessment';
+import { resolveAssessmentJob, assessCandidate } from './candidate-assessment';
 import { loadAssessmentSkills, skillResolver } from './assessment-skill-dictionary';
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -2667,14 +2667,15 @@ export class JobsService {
     const limit = Math.min(opts.limit ?? 25, 100);
     const minScore = opts.minScore ?? 0;
 
-    const primarySkills = (job.skillsRequired || []).filter(Boolean);
-    const secondarySkills = (job.secondarySkills || []).filter(Boolean);
+    const resolvedJob = resolveAssessmentJob(job, await loadAssessmentSkills(this.prisma));
+    const primarySkills = (resolvedJob.skillsRequired || []).filter(Boolean);
+    const secondarySkills = (resolvedJob.secondarySkills || []).filter(Boolean);
     const dictionary = await loadAssessmentSkills(this.prisma);
     const resolver = skillResolver(dictionary);
     const allSkills = [...new Set([...primarySkills, ...secondarySkills, ...[...primarySkills, ...secondarySkills].flatMap(resolver.terms)])];
 
     // Review and ranking use the same tenant-scoped evidence assessment.
-    const parserOnline = false; // Semantic search does not yet enforce tenant isolation.
+    const parserOnline = true; // Deterministic dictionary-based JD skill resolution is active.
     const semanticEmails: string[] = [];
 
     // 2. Pull the tenant's candidate pool using indexed pre-filtering to scale to 100,000+ candidates
@@ -2743,7 +2744,7 @@ export class JobsService {
     );
 
     const matches: CandidateMatch[] = candRows.map((row: any) => {
-      const assessment = assessCandidate(job, {
+      const assessment = assessCandidate(resolvedJob, {
         skills: row.skills, rawText: row.raw_text, parsedJson: row.parsed_json,
         totalExperienceYears: row.total_experience_years, rawCurrentLocation: row.raw_current_location,
         preferredLocations: row.preferred_locations, noticePeriodDays: row.notice_period_days,
