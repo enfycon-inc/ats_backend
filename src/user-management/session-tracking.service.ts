@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, UnauthorizedException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { isIP } from 'node:net';
+import { publicClientIp } from './client-ip';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { deviceLabel } from './management-policy';
@@ -24,8 +24,7 @@ export class SessionTrackingService implements OnModuleDestroy {
   ip(req: any): string | null {
     if (req.skipNetworkObservation) return null;
     // Express resolves this using the explicitly configured trusted proxy chain.
-    const value = String(req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-    return isIP(value) ? value : null;
+    return publicClientIp(req.ip || req.socket?.remoteAddress);
   }
   async observe(actor: AuthUser, claims: any, req: any, method?: string) {
     if ((actor as any).homeTenantId) return;

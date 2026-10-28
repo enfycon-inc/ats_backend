@@ -1,4 +1,5 @@
 import { SessionTrackingService } from './session-tracking.service';
+import express = require('express');
 describe('Session tracking and presence failures', () => {
   const actor: any = { dbId: 'member', tenantId: 'tenant', keycloakId: 'identity' };
   const claims = { sub: 'identity', sid: 'session', azp: 'app', exp: 2000000000, auth_time: 1000 };
@@ -31,7 +32,19 @@ describe('Session tracking and presence failures', () => {
   });
   it('takes the server-resolved IP and ignores arbitrary forwarded headers', () => {
     const service = new SessionTrackingService({} as any, {} as any);
-    expect(service.ip({ headers: { 'x-forwarded-for': '203.0.113.1' }, socket: { remoteAddress: '::ffff:192.0.2.1' } })).toBe('192.0.2.1');
+    expect(service.ip({ headers: { 'x-forwarded-for': '1.1.1.1' }, socket: { remoteAddress: '::ffff:8.8.8.8' } })).toBe('8.8.8.8');
+    expect(service.ip({ headers: { 'x-forwarded-for': '8.8.8.8' }, ip: '172.18.0.11' })).toBeNull();
     expect(service.ip({ ip: '<invalid>' })).toBeNull();
+  });
+  it('uses the first untrusted hop behind exact ingress proxies, not a spoofed leftmost address', () => {
+    const app = express();
+    app.set('trust proxy', ['172.18.0.2/32', '172.18.0.3/32']);
+    const request = Object.create(app.request);
+    request.app = app;
+    request.socket = { remoteAddress: '172.18.0.3' };
+    request.headers = { 'x-forwarded-for': '1.1.1.1, 8.8.8.8, 172.18.0.2' };
+    expect(new SessionTrackingService({} as any, {} as any).ip(request)).toBe('8.8.8.8');
+    request.socket = { remoteAddress: '172.18.0.11' };
+    expect(new SessionTrackingService({} as any, {} as any).ip(request)).toBeNull();
   });
 });

@@ -1,6 +1,18 @@
 import { UserManagementService } from './user-management.service';
 const actor: any = { dbId: 'actor', tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit', permissions: [] };
 describe('Security activity authorization and redaction', () => {
+  it('does not present historical private session IPs as public client evidence', async () => {
+    const { db, service } = setup();
+    db.$queryRawUnsafe.mockResolvedValue([{ id: 'session', ipAddress: '172.18.0.11' }]);
+    const rows = await service.sessions(actor, actor.dbId);
+    expect(rows[0].ipAddress).toBeNull();
+  });
+  it('does not present historical private login IPs as public client evidence', async () => {
+    const { db, service } = setup();
+    db.$queryRawUnsafe.mockResolvedValue([{ id: 'event', ipAddress: '172.18.0.11' }]);
+    const rows = await service.events(actor, actor.dbId);
+    expect(rows[0].ipAddress).toBeNull();
+  });
   function setup(enabled = true) {
     const db: any = { $queryRawUnsafe: jest.fn().mockResolvedValue([]), $executeRawUnsafe: jest.fn().mockResolvedValue(1) };
     db.$transaction = jest.fn(fn => fn(db));

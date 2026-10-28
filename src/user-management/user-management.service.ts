@@ -1,3 +1,4 @@
+import { publicClientIp } from './client-ip';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
@@ -96,7 +97,7 @@ export class UserManagementService {
         const evidence = new Map((await this.office.networks(actor.tenantId, ids)).map(item => [item.user_id, item]));
         for (const row of rows) {
           const item = evidence.get(row.id);
-          row.officeNetwork = item ? `${item.label}${item.branch_name ? ' · ' + item.branch_name : ''}` : 'Unknown network';
+          row.officeNetwork = item ? `${item.label}${item.branch_name ? ' Â· ' + item.branch_name : ''}` : 'Unknown network';
           row.officeObservedAt = item?.observed_at || null;
         }
       }
@@ -141,7 +142,7 @@ export class UserManagementService {
       LEFT JOIN LATERAL (SELECT ip_address FROM ats.session_network_observations WHERE membership_id=m.id ORDER BY observed_at DESC LIMIT 1) n ON true
       WHERE m.user_id=$1::uuid AND m.tenant_id=$2::uuid ORDER BY s.started_at DESC,m.id LIMIT 50 OFFSET $3`, userId, actor.tenantId, (page - 1) * 50);
     await this.auditRead(actor, userId, 'sessions.viewed');
-    return rows.map(row => ({ ...row, current: row.id === (actor as any).sessionMembershipId }));
+    return rows.map(row => ({ ...row, ...(ipAllowed ? { ipAddress: publicClientIp(row.ipAddress) } : {}), current: row.id === (actor as any).sessionMembershipId }));
   }
   async events(actor: AuthUser, userId: string, page = 1): Promise<SecurityEventItem[]> {
     const self = actor.dbId === userId;
@@ -149,11 +150,12 @@ export class UserManagementService {
     if (!this.tracking.enabled) return [];
     const ipAllowed = self || hasCapability(actor, 'user:session_ip:view');
     await this.auditRead(actor, userId, 'login_history.viewed');
-    return this.db.$queryRawUnsafe<any[]>(`SELECT e.id,e.action,e.outcome,e.created_at AS "createdAt",a.full_name AS "actorName"
+    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT e.id,e.action,e.outcome,e.created_at AS "createdAt",a.full_name AS "actorName"
       ${ipAllowed ? ',host(e.ip_address) AS "ipAddress"' : ''}
       FROM ats.user_security_events e LEFT JOIN ats.users a ON a.id=e.actor_id AND a.tenant_id=e.tenant_id
       WHERE e.tenant_id=$1::uuid AND e.user_id=$2::uuid ${self ? "AND e.outcome='success'" : ''}
       ORDER BY e.created_at DESC,e.id LIMIT 50 OFFSET $3`, actor.tenantId, userId, (page - 1) * 50);
+    return rows.map(row => ipAllowed ? { ...row, ipAddress: publicClientIp(row.ipAddress) } : row);
   }
   async revoke(actor: AuthUser, id: string) {
     if (!this.tracking.enabled) throw new BadRequestException('Session monitoring is not enabled.');
@@ -191,7 +193,7 @@ export class UserManagementService {
       ORDER BY e.created_at DESC,e.id LIMIT 10001`, actor.tenantId, userId, start, end);
     if (rows.length > 10000) throw new BadRequestException('Choose a shorter date range to export all matching events.');
     await this.auditRead(actor, userId, 'login_history.exported');
-    return rows;
+    return rows.map(row => 'ipAddress' in row ? { ...row, ipAddress: publicClientIp(row.ipAddress) } : row);
   }
   private async auditRead(actor: AuthUser, targetId: string, action: string) {
     await this.db.$executeRawUnsafe(`INSERT INTO ats.user_security_events(tenant_id,user_id,actor_id,action,outcome)

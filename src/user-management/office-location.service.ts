@@ -6,6 +6,7 @@ import { isIP } from 'node:net';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { hasCapability, requireCapability } from './management-policy';
+import { NON_PUBLIC_NETWORKS } from './client-ip';
 
 export function geofenceResult(latitude: number, longitude: number, accuracy: number, fence: { latitude: number; longitude: number; radius_metres: number }) {
   const rad = (degrees: number) => degrees * Math.PI / 180;
@@ -120,13 +121,15 @@ export class OfficeLocationService {
       SELECT u.branch_id,m.user_id,o.ip_address,o.observed_at FROM ats.session_network_observations o
       JOIN ats.session_memberships m ON m.id=o.membership_id JOIN ats.users u ON u.id=m.user_id AND u.tenant_id=m.tenant_id
       WHERE m.tenant_id=$1::uuid AND u.branch_id=ANY($2::uuid[]) AND o.observed_at>NOW()-INTERVAL '24 hours'
+      AND o.ip_address IS NOT NULL AND NOT (o.ip_address <<= ANY($6::cidr[]))
+      AND (family(o.ip_address)=4 OR o.ip_address <<= '2000::/3'::inet)
     ), totals AS (SELECT branch_id,COUNT(DISTINCT user_id)::float AS employees FROM observed GROUP BY branch_id)
     SELECT x.branch_id,host(x.ip_address) AS network,COUNT(DISTINCT x.user_id)::int AS employees,
       ROUND((COUNT(DISTINCT x.user_id)/MAX(t.employees))::numeric,2)::float AS ratio,MAX(x.observed_at) AS "lastObservedAt"
       FROM observed x JOIN totals t ON t.branch_id=x.branch_id GROUP BY x.branch_id,x.ip_address
       HAVING COUNT(DISTINCT x.user_id)>=$3::int AND COUNT(DISTINCT x.user_id)/MAX(t.employees)>=$4::float
       AND COUNT(DISTINCT date_trunc('hour',x.observed_at))>=$5::int
-      ORDER BY employees DESC LIMIT 20`, actor.tenantId, offices.map(office => office.id), minimum, ratio, hours);
+      ORDER BY employees DESC LIMIT 20`, actor.tenantId, offices.map(office => office.id), minimum, ratio, hours, [...NON_PUBLIC_NETWORKS]);
   }
   async challenge(actor: AuthUser) {
     if (!(await this.context(actor)).configured) throw new BadRequestException('Office location checks are not configured.');
