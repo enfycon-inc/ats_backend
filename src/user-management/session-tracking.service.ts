@@ -19,10 +19,23 @@ export class SessionTrackingService implements OnModuleDestroy {
   /** Only call with the result of the existing server-side verified login flow. */
   async loginResult(result: any, req: any, method: string) {
     if (!this.enabled || !result?.accessToken || !result?.user?.id || !result.user.tenantId) return;
-    const claims = JSON.parse(Buffer.from(result.accessToken.split('.')[1], 'base64url').toString('utf8'));
+    let claims: any;
+    try {
+      claims = JSON.parse(Buffer.from(result.accessToken.split('.')[1], 'base64url').toString('utf8'));
+    } catch {
+      this.logger.warn('Optional login telemetry skipped because session claims could not be read.');
+      return;
+    }
+    const sid = claims.sid || claims.session_state;
+    const authTime = claims.auth_time || claims.iat;
+    const client = claims.azp || process.env.KEYCLOAK_CLIENT_ID;
+    if (!sid || !claims.sub || !Number.isFinite(claims.exp) || !Number.isFinite(authTime) || !client) {
+      this.logger.warn('Optional login telemetry skipped because the identity provider omitted session metadata.');
+      return;
+    }
     const user = result.user;
     const actor = { ...user, dbId: user.id, keycloakId: claims.sub, isActive: true };
-    await this.observe(actor, claims, req, method);
+    await this.observe(actor, claims, req, method, true);
     try { result.officeLoginReceipt = await this.consent?.createLogin(actor, req.headers?.['x-office-login-request']) || null; }
     catch { this.logger.warn('Optional office login context unavailable; authentication remains available.'); }
   }
@@ -31,7 +44,7 @@ export class SessionTrackingService implements OnModuleDestroy {
     // Express resolves this using the explicitly configured trusted proxy chain.
     return publicClientIp(req.ip || req.socket?.remoteAddress);
   }
-  async observe(actor: AuthUser, claims: any, req: any, method?: string) {
+  async observe(actor: AuthUser, claims: any, req: any, method?: string, bestEffortCapture = false) {
     if ((actor as any).homeTenantId) return;
     const sid = claims.sid || claims.session_state;
     if (!sid || !claims.sub || !Number.isFinite(claims.exp) || !Number.isFinite(claims.auth_time || claims.iat)) {
@@ -55,8 +68,9 @@ export class SessionTrackingService implements OnModuleDestroy {
     const now = Date.now();
     const checkpointKey = `${actor.tenantId}:${actor.dbId}:${sid}`;
     if (!membership || method || now - (this.checkpoints.get(checkpointKey) || 0) > 60_000) {
-      membership = await this.db.$transaction(async tx => {
-        const sessions = await tx.$queryRawUnsafe<any[]>(`INSERT INTO ats.application_sessions
+      try {
+        membership = await this.db.$transaction(async tx => {
+          const sessions = await tx.$queryRawUnsafe<any[]>(`INSERT INTO ats.application_sessions
           (provider_subject,provider_session,provider_client,started_at,expires_at,login_method,device,verified_login)
           VALUES ($1,$2,$3,to_timestamp($4),NOW()+make_interval(secs => $5::int),$6,$7,$8)
           ON CONFLICT(provider_subject,provider_session,provider_client) DO UPDATE SET
@@ -82,8 +96,15 @@ export class SessionTrackingService implements OnModuleDestroy {
             ON CONFLICT(event_key) DO NOTHING`, actor.tenantId, actor.dbId, members[0].id, `login:${members[0].id}`, ip);
           await tx.$executeRawUnsafe('UPDATE ats.users SET last_login_at=GREATEST(COALESCE(last_login_at, to_timestamp(0)),to_timestamp($2)) WHERE id=$1::uuid', actor.dbId, claims.auth_time || claims.iat);
         }
-        return members[0];
-      });
+          return members[0];
+        });
+      } catch (error) {
+        // Keep account and revocation checks above fail-closed. Only the optional telemetry
+        // write transaction may degrade gracefully for a login request.
+        if (!bestEffortCapture || error instanceof UnauthorizedException) throw error;
+        this.logger.warn('Optional login telemetry could not be recorded; authentication remains available.');
+        return;
+      }
       this.checkpoints.set(checkpointKey, now);
       if (this.checkpoints.size > 10000) this.checkpoints.clear();
     }
