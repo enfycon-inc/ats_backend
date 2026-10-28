@@ -859,6 +859,8 @@ model Candidate {
   relevantExperienceYears Decimal?            @map("relevant_experience_years") @db.Decimal(4, 1)
   currentCtc            Decimal?              @map("current_ctc") @db.Decimal(10, 2)
   expectedCtc           Decimal?              @map("expected_ctc") @db.Decimal(10, 2)
+  ctcCurrency           String?               @map("ctc_currency") @db.VarChar(10)
+  ctcTerm               String?               @map("ctc_term") @db.VarChar(10)
   currentCompany        String?               @map("current_company") @db.VarChar(255)
   availabilityToStart   String?               @map("availability_to_start") @db.VarChar(100)
   noticePeriodDays      Int                   @default(0) @map("notice_period_days")

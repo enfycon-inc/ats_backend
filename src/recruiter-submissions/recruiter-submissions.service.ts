@@ -329,7 +329,7 @@ export class RecruiterSubmissionsService {
     // 2. Verify candidate exists and belongs to the tenant
     const candidate = await this.prisma.candidate.findFirst({
       where: { id: dto.candidateId, tenantId },
-      select: { id: true, fullName: true, firstName: true, lastName: true, email: true, currentCtc: true, expectedCtc: true, noticePeriodDays: true, relevantExperienceYears: true, preferredLocations: true },
+      select: { id: true, fullName: true, firstName: true, lastName: true, email: true, currentCtc: true, expectedCtc: true, ctcCurrency: true, ctcTerm: true, noticePeriodDays: true, relevantExperienceYears: true, preferredLocations: true },
     });
 
     if (!candidate) {
@@ -363,6 +363,17 @@ export class RecruiterSubmissionsService {
       if (dto.updateCandidateSkills && verifiedCandidate) {
         await tx.candidate.update({ where: { id: candidate.id, tenantId }, data: { skills: verifiedCandidate.skills as string[] } });
       }
+      if (dto.compensationInputUnit !== undefined) {
+        await tx.candidate.update({
+          where: { id: candidate.id, tenantId },
+          data: {
+            currentCtc: dto.currentCompensation === '' || dto.currentCompensation == null ? null : Number(dto.currentCompensation),
+            expectedCtc: Number(dto.expectedCompensation),
+            ctcCurrency: dto.compensationCurrency,
+            ctcTerm: dto.compensationInputUnit,
+          },
+        });
+      }
       const sub = await tx.recruiterSubmission.create({
         data: {
           tenantId,
@@ -382,8 +393,14 @@ export class RecruiterSubmissionsService {
           ...source,
           availabilityToStart: dto.availabilityToStart?.trim() || null,
           submittedRateAmount: typeof dto.submittedRate === 'string' ? parseFloat(dto.submittedRate) : dto.submittedRate || null,
-          candidateCurrentCtc: dto.compensationInputUnit !== undefined ? null : dto.candidateCurrentCtc ?? candidate.currentCtc,
-          candidateExpectedCtc: dto.compensationInputUnit !== undefined ? null : dto.candidateExpectedCtc ?? candidate.expectedCtc,
+          candidateCurrentCtc: dto.compensationInputUnit !== undefined
+            ? (dto.currentCompensation === '' || dto.currentCompensation == null ? null : Number(dto.currentCompensation))
+            : dto.candidateCurrentCtc ?? candidate.currentCtc,
+          candidateExpectedCtc: dto.compensationInputUnit !== undefined
+            ? Number(dto.expectedCompensation)
+            : dto.candidateExpectedCtc ?? candidate.expectedCtc,
+          candidateCtcCurrency: dto.compensationInputUnit !== undefined ? dto.compensationCurrency : candidate.ctcCurrency,
+          candidateCtcTerm: dto.compensationInputUnit !== undefined ? dto.compensationInputUnit : candidate.ctcTerm,
           candidateNoticePeriod: dto.candidateNoticePeriod ?? candidate.noticePeriodDays,
           candidateRelevantExperience: dto.candidateRelevantExperience ?? candidate.relevantExperienceYears,
           candidatePreferredLocations: preferredLocationMode === 'REMOTE_ONLY' ? [] : verifiedCandidate ? String(verifiedCandidate.preferredLocations).split(',').map(value => value.trim()).filter(Boolean) : candidate.preferredLocations || [],

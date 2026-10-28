@@ -163,6 +163,8 @@ export interface CandidateMatch {
   missingSkills: string[];
   currentCTC?: number | null;
   expectedCTC?: number | null;
+  ctcCurrency?: string | null;
+  ctcTerm?: string | null;
   noticePeriodDays?: number;
   servingNotice?: boolean;
   lastWorkingDay?: string | null;
@@ -2667,10 +2669,10 @@ export class JobsService {
     const limit = Math.min(opts.limit ?? 25, 100);
     const minScore = opts.minScore ?? 0;
 
-    const resolvedJob = resolveAssessmentJob(job, await loadAssessmentSkills(this.prisma));
+    const dictionary = await loadAssessmentSkills(this.prisma);
+    const resolvedJob = resolveAssessmentJob({ ...job, jobDescription: job.description }, dictionary);
     const primarySkills = (resolvedJob.skillsRequired || []).filter(Boolean);
     const secondarySkills = (resolvedJob.secondarySkills || []).filter(Boolean);
-    const dictionary = await loadAssessmentSkills(this.prisma);
     const resolver = skillResolver(dictionary);
     const allSkills = [...new Set([...primarySkills, ...secondarySkills, ...[...primarySkills, ...secondarySkills].flatMap(resolver.terms)])];
 
@@ -2737,6 +2739,7 @@ export class JobsService {
       `SELECT c.id, c.full_name, c.email, c.phone, c.raw_current_location,
               c.raw_current_designation, c.source, c.work_authorization,
               c.total_experience_years, c.skills, c.current_ctc, c.expected_ctc,
+              c.ctc_currency, c.ctc_term,
               c.notice_period_days, c.serving_notice, c.last_working_day, 
               c.preferred_locations, r.raw_text, r.parsed_json
        ${filterSql}`,
@@ -2774,8 +2777,10 @@ export class JobsService {
         matchTier,
         matchedSkills: matchedPrimary,
         missingSkills: missingPrimary,
-        currentCTC: row.current_ctc ? Number(row.current_ctc) : null,
-        expectedCTC: row.expected_ctc ? Number(row.expected_ctc) : null,
+        currentCTC: row.current_ctc == null ? null : Number(row.current_ctc),
+        expectedCTC: row.expected_ctc == null ? null : Number(row.expected_ctc),
+        ctcCurrency: row.ctc_currency || null,
+        ctcTerm: row.ctc_term || null,
         noticePeriodDays: row.notice_period_days ? Number(row.notice_period_days) : 0,
         servingNotice: !!row.serving_notice,
         lastWorkingDay: row.last_working_day || null,
@@ -2797,7 +2802,7 @@ export class JobsService {
     this.logger.log(
       `Matched ${ranked.length}/${candRows.length} candidates for job ${job.jobCode} (parser ${parserOnline ? 'online' : 'offline'}).`,
     );
-    return { job, matches: ranked, parserOnline };
+    return { job: { ...job, skillsRequired: primarySkills, secondarySkills }, matches: ranked, parserOnline };
   }
 
   private dbSkillsCache: { name: string; aliases: string[] }[] = [];

@@ -38,6 +38,8 @@ export interface CandidateProfile {
   createdOn: string;
   currentCTC?: number | null;
   expectedCTC?: number | null;
+  ctcCurrency?: string | null;
+  ctcTerm?: string | null;
   noticePeriodDays?: number;
   servingNotice?: boolean;
   lastWorkingDay?: string | null;
