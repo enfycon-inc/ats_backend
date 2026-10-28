@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { CandidateAssessment, AssessmentCriterion } from '../recruiter-submissions/tracker-contract';
 import { AssessmentSkill, skillResolver } from './assessment-skill-dictionary';
 
-export const ASSESSMENT_ENGINE = 'dictionary-v2';
+export const ASSESSMENT_ENGINE = 'dictionary-v2-requirements-v1';
 export interface AssessmentJob {
   skillsRequired?: string[]; secondarySkills?: string[]; expMin?: number | null; expMax?: number | null;
   city?: string | null; state?: string | null; country?: string | null; workMode?: string | null;
@@ -12,10 +12,36 @@ export interface AssessmentCandidate {
   skills?: string[]; rawText?: string | null; parsedJson?: unknown; totalExperienceYears?: unknown;
   rawCurrentLocation?: string | null; preferredLocations?: string[]; preferredLocationMode?: 'SPECIFIC_LOCATIONS' | 'REMOTE_ONLY' | 'REMOTE_OR_LOCATIONS' | null; noticePeriodDays?: number | null;
 }
+export function resolveAssessmentJob<T extends AssessmentJob & { jobDescription?: string | null }>(job: T, dictionary: AssessmentSkill[]): T {
+  const resolver = skillResolver(dictionary);
+  const dedupe = (values: string[]) => [...new Map(values.filter(value => value?.trim()).map(value => [resolver.resolve(value), value.trim()])).values()];
+  const primary = dedupe(job.skillsRequired || []);
+  const secondary = dedupe(job.secondarySkills || []);
+  if (primary.length >= 3) return { ...job, skillsRequired: primary, secondarySkills: secondary };
+  const text = (job.jobDescription || '').replace(/<\/(?:p|div|h[1-6]|li|ul|ol)>|<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ');
+  let section = 'required'; let requiredText = ''; let preferredText = '';
+  for (const line of text.split('\n')) {
+    const heading = line.replace(/^[#*\s]+/, '').replace(/[:*]+$/, '').trim();
+    if (/^(preferred(?: skills| qualifications| requirements)?|nice[ -]to[ -]have|good[ -]to[ -]have|desired(?: skills| qualifications)?|secondary skills|bonus skills)$/i.test(heading)) { section = 'preferred'; continue; }
+    if (/^(required(?: skills| qualifications)?|requirements|qualifications|must[ -]have|responsibilities|key responsibilities|technical skills)$/i.test(heading)) { section = 'required'; continue; }
+    if (/^(education|benefits|selection process)$/i.test(heading)) { section = 'other'; continue; }
+    if (section === 'preferred') preferredText += '\n' + line;
+    if (section === 'required') requiredText += '\n' + line;
+  }
+  for (const row of dictionary) {
+    const terms = [row.canonicalName, ...row.aliases.map(alias => alias.aliasName)];
+    if (terms.some(term => textEvidence(term, requiredText))) primary.push(row.canonicalName);
+    else if (terms.some(term => textEvidence(term, preferredText))) secondary.push(row.canonicalName);
+  }
+  const resolved = dedupe(primary);
+  return { ...job, skillsRequired: resolved, secondarySkills: dedupe(secondary).filter(skill => !resolved.some(required => resolver.resolve(required) === resolver.resolve(skill))) };
+}
+
 export function assessmentSourceVersion(job: AssessmentJob & { id?: string; updatedAt?: Date | string | null }, candidate: AssessmentCandidate & {
   id?: string; updatedAt?: Date | string | null; resumeRecordId?: string | null;
   resumeRecord?: { id?: string | null; fileHash?: string | null } | null;
 }, dictionary: AssessmentSkill[] = []) {
+  job = resolveAssessmentJob(job, dictionary);
   const stableDictionary = dictionary.map(row => ({
     id: row.id,
     canonicalName: row.canonicalName,
@@ -52,6 +78,7 @@ function textEvidence(term: string, text: string) {
   return match ? text.slice(Math.max(0, match.index - 65), match.index + match[0].length + 100).replace(/\s+/g, ' ').trim() : null;
 }
 export function assessCandidate(job: AssessmentJob, candidate: AssessmentCandidate, dictionary: AssessmentSkill[] = [], versionOverride?: string): CandidateAssessment {
+  job = resolveAssessmentJob(job, dictionary);
   let parsed: any = candidate.parsedJson;
   if (typeof parsed === 'string') { try { parsed = JSON.parse(parsed); } catch { parsed = null; } }
   const skills = unique([...strings(candidate.skills), ...strings(parsed?.skills),

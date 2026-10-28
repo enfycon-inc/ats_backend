@@ -1209,23 +1209,7 @@ export class RecruiterSubmissionsService {
       noticePeriodDays: dto.noticePeriodDays ?? null,
     };
     const dictionary = await loadAssessmentSkills(this.prisma);
-    let resolvedJobSkills = job.skillsRequired || [];
-    let resolvedJobSecondary = job.secondarySkills || [];
-    if (!resolvedJobSkills.length) {
-      const title = (job as any).jobTitle || '';
-      const desc = (job as any).jobDescription || '';
-      const combo = `${title}\n${desc}`.trim();
-      if (combo.length > 0) {
-        for (const s of dictionary) {
-          const escaped = s.canonicalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const pattern = new RegExp(`(^|[^a-z0-9+#])${escaped}([^a-z0-9+#]|$)`, 'i');
-          if (pattern.test(combo) && !resolvedJobSkills.includes(s.canonicalName)) {
-            resolvedJobSkills.push(s.canonicalName);
-          }
-        }
-      }
-    }
-    const evaluatedJob = { ...job, skillsRequired: resolvedJobSkills, secondarySkills: resolvedJobSecondary };
+    const evaluatedJob = job;
     const version = assessmentSourceVersion(evaluatedJob, candidate, dictionary);
     return assessCandidate(evaluatedJob, candidate, dictionary, version);
   }
@@ -1254,7 +1238,7 @@ export class RecruiterSubmissionsService {
   private async assessmentSourceVersion(db: any, submission: { jobId: string; candidateId: string; candidatePreferredLocations?: string[] | null; candidatePreferredLocationMode?: string | null }, tenantId: string) {
     const [job, candidate, dictionary] = await Promise.all([
       db.job.findFirst({ where: { id: submission.jobId, tenantId }, select: {
-        id: true, updatedAt: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
+        id: true, updatedAt: true, jobDescription: true, skillsRequired: true, secondarySkills: true, expMin: true, expMax: true,
         city: true, state: true, country: true, workMode: true, degree: true, noticePeriod: true,
       } }),
       db.candidate.findFirst({ where: { id: submission.candidateId, tenantId, deletedAt: null }, select: {
