@@ -135,11 +135,16 @@ export class UserManagementService {
     if (!self) { requireCapability(actor, 'user:sessions:view'); await this.target(actor, userId); }
     if (!this.tracking.enabled) return [];
     const ipAllowed = self || hasCapability(actor, 'user:session_ip:view');
+    const locationAllowed = self || hasCapability(actor, 'user:location:view');
     const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT m.id,s.device,s.login_method AS "loginMethod",s.started_at AS "startedAt",
       m.last_seen_at AS "lastSeenAt",s.expires_at AS "expiresAt",m.revoked_at AS "revokedAt"
       ${ipAllowed ? ', host(n.ip_address) AS "ipAddress"' : ''}
+      ${locationAllowed ? `, CASE WHEN loc.result IS NULL THEN NULL ELSE json_build_object('result',loc.result,'checkedAt',loc.sampled_at,'accuracyMetres',loc.accuracy_metres,'source',loc.source) END AS "officeLocation"` : ''}
       FROM ats.session_memberships m JOIN ats.application_sessions s ON s.id=m.session_id
       LEFT JOIN LATERAL (SELECT ip_address FROM ats.session_network_observations WHERE membership_id=m.id ORDER BY observed_at DESC LIMIT 1) n ON true
+      LEFT JOIN LATERAL (SELECT c.result,c.sampled_at,c.accuracy_metres,c.source FROM ats.office_location_checks c
+        JOIN ats.office_login_instances l ON l.id=c.login_id WHERE l.membership_id=m.id AND c.tenant_id=m.tenant_id AND c.user_id=m.user_id
+        ORDER BY c.sampled_at DESC,c.created_at DESC LIMIT 1) loc ON true
       WHERE m.user_id=$1::uuid AND m.tenant_id=$2::uuid ORDER BY s.started_at DESC,m.id LIMIT 50 OFFSET $3`, userId, actor.tenantId, (page - 1) * 50);
     await this.auditRead(actor, userId, 'sessions.viewed');
     return rows.map(row => ({ ...row, ...(ipAllowed ? { ipAddress: publicClientIp(row.ipAddress) } : {}), current: row.id === (actor as any).sessionMembershipId }));

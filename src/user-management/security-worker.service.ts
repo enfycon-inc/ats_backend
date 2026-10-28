@@ -104,9 +104,11 @@ export class SecurityWorkerService implements OnModuleInit, OnModuleDestroy {
       AND NOT EXISTS(SELECT 1 FROM ats.user_security_events e WHERE e.event_key='expiry:'||m.id) LIMIT 1000
       ON CONFLICT(event_key) DO NOTHING`);
     await this.db.$executeRawUnsafe("DELETE FROM ats.user_security_outbox WHERE status='delivered' AND created_at<NOW()-INTERVAL '7 days'");
+    await this.db.$executeRawUnsafe("DELETE FROM ats.office_browser_preferences WHERE (user_id,browser_hash,origin) IN (SELECT user_id,browser_hash,origin FROM ats.office_browser_preferences WHERE decided_at<NOW()-INTERVAL '365 days' LIMIT 1000)");
     const days = Number(process.env.USER_SECURITY_RETENTION_DAYS || 90);
     if (Number.isInteger(days) && days >= 7 && days <= 3650) {
       await this.db.$executeRawUnsafe('DELETE FROM ats.user_security_events WHERE id IN (SELECT id FROM ats.user_security_events WHERE created_at<NOW()-make_interval(days=>$1::int) LIMIT 1000)', days);
+      await this.db.$executeRawUnsafe('DELETE FROM ats.office_login_instances WHERE id IN (SELECT id FROM ats.office_login_instances WHERE expires_at<NOW()-make_interval(days=>$1::int) LIMIT 1000)', days);
       await this.db.$executeRawUnsafe('DELETE FROM ats.session_network_observations WHERE id IN (SELECT id FROM ats.session_network_observations WHERE observed_at<NOW()-make_interval(days=>$1::int) LIMIT 1000)', days);
     }
     if (this.office.enabled) {

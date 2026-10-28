@@ -1,5 +1,17 @@
 export type Presence = 'active' | 'away' | 'offline' | 'unknown';
 export type UserView = 'active' | 'pending' | 'blocked' | 'activity';
+export const OFFICE_LOCATION_NOTICE_VERSION = 'office-location-v1';
+export interface OfficeConsentContext {
+  eligible: boolean;
+  reason: 'ready' | 'disabled' | 'no_unit' | 'no_geofence' | 'new_login_required';
+  loginId?: string;
+  consent: 'accepted' | 'declined' | 'unknown';
+  handled: boolean;
+  noticeVersion: string;
+  unitName?: string;
+}
+export interface OfficeConsentClaim { claimed: boolean; leaseToken?: string }
+export interface OfficeConsentResult { result: 'within' | 'outside' | 'uncertain'; checkedAt: string; accuracyMetres: number }
 export interface ManagementRow {
   id: string; kind: 'user' | 'invitation'; fullName: string; email: string;
   avatar: string | null; city: string | null; managerName: string | null; assignedRoles: string[];
@@ -19,6 +31,7 @@ export interface DirectoryPage {
   asOf: string; telemetryEnabled: boolean;
 }
 export interface SessionItem {
+  officeLocation?: OfficeConsentResult & { source: 'post_login' | 'manual' };
   id: string; device: string; loginMethod: string; startedAt: string;
   lastSeenAt: string; expiresAt: string; revokedAt: string | null;
   ipAddress?: string | null; current: boolean;

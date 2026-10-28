@@ -3,11 +3,20 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { UserManagementService } from './user-management.service';
 import { SessionTrackingService } from './session-tracking.service';
 import { OfficeLocationService } from './office-location.service';
+import { OfficeConsentService } from './office-consent.service';
 
 @Controller('api/user-management')
 @UseGuards(JwtAuthGuard)
 export class UserManagementController {
-  constructor(private readonly users: UserManagementService, private readonly tracking: SessionTrackingService, private readonly office: OfficeLocationService) {}
+  constructor(private readonly users: UserManagementService, private readonly tracking: SessionTrackingService, private readonly office: OfficeLocationService,
+    private readonly consent: OfficeConsentService) {}
+  @Get('me/location-consent') consentContext(@Req() req: any) { return this.consent.context(req.user, req.headers); }
+  @Post('me/location-consent/claim') consentClaim(@Req() req: any, @Body() body: any) { return this.consent.claim(req.user, req.headers, body); }
+  @Post('me/location-consent/decision') consentDecision(@Req() req: any, @Body() body: any) { return this.consent.decision(req.user, req.headers, body); }
+  @Post('me/location-consent/outcome') consentOutcome(@Req() req: any, @Body() body: any) { return this.consent.outcome(req.user, req.headers, body); }
+  @Post('me/location-consent/withdraw') consentWithdraw(@Req() req: any) { return this.consent.withdraw(req.user, req.headers); }
+  @Post('me/location-consent/challenge') consentChallenge(@Req() req: any, @Body() body: any) { return this.consent.challenge(req.user, req.headers, body); }
+  @Post('me/location-consent/check') consentCheck(@Req() req: any, @Body() body: any) { return this.consent.check(req.user, req.headers, body); }
   @Get('office-branches') officeBranches(@Req() req: any) { return this.office.branches(req.user); }
   @Get('office-network-candidates') officeCandidates(@Req() req: any) { return this.office.candidates(req.user); }
   @Get('branches/:id/office-policy') officePolicy(@Req() req: any, @Param('id', ParseUUIDPipe) id: string) { return this.office.policy(req.user, id); }
@@ -16,8 +25,8 @@ export class UserManagementController {
   @Get('business-units/:id/geofence') unitGeofence(@Req() req: any, @Param('id', ParseUUIDPipe) id: string) { return this.office.unitGeofence(req.user, id); }
   @Put('business-units/:id/geofence') saveUnitGeofence(@Req() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() body: any) { return this.office.saveUnitGeofence(req.user, id, body); }
   @Get('me/office-context') officeContext(@Req() req: any) { return this.office.context(req.user); }
-  @Post('me/location-challenge') locationChallenge(@Req() req: any) { return this.office.challenge(req.user); }
-  @Post('me/location-checks') locationCheck(@Req() req: any, @Body() body: any) { return this.office.check(req.user, body); }
+  @Post('me/location-challenge') locationChallenge(@Req() req: any, @Body() body: any) { return this.consent.challenge(req.user, req.headers, body); }
+  @Post('me/location-checks') locationCheck(@Req() req: any, @Body() body: any) { return this.consent.check(req.user, req.headers, body); }
   @Get('users') list(@Req() req: any, @Query() query: Record<string, string>) { return this.users.list(req.user, query); }
   @Get('users/:id/sessions') sessions(@Req() req: any, @Param('id', ParseUUIDPipe) id: string, @Query('page') page?: string) {
     return this.users.sessions(req.user, id, this.page(page));

@@ -45,6 +45,7 @@ model ApplicationSession {
 }
 
 model SessionMembership {
+  officeLogins OfficeLoginInstance[]
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   sessionId String @map("session_id") @db.Uuid
   userId String @map("user_id") @db.Uuid
@@ -177,6 +178,9 @@ model BusinessUnitGeofence {
 }
 
 model OfficeLocationCheck {
+  loginId String? @map("login_id") @db.Uuid
+  source String @default("manual") @db.VarChar(16)
+  login OfficeLoginInstance? @relation(fields: [loginId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
   userId String @map("user_id") @db.Uuid
@@ -192,6 +196,7 @@ model OfficeLocationCheck {
   branch Branch @relation(fields: [branchId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   @@index([tenantId, userId, createdAt(sort: Desc)], map: "office_location_checks_user")
   @@index([tenantId, businessUnitId, createdAt(sort: Desc)], map: "office_location_checks_unit")
+  @@index([loginId], map: "office_checks_login")
   @@map("office_location_checks")
   @@schema("ats")
 }
@@ -558,6 +563,7 @@ model Pod {
 }
 
 model User {
+  officeLocationPreferences OfficeBrowserPreference[]
   careerOauthClients CareerOauthClient[]
   developerGrants DeveloperLoginGrant[] @relation("DeveloperGrantee")
   grantedDeveloperAccess DeveloperLoginGrant[] @relation("DeveloperGrantor")
@@ -1674,5 +1680,48 @@ model SystemEmailDelivery {
   @@unique([eventId, recipientId, category])
   @@index([status, availableAt], map: "system_email_deliveries_ready")
   @@map("system_email_deliveries")
+  @@schema("ats")
+}
+
+model OfficeLoginInstance {
+  id String @id @db.Uuid
+  membershipId String @map("membership_id") @db.Uuid
+  requestHash String @map("request_hash") @db.VarChar(64)
+  receiptHash String @unique @map("receipt_hash") @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  membership SessionMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  states OfficeLoginLocationState[]
+  checks OfficeLocationCheck[]
+  @@unique([membershipId,requestHash])
+  @@index([expiresAt], map: "office_login_expiry")
+  @@map("office_login_instances")
+  @@schema("ats")
+}
+model OfficeBrowserPreference {
+  userId String @map("user_id") @db.Uuid
+  browserHash String @map("browser_hash") @db.VarChar(64)
+  origin String @db.VarChar(255)
+  decision String @db.VarChar(16)
+  noticeVersion String @map("notice_version") @db.VarChar(40)
+  decidedAt DateTime @default(now()) @map("decided_at") @db.Timestamptz(6)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  @@id([userId,browserHash,origin])
+  @@map("office_browser_preferences")
+  @@schema("ats")
+}
+model OfficeLoginLocationState {
+  loginId String @map("login_id") @db.Uuid
+  browserHash String @map("browser_hash") @db.VarChar(64)
+  origin String @db.VarChar(255)
+  status String @default("pending") @db.VarChar(24)
+  noticeVersion String @map("notice_version") @db.VarChar(40)
+  leaseToken String? @map("lease_token") @db.Uuid
+  leaseUntil DateTime? @map("lease_until") @db.Timestamptz(6)
+  manual Boolean @default(false)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  login OfficeLoginInstance @relation(fields: [loginId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  @@id([loginId,browserHash,origin])
+  @@map("office_login_location_states")
   @@schema("ats")
 }

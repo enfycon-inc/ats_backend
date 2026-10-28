@@ -1,4 +1,5 @@
-import { Injectable, Logger, OnModuleDestroy, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, UnauthorizedException, Optional } from '@nestjs/common';
+import { OfficeConsentService } from './office-consent.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { publicClientIp } from './client-ip';
@@ -12,14 +13,18 @@ export class SessionTrackingService implements OnModuleDestroy {
   private readonly logger = new Logger(SessionTrackingService.name);
   private readonly checkpoints = new Map<string, number>();
   private subscriber: any;
-  constructor(private readonly db: PrismaService, @InjectQueue('user-management') private readonly queue: Queue) {}
+  constructor(private readonly db: PrismaService, @InjectQueue('user-management') private readonly queue: Queue,
+    @Optional() private readonly consent?: OfficeConsentService) {}
   get enabled() { return process.env.USER_MANAGEMENT_TELEMETRY_ENABLED === 'true'; }
   /** Only call with the result of the existing server-side verified login flow. */
   async loginResult(result: any, req: any, method: string) {
     if (!this.enabled || !result?.accessToken || !result?.user?.id || !result.user.tenantId) return;
     const claims = JSON.parse(Buffer.from(result.accessToken.split('.')[1], 'base64url').toString('utf8'));
     const user = result.user;
-    await this.observe({ ...user, dbId: user.id, keycloakId: claims.sub, isActive: true }, claims, req, method);
+    const actor = { ...user, dbId: user.id, keycloakId: claims.sub, isActive: true };
+    await this.observe(actor, claims, req, method);
+    try { result.officeLoginReceipt = await this.consent?.createLogin(actor, req.headers?.['x-office-login-request']) || null; }
+    catch { this.logger.warn('Optional office login context unavailable; authentication remains available.'); }
   }
   ip(req: any): string | null {
     if (req.skipNetworkObservation) return null;
