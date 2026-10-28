@@ -9,6 +9,9 @@ export interface JobStaffOption {
   fullName: string;
   email?: string;
   avatar?: string | null;
+  city?: string | null;
+  assignmentCount: number;
+  lastAssignedAt: Date | null;
   /** Explicitly eligible to receive direct recruiter assignments. */
   canRecruit: boolean;
   canReview: boolean;
@@ -151,7 +154,19 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
   requestedBranch?: string, requestedUnit?: string, jobId?: string): Promise<JobStaffOption[]> {
   const { branchId, unitId, podId } = await resolveJobStaffingScope(prisma, actor, tenantId, requestedBranch, requestedUnit, 'job:assign_recruiter', jobId);
   return prisma.$queryRawUnsafe<JobStaffOption[]>(`
-    WITH RECURSIVE recruiter_role_tree(tenant_id, id, base_role_id) AS (
+    WITH RECURSIVE creator_assignments AS (
+      SELECT jr.recruiter_id,
+             COUNT(*)::int AS assignment_count,
+             MAX(jr.created_at) AS last_assigned_at
+      FROM ats.jobs assigned_job
+      JOIN ats.job_recruiters jr ON jr.job_id = assigned_job.id
+      WHERE assigned_job.tenant_id = $1::uuid
+        AND assigned_job.created_by_user_id = $2::uuid
+        AND assigned_job.deleted_at IS NULL
+        AND ($3::uuid IS NULL OR assigned_job.branch_id = $3::uuid)
+        AND ($4::uuid IS NULL OR assigned_job.business_unit_id = $4::uuid)
+      GROUP BY jr.recruiter_id
+    ), recruiter_role_tree(tenant_id, id, base_role_id) AS (
       SELECT role.tenant_id, role.id, role.base_role_id
       FROM ats.custom_roles role
       JOIN ats.system_roles system_role ON system_role.id = role.system_role_id
@@ -164,8 +179,13 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
       JOIN recruiter_role_tree parent
         ON parent.tenant_id = child.tenant_id AND parent.id = child.base_role_id
     )
-    SELECT staff.id, staff.full_name AS "fullName", staff.email AS "email", staff.profile_picture AS "avatar", eligibility."canRecruit", eligibility."canReview"
+    SELECT staff.id, staff.full_name AS "fullName", staff.email AS "email",
+           staff.profile_picture AS "avatar", staff.city::text AS "city",
+           COALESCE(creator_assignments.assignment_count, 0)::int AS "assignmentCount",
+           creator_assignments.last_assigned_at AS "lastAssignedAt",
+           eligibility."canRecruit", eligibility."canReview"
     FROM ats.users staff
+    LEFT JOIN creator_assignments ON creator_assignments.recruiter_id = staff.id
     CROSS JOIN LATERAL (
       SELECT COALESCE(BOOL_OR(recruiter_role.id IS NOT NULL), false) AS "canRecruit",
              COALESCE(BOOL_OR(role.permissions::jsonb ? 'job:approve'), false) AS "canReview"
@@ -178,11 +198,11 @@ export async function listJobStaff(prisma: PrismaService, actor: AuthUser, tenan
         AND (role.business_unit_id IS NULL OR role.business_unit_id = staff.business_unit_id)
     ) eligibility
     WHERE staff.tenant_id = $1::uuid AND staff.is_active = true AND staff.is_approved = true
-      AND ($2::uuid IS NULL OR staff.branch_id = $2::uuid)
-      AND ($3::uuid IS NULL OR staff.business_unit_id = $3::uuid)
-      AND ($4::uuid IS NULL OR staff.pod_id = $4::uuid)
+      AND ($3::uuid IS NULL OR staff.branch_id = $3::uuid)
+      AND ($4::uuid IS NULL OR staff.business_unit_id = $4::uuid)
+      AND ($5::uuid IS NULL OR staff.pod_id = $5::uuid)
       AND eligibility."canRecruit"
-    ORDER BY staff.full_name, staff.id`, tenantId, branchId, unitId, podId || null);
+    ORDER BY staff.full_name, staff.id`, tenantId, actor.dbId, branchId, unitId, podId || null);
 }
 
 export async function validateJobRecruiters(prisma: PrismaService, actor: AuthUser, tenantId: string,
