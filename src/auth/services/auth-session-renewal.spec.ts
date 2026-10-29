@@ -45,6 +45,16 @@ describe('Keycloak session transport', () => {
     const mock = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
     await service.logoutKeycloakSession('valid');
     expect(mock.mock.calls[0][1]?.headers).toMatchObject({ 'X-Forwarded-Proto': 'https' });
+    expect(mock.mock.calls[0][0]).toBe('http://keycloak:8080/realms/ats/protocol/openid-connect/logout');
+    expect(new URLSearchParams(mock.mock.calls[0][1]?.body as string).get('refresh_token')).toBe('valid');
+  });
+  it('does not report provider logout success on transport failure', async () => {
+    jest.spyOn(global, 'fetch').mockRejectedValue(new Error('network'));
+    await expect(service.logoutKeycloakSession('valid')).rejects.toMatchObject({ status: 503 });
+  });
+  it('does not report provider logout success when the credential is rejected', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}', { status: 400 }));
+    await expect(service.logoutKeycloakSession('stale')).rejects.toMatchObject({ status: 503 });
   });
   it('issues password tokens using the same HTTPS scheme as renewal', async () => {
     const query = { query: jest.fn().mockResolvedValue({ rows: [{

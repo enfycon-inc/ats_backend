@@ -453,12 +453,16 @@ export class AuthCoreService {
     params.append('refresh_token', refreshToken);
     try {
       const headers = this.sessionTransportHeaders();
-      let res = await fetch(logoutUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
-      if (!res || !res.ok) {
-        const altUrl = logoutUrl.includes('localhost') ? logoutUrl.replace('localhost', 'keycloak') : logoutUrl.replace('keycloak', 'localhost');
-        res = await fetch(altUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
+      const res = await fetch(logoutUrl, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) {
+        this.logger.warn(`Identity-provider logout rejected: status=${res.status}`);
+        throw new ServiceUnavailableException('Identity-provider logout could not finish.');
       }
-    } catch (err: any) {}
+    } catch (err: unknown) {
+      if (err instanceof ServiceUnavailableException) throw err;
+      this.logger.warn('Identity-provider logout transport unavailable.');
+      throw new ServiceUnavailableException('Identity-provider logout could not finish.');
+    }
     return { success: true };
   }
 
