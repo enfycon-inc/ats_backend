@@ -152,19 +152,19 @@ export class RecruiterSubmissionsService {
     if (isAccountManager && view === 'all' && !canViewAll) throw new ForbiddenException('All-submission access is not enabled for this role.');
     if (isAccountManager && view === 'pod') throw new ForbiddenException('Pod submission view is not available to account managers.');
     if (view === 'my') {
-      where.push(isAccountManager ? `j.account_manager_id = ${addParam(user.dbId)}::uuid` : `s.recruiter_id = ${addParam(user.dbId)}::uuid`);
+      where.push(isAccountManager ? `j.account_manager_id = ${addParam(user.dbId)}::uuid` : `s.recruiter_id = ${addParam(user.dbId)}::uuid::text`);
     } else if (view === 'pod') {
       await assertPodsEnabled(this.prisma, tenantId, user.businessUnitId, user.branchId);
       if (!has('pod:view')) throw new ForbiddenException('Missing pod:view permission.');
       const userParam = addParam(user.dbId);
-      where.push(`s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1::uuid AND pod_id = (SELECT pod_id FROM ats.users WHERE id = ${userParam}::uuid AND tenant_id = $1::uuid))`);
+      where.push(`s.recruiter_id IN (SELECT id::text FROM ats.users WHERE tenant_id = $1::uuid AND pod_id = (SELECT pod_id FROM ats.users WHERE id = ${userParam}::uuid AND tenant_id = $1::uuid))`);
     } else if (!canViewAll) {
       const userParam = addParam(user.dbId);
       const reviewerBranchId = filters.branchId || user.branchId;
       const websiteQueue = user.permissions?.includes('submission:internal_screening') && reviewerBranchId
-        ? ` OR (s.recruiter_id = 'WEBSITE_APPLICANT' AND s.final_status = 'PENDING_APPROVAL' AND j.branch_id = ${addParam(reviewerBranchId)}::uuid${user.businessUnitId ? ` AND j.business_unit_id = ${addParam(user.businessUnitId)}::uuid` : ''})`
+        ? ` OR ((s.submission_origin = 'WEBSITE' OR s.recruiter_id = 'WEBSITE_APPLICANT') AND s.final_status = 'PENDING_APPROVAL' AND j.branch_id = ${addParam(reviewerBranchId)}::uuid${user.businessUnitId ? ` AND j.business_unit_id = ${addParam(user.businessUnitId)}::uuid` : ''})`
         : '';
-      where.push(`(s.recruiter_id = ${userParam}::uuid OR r.job_reviewer_id = ${userParam}::uuid${websiteQueue})`);
+      where.push(`(s.recruiter_id = ${userParam}::uuid::text OR r.job_reviewer_id = ${userParam}::uuid${websiteQueue})`);
     }
     if (filters.branchId && !unitAdmin && !branchAdmin) {
       const branchParam = addParam(filters.branchId.trim());
@@ -183,7 +183,7 @@ export class RecruiterSubmissionsService {
       OR (s.l1_status = 'CLEARED' AND s.l2_status = 'CLEARED' AND COALESCE(s.l3_status, 'PENDING') IN ('PENDING', 'CANCELLED') AND (s.l3_status = 'CANCELLED' OR s.l3_date IS NULL))
     )`;
     const from = `FROM ats.recruiter_submissions s JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id
-      JOIN ats.candidates c ON c.id = s.candidate_id LEFT JOIN ats.users r ON r.id = s.recruiter_id AND r.tenant_id = s.tenant_id
+      JOIN ats.candidates c ON c.id = s.candidate_id LEFT JOIN ats.users r ON r.id::text = s.recruiter_id AND r.tenant_id = s.tenant_id
       WHERE ${where.join(' AND ')} AND ${eligible}`;
     const countSql = `SELECT COUNT(*)::int AS total ${from}`;
     const rowsSql = `SELECT s.id, c.full_name AS candidate_name, j.job_code, j.job_title,
@@ -236,12 +236,12 @@ export class RecruiterSubmissionsService {
         params.push(user.dbId);
         scopeSql = isAccountManager
           ? ` AND j.account_manager_id = $${params.length}::uuid`
-          : ` AND (s.recruiter_id = $${params.length}::uuid OR r.job_reviewer_id = $${params.length}::uuid)`;
+          : ` AND (s.recruiter_id = $${params.length}::uuid::text OR r.job_reviewer_id = $${params.length}::uuid)`;
       }
     }
 
     const rows = await this.prisma.$queryRawUnsafe<any[]>(`
-      SELECT s.id AS submission_id, s.updated_at, s.final_status,
+      SELECT s.id AS submission_id, s.updated_at, s.final_status, s.recruiter_id, s.submission_origin,
              j.id AS job_id, j.job_code, j.job_title, j.account_manager_id, j.status AS job_status, j.keep_existing_submissions_open,
              j.job_timezone, j.branch_id,
              c.full_name AS candidate_name,
@@ -252,7 +252,7 @@ export class RecruiterSubmissionsService {
       FROM ats.recruiter_submissions s
       JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id
       JOIN ats.candidates c ON c.id = s.candidate_id
-      LEFT JOIN ats.users r ON r.id = s.recruiter_id AND r.tenant_id = s.tenant_id
+      LEFT JOIN ats.users r ON r.id::text = s.recruiter_id AND r.tenant_id = s.tenant_id
       CROSS JOIN LATERAL (VALUES
         ('L1', s.l1_status::text, s.l1_date, s.l1_interviewer, s.l1_color),
         ('L2', s.l2_status::text, s.l2_date, s.l2_interviewer, s.l2_color),
@@ -283,7 +283,7 @@ export class RecruiterSubmissionsService {
       jobId: row.job_id,
       jobCode: row.job_code,
       jobTitle: row.job_title,
-      recruiterName: row.recruiter_name || (row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
+      recruiterName: row.recruiter_name || (row.submission_origin === 'WEBSITE' || row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
       interviewer: row.interviewer,
       meetingLink: row.meeting_link,
       timezone: row.job_timezone,
@@ -383,6 +383,7 @@ export class RecruiterSubmissionsService {
           jobId: dto.jobId,
           candidateId: dto.candidateId,
           recruiterId: dto.recruiterId,
+          submissionOrigin: 'RECRUITER',
           l1Status,
           l1Date,
           l2Status,
@@ -517,6 +518,7 @@ export class RecruiterSubmissionsService {
         s.job_id,
         s.candidate_id,
         s.recruiter_id,
+        s.submission_origin,
         s.l1_status,
         s.l1_date,
         s.l1_remarks,
@@ -622,7 +624,7 @@ export class RecruiterSubmissionsService {
       JOIN ats.jobs j ON s.job_id = j.id AND j.tenant_id=s.tenant_id AND j.deleted_at IS NULL
       LEFT JOIN ats.clients cl ON cl.id = j.client_id AND cl.tenant_id=s.tenant_id AND cl.deleted_at IS NULL
       LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id AND ecl.tenant_id=s.tenant_id AND ecl.deleted_at IS NULL
-      LEFT JOIN ats.users r ON s.recruiter_id::text = r.id::text AND r.tenant_id=s.tenant_id
+      LEFT JOIN ats.users r ON s.recruiter_id = r.id::text AND r.tenant_id=s.tenant_id
       LEFT JOIN ats.pods p ON r.pod_id = p.id AND p.tenant_id=s.tenant_id
       LEFT JOIN ats.users ph ON p.pod_head_id = ph.id AND ph.tenant_id=s.tenant_id
       LEFT JOIN ats.users am ON (
@@ -694,17 +696,17 @@ export class RecruiterSubmissionsService {
     if (view === 'my') {
       baseSql += isAccountManager
         ? ` AND (j.account_manager_id = $${paramIndex}${creatorScopeSql})`
-        : ` AND (s.recruiter_id = $${paramIndex}${creatorScopeSql})`;
+        : ` AND (s.recruiter_id = $${paramIndex}::uuid::text${creatorScopeSql})`;
       params.push(user.dbId);
       paramIndex++;
     } else if (view === 'pod') {
       await assertPodsEnabled(this.prisma, tenantId, user.businessUnitId, user.branchId);
       if (!userPerms.includes('pod:view')) throw new ForbiddenException('Missing pod:view permission.');
-      baseSql += ` AND s.recruiter_id::text IN (SELECT id::text FROM ats.users WHERE tenant_id = $1 AND pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1))`;
+      baseSql += ` AND s.recruiter_id IN (SELECT id::text FROM ats.users WHERE tenant_id = $1::uuid AND pod_id = (SELECT pod_id FROM ats.users WHERE id = $${paramIndex}::uuid AND tenant_id = $1::uuid))`;
       params.push(user.dbId);
       paramIndex++;
     } else if (!canViewAll) {
-      baseSql += ` AND (s.recruiter_id = $${paramIndex} OR r.job_reviewer_id = $${paramIndex}${creatorScopeSql})`;
+      baseSql += ` AND (s.recruiter_id = $${paramIndex}::uuid::text OR r.job_reviewer_id = $${paramIndex}::uuid${creatorScopeSql})`;
       params.push(user.dbId);
       paramIndex++;
     }
@@ -1079,6 +1081,7 @@ export class RecruiterSubmissionsService {
         s.job_id,
         s.candidate_id,
         s.recruiter_id,
+        s.submission_origin,
         s.l1_status,
         s.l1_date,
         s.l1_remarks,
@@ -1167,7 +1170,7 @@ export class RecruiterSubmissionsService {
       LEFT JOIN ats.jobs j ON s.job_id = j.id
       LEFT JOIN ats.clients cl ON cl.id = j.client_id
       LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
-      LEFT JOIN ats.users r ON s.recruiter_id = r.id
+      LEFT JOIN ats.users r ON s.recruiter_id = r.id::text AND r.tenant_id = s.tenant_id
       LEFT JOIN ats.pods p ON r.pod_id = p.id
       LEFT JOIN ats.users ph ON p.pod_head_id = ph.id
       LEFT JOIN ats.users am ON (
@@ -1751,7 +1754,8 @@ export class RecruiterSubmissionsService {
       tenantId: row.tenant_id || row.tenantId,
       jobId: row.job_id || row.jobId,
       candidateId: row.candidate_id || row.candidateId,
-      recruiterId: row.recruiter_id || row.recruiterId,
+      recruiterId: row.recruiter_id ?? row.recruiterId ?? null,
+      submissionOrigin: row.submission_origin || row.submissionOrigin || (row.recruiter_id === 'WEBSITE_APPLICANT' ? 'WEBSITE' : 'RECRUITER'),
       accountManagerId: row.am_id || row.accountManagerId || null,
       recruiterJobReviewerId: row.recruiter_job_reviewer_id || row.recruiterJobReviewerId || null,
       l1Status: row.l1_status || row.l1Status,
@@ -1839,7 +1843,7 @@ export class RecruiterSubmissionsService {
       jobTitle: row.job_title || row.jobTitle,
       clientName: row.client_name || row.client?.clientName,
       endClientName: row.end_client_name || row.end_client?.clientName,
-      recruiterName: row.recruiter_name || row.recruiterName || (row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
+      recruiterName: row.recruiter_name || row.recruiterName || (row.submission_origin === 'WEBSITE' || row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
       recruiterEmail: row.recruiter_email || row.recruiterEmail || null,
       podHeadName: row.pod_head_name || row.podHeadName,
       creatorName: row.creator_name, creatorEmail: row.creator_email, creatorAvatar: row.creator_avatar, joinedAt: row.joined_at ? new Date(row.joined_at).toISOString() : null,

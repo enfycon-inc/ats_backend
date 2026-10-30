@@ -1108,7 +1108,8 @@ model RecruiterSubmission {
   tenantId         String    @map("tenant_id") @db.Uuid
   jobId            String    @map("job_id") @db.Uuid
   candidateId      String    @map("candidate_id") @db.Uuid
-  recruiterId      String    @map("recruiter_id") @db.VarChar(255)
+  recruiterId      String?   @map("recruiter_id") @db.VarChar(255)
+  submissionOrigin String    @default("RECRUITER") @map("submission_origin") @db.VarChar(20)
   l1Status         String    @default("PENDING") @map("l1_status") @db.VarChar(50)
   l1Date           DateTime? @map("l1_date") @db.Timestamptz(6)
   l1Remarks        String?   @map("l1_remarks")

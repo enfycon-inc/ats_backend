@@ -61,10 +61,10 @@ export async function recruiterDashboard(
     GROUP BY j.id, cl.client_name)`;
   const active = `UPPER(status) = 'ACTIVE' AND (approval_status IS NULL OR approval_status = 'APPROVED')`;
   const subScope = `FROM ats.recruiter_submissions s JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id JOIN ats.candidates c ON c.id = s.candidate_id AND c.tenant_id = s.tenant_id
-    WHERE s.tenant_id = $1::uuid AND s.recruiter_id = $2::uuid AND j.branch_id = $3::uuid AND j.business_unit_id = $4::uuid AND j.deleted_at IS NULL AND c.deleted_at IS NULL`;
+    WHERE s.tenant_id = $1::uuid AND s.recruiter_id = $2::uuid::text AND s.submission_origin = 'RECRUITER' AND j.branch_id = $3::uuid AND j.business_unit_id = $4::uuid AND j.deleted_at IS NULL AND c.deleted_at IS NULL`;
   const roundScope = `FROM ats.recruiter_submissions s JOIN ats.jobs j ON j.id = s.job_id AND j.tenant_id = s.tenant_id JOIN ats.candidates c ON c.id = s.candidate_id AND c.tenant_id = s.tenant_id
     CROSS JOIN LATERAL (VALUES ('L1',s.l1_status::text,s.l1_date,s.l1_interviewer), ('L2',s.l2_status::text,s.l2_date,s.l2_interviewer), ('L3',s.l3_status::text,s.l3_date,s.l3_interviewer)) AS r(round,status,date,interviewer)
-    WHERE s.tenant_id = $1::uuid AND s.recruiter_id = $2::uuid AND j.branch_id = $3::uuid AND j.business_unit_id = $4::uuid AND j.deleted_at IS NULL AND c.deleted_at IS NULL AND s.final_status <> 'PENDING_APPROVAL' AND r.date IS NOT NULL AND r.status IN ('SCHEDULED','AWAITING_FEEDBACK','CLEARED','REJECTED','CANCELLED')`;
+    WHERE s.tenant_id = $1::uuid AND s.recruiter_id = $2::uuid::text AND s.submission_origin = 'RECRUITER' AND j.branch_id = $3::uuid AND j.business_unit_id = $4::uuid AND j.deleted_at IS NULL AND c.deleted_at IS NULL AND s.final_status <> 'PENDING_APPROVAL' AND r.date IS NOT NULL AND r.status IN ('SCHEDULED','AWAITING_FEEDBACK','CLEARED','REJECTED','CANCELLED')`;
   const eventSelect = `SELECT s.id AS submission_id, c.full_name, j.job_title, j.job_timezone, s.meeting_link, r.round, r.status, r.date, r.interviewer `;
   const start = new Date(month + '-01T00:00:00Z');
   start.setUTCDate(start.getUTCDate() - 1);

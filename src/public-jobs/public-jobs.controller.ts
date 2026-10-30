@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Headers, Param, ParseUUIDPipe, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, BadRequestException, HttpCode, HttpStatus, Header } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PublicJobsService } from './public-jobs.service';
@@ -45,7 +45,9 @@ export class PublicJobsController {
   @Post(':slug/applications')
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(FileInterceptor('resume', { limits: { fileSize: 8 * 1024 * 1024, files: 1 } }))
-  @ApiOperation({ summary: 'Submit a candidate application and resume for a published job' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', required: ['firstName', 'lastName', 'email', 'consent', 'resume', 'totalExperienceYears', 'relevantExperienceYears', 'currentCompany', 'currentLocation', 'preferredLocations', 'noticePeriodDays', 'currentCompensation', 'expectedCompensation', 'compensationCurrency', 'compensationInputUnit'], properties: { firstName: { type: 'string', maxLength: 120 }, lastName: { type: 'string', maxLength: 120 }, email: { type: 'string', format: 'email' }, phone: { type: 'string', maxLength: 50 }, consent: { type: 'string', enum: ['true'] }, totalExperienceYears: { type: 'string' }, relevantExperienceYears: { type: 'string' }, currentCompany: { type: 'string', maxLength: 255 }, currentLocation: { type: 'string', maxLength: 255 }, preferredLocations: { type: 'string', description: 'Comma-separated locations.' }, noticePeriodDays: { type: 'string' }, currentCompensation: { type: 'string' }, expectedCompensation: { type: 'string' }, compensationCurrency: { type: 'string' }, compensationInputUnit: { type: 'string' }, resume: { type: 'string', format: 'binary' } } } })
+  @ApiOperation({ summary: 'Submit a candidate application and resume for a published job', description: 'Send multipart/form-data with separate firstName and lastName fields. The API stores these in the candidate first_name and last_name fields and composes full_name. The backend records submission_origin=WEBSITE and leaves recruiter_id null.' })
   apply(@Req() req: any, @Param('slug') slug: string, @Body() body: any, @UploadedFile() resume: any) {
     return this.service.apply(req.publicJobsKey, slug, body, resume);
   }

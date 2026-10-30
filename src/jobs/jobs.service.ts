@@ -1623,7 +1623,7 @@ export class JobsService {
     const submissionWhere = { tenantId, jobId: { in: jobIds }, candidate: { tenantId } };
     const submissions = filter.includeSubmissions ? await this.prisma.recruiterSubmission.findMany({
       where: submissionWhere,
-      select: { id: true, jobId: true, recruiterId: true, createdAt: true, finalStatus: true,
+      select: { id: true, jobId: true, recruiterId: true, submissionOrigin: true, createdAt: true, finalStatus: true,
         l1Status: true, l2Status: true, l3Status: true,
         candidateCurrentCtc: true, candidateExpectedCtc: true, candidateCtcCurrency: true, candidateCtcTerm: true,
         currentCompensationAmount: true, expectedCompensationAmount: true, compensationCurrency: true, compensationPeriod: true, compensationInputUnit: true,
@@ -1632,7 +1632,7 @@ export class JobsService {
       orderBy: [{ jobId: 'asc' }, { createdAt: 'asc' }], take: JOB_EXPORT_MAX_SUBMISSIONS + 1,
     }) : [];
     if (submissions.length > JOB_EXPORT_MAX_SUBMISSIONS) throw new BadRequestException('This export exceeds 50,000 submissions. Choose a shorter period or one account manager.');
-    const recruiterIds = [...new Set(submissions.map(s => s.recruiterId))].filter(id => /^[0-9a-f-]{36}$/i.test(id));
+    const recruiterIds = [...new Set(submissions.map(s => s.recruiterId).filter((id): id is string => Boolean(id)))].filter(id => /^[0-9a-f-]{36}$/i.test(id));
     const recruiters = recruiterIds.length ? await this.prisma.user.findMany({ where: { tenantId, id: { in: recruiterIds } }, select: { id: true, fullName: true } }) : [];
     const names = new Map(recruiters.map(r => [r.id, r.fullName]));
     const counts = new Map<string, number>();
@@ -1647,7 +1647,7 @@ export class JobsService {
     const summary: ExportCell[][] = [['Job ID', 'Job code', 'Job title', 'Client name', 'Job location', 'Job type', 'Job status', 'Market', 'Work mode', 'Required skills', 'Minimum experience', 'Maximum experience', 'Positions', 'Required submissions', 'Submissions done', 'Created date (UTC)'],
       ...jobs.map(j => [j.id, j.job_code, j.job_title, j.client_name, location(j), j.job_type, j.status, j.market, j.work_mode, (j.skills_required || []).join(', '), j.exp_min, j.exp_max, j.no_of_positions, j.submission_required, counts.get(j.id) || 0, j.created_at.toISOString()])];
     const detail: ExportCell[][] = [['Job code', 'Job title', 'Client name', 'Job location', 'Job type', 'Job status', 'Required submissions', 'Submissions done', 'Submission ID', 'Candidate ID', 'Candidate name', 'Current location', 'Total experience (years)', 'Relevant experience (years)', 'Current compensation', 'Expected compensation', 'Currency', 'Pay period', 'Input unit', 'Submission status', 'L1 status', 'L2 status', 'L3 status', 'Submitted by', 'Submission date (UTC)'],
-      ...submissions.map(s => { const j = byId.get(s.jobId)!; return [j.job_code, j.job_title, j.client_name, location(j), j.job_type, j.status, j.submission_required, counts.get(j.id) || 0, s.id, s.candidate.id, s.candidate.fullName || [s.candidate.firstName, s.candidate.lastName].filter(Boolean).join(' '), s.candidate.rawCurrentLocation, num(s.candidate.totalExperienceYears), num(s.candidateRelevantExperience), num(s.currentCompensationAmount ?? s.candidateCurrentCtc ?? s.candidate.currentCtc), num(s.expectedCompensationAmount ?? s.candidateExpectedCtc ?? s.candidate.expectedCtc), s.compensationCurrency ?? s.candidateCtcCurrency, s.compensationPeriod ?? s.candidateCtcTerm, s.compensationInputUnit, s.finalStatus, s.l1Status, s.l2Status, s.l3Status, names.get(s.recruiterId) || (s.recruiterId === 'WEBSITE_APPLICANT' ? 'Website Applicant' : 'Unavailable'), s.createdAt.toISOString()]; })];
+      ...submissions.map(s => { const j = byId.get(s.jobId)!; return [j.job_code, j.job_title, j.client_name, location(j), j.job_type, j.status, j.submission_required, counts.get(j.id) || 0, s.id, s.candidate.id, s.candidate.fullName || [s.candidate.firstName, s.candidate.lastName].filter(Boolean).join(' '), s.candidate.rawCurrentLocation, num(s.candidate.totalExperienceYears), num(s.candidateRelevantExperience), num(s.currentCompensationAmount ?? s.candidateCurrentCtc ?? s.candidate.currentCtc), num(s.expectedCompensationAmount ?? s.candidateExpectedCtc ?? s.candidate.expectedCtc), s.compensationCurrency ?? s.candidateCtcCurrency, s.compensationPeriod ?? s.candidateCtcTerm, s.compensationInputUnit, s.finalStatus, s.l1Status, s.l2Status, s.l3Status, s.submissionOrigin === 'WEBSITE' || s.recruiterId === 'WEBSITE_APPLICANT' ? 'Website Applicant' : (s.recruiterId ? names.get(s.recruiterId) || 'Unavailable' : 'Unavailable'), s.createdAt.toISOString()]; })];
     const workbook = jobExportWorkbook([{ name: 'Jobs Summary', rows: summary }, ...(filter.includeSubmissions ? [{ name: 'Job Submissions', rows: detail }] : [])]);
     await this.prisma.auditLog.create({ data: { tenantId, actorId: user.dbId, actorEmail: user.email, action: 'JOB_DATA_EXPORTED', targetType: 'job', details: { jobIds, ...filter, submissionCount: submissions.length } } });
     return { filename: `job_report_${filter.from.slice(0, 10)}.xlsx`, content: workbook.toString('base64') };

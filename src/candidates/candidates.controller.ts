@@ -304,7 +304,7 @@ export class CandidatesController {
       if (!tenantWide && !user.branchId) throw new ForbiddenException('An assigned branch is required to review this resume.');
       const visibleWebsiteApplication = await this.prisma.recruiterSubmission.findFirst({
         where: {
-          tenantId: activeTenantId, candidateId: id, recruiterId: 'WEBSITE_APPLICANT', finalStatus: 'PENDING_APPROVAL',
+          tenantId: activeTenantId, candidateId: id, submissionOrigin: 'WEBSITE', finalStatus: 'PENDING_APPROVAL',
           job: { tenantId: activeTenantId, ...(tenantWide ? {} : { branchId: user.branchId, ...(user.businessUnitId ? { businessUnitId: user.businessUnitId } : {}) }) },
         }, select: { id: true },
       });

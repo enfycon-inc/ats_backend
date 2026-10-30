@@ -4,7 +4,7 @@ import { PublicJobsService } from './public-jobs.service';
 describe('automatic careers publication', () => {
   const key = { id: 'client', tenantId: 'tenant', scope: 'TENANT' as const, branchId: null, businessUnitId: null };
   const user = { dbId: 'admin', tenantId: 'tenant', permissions: ['tenant:settings', 'job:manage_publication_tenant'] };
-  const application = { fullName: 'Alex Morgan', email: 'alex@example.com', consent: 'true', totalExperienceYears: '5', relevantExperienceYears: '4', currentCompany: 'Example', currentLocation: 'Bengaluru', preferredLocations: 'Bengaluru', noticePeriodDays: '0', currentCompensation: '12', expectedCompensation: '15', compensationInputUnit: 'LPA', compensationCurrency: 'INR' };
+  const application = { firstName: 'Alex', lastName: 'Morgan', email: 'alex@example.com', consent: 'true', totalExperienceYears: '5', relevantExperienceYears: '4', currentCompany: 'Example', currentLocation: 'Bengaluru', preferredLocations: 'Bengaluru', noticePeriodDays: '0', currentCompensation: '12', expectedCompensation: '15', compensationInputUnit: 'LPA', compensationCurrency: 'INR' };
   const resume = { buffer: Buffer.from('%PDF-example'), size: 12, mimetype: 'application/pdf' };
   it('enrolls newly created jobs with unique slugs that fit the existing schema', () => {
     const first = careerPublicationDefaults('Engineer', 'JOB-001');

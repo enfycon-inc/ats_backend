@@ -139,8 +139,8 @@ export class RecruiterPerformanceService {
     return { ...scope, jobs, subs, review, pods, features, sort };
   }
 
-  // Shared scope for both endpoints. Never cast the legacy varchar recruiter_id:
-  // sentinel website applicants and malformed identifiers must remain unattributed.
+  // Website-origin submissions have no recruiter attribution and therefore never
+  // enter recruiter performance counts.
   private ctes(
     ctx: Awaited<ReturnType<RecruiterPerformanceService['context']>>,
     input: RecruiterFilters,
@@ -160,7 +160,7 @@ export class RecruiterPerformanceService {
     ), roster AS (
       SELECT u.* FROM unit_users u WHERE EXISTS (SELECT 1 FROM recruiter_roles r WHERE r.id = u.role_id OR r.id = ANY(u.assigned_role_ids))
         OR (${jobs} AND EXISTS (SELECT 1 FROM ats.job_recruiters jr JOIN scoped_jobs j ON j.id = jr.job_id WHERE jr.recruiter_id = u.id))
-        OR (${subs} AND EXISTS (SELECT 1 FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id WHERE s.tenant_id = ${where.tenantId}::uuid AND s.recruiter_id::text = u.id::text))
+        OR (${subs} AND EXISTS (SELECT 1 FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id WHERE s.tenant_id = ${where.tenantId}::uuid AND s.submission_origin = 'RECRUITER' AND s.recruiter_id = u.id::text))
     ), members AS (
       SELECT r.* FROM roster r WHERE (${input.recruiterId ?? ''} = '' OR r.id::text = ${input.recruiterId ?? ''}) AND (${input.podId ?? ''} = '' OR r.pod_id::text = ${input.podId ?? ''})
         AND (POSITION(LOWER(${input.search?.trim() ?? ''}) IN LOWER(r.full_name)) > 0 OR POSITION(LOWER(${input.search?.trim() ?? ''}) IN LOWER(r.email)) > 0)
@@ -175,7 +175,7 @@ export class RecruiterPerformanceService {
     ), attributed AS (
       SELECT s.id, s.job_id, s.candidate_id, s.recruiter_id, s.created_at, s.final_status, s.l1_status, s.l2_status, s.l3_status,
         s.l1_date, s.l2_date, s.l3_date, m.id AS member_id
-      FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id JOIN members m ON m.id::text = s.recruiter_id::text
+      FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id JOIN members m ON m.id::text = s.recruiter_id AND s.submission_origin = 'RECRUITER'
       JOIN ats.candidates c ON c.id = s.candidate_id AND c.tenant_id = s.tenant_id AND c.deleted_at IS NULL WHERE ${subs} AND s.tenant_id = ${where.tenantId}::uuid
     ), milestones AS (
       SELECT s.*, ev.offered_at, ev.joined_at FROM attributed s LEFT JOIN LATERAL (
@@ -235,7 +235,7 @@ export class RecruiterPerformanceService {
       COALESCE((SELECT jsonb_agg(jsonb_build_object('bucket',bucket,'submissions',submissions,'closures',closures)) FROM weekly),'[]'::jsonb) AS weekly,
       (SELECT COUNT(DISTINCT a.job_id)::int FROM assignments a JOIN scoped_jobs j ON j.id=a.job_id WHERE UPPER(j.status)='ACTIVE') AS "activeJobs",
       (SELECT COUNT(*)::int FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id=s.job_id JOIN ats.candidates c ON c.id=s.candidate_id AND c.tenant_id=s.tenant_id AND c.deleted_at IS NULL
-        WHERE ${ctx.subs} AND s.tenant_id=${ctx.where.tenantId}::uuid AND ${period(Prisma.sql`s.created_at`)} AND NOT EXISTS (SELECT 1 FROM roster r WHERE r.id::text=s.recruiter_id::text)) AS unattributed,
+        WHERE ${ctx.subs} AND s.tenant_id=${ctx.where.tenantId}::uuid AND ${period(Prisma.sql`s.created_at`)} AND s.submission_origin = 'RECRUITER' AND s.recruiter_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM roster r WHERE r.id::text=s.recruiter_id)) AS unattributed,
       ${ctx.pods ? Prisma.sql`COALESCE((SELECT jsonb_agg(jsonb_build_object('id',p.id,'name',p.name) ORDER BY p.name,p.id) FROM ats.pods p WHERE p.tenant_id=${ctx.where.tenantId}::uuid AND p.branch_id=${ctx.where.branchId}::uuid AND p.business_unit_id=${ctx.where.businessUnitId}::uuid),'[]'::jsonb)` : Prisma.sql`'[]'::jsonb`} AS pods`);
     const rows: RecruiterRow[] = raw.rows.map((r) => {
       const p = aggregateDeliveryPipeline(r.groups);
