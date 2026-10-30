@@ -1,3 +1,4 @@
+import { normalizeJobUrgency } from './job-urgency-contract';
 import { assertPermanentDeletion } from '../auth/utils/permanent-deletion';
 import { effectiveJobAssignmentPolicy } from '../auth/job-assignment-policy';
 import { jobExportWorkbook, type ExportCell } from './job-export-workbook';
@@ -810,6 +811,7 @@ export class JobsService {
   }
 
   async createJob(dto: CreateJobDto, tenantId: string, createdByEmail?: string, activeBranchId?: string | null, actor?: AuthUser, draft = false): Promise<JobProfile> {
+    if(dto.priority!==undefined&&!normalizeJobUrgency(dto.priority))throw new BadRequestException('Choose Hot, Warm or Cold.');
     const requestedWorkMode = dto.workMode ?? dto.remoteJob;
     const workMode = requestedWorkMode === undefined ? 'In Office' : normalizeJobWorkMode(requestedWorkMode);
     if (!workMode) throw new BadRequestException('Select In Office, Remote, or Hybrid as the work mode.');
@@ -1152,7 +1154,7 @@ export class JobsService {
           noOfPositions: dto.noOfPositions || 1,
           submissionRequired: dto.submissionRequired ?? 1,
           submissionDone: 0,
-          urgency: dto.priority || 'Medium',
+          urgency: dto.priority === undefined ? 'Warm' : normalizeJobUrgency(dto.priority)!,
           workMode,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
@@ -1864,7 +1866,7 @@ export class JobsService {
       noOfPositions: row.no_of_positions ?? row.noOfPositions ?? 1,
       submissionRequired: row.submission_required ?? row.submissionRequired ?? 1,
       submissionDone: row.submission_done ?? row.submissionDone ?? 0,
-      priority: row.urgency || 'Medium',
+      priority: normalizeJobUrgency(row.urgency) || row.urgency || 'Warm',
 
       workMode: row.work_mode ?? row.workMode ?? 'In Office',
       startDate: rawStartDate ? new Date(rawStartDate).toISOString().split('T')[0] : null,
@@ -2184,6 +2186,7 @@ export class JobsService {
     user: any,
     mode?: 'draft' | 'publish'
   ): Promise<JobProfile> {
+    if(dto.priority!==undefined&&!normalizeJobUrgency(dto.priority))throw new BadRequestException('Choose Hot, Warm or Cold.');
     this.logger.log(`Updating job: ${id} for tenant: ${tenantId}`);
     positiveInteger(dto.submissionRequired, 'Maximum allowed submissions');
     positiveInteger(dto.noOfPositions, 'Number of positions');
@@ -2480,7 +2483,7 @@ export class JobsService {
     
     if (dto.noOfPositions !== undefined) dataToUpdate.noOfPositions = dto.noOfPositions;
     if (dto.submissionRequired !== undefined) dataToUpdate.submissionRequired = dto.submissionRequired;
-    if (dto.priority !== undefined) dataToUpdate.urgency = dto.priority;
+    if (dto.priority !== undefined) {const urgency=normalizeJobUrgency(dto.priority);if(!urgency)throw new BadRequestException('Choose Hot, Warm or Cold.');dataToUpdate.urgency=urgency;}
     if (dto.workMode !== undefined || dto.remoteJob !== undefined) {
       const workMode = normalizeJobWorkMode(dto.workMode ?? dto.remoteJob);
       if (!workMode) throw new BadRequestException('Select In Office, Remote, or Hybrid as the work mode.');
@@ -3249,7 +3252,7 @@ export class JobsService {
       taxTerms: original.taxTerms,
       noOfPositions: original.noOfPositions || 1,
       submissionRequired: original.submissionRequired ?? 1,
-      priority: original.priority || 'Medium',
+      priority: normalizeJobUrgency(original.priority) || original.priority || 'Warm',
       workMode: (original as any).workMode || (original as any).remoteJob || 'In Office',
       duration: original.duration || '',
       hoursPerWeek: original.hoursPerWeek || 40,

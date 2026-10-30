@@ -5,7 +5,7 @@ import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 
 const user = { dbId: 'user-id', permissions: ['submission:view', 'submission:edit'], roles: [], tenantId: 'tenant-id' } as unknown as AuthUser;
 function setup() {
-  const prisma: any = { skillMaster: { findMany: jest.fn().mockResolvedValue([]) }, submissionEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }, $queryRawUnsafe: jest.fn(), recruiterSubmission: { findFirst: jest.fn(), updateMany: jest.fn() } };
+  const prisma: any = { skillMaster: { findMany: jest.fn().mockResolvedValue([]) }, submissionEvent: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() }, $queryRawUnsafe: jest.fn().mockImplementation(async (sql: string) => sql.startsWith('SELECT status, keep_existing_submissions_open') ? [{status:'Active',keep_existing_submissions_open:false}] : []), recruiterSubmission: { findFirst: jest.fn(), updateMany: jest.fn() } };
   prisma.$transaction = jest.fn(callback => callback(prisma));
   const notifications = { create: jest.fn() };
   const service = new RecruiterSubmissionsService(prisma as any, notifications as any);
@@ -145,7 +145,7 @@ describe('submission tracker API', () => {
     const { service, prisma } = setup();
     prisma.$queryRawUnsafe.mockResolvedValueOnce([{ count: 2n, all_count: 35n, review_count: 6n, interviews_count: 20n, offers_count: 2n, closed_count: 7n }]).mockResolvedValueOnce([]);
     const result = await service.findAll('tenant-id', user, { bucket: 'offers', page: 2, limit: 10, search: 'Name%' });
-    expect(result.counts).toEqual({ all: 35, review: 6, interviews: 20, offers: 2, closed: 7 });
+    expect(result.counts).toEqual({ all: 35, review: 6, interviews: 20, offers: 2, closures: 0, closed: 7 });
     expect(result.total).toBe(2);
     const [countSql, ...countParams] = prisma.$queryRawUnsafe.mock.calls[0];
     expect(countSql).toContain('s.tenant_id = $1');

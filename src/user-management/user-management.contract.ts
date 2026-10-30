@@ -19,6 +19,7 @@ export interface ManagementRow {
   branchId?: string | null; businessUnitId?: string | null;
   branchName: string | null; businessUnitName: string | null; roleName: string | null;
   isActive: boolean; isApproved: boolean; requestedRole: string | null;
+  requestedRoleId?: string | null; requestVersion?: string | null;
   lastLoginAt: string | null; createdAt: string; invitationStatus?: 'invited' | 'expired';
   presence?: Presence; lastSeenAt?: string | null; sessions?: number;
   blockReason?: string | null;
@@ -26,6 +27,7 @@ export interface ManagementRow {
   allowedActions?: { edit: boolean; changeAccess: boolean; review: boolean; resendInvitation: boolean; assignManager?: boolean; resetPassword?: boolean; endSessions?: boolean; deleteUser?: boolean };
 }
 export interface DirectoryPage {
+  filters: { cities: string[]; roles: string[] };
   items: ManagementRow[]; total: number; page: number; pageSize: number;
   counts: { active: number; pending: number; blocked: number };
   asOf: string; telemetryEnabled: boolean;

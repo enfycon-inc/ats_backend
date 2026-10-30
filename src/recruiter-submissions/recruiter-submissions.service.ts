@@ -1,3 +1,6 @@
+import { clientReadWhere } from '../clients/client-visibility';
+import { TRACKER_OPTION_FIELDS, trackerFilterAccess, validateTrackerFilters, trackerExtraPredicates, joinedDateSql } from './tracker-filters';
+import type { TrackerListFilters, TrackerOptionKind, TrackerFilterOptions, TrackerResponse, TrackerDashboardSummary } from './tracker-contract';
 import { assertPermanentDeletion } from '../auth/utils/permanent-deletion';
 import { recruiterDashboard } from './recruiter-dashboard';
 import { assertPodsEnabled, loadWorkspaceFeatures } from '../auth/workspace-features';
@@ -494,28 +497,17 @@ export class RecruiterSubmissionsService {
   async findAll(
     tenantId: string,
     user: AuthUser,
-    filters: {
-      page?: number;
-      limit?: number;
-      startDate?: string;
-      endDate?: string;
-      l1Status?: string;
-      l2Status?: string;
-      l3Status?: string;
-      finalStatus?: string;
-      jobId?: string;
-      candidateId?: string;
-      branchId?: string;
-      view?: string;
-      submissionId?: string;
-      search?: string;
-      bucket?: TrackerBucket;
-      sortBy?: string;
-      sortDirection?: string;
-      dashboardRangeDays?: 7 | 30 | 90;
-      dashboardOnly?: boolean;
+    filters: Omit<TrackerListFilters, 'sortBy' | 'sortDirection'> & {
+      sortBy?: string; sortDirection?: string; submissionId?: string; dashboardRangeDays?: 7 | 30 | 90; dashboardOnly?: boolean;
+      filterOptions?: TrackerOptionKind; optionSearch?: string; optionPage?: number;
     },
-  ) {
+  ): Promise<any> {
+    if (user.tenantId && user.tenantId !== tenantId) throw new ForbiddenException('Workspace access is unavailable.');
+    if (!(user.permissions || []).some(p => ['submission:view', 'submission:create', '*'].includes(p))) throw new ForbiddenException('Submission viewing permission is required.');
+    if (filters.filterOptions !== undefined && !Object.prototype.hasOwnProperty.call(TRACKER_OPTION_FIELDS, filters.filterOptions)) throw new BadRequestException('Invalid filter option.');
+    const access = trackerFilterAccess(user.permissions || []);
+    validateTrackerFilters(filters as TrackerListFilters, access);
+    if (filters.page !== undefined && (!Number.isSafeInteger(filters.page) || filters.page < 1 || filters.page > 100000) || filters.limit !== undefined && (!Number.isSafeInteger(filters.limit) || filters.limit < 1 || filters.limit > 100)) throw new BadRequestException('Invalid submission pagination.');
     this.logger.log(`Listing submissions for tenant: ${tenantId} under user role visibility, view=${filters.view || 'all'}`);
 
     let baseSql = `
@@ -610,6 +602,8 @@ export class RecruiterSubmissionsService {
         r.email AS recruiter_email, r.profile_picture AS recruiter_avatar,
         r.job_reviewer_id AS recruiter_job_reviewer_id,
         j.created_by_user_id AS job_creator_id, j.business_unit_id AS job_unit_id,
+        creator.full_name AS creator_name, creator.email AS creator_email, creator.profile_picture AS creator_avatar,
+        ${joinedDateSql} AS joined_at,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
         am.id AS am_id,
@@ -624,19 +618,22 @@ export class RecruiterSubmissionsService {
          ORDER BY cr.is_system ASC, cr.created_at ASC, cr.id ASC LIMIT 1) AS am_role
       FROM (SELECT rs.*, ROW_NUMBER() OVER (PARTITION BY rs.job_id ORDER BY rs.created_at ASC, rs.id ASC) AS submission_number
             FROM ats.recruiter_submissions rs WHERE rs.tenant_id = $1) s
-      LEFT JOIN ats.candidates c ON s.candidate_id = c.id
-      LEFT JOIN ats.jobs j ON s.job_id = j.id
-      LEFT JOIN ats.clients cl ON cl.id = j.client_id
-      LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id
-      LEFT JOIN ats.users r ON s.recruiter_id = r.id
-      LEFT JOIN ats.pods p ON r.pod_id = p.id
-      LEFT JOIN ats.users ph ON p.pod_head_id = ph.id
+      JOIN ats.candidates c ON s.candidate_id = c.id AND c.tenant_id=s.tenant_id AND c.deleted_at IS NULL
+      JOIN ats.jobs j ON s.job_id = j.id AND j.tenant_id=s.tenant_id AND j.deleted_at IS NULL
+      LEFT JOIN ats.clients cl ON cl.id = j.client_id AND cl.tenant_id=s.tenant_id AND cl.deleted_at IS NULL
+      LEFT JOIN ats.clients ecl ON ecl.id = j.end_client_id AND ecl.tenant_id=s.tenant_id AND ecl.deleted_at IS NULL
+      LEFT JOIN ats.users r ON s.recruiter_id::text = r.id::text AND r.tenant_id=s.tenant_id
+      LEFT JOIN ats.pods p ON r.pod_id = p.id AND p.tenant_id=s.tenant_id
+      LEFT JOIN ats.users ph ON p.pod_head_id = ph.id AND ph.tenant_id=s.tenant_id
       LEFT JOIN ats.users am ON (
-        j.account_manager_id = am.id 
+        j.account_manager_id = am.id AND am.tenant_id=s.tenant_id
 
 
       )
       
+      LEFT JOIN ats.users creator ON creator.id=j.created_by_user_id AND creator.tenant_id=s.tenant_id
+      LEFT JOIN ats.business_units bu ON bu.id=j.business_unit_id AND bu.tenant_id=s.tenant_id AND bu.branch_id=j.branch_id
+      LEFT JOIN ats.branches br ON br.id=j.branch_id AND br.tenant_id=s.tenant_id
       WHERE s.tenant_id = $1
     `;
 
@@ -644,12 +641,14 @@ export class RecruiterSubmissionsService {
     let paramIndex = 2;
 
     const userPerms = user.permissions || [];
-    const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+    let scopeBranchId=user.branchId, scopeUnitId=user.businessUnitId;
+    const isAccountManager = access.portfolio;
     // Unit managers never inherit tenant-wide submission visibility from view/audit permissions.
     if (userPerms.includes('unit_admin:manage') && !userPerms.some(p => ['tenant:manage', 'tenant:settings', 'platform:manage', 'branch_admin:manage'].includes(p))) {
       const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true, businessUnitId: true } });
       if (!membership?.branchId || !membership.businessUnitId) throw new ForbiddenException('A current branch and unit assignment is required.');
       baseSql += ` AND j.tenant_id = $1 AND j.branch_id = $${paramIndex}::uuid AND j.business_unit_id = $${paramIndex + 1}::uuid`;
+      scopeBranchId=membership.branchId; scopeUnitId=membership.businessUnitId;
       params.push(membership.branchId, membership.businessUnitId);
       paramIndex += 2;
     }
@@ -657,6 +656,7 @@ export class RecruiterSubmissionsService {
       const membership = await this.prisma.user.findFirst({ where: { id: user.dbId, tenantId, isActive: true, isApproved: true }, select: { branchId: true } });
       if (!membership?.branchId || (filters.branchId && filters.branchId !== membership.branchId)) throw new ForbiddenException('A current branch assignment is required.');
       baseSql += ` AND j.tenant_id = $1 AND j.branch_id = $${paramIndex}::uuid`;
+      scopeBranchId=membership.branchId;
       params.push(membership.branchId);
       paramIndex++;
     }
@@ -709,6 +709,70 @@ export class RecruiterSubmissionsService {
       paramIndex++;
     }
 
+    if (access.pods && !filters.filterOptions && !filters.podId) {
+      access.pods=(await loadWorkspaceFeatures(this.prisma,tenantId,filters.businessUnitId||scopeUnitId,scopeBranchId)).podsEnabled;
+    }
+    if (filters.podId || filters.filterOptions === 'podId') {
+      const features = await loadWorkspaceFeatures(this.prisma, tenantId, filters.businessUnitId||scopeUnitId, scopeBranchId);
+      if (!features.podsEnabled) {
+        if (filters.podId) throw new ForbiddenException('Pods are disabled in this workspace.');
+        return { data: [], page: filters.optionPage || 1, hasMore: false };
+      }
+    }
+    let matchingClientIds:string[]|undefined;
+    if(filters.clients){
+      const policy=await clientReadWhere(this.prisma,tenantId,{...user,branchId:scopeBranchId,businessUnitId:scopeUnitId});
+      const selection=filters.clients;
+      const rows=await this.prisma.client.findMany({where:{AND:[policy,{deletedAt:null},...(selection.mode==='ids'?[{id:{in:selection.ids}}]:[{clientName:{contains:selection.search.trim(),mode:'insensitive' as const}}])]},select:{id:true}});
+      if(selection.mode==='ids'&&rows.length!==selection.ids.length)throw new NotFoundException('A selected client is unavailable.');
+      if(selection.mode==='matching')matchingClientIds=rows.map(row=>row.id);
+    }
+    if (filters.clientId) {
+      const policy = await clientReadWhere(this.prisma, tenantId, {...user,branchId:scopeBranchId,businessUnitId:scopeUnitId});
+      if (!await this.prisma.client.findFirst({where:{AND:[policy,{id:filters.clientId,deletedAt:null}]},select:{id:true}})) throw new NotFoundException('Client is unavailable.');
+    }
+    const addFilter = (value: unknown) => { params.push(value); return `$${paramIndex++}`; };
+    if(filters.branchId && !['null','undefined',''].includes(filters.branchId)) {
+      if(!access.branch&&scopeBranchId&&filters.branchId!==scopeBranchId)throw new ForbiddenException('You can only filter your current branch.');
+      const branch=addFilter(filters.branchId.trim());
+      baseSql+=` AND (j.branch_id::text=${branch} OR j.branch_id IN (SELECT id FROM ats.branches WHERE tenant_id=$1::uuid AND (LOWER(name)=LOWER(${branch}) OR LOWER(code)=LOWER(${branch}))))`;
+    }
+    const selectedIds=(['accountManagerId','recruiterId','createdById','clientId','businessUnitId','podId'] as const).filter(key=>filters[key]);
+    if(selectedIds.length){
+      const source=baseSql.slice(baseSql.indexOf('FROM (SELECT rs.*'));
+      const tests=selectedIds.map(key=>`COALESCE(BOOL_OR(${TRACKER_OPTION_FIELDS[key].id}::text=${addFilter(filters[key])}),FALSE) AS "${key}"`);
+      const [visible]=await this.prisma.$queryRawUnsafe<Record<string,boolean>[]>(`SELECT ${tests.join(',')} ${source}`, ...params);
+      if(!visible||selectedIds.some(key=>!visible[key]))throw new NotFoundException('A selected filter is unavailable in your submission scope.');
+      // These values will be bound again in the actual predicates; remove the
+      // validation-only parameters so list statements never receive unused binds.
+      params.splice(params.length-selectedIds.length,selectedIds.length);paramIndex-=selectedIds.length;
+    }
+    const multiSelected=(['accountManagers','recruiters','clients'] as const).filter(key=>filters[key]?.mode==='ids');
+    if(multiSelected.length){
+      const source=baseSql.slice(baseSql.indexOf('FROM (SELECT rs.*'));
+      const before=params.length;
+      const checks=multiSelected.map(key=>{const field=TRACKER_OPTION_FIELDS[key==='accountManagers'?'accountManagerId':key==='recruiters'?'recruiterId':'clientId'];const selection=filters[key]!;return `COUNT(DISTINCT ${field.id}) FILTER(WHERE ${field.id}=ANY(${addFilter(selection.mode==='ids'?selection.ids:[])}::uuid[]))::int AS "${key}"`;});
+      const [visible]=await this.prisma.$queryRawUnsafe<Record<string,number>[]>(`SELECT ${checks.join(',')} ${source}`,...params);
+      if(!visible||multiSelected.some(key=>{const sel=filters[key]!;return Number(visible[key])!==(sel.mode==='ids'?sel.ids.length:0);}))throw new NotFoundException('A selected filter is unavailable in your submission scope.');
+      params.splice(before);paramIndex=before+1;
+    }
+    for (const clause of trackerExtraPredicates(filters as TrackerListFilters, addFilter, matchingClientIds)) baseSql += ` AND (${clause})`;
+    if (filters.filterOptions) {
+      const kind = filters.filterOptions;
+      if (!(kind in TRACKER_OPTION_FIELDS)) throw new BadRequestException('Invalid filter option.');
+      if (['accountManagerId','recruiterId','createdById'].includes(kind) && !access.people || kind==='businessUnitId' && !access.unit || kind==='branchId' && !access.branch || kind==='clientId' && !access.clients || kind==='podId' && !access.pods) throw new ForbiddenException('This filter is unavailable in your scope.');
+      const field = TRACKER_OPTION_FIELDS[kind];
+      const optionPage=filters.optionPage??1, text=filters.optionSearch??'';
+      if(!Number.isSafeInteger(optionPage)||optionPage<1||optionPage>10000||typeof text!=='string'||text.length>100)throw new BadRequestException('Invalid option search.');
+      const from = baseSql.slice(baseSql.indexOf('FROM (SELECT rs.*'));
+      const searchParam=addFilter(text.trim()), limitParam=addFilter(51), offsetParam=addFilter((optionPage-1)*50);
+      const rows: {id:string;label:string;email?:string;avatar?:string}[]=await this.prisma.$queryRawUnsafe(`SELECT DISTINCT ${field.id}::text AS id, COALESCE(${field.label},'Name unavailable') AS label, ${field.email||'NULL::text'} AS email, ${field.avatar||'NULL::text'} AS avatar ${from}
+        AND ${field.id} IS NOT NULL AND POSITION(LOWER(${searchParam}) IN LOWER(COALESCE(${field.label},'') || ' ' || COALESCE(${field.email||'NULL::text'},'')))>0 ORDER BY label,id LIMIT ${limitParam} OFFSET ${offsetParam}`, ...params);
+      let visible=rows.slice(0,50);
+      if(kind==='clientId'&&visible.length){const policy=await clientReadWhere(this.prisma,tenantId,{...user,branchId:scopeBranchId,businessUnitId:scopeUnitId});const allowed=await this.prisma.client.findMany({where:{AND:[policy,{id:{in:visible.map(row=>row.id)},deletedAt:null}]},select:{id:true}});const ids=new Set(allowed.map(row=>row.id));visible=visible.filter(row=>ids.has(row.id));}
+      return {data:visible,page:optionPage,hasMore:rows.length>50} satisfies TrackerFilterOptions;
+    }
+
     if (filters.submissionId) {
       baseSql += ` AND s.id = $${paramIndex}`;
       params.push(filters.submissionId);
@@ -724,17 +788,6 @@ export class RecruiterSubmissionsService {
     if (filters.candidateId) {
       baseSql += ` AND s.candidate_id = $${paramIndex}`;
       params.push(filters.candidateId);
-      paramIndex++;
-    }
-
-    if (filters.branchId && filters.branchId.trim().length > 0 && filters.branchId !== 'null' && filters.branchId !== 'undefined') {
-      baseSql += ` AND (
-        j.branch_id = $${paramIndex} 
-        OR j.branch_id IN (SELECT id FROM ats.branches WHERE LOWER(name) = LOWER($${paramIndex}) OR LOWER(code) = LOWER($${paramIndex}))
-
-        OR j.branch_id IS NULL
-      )`;
-      params.push(filters.branchId.trim());
       paramIndex++;
     }
 
@@ -768,10 +821,11 @@ export class RecruiterSubmissionsService {
       paramIndex++;
     }
 
+    const undatedScopeSql=baseSql;
     if (filters.startDate && filters.startDate !== 'undefined' && filters.startDate !== 'null') {
       const start = new Date(filters.startDate);
       if (!isNaN(start.getTime())) {
-        baseSql += ` AND s.created_at >= $${paramIndex}`;
+        baseSql += ` AND ${filters.dateBasis === 'joined' ? joinedDateSql : 's.created_at'} >= $${paramIndex}`;
         params.push(start);
         paramIndex++;
       }
@@ -781,7 +835,7 @@ export class RecruiterSubmissionsService {
       const end = new Date(filters.endDate);
       if (!isNaN(end.getTime())) {
         end.setHours(23, 59, 59, 999);
-        baseSql += ` AND s.created_at <= $${paramIndex}`;
+        baseSql += ` AND ${filters.dateBasis === 'joined' ? joinedDateSql : 's.created_at'} <= $${paramIndex}`;
         params.push(end);
         paramIndex++;
       }
@@ -800,6 +854,8 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE ${bucketConditions.interviews}) as interviews_count,
       COUNT(*) FILTER (WHERE ${bucketConditions.offers}) as offers_count,
       COUNT(*) FILTER (WHERE ${bucketConditions.closed}) as closed_count,
+      COUNT(*) FILTER (WHERE ${bucketConditions.closures}) as closures_count,
+      (SELECT COUNT(*) FROM (${undatedScopeSql}) AS undated WHERE undated.final_status='JOIN' AND undated.joined_at IS NULL) as undated_closures,
       MIN(am_role) AS min_am_role, MAX(am_role) AS max_am_role,
       COUNT(*) FILTER (WHERE am_role IS NULL) AS missing_am_role_count,
       COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
@@ -823,9 +879,9 @@ export class RecruiterSubmissionsService {
         WHEN s.l3_status IS DISTINCT FROM 'CLEARED' THEN 'L3 ' || COALESCE(s.l3_status, 'PENDING') ELSE 'Final round cleared' END
       ELSE s.final_status END`;
     const sortExpressions: Record<TrackerSortKey, string> = {
-      job: 'LOWER(j.job_title)', manager: 'LOWER(COALESCE(am.full_name, am.email))',
+      creator: 'LOWER(creator.full_name)', job: 'LOWER(j.job_title)', manager: 'LOWER(COALESCE(am.full_name, am.email))',
       recruiter: 'LOWER(r.full_name)', candidate: 'LOWER(c.full_name)',
-      pipeline: roundIndex, status: `LOWER(${statusLabel})`, jobCreated: 'j.created_at', submitted: 's.created_at',
+      pipeline: roundIndex, status: `LOWER(${statusLabel})`, jobCreated: 'j.created_at', submitted: filters.bucket==='closures' ? joinedDateSql : 's.created_at',
     };
     const sortBy = filters.sortBy ?? 'submitted';
     if (!(TRACKER_SORT_KEYS as readonly string[]).includes(sortBy)) throw new BadRequestException('Invalid submission sort column.');
@@ -900,7 +956,7 @@ export class RecruiterSubmissionsService {
       const data: SubmissionDetails[] = (retrieveRes || []).map((row: any) => {
         const creatorReview = Boolean(creatorMember?.branchId && creatorMember.businessUnitId && row.job_creator_id === user.dbId && row.branch_id === creatorMember.branchId && row.job_unit_id === creatorMember.businessUnitId);
         const capabilities = submissionCapabilities(user.permissions, row.recruiter_job_reviewer_id === user.dbId, row.job_status, row.final_status, row.keep_existing_submissions_open === true, creatorReview, Boolean(user.dbId && row.job_creator_id === user.dbId && row.recruiter_id === user.dbId));
-        const isAccountManager = user.systemRole === 'ACCOUNT_MANAGER' || user.roles?.includes('ACCOUNT_MANAGER');
+        const isAccountManager = access.portfolio;
         const hasAdminScope = (user.permissions || []).some(permission => ['*', 'tenant:manage', 'tenant:settings', 'platform:manage'].includes(permission));
         const cannotEditOtherManagerJob = isAccountManager && !hasAdminScope && row.am_id !== user.dbId && !(user.permissions || []).includes('submission:edit_all');
         if (cannotEditOtherManagerJob) {
@@ -938,7 +994,7 @@ export class RecruiterSubmissionsService {
           .map((row: any) => [row.field, new Date(row.created_at).toISOString()]));
       }
 
-      return {
+      const response: TrackerResponse & {stats:{total:number;l1Pending:number;l2Pending:number;l3Pending:number};dashboard?:TrackerDashboardSummary} = {
         data,
         accountManagerLabel: Number(countRes[0]?.missing_am_role_count || 0) === 0 && countRes[0]?.min_am_role === countRes[0]?.max_am_role ? countRes[0]?.min_am_role || 'Created by' : 'Created by',
         total,
@@ -950,11 +1006,14 @@ export class RecruiterSubmissionsService {
           interviews: Number(countRes[0]?.dashboard_interviews || 0),
           selections: Number(countRes[0]?.dashboard_selections || 0),
         },
+        filterAccess: access,
+        undatedClosures: Number(countRes[0]?.undated_closures || 0),
         counts: {
           all: Number(countRes[0]?.all_count || 0),
           review: Number(countRes[0]?.review_count || 0),
           interviews: Number(countRes[0]?.interviews_count || 0),
           offers: Number(countRes[0]?.offers_count || 0),
+          closures: Number(countRes[0]?.closures_count || 0),
           closed: Number(countRes[0]?.closed_count || 0),
         },
         stats: {
@@ -963,7 +1022,7 @@ export class RecruiterSubmissionsService {
           l2Pending: Number(countRes[0]?.l2_pending || 0),
           l3Pending: Number(countRes[0]?.l3_pending || 0),
         },
-        ...(dashboardRes?.[0] ? { dashboard: {
+        ...(dashboardRes?.[0] && filters.dashboardRangeDays ? { dashboard: {
           rangeDays: filters.dashboardRangeDays,
           activity: dashboardRes[0].activity,
           pipeline: dashboardRes[0].pipeline,
@@ -974,6 +1033,7 @@ export class RecruiterSubmissionsService {
           },
         } } : {}),
       };
+      return response;
     } catch (err: any) {
       this.logger.error(`Failed to retrieve submissions: ${err.message}`, err.stack);
       throw err;
@@ -1782,6 +1842,7 @@ export class RecruiterSubmissionsService {
       recruiterName: row.recruiter_name || row.recruiterName || (row.recruiter_id === 'WEBSITE_APPLICANT' ? 'Website Applicant' : undefined),
       recruiterEmail: row.recruiter_email || row.recruiterEmail || null,
       podHeadName: row.pod_head_name || row.podHeadName,
+      creatorName: row.creator_name, creatorEmail: row.creator_email, creatorAvatar: row.creator_avatar, joinedAt: row.joined_at ? new Date(row.joined_at).toISOString() : null,
       accountManagerName: row.am_name || row.accountManagerName,
       
       market: row.market,

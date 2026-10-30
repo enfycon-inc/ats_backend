@@ -1,3 +1,4 @@
+import { JOB_URGENCIES } from '../job-urgency-contract';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateJobDto {
@@ -79,7 +80,7 @@ export class CreateJobDto {
   @ApiPropertyOptional({ example: 1, description: 'Maximum allowed submissions; positive integer, defaults to 1' })
   submissionRequired?: number;
 
-  @ApiPropertyOptional({ example: 'High', enum: ['High', 'Medium', 'Low'], description: 'Job priority level' })
+  @ApiPropertyOptional({ example: 'Warm', enum: JOB_URGENCIES, description: 'Job priority level' })
   priority?: string;
 
   @ApiPropertyOptional({ example: 'C2C', enum: ['C2C', 'W2', '1099', 'Full-time'], description: 'Tax terms' })

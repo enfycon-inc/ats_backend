@@ -1,11 +1,24 @@
 import type { SubmissionAutoApprovalAudit } from './submission-auto-approval';
 // Canonical submission tracker contract. Run node ats_frontend_main/scripts/sync-submission-contract.cjs
 // from the workspace root to update the frontend's generated contract.
-export type TrackerBucket = 'all' | 'review' | 'interviews' | 'offers' | 'closed';
-export const TRACKER_SORT_KEYS = ['job', 'manager', 'recruiter', 'candidate', 'pipeline', 'status', 'jobCreated', 'submitted'] as const;
+export type TrackerBucket = 'all' | 'review' | 'interviews' | 'offers' | 'closures' | 'closed';
+export type TrackerStage = 'review' | 'l1' | 'l2' | 'l3' | 'final';
+export const TRACKER_SELECTION_LIMIT = 50;
+export type TrackerEntitySelection = { mode: 'ids'; ids: string[] } | { mode: 'matching'; search: string; excludedIds?: string[] };
+export type TrackerOptionKind = 'accountManagerId' | 'recruiterId' | 'createdById' | 'clientId' | 'jobId' | 'businessUnitId' | 'podId' | 'branchId';
+export interface TrackerFilterOption { id: string; label: string; email?: string | null; avatar?: string | null }
+export interface TrackerFilterOptions { data: TrackerFilterOption[]; page: number; hasMore: boolean }
+export interface TrackerFilterAccess { unit: boolean; branch: boolean; people: boolean; clients: boolean; pods: boolean; portfolio: boolean; review: boolean }
+export const TRACKER_SORT_KEYS = ['job', 'manager', 'creator', 'recruiter', 'candidate', 'pipeline', 'status', 'jobCreated', 'submitted'] as const;
 export type TrackerSortKey = typeof TRACKER_SORT_KEYS[number];
 export type TrackerSortDirection = 'asc' | 'desc';
 export interface TrackerListFilters {
+  accountManagers?: TrackerEntitySelection; recruiters?: TrackerEntitySelection; clients?: TrackerEntitySelection;
+  round?: RoundKey; roundStatus?: InterviewRoundStatus;
+  queue?: 'scheduling' | 'feedback' | 'upcoming';
+  accountManagerId?: string; recruiterId?: string; createdById?: string; clientId?: string; businessUnitId?: string; podId?: string;
+  stage?: TrackerStage; stageStatus?: string; jobStatus?: string; workflow?: 'running' | 'paused'; urgency?: string;
+  dateBasis?: 'submitted' | 'joined'; interviewFrom?: string; interviewTo?: string;
   page?: number;
   limit?: number;
   view?: string;
@@ -59,6 +72,7 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  creatorName?: string | null; creatorEmail?: string | null; creatorAvatar?: string | null; joinedAt?: string | null;
   jobStatus?: string | null;
   keepExistingSubmissionsOpen?: boolean;
   workflowPaused?: boolean;
@@ -159,6 +173,8 @@ export interface TrackerSubmission {
   capabilities?: SubmissionCapabilities;
 }
 export interface TrackerResponse {
+  filterAccess?: TrackerFilterAccess;
+  undatedClosures?: number;
   dashboardMetrics: { submissions: number; interviews: number; selections: number };
   accountManagerLabel?: string;
   data: TrackerSubmission[];

@@ -1,3 +1,4 @@
+import { canReviewRoleRequest } from '../auth/utils/role-request-policy';
 import { publicClientIp } from './client-ip';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -21,6 +22,13 @@ export class UserManagementService {
     const page = this.integer(query.page, 1, 1, 100000);
     const size = this.integer(query.pageSize, 25, 1, 100);
     const search = String(query.search || '').trim().slice(0, 150);
+    const city = String(query.city || '').trim();
+    const role = String(query.role || '').trim();
+    if (city.length > 150 || role.length > 150) throw new BadRequestException('Invalid directory filter.');
+    const sorts: Record<string, string> = { name: '"fullName"', city: 'city', branch: '"branchName"', created: '"createdAt"' };
+    const sort = query.sort || 'name';
+    const direction = query.direction || 'asc';
+    if (!Object.prototype.hasOwnProperty.call(sorts, sort) || !['asc', 'desc'].includes(direction)) throw new BadRequestException('Invalid directory sorting.');
     const scope = managementScope(actor);
     // Unaccepted invitations with an existing member are represented by that member, not counted twice.
     const invitationScope = managementScope(actor, 'i');
@@ -48,34 +56,46 @@ export class UserManagementService {
       COALESCE(assigned_roles.names,ARRAY_REMOVE(ARRAY[r.name],NULL)) AS "assignedRoles",
       ARRAY_REMOVE(ARRAY[u.role_id] || u.assigned_role_ids,NULL) AS "assignedRoleIds",u.job_reviewer_id AS "jobReviewerId",
       u.branch_id AS "branchId",u.business_unit_id AS "businessUnitId",b.name AS "branchName",bu.name AS "businessUnitName",r.name AS "roleName",
-      u.is_active AS "isActive",u.is_approved AS "isApproved",u.requested_role AS "requestedRole",
+      u.is_active AS "isActive",u.is_approved AS "isApproved",COALESCE(requested_role.name,u.requested_role) AS "requestedRole",
+      requested_role.id AS "requestedRoleId",to_jsonb(u)->>'role_request_version' AS "requestVersion",
       u.last_login_at AS "lastLoginAt",u.created_at AS "createdAt",
       (SELECT CASE WHEN i.token_expires_at<NOW() THEN 'expired' ELSE 'invited' END FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id AND LOWER(i.email)=LOWER(u.email) AND i.is_accepted=false LIMIT 1) AS "invitationStatus",
       u.tenant_id AS "__tenantId",u.branch_id AS "__branchId",u.business_unit_id AS "__unitId",${memberPermissionProjection('u')}
       FROM ats.users u LEFT JOIN ats.branches b ON b.id=u.branch_id
       LEFT JOIN ats.business_units bu ON bu.id=u.business_unit_id
       LEFT JOIN ats.custom_roles r ON r.id=u.role_id
+      LEFT JOIN ats.custom_roles requested_role ON requested_role.id::text=u.requested_role AND requested_role.tenant_id=u.tenant_id
       LEFT JOIN ats.users rev ON rev.id=u.job_reviewer_id AND rev.tenant_id=u.tenant_id
       LEFT JOIN LATERAL (
         SELECT ARRAY_AGG(DISTINCT cr.name ORDER BY cr.name) AS names FROM ats.custom_roles cr
         WHERE cr.id=ANY(ARRAY_REMOVE(ARRAY[u.role_id] || u.assigned_role_ids,NULL)) AND cr.tenant_id=u.tenant_id
       ) assigned_roles ON TRUE
       WHERE ${scope.sql} AND (${conditions[state as UserView]})
-      AND (u.full_name ILIKE ${searchParam} OR u.email ILIKE ${searchParam})`;
+      `;
     let combined = base;
     if (state === 'pending') {
       const shift = values.length;
       const shiftedScope = inviteSql.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + shift}`);
       values.push(...invitationScope.values);
-      combined += ` UNION ALL SELECT i.id,'invitation',COALESCE(i.full_name,i.email),i.email,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,b.name,NULL,r.name,
-        false,false,NULL,NULL,i.created_at,CASE WHEN i.token_expires_at<NOW() THEN 'expired' ELSE 'invited' END,i.tenant_id,i.branch_id,NULL::uuid,ARRAY[]::text[]
+      combined += ` UNION ALL SELECT i.id,'invitation'::text,COALESCE(i.full_name,i.email),i.email,NULL::text,
+        NULL::text,NULL::text,ARRAY_REMOVE(ARRAY[r.name],NULL),ARRAY_REMOVE(ARRAY[i.role_id],NULL),NULL::uuid,
+        i.branch_id,NULL::uuid,b.name,NULL::text,r.name,
+        false,false,NULL,NULL::uuid,NULL::text,NULL,i.created_at,CASE WHEN i.token_expires_at<NOW() THEN 'expired' ELSE 'invited' END,i.tenant_id,i.branch_id,NULL::uuid,ARRAY[]::text[]
         FROM ats.user_invitations i LEFT JOIN ats.branches b ON b.id=i.branch_id LEFT JOIN ats.custom_roles r ON r.id=i.role_id
-      WHERE ${shiftedScope} AND i.is_accepted=false AND i.token_expires_at>NOW() AND (i.full_name ILIKE ${searchParam} OR i.email ILIKE ${searchParam})
+      WHERE ${shiftedScope} AND i.is_accepted=false AND i.token_expires_at>NOW()
         AND NOT EXISTS(SELECT 1 FROM ats.users u WHERE u.tenant_id=i.tenant_id AND LOWER(u.email)=LOWER(i.email))`;
     }
-    const totalRows = await this.db.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS count FROM (${combined}) matches`, ...values);
+    const cityParam = `$${values.push(city)}`, roleParam = `$${values.push(role)}`;
+    const filter = `("fullName" ILIKE ${searchParam} OR email ILIKE ${searchParam})
+      AND (${cityParam}='' OR city=${cityParam})
+      AND (${roleParam}='' OR ${roleParam}=ANY("assignedRoles"))`;
+    const totalRows = await this.db.$queryRawUnsafe<any[]>(`WITH scoped AS (${combined})
+      SELECT COUNT(*) FILTER (WHERE ${filter})::int AS count,
+        ARRAY(SELECT DISTINCT city FROM scoped WHERE city IS NOT NULL AND city<>'' ORDER BY city) AS cities,
+        ARRAY(SELECT DISTINCT role FROM scoped CROSS JOIN LATERAL unnest("assignedRoles") role ORDER BY role) AS roles
+      FROM scoped matches`, ...values);
     const limit = `$${values.length + 1}`, offset = `$${values.length + 2}`;
-    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches ORDER BY "fullName",id LIMIT ${limit} OFFSET ${offset}`, ...values, size, (page - 1) * size);
+    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches WHERE ${filter} ORDER BY ${sorts[sort]} ${direction} NULLS LAST,id LIMIT ${limit} OFFSET ${offset}`, ...values, size, (page - 1) * size);
     if (this.tracking.enabled) {
       const ids = rows.filter(row => row.kind === 'user').map(row => row.id);
       const presence = hasCapability(actor, 'user:presence:view') ? await this.tracking.presences(actor.tenantId, ids) : new Map();
@@ -107,7 +127,8 @@ export class UserManagementService {
       const actions = userManagementActions(actor, { id: row.id, tenantId: row.__tenantId, branchId: row.__branchId, businessUnitId: row.__unitId, permissions: row.management_permissions || [] });
         row.allowedActions = { edit: row.kind === 'user' && actions.editProfile,
         changeAccess: row.kind === 'user' && row.isApproved && actions.changeStatus,
-        review: row.kind === 'user' && !!row.requestedRole && actions.reviewRequest,
+        review: row.kind === 'user' && !row.isApproved && !!row.requestedRole && actions.reviewRequest &&
+          (!row.requestVersion || canReviewRoleRequest(actor, { id: row.id, tenant_id: row.__tenantId, branch_id: row.__branchId, business_unit_id: row.__unitId })),
           resendInvitation: row.kind === 'user' && !!row.invitationStatus && row.isActive && actions.editProfile,
           assignManager: row.kind === 'user' && actions.assignManager,
           resetPassword: row.kind === 'user' && actions.resetPassword,
@@ -116,6 +137,7 @@ export class UserManagementService {
       delete row.__tenantId; delete row.__branchId; delete row.__unitId; delete row.management_permissions;
     }
     return { items: rows, total: totalRows[0].count, page, pageSize: size,
+      filters: { cities: totalRows[0].cities || [], roles: totalRows[0].roles || [] },
       counts: { ...counts[0], pending: counts[0].pending + invited[0].count },
       asOf: new Date().toISOString(), telemetryEnabled: this.tracking.enabled };
   }

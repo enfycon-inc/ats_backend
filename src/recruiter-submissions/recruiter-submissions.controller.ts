@@ -1,3 +1,5 @@
+import { trackerPublicFilters } from './tracker-filters';
+import type { TrackerOptionKind } from './tracker-contract';
 import {
   Controller,
   Get,
@@ -14,6 +16,7 @@ import {
   HttpCode,
   UseGuards,
   ForbiddenException,
+  BadRequestException,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
@@ -58,51 +61,21 @@ export class RecruiterSubmissionsController {
   }
 
   @Get()
-  @ApiOperation({
-    summary: 'List & Filter Candidate Submissions',
-    description: 'Retrieves all candidate submissions for a specific tenant, supporting custom filters and pagination.',
-  })
-  @ApiResponse({ status: 200, description: 'Submissions list resolved.' })
-  async findAll(
-    @CurrentUser() user: AuthUser,
-    @Headers('x-tenant-id') tenantId?: string,
-    @Headers('x-branch-id') branchHeaderId?: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string,
-    @Query('l1Status') l1Status?: string,
-    @Query('l2Status') l2Status?: string,
-    @Query('l3Status') l3Status?: string,
-    @Query('finalStatus') finalStatus?: string,
-    @Query('jobId') jobId?: string,
-    @Query('candidateId') candidateId?: string,
-    @Query('view') view?: string,
-    @Query('search') search?: string,
-    @Query('bucket') bucket?: TrackerBucket,
-    @Query('sortBy') sortBy?: string,
-    @Query('sortDirection') sortDirection?: string,
-  ) {
-    const tid = resolveTenantId(user, tenantId);
-    const bid = resolveBranchId(user, branchHeaderId);
-    return this.service.findAll(tid, user, {
-      page: page ? parseInt(page, 10) : undefined,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      startDate,
-      endDate,
-      l1Status,
-      l2Status,
-      l3Status,
-      finalStatus,
-      jobId,
-      candidateId: candidateId ? candidateId : undefined,
-      branchId: bid || undefined,
-      view,
-      search,
-      bucket,
-      sortBy,
-      sortDirection,
-    });
+  @ApiOperation({ summary: 'List and filter submissions within the current permitted scope' })
+  async findAll(@CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-branch-id') branchHeaderId: string | undefined, @Query() query: Record<string, string>) {
+    const tid=resolveTenantId(user,tenantId);
+    const bid=resolveBranchId(user,query.branchId || branchHeaderId);
+    return this.service.findAll(tid,user,{...trackerPublicFilters(query),branchId:bid||undefined});
+  }
+
+  @Get('filter-options')
+  async filterOptions(@CurrentUser() user: AuthUser, @Headers('x-tenant-id') tenantId: string | undefined,
+    @Headers('x-branch-id') branchHeaderId: string | undefined, @Query() query: Record<string,string>) {
+    if (!query.kind) throw new BadRequestException('Choose a filter option kind.');
+    const tid=resolveTenantId(user,tenantId),bid=resolveBranchId(user,query.branchId||branchHeaderId);
+    return this.service.findAll(tid,user,{...trackerPublicFilters(query),branchId:bid||undefined,
+      filterOptions:query.kind as TrackerOptionKind,optionSearch:query.optionSearch,optionPage:query.optionPage===undefined?1:Number(query.optionPage)});
   }
 
   @Get('tracker-stats')

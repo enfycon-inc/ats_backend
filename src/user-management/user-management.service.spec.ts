@@ -99,4 +99,42 @@ describe('Security activity authorization and redaction', () => {
     expect(directorySql).not.toContain('EXISTS(SELECT 1 FROM ats.user_invitations i WHERE i.tenant_id=u.tenant_id');
     expect(result.items).toEqual([]);
   });
+  it('parameterizes filters, keeps facets scoped and applies filters before pagination', async () => {
+    const { db, service } = setup(false);
+    db.$queryRawUnsafe.mockResolvedValueOnce([{ active: 1, pending: 0, blocked: 0 }])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ count: 0, cities: ['BBSR'], roles: ['Recruiter'] }])
+      .mockResolvedValueOnce([]);
+    const role = "Recruiter' OR true --";
+    const result = await service.list({ ...actor, permissions: ['user:manage', 'tenant:manage'] },
+      { state: 'active', city: 'BBSR', role, sort: 'city', direction: 'desc', page: '2', pageSize: '50' });
+    const [sql, ...values] = db.$queryRawUnsafe.mock.calls[3];
+    expect(sql).not.toContain(role);
+    expect(values).toContain(role);
+    expect(values).toContain('BBSR');
+    expect(values.slice(-2)).toEqual([50, 50]);
+    expect(sql).toContain('ORDER BY city desc NULLS LAST,id');
+    expect(sql.indexOf('=ANY("assignedRoles")')).toBeLessThan(sql.lastIndexOf('LIMIT'));
+    expect(result.filters).toEqual({ cities: ['BBSR'], roles: ['Recruiter'] });
+    expect(db.$queryRawUnsafe.mock.calls[2][0]).toContain('FROM scoped');
+  });
+  it.each([{ sort: 'name; DROP TABLE users' }, { sort: 'toString' }, { direction: 'sideways' }, { city: 'x'.repeat(151) }])
+    ('rejects invalid directory options before querying: %j', async query => {
+      const { db, service } = setup(false);
+      await expect(service.list({ ...actor, permissions: ['user:manage'] }, query)).rejects.toThrow();
+      expect(db.$queryRawUnsafe).not.toHaveBeenCalled();
+    });
+
+  it('projects review version/identity and denies versioned self-review', async () => {
+    const { db, service } = setup(false);
+    db.$queryRawUnsafe.mockResolvedValueOnce([{ active: 0, pending: 1, blocked: 0 }])
+      .mockResolvedValueOnce([{ count: 0 }]).mockResolvedValueOnce([{ count: 1 }])
+      .mockResolvedValueOnce([{ id: actor.dbId, kind: 'user', isApproved: false, requestedRole: 'Recruiter',
+        requestVersion: 'version', __tenantId: actor.tenantId, __branchId: actor.branchId, __unitId: actor.businessUnitId }]);
+    const result = await service.list({ ...actor, permissions: ['user:manage', 'tenant:manage'] }, { state: 'pending' });
+    expect(result.items[0].allowedActions?.review).toBe(false);
+    expect(db.$queryRawUnsafe.mock.calls[3][0]).toContain('AS "requestVersion"');
+    expect(db.$queryRawUnsafe.mock.calls[3][0]).toContain('AS "requestedRoleId"');
+  });
+
 });

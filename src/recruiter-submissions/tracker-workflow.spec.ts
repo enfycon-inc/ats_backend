@@ -18,6 +18,6 @@ describe('tracker workflow', () => {
       expect(rows[bucket].replace(/s\./g, '')).toBe(count[bucket]);
     }
     expect(count.review).toContain('NOT (');
-    expect(count.interviews).toContain('l3_date IS NOT NULL');
+    expect(count.interviews).not.toContain('l1_status');
   });
 });
