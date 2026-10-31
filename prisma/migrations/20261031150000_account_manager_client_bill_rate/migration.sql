@@ -1,3 +1,8 @@
+-- ATS: rollback-compatible
+-- Additive permission grant; older application images tolerate the retained key.
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+
 -- Make client bill rates available in the Account Manager archetype and its
 -- default tenant copies. Preserve all other permissions and custom-role choices.
 UPDATE ats.system_roles
@@ -12,3 +17,5 @@ WHERE cr.system_role_id = sr.id
   AND sr.system_key = 'ACCOUNT_MANAGER'
   AND cr.is_system = true
   AND NOT (COALESCE(cr.permissions, '[]'::jsonb) ? 'job:bill_rate:view');
+
+COMMIT;
