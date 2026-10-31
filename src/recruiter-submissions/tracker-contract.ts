@@ -100,6 +100,8 @@ export interface TrackerSubmission {
   candidateCtcCurrency?: string | null;
   candidateCtcTerm?: string | null;
   jobType?: string | null;
+  clientBillRate?: { min: string | null; max: string | null; currency: string | null; term: string | null } | null;
+  clientCommissionPct?: string | null;
   recruiterAvatar?: string | null;
   rejectionFromStatus?: string | null;
   jobUrgency?: string | null;

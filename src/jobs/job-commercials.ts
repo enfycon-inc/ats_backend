@@ -59,3 +59,24 @@ export function displayCommercialRate(row: any, prefix: 'pay' | 'clientBill'): s
   const suffix = ({ Monthly: '/mo', Hourly: '/hr', Yearly: '/yr' } as Record<string, string>)[term] || term;
   return `${currency} - ${Number(min)}${max != null && Number(max) !== Number(min) ? ` to ${Number(max)}` : ''} ${suffix}`.trim();
 }
+
+export function displayClientBillRate(row: any, permissions: string[] = []): string {
+  const canViewRate = permissions.some(permission => ['*', 'platform:manage', 'job:bill_rate:view'].includes(permission));
+  const canViewCommission = permissions.some(permission => ['*', 'platform:manage', 'placement:view'].includes(permission));
+  const raw = row.client_bill_rate ?? row.clientBillRate;
+  const rawText = typeof raw === 'string' ? raw.trim() : '';
+  const rawCommission = rawText.match(/^(\d+(?:\.\d+)?)%\s*Placement Commission$/i);
+  const commission = row.placement_commission_pct ?? row.placementCommissionPct ?? rawCommission?.[1];
+  const hasNumericRate = row.client_bill_rate_min != null || row.clientBillRateMin != null;
+
+  if (canViewRate && hasNumericRate) {
+    return displayCommercialRate({ ...row, placement_commission_pct: null, placementCommissionPct: null, client_bill_rate: null, clientBillRate: null }, 'clientBill');
+  }
+  if (commission != null || rawCommission) {
+    if (!canViewCommission) return 'N/A';
+    return `${Number(commission)}% Placement Commission`;
+  }
+  if (!canViewRate) return 'N/A';
+  if (rawText && rawText.toUpperCase() !== 'N/A') return rawText;
+  return displayCommercialRate(row, 'clientBill');
+}

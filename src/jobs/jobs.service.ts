@@ -29,7 +29,7 @@ import { listJobStaff, listJobPods, validateJobRecruiters, isPodScopedRecruiterA
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { clientReadWhere } from '../clients/client-visibility';
 import { resolveActiveRole } from '../auth/utils/active-role';
-import { commercialFields, displayCommercialRate, positiveInteger } from './job-commercials';
+import { commercialFields, displayClientBillRate, displayCommercialRate, positiveInteger } from './job-commercials';
 
 export interface JobProfile {
   keepExistingSubmissionsOpen?: boolean;
@@ -1352,7 +1352,7 @@ export class JobsService {
         this.logger.warn(`Failed to dispatch job creation notification: ${notifErr.message}`);
       }
 
-      return this.findOneJob(jobId, tenantId);
+      return this.findOneJob(jobId, tenantId, actor);
     } catch (err: any) {
       this.logger.error(`Failed to create job: ${err.message}`, err.stack);
       throw err;
@@ -1668,7 +1668,7 @@ export class JobsService {
       this.logger.log(`findAllJobs SQL: ${sql} | Params: ${JSON.stringify(params)}`);
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
       this.logger.log(`findAllJobs returned ${rows.length} jobs.`);
-      return rows.map((row) => ({ ...this.mapRowToProfile(row), capabilities: jobCapabilities(user, rowJobScope(row, tenantId, context)) }));
+      return rows.map((row) => ({ ...this.mapRowToProfile(row, user?.permissions || []), capabilities: jobCapabilities(user, rowJobScope(row, tenantId, context)) }));
     } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
       return [];
@@ -1775,7 +1775,7 @@ export class JobsService {
         const pod = direct || !context.podsEnabled ? null : await this.prisma.pod.findFirst({ where: { tenantId, jobPods: { some: { jobId: rows[0].id } }, OR: [{ podHeadId: user.dbId }, ...((user.permissions || []).some((permission: string) => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)) ? [{ users: { some: { id: user.dbId, tenantId, isActive: true } } }] : [])] }, select: { id: true } });
         if (!direct && !pod) throw new ForbiddenException('This job has not been assigned to you or your lead workspace.');
       }
-      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0]), capabilities: jobCapabilities(user, rowJobScope(rows[0], tenantId, context)) };
+      if (user) { const row = rows[0]; const userPermissions = Array.isArray(user?.permissions) ? user.permissions : []; const isAdmin = userPermissions.includes('tenant:settings') || userPermissions.includes('tenant:manage') || userPermissions.includes('platform:manage') || userPermissions.includes('*'); const hasViewPerm = userPermissions.includes('job:view') || userPermissions.includes('job:edit') || userPermissions.includes('job:view_all_branches'); const isOwner = row.account_manager_id === user?.dbId || row.account_manager_id === user?.id || row.recruitment_manager_id === user?.dbId || row.recruitment_manager_id === user?.id || row.created_by_user_id === user?.dbId || row.created_by_user_id === user?.id; if (!isAdmin && !hasViewPerm && !isOwner) { throw new ForbiddenException('You do not have permission to view this job.'); } } return { ...this.mapRowToProfile(rows[0], user?.permissions || []), capabilities: jobCapabilities(user, rowJobScope(rows[0], tenantId, context)) };
     } catch (err) {
       if (err instanceof NotFoundException || err instanceof ForbiddenException) throw err;
       this.logger.error(`findOneJob failed: ${err.message}`, err.stack);
@@ -1786,7 +1786,7 @@ export class JobsService {
   /**
    * Map a raw Postgres/Prisma row to the typed JobProfile response
    */
-  private mapRowToProfile(row: any): JobProfile {
+  private mapRowToProfile(row: any, permissions: string[] = []): JobProfile {
     const rawCreatedAt = row.created_at ?? row.createdAt;
     const createdAt = rawCreatedAt ? new Date(rawCreatedAt) : new Date();
     const agingDays = Math.floor(
@@ -1857,7 +1857,7 @@ export class JobsService {
       marginSplitRecPct: row.margin_split_rec_pct ?? null,
 
       visaType: row.visa_type ?? row.visaType ?? '',
-      clientBillRate: row.client_bill_rate ?? row.clientBillRate ?? displayCommercialRate(row, 'clientBill'),
+      clientBillRate: displayClientBillRate(row, permissions),
       payRate: row.pay_rate ?? row.payRate ?? displayCommercialRate(row, 'pay'),
       taxTerms: row.tax_terms ?? row.taxTerms ?? 'C2C',
 
@@ -2084,7 +2084,7 @@ export class JobsService {
       this.logger.warn(`Failed to dispatch job approval notification: ${notifErr.message}`);
     }
 
-    return this.findOneJob(jobId, tenantId);
+    return this.findOneJob(jobId, tenantId, approver);
   }
 
   /**
@@ -2145,7 +2145,7 @@ export class JobsService {
       this.logger.warn(`Failed to dispatch job rejection notification: ${notifErr.message}`);
     }
 
-    return this.findOneJob(jobId, tenantId);
+    return this.findOneJob(jobId, tenantId, approver);
   }
 
   /**
@@ -2650,7 +2650,7 @@ export class JobsService {
       this.logger.warn(`Failed to dispatch job update notification: ${notifErr.message}`);
     }
 
-    return this.findOneJob(id, tenantId);
+    return this.findOneJob(id, tenantId, user);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -3225,7 +3225,7 @@ export class JobsService {
   async duplicateJob(id: string, tenantId: string, user: any): Promise<JobProfile> {
     this.logger.log(`Duplicating Job ID=${id} for tenant=${tenantId}`);
 
-    const original = await this.findOneJob(id, tenantId);
+    const original = await this.findOneJob(id, tenantId, user);
     if (!original) {
       throw new NotFoundException(`Job with ID ${id} not found.`);
     }
@@ -3301,7 +3301,7 @@ export class JobsService {
     return true;
   }
 
-  async restoreJob(id: string, tenantId: string): Promise<JobProfile> {
+  async restoreJob(id: string, tenantId: string, user?: AuthUser): Promise<JobProfile> {
     this.logger.log(`Restoring job ${id} for tenant ${tenantId}`);
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
     const existing = await this.prisma.job.findFirst({
@@ -3319,7 +3319,7 @@ export class JobsService {
       where: { id: existing.id },
       data: { deletedAt: null },
     });
-    return this.findOneJob(existing.id, tenantId);
+    return this.findOneJob(existing.id, tenantId, user);
   }
 
   // --- Cross-Branch Delegation Logic ---

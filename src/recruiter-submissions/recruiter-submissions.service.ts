@@ -592,6 +592,7 @@ export class RecruiterSubmissionsService {
         j.submission_done AS job_submission_done,
         j.job_code,
         j.job_title, j.job_type, j.status AS job_status, j.keep_existing_submissions_open,
+        j.client_bill_rate_min, j.client_bill_rate_max, j.client_bill_currency, j.client_bill_term, j.placement_commission_pct,
         ${filters.submissionId ? `j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
         concat_ws(', ', j.city, j.state, j.country) AS job_location,
         j.work_mode AS job_work_mode, j.degree AS job_degree, j.notice_period AS job_notice_period,` : ''}
@@ -968,7 +969,7 @@ export class RecruiterSubmissionsService {
           capabilities.results = { l1: false, l2: false, l3: false };
           capabilities.outcome = false;
         }
-        const details = this.mapRowToDetails(row);
+        const details = this.mapRowToDetails(row, user.permissions || []);
         return { ...details, capabilities, resume: {
           available: Boolean(row.resume_available), filename: row.resume_filename ?? null,
           canDownload: Boolean(row.resume_available) && canDownloadSubmissionResume(details, user.permissions),
@@ -1144,6 +1145,7 @@ export class RecruiterSubmissionsService {
         j.submission_done AS job_submission_done,
         j.job_code,
         j.job_title, j.job_type, j.status AS job_status, j.keep_existing_submissions_open,
+        j.client_bill_rate_min, j.client_bill_rate_max, j.client_bill_currency, j.client_bill_term, j.placement_commission_pct,
         j.job_description, j.exp_min AS job_experience_min, j.exp_max AS job_experience_max,
         concat_ws(', ', j.city, j.state, j.country) AS job_location,
         j.work_mode AS job_work_mode, j.degree AS job_degree, j.notice_period AS job_notice_period,
@@ -1746,7 +1748,9 @@ export class RecruiterSubmissionsService {
   /**
    * Helper mapping from PG row to details object
    */
-  private mapRowToDetails(row: any): SubmissionDetails {
+  private mapRowToDetails(row: any, permissions: string[] = []): SubmissionDetails {
+    const canViewBillRate = permissions.some(permission => ['*', 'platform:manage', 'job:bill_rate:view'].includes(permission));
+    const canViewCommission = permissions.some(permission => ['*', 'platform:manage', 'placement:view'].includes(permission));
     return {
       rejectionFromStatus: row.rejection_from_status ?? null,
       currentRoundKey: currentTrackerRound(row),
@@ -1805,6 +1809,13 @@ export class RecruiterSubmissionsService {
       keepExistingSubmissionsOpen: row.keep_existing_submissions_open === true,
       workflowPaused: isClosedJob(row.job_status) && row.keep_existing_submissions_open !== true,
       jobType: row.job_type ?? null,
+      clientBillRate: canViewBillRate ? {
+        min: row.client_bill_rate_min == null ? null : String(row.client_bill_rate_min),
+        max: row.client_bill_rate_max == null ? null : String(row.client_bill_rate_max),
+        currency: row.client_bill_currency ?? null,
+        term: row.client_bill_term ?? null,
+      } : null,
+      clientCommissionPct: canViewCommission && row.placement_commission_pct != null ? String(row.placement_commission_pct) : null,
       recruiterAvatar: row.recruiter_avatar ?? null,
       candidateName: row.candidate_name || row.candidateName,
       candidateEmail: row.candidate_email || row.candidateEmail,

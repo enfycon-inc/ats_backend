@@ -410,7 +410,7 @@ export class JobsController {
     @Headers('x-tenant-id') tenantId?: string,
   ): Promise<JobProfile> {
     const tid = resolveTenantId(user, tenantId);
-    return this.jobsService.restoreJob(id, tid);
+    return this.jobsService.restoreJob(id, tid, user);
   }
 
   @Delete(':id/permanent')
