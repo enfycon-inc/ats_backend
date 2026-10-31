@@ -1,3 +1,4 @@
+import type { JobCatalogResponse } from "./job-catalog.contract";
 import { normalizeJobUrgency } from './job-urgency-contract';
 import { assertPermanentDeletion } from '../auth/utils/permanent-deletion';
 import { effectiveJobAssignmentPolicy } from '../auth/job-assignment-policy';
@@ -1396,6 +1397,7 @@ export class JobsService {
             JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
+          WHERE u.tenant_id = $1::uuid
           GROUP BY jr.job_id
         ) recruiter_info ON recruiter_info.job_id = j.id
       LEFT JOIN (
@@ -1405,6 +1407,7 @@ export class JobsService {
           STRING_AGG(p.name, ', ') AS pod_name
         FROM ats.job_pods jp
         JOIN ats.pods p ON p.id = jp.pod_id
+        WHERE p.tenant_id = $1::uuid
         GROUP BY jp.job_id
       ) pod_info ON pod_info.job_id = j.id
       LEFT JOIN ats.users uc ON (uc.id = j.account_manager_id)
@@ -1653,6 +1656,67 @@ export class JobsService {
     return { filename: `job_report_${filter.from.slice(0, 10)}.xlsx`, content: workbook.toString('base64') };
   }
 
+  async findJobPage(tenantId: string, actor: AuthUser, branchId: string | null | undefined, query: Record<string, string>): Promise<JobCatalogResponse<JobProfile>> {
+    const page = Number(query.page || 1), limit = Number(query.limit || 25);
+    if (!Number.isSafeInteger(page) || page < 1 || page > 100000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new BadRequestException('Invalid job pagination.');
+    const context = await loadJobActor(this.prisma, actor);
+    if (query.filter === 'pod' && (!context.podsEnabled || !(context.actor?.permissions || []).some(permission => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)))) throw new ForbiddenException('Pod job access is unavailable in this workspace.');
+    const scope = this.buildJobListQuery(tenantId, context.actor, branchId, query.filter, context.podsEnabled);
+    if (!scope) return { data: [], total: 0, page, limit, totalPages: 0 };
+    const optionRows = await this.prisma.$queryRawUnsafe<any[]>(`SELECT
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT mapped_business_unit_name), NULL) AS branches,
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT creator_name), NULL) AS creators,
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT mapped_client_name) || ARRAY_AGG(DISTINCT mapped_end_client_name), NULL) AS clients,
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT multi_recruiter_names), NULL) AS recruiters,
+      ARRAY_REMOVE(ARRAY_AGG(DISTINCT pod_name), NULL) AS pods
+      FROM (${scope.sql}) option_jobs`, ...scope.params);
+    const options = optionRows[0] || {};
+    const params = [...scope.params];
+    const bind = (value: string | number) => { params.push(value); return '$' + params.length; };
+    let sql = scope.sql;
+    if (query.search?.trim()) {
+      const value = bind(query.search.trim());
+      sql += ` AND POSITION(LOWER(${value}) IN LOWER(CONCAT_WS(' ', j.job_title, j.job_code, cl.client_name, ecl.client_name, bu.name, j.city, j.state, j.country, recruiter_info.recruiter_names))) > 0`;
+    }
+    if (query.status === 'Draft') sql += ` AND UPPER(j.status) IN ('DRAFT', 'PENDING APPROVAL', 'PENDING_APPROVAL')`;
+    else if (query.status) sql += ` AND UPPER(j.status) = UPPER(${bind(query.status)})`;
+    const fields: Record<string, string> = { branch: 'b.name', unit: 'bu.name', creator: 'COALESCE(cr.full_name, uc.full_name)' };
+    if (query.client) { const client = bind(query.client); sql += ` AND (cl.client_name = ${client} OR ecl.client_name = ${client})`; }
+    for (const [key, field] of Object.entries(fields)) if (query[key]) sql += ` AND ${field} = ${bind(query[key])}`;
+    if (query.recruiter === 'Unassigned') sql += ` AND NOT EXISTS (SELECT 1 FROM ats.job_recruiters unassigned_jr WHERE unassigned_jr.job_id = j.id)`;
+    else if (query.recruiter) sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters selected_jr JOIN ats.users selected_u ON selected_u.id = selected_jr.recruiter_id WHERE selected_jr.job_id = j.id AND selected_u.tenant_id = $1::uuid AND selected_u.full_name = ${bind(query.recruiter)})`;
+    if (query.pod) sql += ` AND EXISTS (SELECT 1 FROM ats.job_pods selected_jp JOIN ats.pods selected_p ON selected_p.id = selected_jp.pod_id WHERE selected_jp.job_id = j.id AND selected_p.tenant_id = $1::uuid AND selected_p.name = ${bind(query.pod)})`;
+    for (const [key, operator] of [['from', '>='], ['to', '<']] as const) if (query[key]) {
+      const date = new Date(query[key]);
+      if (!Number.isFinite(date.getTime())) throw new BadRequestException('Invalid job date range.');
+      sql += ` AND j.created_at ${operator} ${bind(date.toISOString())}::timestamptz`;
+    }
+    if (query.priority) sql += ` AND UPPER(j.urgency) = UPPER(${bind(query.priority)})`;
+    if (query.tab === 'branch' && actor.branchId) sql += ` AND j.branch_id = ${bind(actor.branchId)}::uuid`;
+    if (query.tab === 'shared' && actor.branchId) sql += ` AND ${bind(actor.branchId)} = ANY(j.shared_branch_ids)`;
+    const predefined: Record<string, string> = {
+      'Active Jobs': "UPPER(j.status) = 'ACTIVE'", 'Archived Jobs': "UPPER(j.status) = 'ARCHIVED'", 'Closed Jobs': "UPPER(j.status) IN ('CLOSED','CLOSE')",
+      'My Jobs': `j.account_manager_id = $${scope.params.length + 1}::uuid`,
+      'Jobs with submissions': 'EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
+      'Jobs without submissions': 'NOT EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
+      'Jobs with Pipeline': 'EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
+      'Jobs without Recruiters Assigned': 'NOT EXISTS (SELECT 1 FROM ats.job_recruiters fr WHERE fr.job_id = j.id)',
+      'VMS Jobs': "COALESCE(j.client_job_id, '') <> ''",
+    };
+    if (query.predefined) {
+      if (query.predefined.split('|').includes('My Jobs')) predefined['My Jobs'] = `j.account_manager_id = ${bind(actor.dbId!)}::uuid`;
+      const conditions = query.predefined.split('|').map(key => predefined[key]).filter(Boolean);
+      if (conditions.length) sql += ` AND (${conditions.join(' OR ')})`;
+    }
+    const sorts: Record<string, string> = { created: 'created_at', updated: 'updated_at', title: 'job_title', code: 'job_code', client: 'mapped_client_name', creator: 'creator_name', recruiter: 'multi_recruiter_names', status: 'status', unit: 'mapped_business_unit_name', type: 'job_type', urgency: 'urgency', pod: 'pod_name', endClient: 'mapped_end_client_name', location: 'city', states: 'state', clientJob: 'client_job_id', payRate: 'pay_rate_min', billRate: 'client_bill_rate_min', submissions: '(SELECT COUNT(*) FROM ats.recruiter_submissions sort_s WHERE sort_s.job_id = scoped_jobs.id AND sort_s.tenant_id = scoped_jobs.tenant_id)', hot: "CASE UPPER(urgency) WHEN 'HOT' THEN 0 WHEN 'WARM' THEN 1 ELSE 2 END" };
+    const sort = sorts[query.sort || 'created'];
+    if (!sort || (query.direction && !['asc', 'desc'].includes(query.direction))) throw new BadRequestException('Invalid job sorting.');
+    const count = await this.prisma.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS total FROM (${sql}) scoped_jobs`, ...params);
+    const total = Number(count[0]?.total || 0);
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(`SELECT * FROM (${sql}) scoped_jobs ORDER BY ${sort} ${(query.direction || 'desc').toUpperCase()} NULLS LAST, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, ...params, limit, (page - 1) * limit);
+    return { data: rows.map(row => ({ ...this.mapRowToProfile(row, context.actor?.permissions || []), capabilities: jobCapabilities(context.actor, rowJobScope(row, tenantId, context)) })), total, page, limit, totalPages: Math.ceil(total / limit), options };
+  }
+
   async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {
     const context = await loadJobActor(this.prisma, user);
     user = context.actor;
@@ -1665,9 +1729,9 @@ export class JobsService {
     sql += ' ORDER BY j.created_at DESC';
 
     try {
-      this.logger.log(`findAllJobs SQL: ${sql} | Params: ${JSON.stringify(params)}`);
+      const queryStartedAt = Date.now();
       const rows = await this.prisma.$queryRawUnsafe<any[]>(sql, ...params);
-      this.logger.log(`findAllJobs returned ${rows.length} jobs.`);
+      this.logger.debug(`Jobs list query completed in ${Date.now() - queryStartedAt}ms (${rows.length} rows).`);
       return rows.map((row) => ({ ...this.mapRowToProfile(row, user?.permissions || []), capabilities: jobCapabilities(user, rowJobScope(row, tenantId, context)) }));
     } catch (err: any) {
       this.logger.error(`Failed to fetch jobs: ${err.message}`, err.stack);
@@ -1706,6 +1770,8 @@ export class JobsService {
             JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
+          WHERE u.tenant_id = $1::uuid
+            AND EXISTS (SELECT 1 FROM ats.jobs assignment_job WHERE assignment_job.id = jr.job_id AND assignment_job.tenant_id = $1::uuid AND (assignment_job.id::text = $2::text OR assignment_job.job_code = $2::text))
           GROUP BY jr.job_id
         ) recruiter_info ON recruiter_info.job_id = j.id
          LEFT JOIN (
@@ -1715,6 +1781,8 @@ export class JobsService {
              STRING_AGG(p.name, ', ') AS pod_name
            FROM ats.job_pods jp
            JOIN ats.pods p ON p.id = jp.pod_id
+           WHERE p.tenant_id = $1::uuid
+             AND EXISTS (SELECT 1 FROM ats.jobs assignment_job WHERE assignment_job.id = jp.job_id AND assignment_job.tenant_id = $1::uuid AND (assignment_job.id::text = $2::text OR assignment_job.job_code = $2::text))
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
          LEFT JOIN ats.users uc ON (uc.id = j.account_manager_id)
@@ -1744,6 +1812,8 @@ export class JobsService {
             JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
+          WHERE u.tenant_id = $1::uuid
+            AND EXISTS (SELECT 1 FROM ats.jobs assignment_job WHERE assignment_job.id = jr.job_id AND assignment_job.tenant_id = $1::uuid AND (assignment_job.id::text = $2::text OR assignment_job.job_code = $2::text))
           GROUP BY jr.job_id
         ) recruiter_info ON recruiter_info.job_id = j.id
          LEFT JOIN (
@@ -1753,6 +1823,8 @@ export class JobsService {
              STRING_AGG(p.name, ', ') AS pod_name
            FROM ats.job_pods jp
            JOIN ats.pods p ON p.id = jp.pod_id
+           WHERE p.tenant_id = $1::uuid
+             AND EXISTS (SELECT 1 FROM ats.jobs assignment_job WHERE assignment_job.id = jp.job_id AND assignment_job.tenant_id = $1::uuid AND (assignment_job.id::text = $2::text OR assignment_job.job_code = $2::text))
            GROUP BY jp.job_id
          ) pod_info ON pod_info.job_id = j.id
          LEFT JOIN ats.users uc ON (uc.id = j.account_manager_id)

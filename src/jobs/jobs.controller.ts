@@ -41,6 +41,15 @@ export class JobsController {
     return this.jobsService.exportManagers(resolveTenantId(user, tenantId), user, resolveBranchId(user, branchId));
   }
 
+  @Get('catalog')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('job:view')
+  @ApiBearerAuth()
+  async catalog(@CurrentUser() user: AuthUser, @Query() query: Record<string, string>,
+    @Headers('x-tenant-id') tenantId?: string, @Headers('x-branch-id') branchId?: string) {
+    return this.jobsService.findJobPage(resolveTenantId(user, tenantId), user, resolveBranchId(user, branchId), query);
+  }
+
   @Get('pod-options')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('job:assign_pod')
