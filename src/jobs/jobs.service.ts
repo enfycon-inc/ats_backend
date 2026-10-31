@@ -2216,7 +2216,6 @@ export class JobsService {
     const assignmentChanged = dto.recruiterIds !== undefined || dto.recruiterId !== undefined || dto.podId !== undefined || dto.podIds !== undefined;
     if (assignmentChanged && user.permissions?.includes('job:override_assignment')) {
       if (!user.branchId || !user.businessUnitId || currentJob.branchId !== user.branchId || currentJob.businessUnitId !== user.businessUnitId || (dto.branchId !== undefined && dto.branchId !== user.branchId) || (dto.businessUnitId !== undefined && dto.businessUnitId !== user.businessUnitId)) throw new ForbiddenException('Emergency assignments must stay in your current unit.');
-      if (!user.permissions?.includes('job:assignment_reason_optional') && (typeof dto.assignmentReason !== 'string' || !dto.assignmentReason.trim() || dto.assignmentReason.length > 2000)) throw new BadRequestException('Enter an emergency assignment reason (up to 2000 characters).');
     }
     if (mode) {
       assertUnitJobScope(user, currentJob);
