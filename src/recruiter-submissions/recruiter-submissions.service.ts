@@ -864,7 +864,7 @@ export class RecruiterSubmissionsService {
       COUNT(*) FILTER (WHERE l1_status = 'PENDING') as l1_pending,
       COUNT(*) FILTER (WHERE l2_status = 'PENDING') as l2_pending,
       COUNT(*) FILTER (WHERE l3_status = 'PENDING') as l3_pending,
-      COUNT(*) FILTER (WHERE l1_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED') OR l2_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED') OR l3_status IN ('SCHEDULED', 'AWAITING_FEEDBACK', 'CLEARED', 'PASSED')) as dashboard_interviews,
+      COUNT(*) FILTER (WHERE ${bucketConditions.interviews}) as dashboard_interviews,
       COUNT(*) FILTER (WHERE final_status IN ('SELECTED', 'OFFER', 'JOIN', 'PLACED')) as dashboard_selections
       FROM (${baseSql}) AS counted`;
     // Only allow server-owned expressions into ORDER BY; filter values remain bound parameters.

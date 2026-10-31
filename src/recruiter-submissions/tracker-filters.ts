@@ -276,6 +276,9 @@ export function trackerExtraPredicates(
       if(status)clauses.push(`COALESCE(s.${round}_status,'PENDING')=${add(status)}`);
       if(f.bucket!=='closed'&&f.workflow!=='paused')clauses.push(`NOT (UPPER(COALESCE(j.status,'')) IN ('CLOSED','CLOSE') AND NOT COALESCE(j.keep_existing_submissions_open,FALSE))`);
     }
+  } else if (f.roundStatus) {
+    clauses.push(`s.final_status='SUBMITTED' AND (${trackerRoundStatusSql})=${add(f.roundStatus)}`);
+    if(f.bucket!=='closed'&&f.workflow!=='paused')clauses.push(`NOT (UPPER(COALESCE(j.status,'')) IN ('CLOSED','CLOSE') AND NOT COALESCE(j.keep_existing_submissions_open,FALSE))`);
   }
   if (f.queue)
     clauses.push(

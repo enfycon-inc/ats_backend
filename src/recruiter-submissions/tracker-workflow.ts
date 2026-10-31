@@ -14,7 +14,7 @@ export function trackerBucketConditions(prefix = '', jobStatusExpression?: strin
   return {
     all: 'TRUE',
     review: `(NOT (${paused}) AND ${prefix}final_status = 'PENDING_APPROVAL')`,
-    interviews: `(NOT (${paused}) AND ${prefix}final_status = 'SUBMITTED')`,
+    interviews: `(NOT (${paused}) AND ${prefix}final_status = 'SUBMITTED' AND (${prefix}l1_status IN ('SCHEDULED', 'AWAITING_FEEDBACK') OR ${prefix}l2_status IN ('SCHEDULED', 'AWAITING_FEEDBACK') OR ${prefix}l3_status IN ('SCHEDULED', 'AWAITING_FEEDBACK')))`,
     offers: `${prefix}final_status IN ('SELECTED', 'OFFER')`,
     closures: `${prefix}final_status = 'JOIN'`,
     closed: `(${prefix}final_status IN ('REJECTED', 'NOT_SELECTED', 'WITHDRAWN') OR ${paused})`,

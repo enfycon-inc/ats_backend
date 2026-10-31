@@ -18,6 +18,9 @@ describe('tracker workflow', () => {
       expect(rows[bucket].replace(/s\./g, '')).toBe(count[bucket]);
     }
     expect(count.review).toContain('NOT (');
-    expect(count.interviews).not.toContain('l1_status');
+    expect(count.interviews).toContain('l1_status');
+    expect(count.interviews).toContain('SCHEDULED');
+    expect(count.interviews).toContain('AWAITING_FEEDBACK');
+    expect(count.interviews).not.toContain("l1_status = 'PENDING'");
   });
 });
