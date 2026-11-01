@@ -5,6 +5,7 @@ import { rejectManualPodLeadRoles, existingPodLeadRoleIds } from './pod-lead-rol
 import {
   Injectable,
   Logger,
+  HttpException,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -1015,6 +1016,7 @@ async approveTenantUser(
       throw new BadRequestException('Select valid users and a valid manager.');
     }
     if (!requester) throw new ForbiddenException('User management identity is required.');
+    if (reviewerId && userIds.some(id => id.toLowerCase() === reviewerId.trim().toLowerCase())) throw new BadRequestException('A selected user cannot be assigned as their own manager.');
     const selected = await this.authQuery.query(`SELECT id, tenant_id, branch_id, business_unit_id, ${memberPermissionProjection('users')} FROM users WHERE tenant_id = $1::uuid AND id = ANY($2::uuid[])`, [tenantId, [...new Set(userIds)]]);
     if (selected.rows.length !== new Set(userIds).size) throw new ForbiddenException('One or more selected members are unavailable.');
     selected.rows.forEach(member => assertMemberAction(requester, member, 'assignManager'));
@@ -1025,6 +1027,54 @@ async approveTenantUser(
       [cleanReviewerId, userIds, tenantId]
     );
     return { success: true, count: userIds.length, reviewerId: cleanReviewerId };
+  }
+
+  async bulkDirectoryAction(input: {
+    userIds: string[];
+    action: 'change-status' | 'revoke-sessions' | 'change-city';
+    isActive?: boolean;
+    reason?: string;
+    city?: string | null;
+  }, requester: AuthUser) {
+    if (!input || typeof input !== 'object') throw new BadRequestException('Bulk action details are required.');
+    if (!Array.isArray(input.userIds) || input.userIds.length < 1 || input.userIds.length > 100 ||
+        input.userIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+      throw new BadRequestException('Select between 1 and 100 valid user accounts.');
+    }
+    if (new Set(input.userIds).size !== input.userIds.length) throw new BadRequestException('Duplicate user accounts are not allowed.');
+    if (!requester?.tenantId || !requester.dbId) throw new ForbiddenException('A workspace user-management identity is required.');
+    if (!['change-status', 'revoke-sessions', 'change-city'].includes(input.action)) throw new BadRequestException('Select a supported bulk action.');
+    if (input.action === 'change-status' && typeof input.isActive !== 'boolean') throw new BadRequestException('Select whether accounts should be activated or deactivated.');
+    if (input.action === 'change-status' && input.isActive === false && (typeof input.reason !== 'string' || input.reason.trim().length < 3 || input.reason.length > 500)) {
+      throw new BadRequestException('Provide a reason between 3 and 500 characters to deactivate accounts.');
+    }
+    if (input.action === 'change-city' && input.city != null && !USER_CITY_VALUES.includes(input.city as UserCity)) throw new BadRequestException('Select a valid city or no city.');
+
+    const results: Array<{ userId: string; success: boolean; message: string }> = new Array(input.userIds.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= input.userIds.length) return;
+        const userId = input.userIds[index];
+        try {
+          if (input.action === 'change-status') {
+            await this.setUserActive(userId, input.isActive!, requester.dbId!, requester, input.reason);
+          } else if (input.action === 'revoke-sessions') {
+            await this.logoutUserSessions(userId, requester);
+          } else {
+            await this.updateUserDetails(userId, { city: input.city ?? null }, requester);
+          }
+          results[index] = { userId, success: true, message: 'Completed.' };
+        } catch (error) {
+          const message = error instanceof HttpException ? String(error.message) : 'Unable to complete this action for the selected account.';
+          results[index] = { userId, success: false, message };
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(5, input.userIds.length) }, () => worker()));
+    const succeeded = results.filter(result => result.success).length;
+    return { success: succeeded === results.length, count: results.length, succeeded, failed: results.length - succeeded, results };
   }
 
   // ─── Shared helpers ───────────────────────────────────────────

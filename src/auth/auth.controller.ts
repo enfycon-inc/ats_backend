@@ -423,6 +423,19 @@ Validates email + password and returns a signed JWT access token.
     return this.authService.bulkSetJobReviewer(currentUser.tenantId, body.userIds, body.reviewerId || null, currentUser);
   }
 
+  @Post('users/bulk-action')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('user:manage')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Run one permission-scoped action for selected user accounts' })
+  async bulkDirectoryAction(
+    @Body() body: { userIds: string[]; action: 'change-status' | 'revoke-sessions' | 'change-city'; isActive?: boolean; reason?: string; city?: string | null },
+    @CurrentUser() currentUser: AuthUser,
+  ) {
+    return this.authService.bulkDirectoryAction(body, currentUser);
+  }
+
 
   // â”€â”€â”€ POST /api/auth/request-role â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   @Post('request-role')
