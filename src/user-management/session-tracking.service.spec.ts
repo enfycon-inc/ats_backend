@@ -34,6 +34,14 @@ describe('Session tracking and presence failures', () => {
     const result = await new SessionTrackingService({} as any, queue).presences('tenant', ['one', 'two']);
     expect([...result.values()]).toEqual(['unknown', 'unknown']);
   });
+  it('reports whether the Redis presence store is available through a scoped read', async () => {
+    const redis: any = { hgetall: jest.fn().mockResolvedValue({}) };
+    const service = new SessionTrackingService({} as any, { client: Promise.resolve(redis) } as any);
+    await expect(service.presenceTelemetryAvailable('tenant')).resolves.toBe(true);
+    expect(redis.hgetall).toHaveBeenCalledWith('um:presence:tenant:__telemetry_probe__');
+    const unavailable = new SessionTrackingService({} as any, { client: Promise.resolve({ hgetall: jest.fn().mockRejectedValue(new Error('Redis down')) }) } as any);
+    await expect(unavailable.presenceTelemetryAvailable('tenant')).resolves.toBe(false);
+  });
   it('aggregates activity across tabs and ignores stale connections', async () => {
     const now = Date.now();
     const results = [

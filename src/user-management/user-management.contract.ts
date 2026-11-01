@@ -32,6 +32,13 @@ export interface DirectoryPage {
   counts: { active: number; pending: number; blocked: number };
   asOf: string; telemetryEnabled: boolean;
 }
+export interface PresenceSummary {
+  counts: { loggedInToday: number; active: number; away: number; offline: number; unknown: number };
+  recent: Array<{ id: string; fullName: string; email: string; presence: Presence; lastSeenAt: string | null }>;
+  asOf: string;
+  telemetryEnabled: boolean;
+  telemetryAvailable: boolean;
+}
 export interface SessionItem {
   officeLocation?: OfficeConsentResult & { source: 'post_login' | 'manual' };
   id: string; device: string; loginMethod: string; startedAt: string;

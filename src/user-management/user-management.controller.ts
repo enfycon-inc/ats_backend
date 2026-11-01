@@ -28,6 +28,7 @@ export class UserManagementController {
   @Post('me/location-challenge') locationChallenge(@Req() req: any, @Body() body: any) { return this.consent.challenge(req.user, req.headers, body); }
   @Post('me/location-checks') locationCheck(@Req() req: any, @Body() body: any) { return this.consent.check(req.user, req.headers, body); }
   @Get('users') list(@Req() req: any, @Query() query: Record<string, string>) { return this.users.list(req.user, query); }
+  @Get('presence/summary') presenceSummary(@Req() req: any) { return this.users.presenceSummary(req.user); }
   @Get('users/:id/sessions') sessions(@Req() req: any, @Param('id', ParseUUIDPipe) id: string, @Query('page') page?: string) {
     return this.users.sessions(req.user, id, this.page(page));
   }

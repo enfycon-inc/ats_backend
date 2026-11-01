@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
 import { hasCapability, managementScope, requireCapability } from './management-policy';
 import { SessionTrackingService } from './session-tracking.service';
-import type { DirectoryPage, SecurityEventItem, SessionItem, UserView } from './user-management.contract';
+import type { DirectoryPage, Presence, PresenceSummary, SecurityEventItem, SessionItem, UserView } from './user-management.contract';
 import { assertMemberAction, memberPermissionProjection } from '../auth/utils/user-management-access';
 import { OfficeLocationService } from './office-location.service';
 import { userManagementActions } from '../auth/user-management-policy';
@@ -24,6 +24,11 @@ export class UserManagementService {
     const search = String(query.search || '').trim().slice(0, 150);
     const city = String(query.city || '').trim();
     const role = String(query.role || '').trim();
+    const presenceFilter = String(query.presence || '').trim();
+    if (presenceFilter && !['active', 'away', 'offline', 'unknown'].includes(presenceFilter)) throw new BadRequestException('Invalid presence filter.');
+    if (presenceFilter) requireCapability(actor, 'user:presence:view');
+    const loginToday = query.loginToday === '1';
+    if (loginToday) requireCapability(actor, 'user:presence:view');
     if (city.length > 150 || role.length > 150) throw new BadRequestException('Invalid directory filter.');
     const sorts: Record<string, string> = { name: '"fullName"', city: 'city', branch: '"branchName"', created: '"createdAt"' };
     const sort = query.sort || 'name';
@@ -86,26 +91,55 @@ export class UserManagementService {
         AND NOT EXISTS(SELECT 1 FROM ats.users u WHERE u.tenant_id=i.tenant_id AND LOWER(u.email)=LOWER(i.email))`;
     }
     const cityParam = `$${values.push(city)}`, roleParam = `$${values.push(role)}`;
+    const loginTodayFilter = loginToday ? `AND EXISTS (SELECT 1 FROM ats.users login_user
+      LEFT JOIN ats.branches login_branch ON login_branch.id=login_user.branch_id
+      LEFT JOIN ats.business_units login_unit ON login_unit.id=login_user.business_unit_id
+      WHERE login_user.id=matches.id AND login_user.last_login_at IS NOT NULL
+        AND (login_user.last_login_at AT TIME ZONE COALESCE(login_unit.timezone,login_branch.timezone,'Asia/Kolkata'))::date
+          = (NOW() AT TIME ZONE COALESCE(login_unit.timezone,login_branch.timezone,'Asia/Kolkata'))::date)` : '';
     const filter = `("fullName" ILIKE ${searchParam} OR email ILIKE ${searchParam})
       AND (${cityParam}='' OR city=${cityParam})
-      AND (${roleParam}='' OR ${roleParam}=ANY("assignedRoles"))`;
+      AND (${roleParam}='' OR ${roleParam}=ANY("assignedRoles")) ${loginTodayFilter}`;
     const totalRows = await this.db.$queryRawUnsafe<any[]>(`WITH scoped AS (${combined})
       SELECT COUNT(*) FILTER (WHERE ${filter})::int AS count,
         ARRAY(SELECT DISTINCT city FROM scoped WHERE city IS NOT NULL AND city<>'' ORDER BY city) AS cities,
         ARRAY(SELECT DISTINCT role FROM scoped CROSS JOIN LATERAL unnest("assignedRoles") role ORDER BY role) AS roles
       FROM scoped matches`, ...values);
     const limit = `$${values.length + 1}`, offset = `$${values.length + 2}`;
-    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches WHERE ${filter} ORDER BY ${sorts[sort]} ${direction} NULLS LAST,id LIMIT ${limit} OFFSET ${offset}`, ...values, size, (page - 1) * size);
+    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches WHERE ${filter} ORDER BY ${sorts[sort]} ${direction} NULLS LAST,id LIMIT ${limit} OFFSET ${values.length + 2}`, ...values, size, (page - 1) * size);
+    let presence: Map<string, Presence> | null = null;
+    let presenceTotal: number | null = null;
+    if (presenceFilter) {
+      // Filter prior to pagination. Walk only the user IDs in the actor's SQL scope,
+      // in bounded chunks, and use Redis heartbeats to choose the matching IDs.
+      const candidates = await this.db.$queryRawUnsafe<any[]>(`WITH scoped AS (${combined})
+        SELECT id FROM scoped matches WHERE ${filter} AND kind='user' ORDER BY ${sorts[sort]} ${direction} NULLS LAST,id`, ...values);
+      const matched: string[] = [];
+      presence = new Map();
+      for (let offset = 0; offset < candidates.length; offset += 400) {
+        const chunk = candidates.slice(offset, offset + 400).map(row => String(row.id));
+        const statuses = await this.tracking.presences(actor.tenantId, chunk);
+        for (const [id, status] of statuses) {
+          presence.set(id, status);
+          if (status === presenceFilter) matched.push(id);
+        }
+      }
+      presenceTotal = matched.length;
+      const pageIds = matched.slice((page - 1) * size, page * size);
+      const pageRows = pageIds.length ? await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches WHERE id=ANY($${values.length + 1}::uuid[])`, ...values, pageIds) : [];
+      const byId = new Map(pageRows.map(row => [row.id, row]));
+      rows.splice(0, rows.length, ...pageIds.map(id => byId.get(id)).filter(Boolean));
+    }
     if (this.tracking.enabled) {
       const ids = rows.filter(row => row.kind === 'user').map(row => row.id);
-      const presence = hasCapability(actor, 'user:presence:view') ? await this.tracking.presences(actor.tenantId, ids) : new Map();
+      const rowPresence = hasCapability(actor, 'user:presence:view') ? (presence || await this.tracking.presences(actor.tenantId, ids)) : new Map();
       const summaries = ids.length ? await this.db.$queryRawUnsafe<any[]>(`SELECT m.user_id,
         COUNT(*) FILTER(WHERE m.revoked_at IS NULL AND s.expires_at>NOW())::int AS sessions,MAX(m.last_seen_at) AS last_seen
         FROM ats.session_memberships m JOIN ats.application_sessions s ON s.id=m.session_id
         WHERE m.tenant_id=$1::uuid AND m.user_id=ANY($2::uuid[]) GROUP BY m.user_id`, actor.tenantId, ids) : [];
       const byId = new Map(summaries.map(row => [row.user_id, row]));
       for (const row of rows) {
-        if (hasCapability(actor, 'user:presence:view')) { row.presence = presence.get(row.id) || 'unknown'; row.lastSeenAt = byId.get(row.id)?.last_seen || null; }
+        if (hasCapability(actor, 'user:presence:view')) { row.presence = rowPresence.get(row.id) || 'unknown'; row.lastSeenAt = byId.get(row.id)?.last_seen || null; }
         if (hasCapability(actor, 'user:sessions:view')) row.sessions = byId.get(row.id)?.sessions || 0;
       }
       if (state === 'blocked' && ids.length) {
@@ -136,10 +170,45 @@ export class UserManagementService {
           deleteUser: row.kind === 'user' && actions.deleteUser };
       delete row.__tenantId; delete row.__branchId; delete row.__unitId; delete row.management_permissions;
     }
-    return { items: rows, total: totalRows[0].count, page, pageSize: size,
+    return { items: rows, total: presenceTotal ?? totalRows[0].count, page, pageSize: size,
       filters: { cities: totalRows[0].cities || [], roles: totalRows[0].roles || [] },
       counts: { ...counts[0], pending: counts[0].pending + invited[0].count },
       asOf: new Date().toISOString(), telemetryEnabled: this.tracking.enabled };
+  }
+  async presenceSummary(actor: AuthUser): Promise<PresenceSummary> {
+    requireCapability(actor, 'user:presence:view');
+    const scope = managementScope(actor);
+    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT u.id,u.full_name AS "fullName",u.email,u.last_login_at AS "lastLoginAt",
+      (u.last_login_at IS NOT NULL AND (u.last_login_at AT TIME ZONE COALESCE(bu.timezone,b.timezone,'Asia/Kolkata'))::date
+        = (NOW() AT TIME ZONE COALESCE(bu.timezone,b.timezone,'Asia/Kolkata'))::date) AS "loggedInToday"
+      FROM ats.users u LEFT JOIN ats.branches b ON b.id=u.branch_id LEFT JOIN ats.business_units bu ON bu.id=u.business_unit_id
+      WHERE ${scope.sql} AND u.is_approved=true AND u.is_active=true
+      ORDER BY u.last_login_at DESC NULLS LAST,u.full_name ASC`, ...scope.values);
+    const telemetryAvailable = await this.tracking.presenceTelemetryAvailable(actor.tenantId);
+    const statuses = new Map<string, Presence>();
+    const allIds = rows.map(row => String(row.id));
+    let lastSeen = new Map<string, string | null>();
+    if (telemetryAvailable) {
+      for (let offset = 0; offset < rows.length; offset += 400) {
+        const chunk = rows.slice(offset, offset + 400).map(row => String(row.id));
+        for (const [id, status] of await this.tracking.presences(actor.tenantId, chunk)) statuses.set(id, status);
+      }
+      const observations = allIds.length ? await this.db.$queryRawUnsafe<any[]>(`SELECT user_id,MAX(last_seen_at) AS last_seen FROM ats.session_memberships
+        WHERE tenant_id=$1::uuid AND user_id=ANY($2::uuid[]) GROUP BY user_id`, actor.tenantId, allIds) : [];
+      lastSeen = new Map(observations.map(row => [row.user_id, row.last_seen]));
+    }
+    const counts = { loggedInToday: 0, active: 0, away: 0, offline: 0, unknown: 0 };
+    const recent = [] as PresenceSummary['recent'];
+    for (const row of rows) {
+      const presence: Presence = telemetryAvailable ? statuses.get(row.id) || 'unknown' : 'unknown';
+      if (presence === 'active') counts.active++;
+      else if (presence === 'away') counts.away++;
+      else if (presence === 'offline') counts.offline++;
+      else counts.unknown++;
+      if (row.loggedInToday) counts.loggedInToday++;
+      if (recent.length < 8) recent.push({ id: row.id, fullName: row.fullName, email: row.email, presence, lastSeenAt: lastSeen.get(row.id) || null });
+    }
+    return { counts, recent, asOf: new Date().toISOString(), telemetryEnabled: this.tracking.enabled, telemetryAvailable };
   }
   private integer(raw: string | undefined, fallback: number, min: number, max: number) {
     if (raw === undefined) return fallback;

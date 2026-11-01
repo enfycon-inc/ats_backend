@@ -1,4 +1,4 @@
-import { managementScope, hasCapability, requireCapability, deviceLabel } from './management-policy';
+import { managementScope, hasCapability, requireCapability, deviceLabel, presenceViewerRooms, presenceAudienceRooms } from './management-policy';
 const actor: any = { dbId: 'actor', tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit', permissions: ['user:presence:view'] };
 describe('User telemetry resource scope', () => {
   it('isolates a delivery viewer to tenant, branch and unit without relying on a role name', () => {
@@ -30,5 +30,19 @@ describe('User telemetry resource scope', () => {
     expect(deviceLabel('Chrome/123 Windows')).toBe('Chrome · Windows');
     expect(deviceLabel('Edg/123 Windows Chrome/123')).toBe('Edge · Windows');
     expect(deviceLabel('<script>untrusted device</script>')).toBe('Unknown browser · Unknown OS');
+  });
+  it('joins presence subscribers only to the authorized tenant, branch, unit, or self room', () => {
+    expect(presenceViewerRooms({ ...actor, businessUnitId: 'unit' })).toEqual(['presence:unit:tenant:branch:unit']);
+    expect(presenceViewerRooms({ ...actor, businessUnitId: undefined })).toEqual(['presence:user:tenant:actor']);
+    expect(presenceViewerRooms({ ...actor, permissions: ['user:presence:view', 'branch_admin:manage'], assignedBranchIds: ['branch-b'] })).toEqual([
+      'presence:branch:tenant:branch-b', 'presence:branch:tenant:branch',
+    ]);
+    expect(presenceViewerRooms({ ...actor, permissions: ['user:presence:view', 'tenant:manage'] })).toEqual(['presence:tenant:tenant']);
+    expect(presenceViewerRooms({ ...actor, permissions: [] })).toEqual([]);
+  });
+  it('publishes presence invalidation into broader authorized audiences when a scoped user changes state', () => {
+    expect(presenceAudienceRooms(actor)).toEqual([
+      'presence:tenant:tenant', 'presence:user:tenant:actor', 'presence:branch:tenant:branch', 'presence:unit:tenant:branch:unit',
+    ]);
   });
 });

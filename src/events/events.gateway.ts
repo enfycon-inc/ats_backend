@@ -5,7 +5,7 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SessionTrackingService } from '../user-management/session-tracking.service';
-import { hasCapability, managementScope } from '../user-management/management-policy';
+import { hasCapability, managementScope, presenceViewerRooms } from '../user-management/management-policy';
 
 @Injectable()
 @WebSocketGateway({ cors: { origin: (origin, callback) => {
@@ -33,6 +33,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     client.data.actor = await guard.authenticateRequest(client.data.request);
     const actor = client.data.actor;
     const desired = new Set([`user:${actor.tenantId}:${actor.dbId}`, `tenant:${actor.tenantId}`]);
+    presenceViewerRooms(actor).forEach(room => desired.add(room));
     if (actor.permissions?.some((p: string) => ['user:manage', 'tenant:settings', 'tenant:manage', '*', 'platform:manage'].includes(p))) desired.add(`admins:${actor.tenantId}`);
     for (const room of client.rooms) if (room !== client.id && !desired.has(room)) await client.leave(room);
     for (const room of desired) await client.join(room);
@@ -76,7 +77,6 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect, 
     try {
       const actor = await this.refresh(client);
       await this.tracking.heartbeat(actor, client.id, body?.active === true);
-      await this.handleGetOnlineUsers(client);
     } catch { client.disconnect(true); }
   }
   @SubscribeMessage('get_online_users') async handleGetOnlineUsers(@ConnectedSocket() client: Socket) {

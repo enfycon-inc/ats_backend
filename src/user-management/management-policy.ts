@@ -7,6 +7,24 @@ export function hasCapability(actor: AuthUser, key: string): boolean {
 export function requireCapability(actor: AuthUser, key: string) {
   if (!hasCapability(actor, key)) throw new ForbiddenException('You do not have permission to view or change this information.');
 }
+export function presenceViewerRooms(actor: AuthUser): string[] {
+  if (!actor.tenantId || !hasCapability(actor, 'user:presence:view')) return [];
+  const tenant = actor.tenantId;
+  if (actor.permissions?.some(p => ['*', 'platform:manage', 'tenant:settings', 'tenant:manage'].includes(p))) return [`presence:tenant:${tenant}`];
+  if (hasCapability(actor, 'branch_admin:manage')) {
+    return [...new Set([...(actor.assignedBranchIds || []), ...(actor.branchId ? [actor.branchId] : [])])]
+      .map(branch => `presence:branch:${tenant}:${branch}`);
+  }
+  if (actor.businessUnitId && actor.branchId) return [`presence:unit:${tenant}:${actor.branchId}:${actor.businessUnitId}`];
+  return [`presence:user:${tenant}:${actor.dbId}`];
+}
+export function presenceAudienceRooms(actor: AuthUser): string[] {
+  if (!actor.tenantId) return [];
+  const rooms = [`presence:tenant:${actor.tenantId}`, `presence:user:${actor.tenantId}:${actor.dbId}`];
+  if (actor.branchId) rooms.push(`presence:branch:${actor.tenantId}:${actor.branchId}`);
+  if (actor.branchId && actor.businessUnitId) rooms.push(`presence:unit:${actor.tenantId}:${actor.branchId}:${actor.businessUnitId}`);
+  return rooms;
+}
 /** Returns parameterised SQL for the current tenant and authorised staff scope. */
 export function managementScope(actor: AuthUser, alias = 'u', start = 1) {
   if (!actor.tenantId) throw new ForbiddenException('A workspace is required.');

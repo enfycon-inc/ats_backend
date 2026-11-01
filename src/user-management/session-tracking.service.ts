@@ -5,8 +5,20 @@ import { Queue } from 'bullmq';
 import { publicClientIp } from './client-ip';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../auth/interfaces/auth-user.interface';
-import { deviceLabel } from './management-policy';
+import { deviceLabel, presenceAudienceRooms } from './management-policy';
 import type { Presence } from './user-management.contract';
+
+function safePresenceRecord(raw: string): { seen: number; active: number } | null {
+  try {
+    const value = JSON.parse(raw);
+    return Number.isFinite(value?.seen) && Number.isFinite(value?.active) ? value : null;
+  } catch { return null; }
+}
+function classifyPresence(records: Record<string, string>, now = Date.now()): Presence {
+  const observations = Object.values(records).map(safePresenceRecord).filter((value): value is { seen: number; active: number } => !!value);
+  const fresh = observations.filter(value => now - value.seen < 90_000);
+  return fresh.some(value => now - value.active < 300_000) ? 'active' : fresh.length ? 'away' : 'offline';
+}
 
 @Injectable()
 export class SessionTrackingService implements OnModuleDestroy {
@@ -118,18 +130,39 @@ export class SessionTrackingService implements OnModuleDestroy {
   }
   async heartbeat(actor: AuthUser, connectionId: string, active: boolean) {
     if (!this.enabled || !(actor as any).sessionMembershipId) return;
+    let statusChanged = false;
     await this.redisWork(async redis => {
     const key = `um:presence:${actor.tenantId}:${actor.dbId}`;
     const field = `${(actor as any).sessionMembershipId}:${connectionId}`;
-    const prior = await redis.hget(key, field);
-    const old = prior ? JSON.parse(prior) : null;
+    const records = await redis.hgetall(key);
+    const old = records[field] ? safePresenceRecord(records[field]) : null;
+    const previousStatus = classifyPresence(records);
+    const value = JSON.stringify({ seen: Date.now(), active: active ? Date.now() : old?.active || 0 });
     redis.defineCommand('umHeartbeat', { numberOfKeys: 1, lua: "redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); redis.call('EXPIRE',KEYS[1],180); return 1" });
-    await redis.runCommand('umHeartbeat', [key, field, JSON.stringify({ seen: Date.now(), active: active ? Date.now() : old?.active || 0 })]);
+    await redis.runCommand('umHeartbeat', [key, field, value]);
+    statusChanged = previousStatus !== classifyPresence({ ...records, [field]: value });
     });
+    if (statusChanged) await this.publishPresenceChanged(actor);
   }
   async disconnect(actor: AuthUser, connectionId: string) {
     if (!this.enabled || !(actor as any).sessionMembershipId) return;
-    await this.redisWork(redis => redis.hdel(`um:presence:${actor.tenantId}:${actor.dbId}`, `${(actor as any).sessionMembershipId}:${connectionId}`));
+    let statusChanged = false;
+    await this.redisWork(async redis => {
+      const key = `um:presence:${actor.tenantId}:${actor.dbId}`;
+      const records = await redis.hgetall(key);
+      const field = `${(actor as any).sessionMembershipId}:${connectionId}`;
+      const previousStatus = classifyPresence(records);
+      await redis.hdel(key, field);
+      const remaining = { ...records }; delete remaining[field];
+      statusChanged = previousStatus !== classifyPresence(remaining);
+    });
+    if (statusChanged) await this.publishPresenceChanged(actor);
+  }
+  private async publishPresenceChanged(actor: AuthUser) {
+    const payload = { changedAt: new Date().toISOString() };
+    const deliveries = presenceAudienceRooms(actor).map(room => this.publish('presence_changed', payload, room));
+    const results = await Promise.allSettled(deliveries);
+    if (results.some(result => result.status === 'rejected')) this.logger.warn('Presence update event could not be published; clients recover on reconnect.');
   }
   async presences(tenantId: string, ids: string[]): Promise<Map<string, Presence>> {
     const result = new Map<string, Presence>(ids.map(id => [id, 'unknown']));
@@ -142,12 +175,23 @@ export class SessionTrackingService implements OnModuleDestroy {
       });
       ids.forEach((id, i) => {
         if (!values || values[i]?.[0]) return;
-        const observations = Object.values((values[i]?.[1] || {}) as Record<string, string>).map(raw => JSON.parse(raw));
-        const fresh = observations.filter(value => Date.now() - value.seen < 90_000);
-        result.set(id, fresh.some(value => Date.now() - value.active < 300_000) ? 'active' : fresh.length ? 'away' : 'offline');
+        result.set(id, classifyPresence((values[i]?.[1] || {}) as Record<string, string>));
       });
     } catch { this.logger.warn('Presence store unavailable; returning unknown status.'); }
     return result;
+  }
+  /** Returns a best-effort telemetry availability check for aggregate presence views. */
+  async presenceTelemetryAvailable(tenantId: string): Promise<boolean> {
+    if (!this.enabled) return false;
+    try {
+      // Reuse the same scoped read command used by presence lookup. Managed Redis
+      // deployments may deny INFO even while application keys are healthy.
+      await this.redisWork(async redis => { await redis.hgetall(`um:presence:${tenantId}:__telemetry_probe__`); });
+      return true;
+    } catch {
+      this.logger.warn(`Presence store unavailable for tenant ${tenantId}; summary reports unknown status.`);
+      return false;
+    }
   }
   async publish(event: string, payload: unknown, room: string) {
     await this.redisWork(async redis => {
