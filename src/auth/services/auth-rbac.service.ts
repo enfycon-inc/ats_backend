@@ -44,7 +44,7 @@ export class AuthRbacService {
       const roleName = sysRole.name;
       const systemRoleId = sysRole.id;
       const storedPerms: string[] = typeof sysRole.permissions === 'string' ? JSON.parse(sysRole.permissions) : sysRole.permissions;
-      const perms = [...new Set([...storedPerms, ...submissionAutoApprovalDefaults(systemKey)])];
+      const perms = [...new Set([...storedPerms, 'user:presence:view', ...submissionAutoApprovalDefaults(systemKey)])];
 
       // Removed restriction
 

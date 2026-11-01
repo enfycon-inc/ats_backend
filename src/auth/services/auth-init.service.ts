@@ -194,13 +194,13 @@ export class AuthInitService implements OnModuleInit {
       FROM system_roles sr
       WHERE cr.is_system = true AND UPPER(cr.name) = sr.system_key;
 
-      -- Grant live presence to standard leadership roles and synchronize existing tenant copies.
+      -- Grant scoped team-presence visibility to every default role and synchronize
+      -- existing tenant copies. This permission does not grant user-management actions.
       UPDATE system_roles
       SET permissions = CASE
         WHEN COALESCE(permissions, '[]'::jsonb) ? 'user:presence:view' THEN permissions
         ELSE COALESCE(permissions, '[]'::jsonb) || '["user:presence:view"]'::jsonb
-      END
-      WHERE system_key IN ('SUPER_ADMIN', 'TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'DELIVERY_HEAD');
+      END;
 
       UPDATE custom_roles cr
       SET permissions = CASE
@@ -209,8 +209,7 @@ export class AuthInitService implements OnModuleInit {
       END
       FROM system_roles sr
       WHERE cr.system_role_id = sr.id
-        AND cr.is_system = true
-        AND sr.system_key IN ('SUPER_ADMIN', 'TENANT_ADMIN', 'BRANCH_ADMIN', 'UNIT_ADMIN', 'DELIVERY_HEAD');
+        AND cr.is_system = true;
 
       -- Backfill the new bill-rate capability into existing default system-role
       -- copies. seedTenantRoles creates these rows but intentionally preserves
