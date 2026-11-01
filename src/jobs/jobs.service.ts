@@ -1692,6 +1692,20 @@ export class JobsService {
       sql += ` AND j.created_at ${operator} ${bind(date.toISOString())}::timestamptz`;
     }
     if (query.priority) sql += ` AND UPPER(j.urgency) = UPPER(${bind(query.priority)})`;
+    if (query.workMode) sql += ` AND UPPER(j.work_mode) = UPPER(${bind(query.workMode)})`;
+    const idList = (value?: string) => (value || '').split(',').map(id => id.trim()).filter(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)).slice(0, 50);
+    const accountManagerIds = idList(query.accountManagers);
+    if (accountManagerIds.length) sql += ` AND j.account_manager_id = ANY(${bind(accountManagerIds)}::uuid[])`;
+    const recruiterIds = idList(query.recruiters);
+    if (recruiterIds.length) sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters mr WHERE mr.job_id = j.id AND mr.recruiter_id = ANY(${bind(recruiterIds)}::uuid[]))`;
+    const conditionSql: Record<string, string> = {
+      hasSubmissions: 'EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
+      noSubmissions: 'NOT EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
+      unassigned: 'NOT EXISTS (SELECT 1 FROM ats.job_recruiters ur WHERE ur.job_id = j.id)',
+      hasPipeline: 'EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
+    };
+    const conditions = (query.conditions || '').split(',').map(value => conditionSql[value]).filter(Boolean);
+    if (conditions.length) sql += ` AND (${conditions.join(' AND ')})`;
     if (query.tab === 'branch' && actor.branchId) sql += ` AND j.branch_id = ${bind(actor.branchId)}::uuid`;
     if (query.tab === 'shared' && actor.branchId) sql += ` AND ${bind(actor.branchId)} = ANY(j.shared_branch_ids)`;
     const predefined: Record<string, string> = {
