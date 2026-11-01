@@ -1663,13 +1663,25 @@ export class JobsService {
     if (query.filter === 'pod' && (!context.podsEnabled || !(context.actor?.permissions || []).some(permission => ['job:view_pod_jobs', 'job:submit_pod_jobs'].includes(permission)))) throw new ForbiddenException('Pod job access is unavailable in this workspace.');
     const scope = this.buildJobListQuery(tenantId, context.actor, branchId, query.filter, context.podsEnabled);
     if (!scope) return { data: [], total: 0, page, limit, totalPages: 0 };
-    const optionRows = await this.prisma.$queryRawUnsafe<any[]>(`SELECT
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT mapped_business_unit_name), NULL) AS branches,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT creator_name), NULL) AS creators,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT mapped_client_name) || ARRAY_AGG(DISTINCT mapped_end_client_name), NULL) AS clients,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT multi_recruiter_names), NULL) AS recruiters,
-      ARRAY_REMOVE(ARRAY_AGG(DISTINCT pod_name), NULL) AS pods
-      FROM (${scope.sql}) option_jobs`, ...scope.params);
+    const optionRows = await this.prisma.$queryRawUnsafe<any[]>(`WITH option_jobs AS (${scope.sql})
+      SELECT
+        ARRAY_REMOVE(ARRAY_AGG(DISTINCT mapped_business_unit_name), NULL) AS branches,
+        ARRAY_REMOVE(ARRAY_AGG(DISTINCT creator_name), NULL) AS creators,
+        ARRAY_REMOVE(ARRAY_AGG(DISTINCT mapped_client_name) || ARRAY_AGG(DISTINCT mapped_end_client_name), NULL) AS clients,
+        ARRAY_REMOVE(ARRAY_AGG(DISTINCT multi_recruiter_names), NULL) AS recruiters,
+        ARRAY_REMOVE(ARRAY_AGG(DISTINCT pod_name), NULL) AS pods,
+        COALESCE((SELECT jsonb_agg(to_jsonb(manager_options) ORDER BY manager_options.label)
+          FROM (SELECT DISTINCT staff.id::text AS id, staff.full_name AS label
+            FROM option_jobs visible_job
+            JOIN ats.users staff ON staff.id = visible_job.account_manager_id AND staff.tenant_id = $1::uuid
+          ) manager_options), '[]'::jsonb) AS account_manager_options,
+        COALESCE((SELECT jsonb_agg(to_jsonb(recruiter_options) ORDER BY recruiter_options.label)
+          FROM (SELECT DISTINCT staff.id::text AS id, staff.full_name AS label
+            FROM option_jobs visible_job
+            JOIN ats.job_recruiters assigned_recruiter ON assigned_recruiter.job_id = visible_job.id
+            JOIN ats.users staff ON staff.id = assigned_recruiter.recruiter_id AND staff.tenant_id = $1::uuid
+          ) recruiter_options), '[]'::jsonb) AS recruiter_options
+      FROM option_jobs`, ...scope.params);
     const options = optionRows[0] || {};
     const params = [...scope.params];
     const bind = (value: string | number | string[]) => { params.push(value); return '$' + params.length; };
@@ -1744,7 +1756,11 @@ export class JobsService {
     const count = await this.prisma.$queryRawUnsafe<any[]>(`SELECT COUNT(*)::int AS total FROM (${sql}) scoped_jobs`, ...params);
     const total = Number(count[0]?.total || 0);
     const rows = await this.prisma.$queryRawUnsafe<any[]>(`SELECT * FROM (${sql}) scoped_jobs ORDER BY ${sort} ${(query.direction || 'desc').toUpperCase()} NULLS LAST, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, ...params, limit, (page - 1) * limit);
-    return { data: rows.map(row => ({ ...this.mapRowToProfile(row, context.actor?.permissions || []), capabilities: jobCapabilities(context.actor, rowJobScope(row, tenantId, context)) })), total, page, limit, totalPages: Math.ceil(total / limit), options };
+    return { data: rows.map(row => ({ ...this.mapRowToProfile(row, context.actor?.permissions || []), capabilities: jobCapabilities(context.actor, rowJobScope(row, tenantId, context)) })), total, page, limit, totalPages: Math.ceil(total / limit), options: {
+      ...options,
+      accountManagerOptions: options.account_manager_options || [],
+      recruiterOptions: options.recruiter_options || [],
+    } };
   }
 
   async findAllJobs(tenantId: string, user?: any, activeBranchId?: string | null, filter?: string | null): Promise<JobProfile[]> {

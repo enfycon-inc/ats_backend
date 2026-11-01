@@ -19,6 +19,28 @@ describe('Job catalog database pagination', () => {
     expect(countParams).toContain('Java');
     expect(countParams).toContain('Client');
   });
+  it('returns minimal owner and recruiter filter options from jobs in the authorized catalog scope', async () => {
+    const { query, service } = create();
+    query.mockReset()
+      .mockResolvedValueOnce([{
+        account_manager_options: [{ id: 'owner-id', label: 'Visible Owner' }],
+        recruiter_options: [{ id: 'recruiter-id', label: 'Visible Recruiter' }],
+      }])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([]);
+
+    const result = await service.findJobPage('tenant', actor, undefined, { page: '1', limit: '25' });
+    const optionsSql = query.mock.calls[0][0] as string;
+
+    expect(optionsSql).toContain('WITH option_jobs AS');
+    expect(optionsSql).toContain('visible_job.account_manager_id');
+    expect(optionsSql).toContain('ats.job_recruiters assigned_recruiter');
+    expect(optionsSql).toContain('staff.tenant_id = $1::uuid');
+    expect(result.options).toMatchObject({
+      accountManagerOptions: [{ id: 'owner-id', label: 'Visible Owner' }],
+      recruiterOptions: [{ id: 'recruiter-id', label: 'Visible Recruiter' }],
+    });
+  });
   it.each([{page:'0'}, {limit:'101'}, {page:'1.5'}])('rejects invalid pagination %o', async query => {
     const { service } = create();
     await expect(service.findJobPage('tenant',actor,undefined,query)).rejects.toThrow('Invalid job pagination');

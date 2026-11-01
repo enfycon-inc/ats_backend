@@ -8,5 +8,10 @@ export interface JobCatalogQuery {
 }
 export interface JobCatalogResponse<Row> {
   data: Row[]; total: number; page: number; limit: number; totalPages: number;
-  options?: Record<string, string[]>;
+  options?: Record<string, string[] | JobCatalogPersonOption[]>;
+}
+
+export interface JobCatalogPersonOption {
+  id: string;
+  label: string;
 }
