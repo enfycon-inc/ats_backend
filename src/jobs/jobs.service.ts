@@ -1672,7 +1672,7 @@ export class JobsService {
       FROM (${scope.sql}) option_jobs`, ...scope.params);
     const options = optionRows[0] || {};
     const params = [...scope.params];
-    const bind = (value: string | number) => { params.push(value); return '$' + params.length; };
+    const bind = (value: string | number | string[]) => { params.push(value); return '$' + params.length; };
     let sql = scope.sql;
     if (query.search?.trim()) {
       const value = bind(query.search.trim());
