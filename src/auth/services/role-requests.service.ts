@@ -305,10 +305,9 @@ export class RoleRequestsService
       user.requested_role,
       user,
     );
-    if (!canGrantRequestedRole(actor, role, user))
-      throw new ForbiddenException(
-        'Your current role cannot grant the requested access.',
-      );
+    // Reviewing is read-only and scope-limited. Grant authorization stays in
+    // the approval transaction so reviewers can inspect and reject requests
+    // that require a higher-privilege approver.
     return {
       id: user.id,
       fullName: user.full_name,

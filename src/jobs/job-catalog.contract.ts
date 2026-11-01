@@ -4,6 +4,7 @@ export interface JobCatalogQuery {
   client?: string; branch?: string; unit?: string; creator?: string; recruiter?: string; pod?: string;
   from?: string; to?: string; sort?: string; direction?: string;
   accountManagers?: string; recruiters?: string; workMode?: string; conditions?: string;
+  branches?: string; clients?: string; workModes?: string; statuses?: string; priorities?: string;
 }
 export interface JobCatalogResponse<Row> {
   data: Row[]; total: number; page: number; limit: number; totalPages: number;

@@ -1698,6 +1698,22 @@ export class JobsService {
     if (accountManagerIds.length) sql += ` AND j.account_manager_id = ANY(${bind(accountManagerIds)}::uuid[])`;
     const recruiterIds = idList(query.recruiters);
     if (recruiterIds.length) sql += ` AND EXISTS (SELECT 1 FROM ats.job_recruiters mr WHERE mr.job_id = j.id AND mr.recruiter_id = ANY(${bind(recruiterIds)}::uuid[]))`;
+    const branchIds = idList(query.branches);
+    if (branchIds.length) sql += ` AND j.branch_id = ANY(${bind(branchIds)}::uuid[])`;
+    const clientIds = idList(query.clients);
+    if (clientIds.length) sql += ` AND (j.client_id = ANY(${bind(clientIds)}::uuid[]) OR j.end_client_id = ANY(${bind(clientIds)}::uuid[]))`;
+    const workModes = (query.workModes || '').split(',').map(value => value.trim()).filter(value => ['IN OFFICE', 'IN-OFFICE', 'ON-SITE', 'ONSITE', 'REMOTE', 'HYBRID'].includes(value.toUpperCase()));
+    if (workModes.length) {
+      const normalizedModes = workModes.map(value => value.toUpperCase() === 'ON-SITE' || value.toUpperCase() === 'ONSITE' ? 'IN OFFICE' : value.toUpperCase());
+      sql += ` AND UPPER(j.work_mode) = ANY(${bind(normalizedModes)}::text[])`;
+    }
+    const statuses = (query.statuses || '').split(',').map(value => value.trim()).filter(value => ['ACTIVE', 'DRAFT', 'PENDING APPROVAL', 'CLOSED', 'CLOSE', 'ARCHIVED'].includes(value.toUpperCase()));
+    if (statuses.length) {
+      const normalizedStatuses = statuses.flatMap(value => value.toUpperCase() === 'DRAFT' ? ['DRAFT', 'PENDING APPROVAL', 'PENDING_APPROVAL'] : [value.toUpperCase()]);
+      sql += ` AND UPPER(j.status) = ANY(${bind(normalizedStatuses)}::text[])`;
+    }
+    const priorities = (query.priorities || '').split(',').map(value => value.trim()).filter(value => ['HOT', 'WARM', 'COLD'].includes(value.toUpperCase()));
+    if (priorities.length) sql += ` AND UPPER(j.urgency) = ANY(${bind(priorities.map(value => value.toUpperCase()))}::text[])`;
     const conditionSql: Record<string, string> = {
       hasSubmissions: 'EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',
       noSubmissions: 'NOT EXISTS (SELECT 1 FROM ats.recruiter_submissions fs WHERE fs.job_id = j.id AND fs.tenant_id = j.tenant_id)',

@@ -50,14 +50,14 @@ describe('durable role request notifications', () => {
   };
 
   function setup(
-    options: { user?: any; reviewers?: any[]; jobs?: any[] } = {},
+    options: { user?: any; role?: any; reviewers?: any[]; jobs?: any[] } = {},
   ) {
     const query = jest.fn(async (sql: string) => {
       if (sql.includes('system_email_deliveries')) return [];
       if (sql.startsWith('WITH ready')) return options.jobs || [];
       if (sql.includes('FROM ats.users u JOIN ats.custom_roles'))
         return options.reviewers || [reviewer];
-      if (sql.includes('FROM ats.custom_roles cr LEFT')) return [role];
+      if (sql.includes('FROM ats.custom_roles cr LEFT')) return [options.role || role];
       if (
         sql.includes('FROM ats.branches') ||
         sql.includes('FROM ats.business_units')
@@ -100,6 +100,27 @@ describe('durable role request notifications', () => {
     );
     await auth.requestRole(id, roleId, branch, unit, null);
     expect(submit).toHaveBeenCalledWith(id, roleId, branch, unit, null);
+  });
+  it('lets an in-scope Delivery Head inspect a request for a role they cannot grant', async () => {
+    const requestedAdminRole = {
+      ...role,
+      name: 'Unit Admin',
+      permissions: ['unit_admin:manage'],
+      system_key: 'UNIT_ADMIN',
+    };
+    const { service } = setup({ role: requestedAdminRole });
+    await expect(service.review(id, version, {
+      dbId: recipientId,
+      tenantId: tenant,
+      branchId: branch,
+      businessUnitId: unit,
+      systemRole: 'DELIVERY_HEAD',
+      permissions: ['user:manage', 'unit_admin:manage'],
+    } as any)).resolves.toMatchObject({
+      id,
+      roleId,
+      requestedRole: 'Unit Admin',
+    });
   });
   it('saves the request and both delivery channels in one transaction without sending mail inline', async () => {
     const { service, prisma, execute, mail } = setup();
