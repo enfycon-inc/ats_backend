@@ -1,3 +1,4 @@
+-- ATS: rollback-compatible
 -- ATS: additive default capability grant; preserves existing role permissions.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
