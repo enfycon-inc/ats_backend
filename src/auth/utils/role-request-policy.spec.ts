@@ -106,4 +106,33 @@ describe('role request reviewer policy', () => {
       canGrantRequestedRole(head, { ...role, permissions: [] }, target),
     ).toBe(true);
   });
+
+  it('lets Delivery Heads review and assign employee roles across units in their branch', () => {
+    const head = {
+      ...actor,
+      systemRole: 'DELIVERY_HEAD',
+      businessUnitId: 'unit-a',
+      permissions: ['user:manage', 'unit_admin:manage', 'job:approve'],
+    };
+    const anotherUnitRequest = { ...target, business_unit_id: 'unit-b' };
+    const branchEmployeeRole = {
+      ...role,
+      permissions: ['candidate:view', 'job:create', 'submission:create'],
+      business_unit_id: 'unit-b',
+    };
+    expect(canReviewRoleRequest(head, anotherUnitRequest)).toBe(true);
+    expect(canGrantRequestedRole(head, branchEmployeeRole, anotherUnitRequest)).toBe(true);
+    expect(canReviewRoleRequest(head, { ...anotherUnitRequest, branch_id: 'other-branch' })).toBe(false);
+  });
+
+  it.each([
+    { ...role, name: 'Tenant Admin', permissions: [] },
+    { ...role, system_role: 'BRANCH_ADMIN', permissions: [] },
+    { ...role, system_role: 'UNIT_ADMIN', permissions: [] },
+    { ...role, name: 'Custom Staff', permissions: ['unit_admin:manage'] },
+    { ...role, name: 'Custom Staff', permissions: ['branch_admin:manage'] },
+  ])('keeps administrative roles unavailable to Delivery Heads', (adminRole) => {
+    const head = { ...actor, systemRole: 'DELIVERY_HEAD', permissions: ['user:manage', 'unit_admin:manage'] };
+    expect(canGrantRequestedRole(head, adminRole, target)).toBe(false);
+  });
 });

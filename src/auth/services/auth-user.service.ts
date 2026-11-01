@@ -18,7 +18,7 @@ import { AuthEmailService } from './auth-email.service';
 import type { AuthUser } from '../interfaces/auth-user.interface';
 import { validateBranchAccess } from '../utils/branch-scoping';
 import { assertUnitPendingRequest, isCurrentUnitManager } from '../utils/unit-pending-request';
-import { assertRoleAssignmentAllowed } from '../utils/admin-role-assignment-policy';
+import { assertRoleAssignmentAllowed, isDeliveryHead } from '../utils/admin-role-assignment-policy';
 import { EventsGateway } from '../../events/events.gateway';
 import type { StaffProfile } from '../profile-contract';
 import { USER_CITY_VALUES, type UserCity } from '../user-city-contract';
@@ -813,7 +813,18 @@ async approveTenantUser(
     const branchId = dto.branchId !== undefined ? (dto.branchId || null) : (targetUser.branch_id || (requester as any).branchId || null);
     const businessUnitId = dto.businessUnitId !== undefined ? (dto.businessUnitId || null) : (targetUser.business_unit_id || (requester as any).businessUnitId || null);
 
-    if (!isTenantAdmin && (requester as any).businessUnitId) {
+    // Delivery Heads may assign employee roles across units, but only within
+    // their own branch. Enforce this even for legacy requests without a
+    // role_request_version so clients cannot move users across branches.
+    if (isDeliveryHead(requester) && (
+      !requester.branchId ||
+      targetUser.branch_id !== requester.branchId ||
+      branchId !== requester.branchId
+    )) {
+      throw new ForbiddenException('Delivery Heads can only approve users within their assigned branch.');
+    }
+
+    if (!isTenantAdmin && !isDeliveryHead(requester) && (requester as any).businessUnitId) {
       if (businessUnitId && businessUnitId !== (requester as any).businessUnitId) {
         throw new ForbiddenException('Access denied. You can only approve or assign users to your own Business Unit.');
       }
@@ -978,7 +989,7 @@ async approveTenantUser(
       validateBranchAccess(requester, targetUser.branch_id, 'reject users');
     }
 
-    if (!isTenantAdmin && (requester as any).businessUnitId) {
+    if (!isTenantAdmin && !isDeliveryHead(requester) && (requester as any).businessUnitId) {
       if (targetUser.business_unit_id && targetUser.business_unit_id !== (requester as any).businessUnitId) {
         throw new ForbiddenException('Access denied. This user belongs to a different Business Unit.');
       }

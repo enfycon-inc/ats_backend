@@ -1,5 +1,5 @@
 import type { AuthUser } from '../interfaces/auth-user.interface';
-import { assertRoleAssignmentAllowed } from './admin-role-assignment-policy';
+import { assertRoleAssignmentAllowed, isDeliveryHead } from './admin-role-assignment-policy';
 
 export type RequestScope = {
   id?: string;
@@ -32,7 +32,7 @@ export function permissionList(value: unknown): string[] {
 export function canReviewRoleRequest(
   actor: Pick<
     AuthUser,
-    'dbId' | 'tenantId' | 'permissions' | 'branchId' | 'businessUnitId'
+    'dbId' | 'tenantId' | 'permissions' | 'branchId' | 'businessUnitId' | 'systemRole'
   >,
   target: RequestScope,
 ): boolean {
@@ -41,7 +41,9 @@ export function canReviewRoleRequest(
   if (actor.tenantId !== target.tenant_id) return false;
   if (!p.some((key) => ['user:manage', '*', 'platform:manage'].includes(key)))
     return false;
+  const deliveryHead = isDeliveryHead(actor);
   if (
+    !deliveryHead &&
     p.some((key) =>
       ['*', 'platform:manage', 'tenant:manage', 'tenant:settings'].includes(
         key,
@@ -50,9 +52,10 @@ export function canReviewRoleRequest(
   )
     return true;
   if (!actor.branchId || actor.branchId !== target.branch_id) return false;
-  if (actor.businessUnitId && actor.businessUnitId !== target.business_unit_id)
+  if (!deliveryHead && actor.businessUnitId && actor.businessUnitId !== target.business_unit_id)
     return false;
   if (
+    !deliveryHead &&
     p.includes('unit_admin:manage') &&
     !p.includes('branch_admin:manage') &&
     (!actor.businessUnitId || actor.businessUnitId !== target.business_unit_id)
@@ -102,5 +105,9 @@ export function canGrantRequestedRole(
     )
   )
     return true;
+  // A Delivery Head may assign employee roles inside their own branch. The
+  // administrative-role guard above still rejects admin roles and elevated
+  // custom roles before reaching this branch.
+  if (isDeliveryHead(actor)) return true;
   return permissions.every((key) => p.includes(key));
 }

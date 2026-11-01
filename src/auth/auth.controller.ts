@@ -46,6 +46,7 @@ import { RequirePermissions } from './decorators/permissions.decorator';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { assertRoleManagementAccess } from './utils/admin-role-assignment-policy';
+import { activeManagementRole } from './user-management-policy';
 import type { AuthUser } from './interfaces/auth-user.interface';
 import { resolveTenantId } from './utils/tenant-resolver';
 import { AuditService } from '../audit/audit.service';
@@ -705,9 +706,13 @@ Validates email + password and returns a signed JWT access token.
       Array.isArray((user as any).permissions) &&
       (user as any).permissions.includes('branch_admin:manage') &&
       !(user as any).permissions.includes('tenant:settings');
+    const isDeliveryHead = activeManagementRole(user) === 'DELIVERY_HEAD';
 
     let bid: string | string[] | undefined;
-    if (isBranchAdmin) {
+    if (isBranchAdmin || isDeliveryHead) {
+      if (isDeliveryHead && !user.branchId) {
+        throw new ForbiddenException('A branch assignment is required to review role requests.');
+      }
       bid = (user as any).branchId || undefined;
     } else {
       bid = branchId && branchId !== 'ALL'
