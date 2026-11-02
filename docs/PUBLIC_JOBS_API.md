@@ -61,6 +61,8 @@ The backend rechecks job publication and key scope when applying. It creates or 
 
 In the ATS, the recruiter label is **Website Applicant**. Applications appear in the internal review queue for authorized tenant/branch/unit reviewers with `submission:internal_screening`. Website applicants are not assigned to a recruiter until an ATS user claims or assigns them. The developer key cannot list applications or download resumes.
 
+Applications accept optional `linkedinUrl`: HTTPS LinkedIn personal-profile URL, maximum 500 characters. Omission preserves existing links.
+
 ## Common errors
 
 - `401`: missing, invalid, expired, or revoked API key.

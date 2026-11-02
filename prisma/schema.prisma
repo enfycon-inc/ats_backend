@@ -847,6 +847,7 @@ model Resume {
 }
 
 model Candidate {
+  linkedinUrl          String? @map("linkedin_url") @db.VarChar(500)
   id                    String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId              String?               @map("tenant_id") @db.Uuid
   branchId              String?               @map("branch_id") @db.Uuid

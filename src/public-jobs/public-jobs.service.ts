@@ -1,3 +1,4 @@
+import { linkedinProfile } from '../candidates/linkedin-profile';
 import { assertJobAction } from '../jobs/job-action-policy';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
@@ -118,6 +119,7 @@ export class PublicJobsService {
     const supportedMime = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
     const signature = file.mimetype === 'application/pdf' ? file.buffer.subarray(0, 5).toString() === '%PDF-' : file.buffer[0] === 0x50 && file.buffer[1] === 0x4b;
     if (!supportedMime.includes(file.mimetype) || !signature) throw new BadRequestException('Upload a valid PDF or DOCX resume.');
+    const linkedinUrl = linkedinProfile(body?.linkedinUrl);
     const firstName = typeof body?.firstName === 'string' ? body.firstName.trim() : '';
     const lastName = typeof body?.lastName === 'string' ? body.lastName.trim() : '';
     const name = [firstName, lastName].filter(Boolean).join(' ').slice(0, 255);
@@ -167,9 +169,9 @@ export class PublicJobsService {
         if (dup) return dup.id;
         await tx.resume.create({ data: { id: resumeId, filename: String(file.originalname || 'resume').slice(0, 255), candidateName: name, email, fileHash: createHash('sha256').update(file.buffer).digest('hex'), fileData: file.buffer, fileMime: file.mimetype, fileSize: file.size } });
         if (existing) {
-          await tx.candidate.update({ where: { id: candidateId }, data: { firstName, lastName, fullName: name, phone, resumeRecordId: resumeId, totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations } });
+          await tx.candidate.update({ where: { id: candidateId }, data: { firstName, lastName, fullName: name, phone, linkedinUrl, resumeRecordId: resumeId, totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations } });
         } else {
-          await tx.candidate.create({ data: { id: candidateId, tenantId: key.tenantId, branchId: job.branchId, firstName, lastName, fullName: name, email, phone, market: job.market || 'US', source: 'Company Website', totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations, skills: [], resumeRecordId: resumeId } });
+          await tx.candidate.create({ data: { id: candidateId, tenantId: key.tenantId, branchId: job.branchId, firstName, lastName, fullName: name, email, phone, linkedinUrl, market: job.market || 'US', source: 'Company Website', totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations, skills: [], resumeRecordId: resumeId } });
         }
         await tx.recruiterSubmission.create({ data: { id: submissionId, tenantId: key.tenantId, jobId: job.id, candidateId, recruiterId: null, submissionOrigin: 'WEBSITE', finalStatus: 'PENDING_APPROVAL', sourceCategory: 'Market', sourceChannel: 'Direct Application', sourceDetail: 'Website', l1Status: 'PENDING', l2Status: 'PENDING', l3Status: 'PENDING', ...normalizedCompensation, candidateCurrentCtc: currentCtcText, candidateExpectedCtc: expectedCtcText, candidateCtcCurrency: body.compensationCurrency, candidateCtcTerm: body.compensationInputUnit, candidateNoticePeriod: Number(noticePeriodText), candidateRelevantExperience: relevantExperience, candidatePreferredLocations: uniquePreferredLocations } });
         await tx.job.update({ where: { id: job.id }, data: { submissionDone: { increment: 1 } } });

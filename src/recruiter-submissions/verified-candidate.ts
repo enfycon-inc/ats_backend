@@ -1,3 +1,4 @@
+import { linkedinProfile } from '../candidates/linkedin-profile';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
 export function verifiedCandidateInput(value: unknown, updateSkills: unknown, permissions: string[] = []) {
@@ -10,6 +11,8 @@ export function verifiedCandidateInput(value: unknown, updateSkills: unknown, pe
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new BadRequestException('Invalid verified candidate details.');
   const input = value as Record<string, unknown>;
   const result: Record<string, string | string[]> = {};
+  const linkedinUrl = linkedinProfile(input.linkedinUrl);
+  if (linkedinUrl) result.linkedinUrl = linkedinUrl;
   for (const key of ['firstName', 'lastName', 'email', 'phone', 'totalExperienceYears', 'relevantExperienceYears', 'currentCompany', 'currentLocation', 'preferredLocations', 'noticePeriodDays', 'availabilityToStart']) {
     if (typeof input[key] !== 'string' || (input[key] as string).length > 1000) throw new BadRequestException('Invalid verified candidate details.');
     result[key] = (input[key] as string).trim();

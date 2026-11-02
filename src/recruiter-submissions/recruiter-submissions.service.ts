@@ -364,7 +364,7 @@ export class RecruiterSubmissionsService {
       const duplicate = await tx.recruiterSubmission.findFirst({ where: { tenantId, jobId: dto.jobId, candidateId: dto.candidateId }, select: { id: true } });
       if (duplicate) throw new ConflictException('This candidate has already been submitted to this job.');
       if (dto.updateCandidateSkills && verifiedCandidate) {
-        await tx.candidate.update({ where: { id: candidate.id, tenantId }, data: { skills: verifiedCandidate.skills as string[] } });
+        await tx.candidate.update({ where: { id: candidate.id, tenantId }, data: { skills: verifiedCandidate.skills as string[], ...(verifiedCandidate.linkedinUrl ? { linkedinUrl: String(verifiedCandidate.linkedinUrl) } : {}) } });
       }
       if (dto.compensationInputUnit !== undefined) {
         await tx.candidate.update({

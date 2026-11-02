@@ -1,3 +1,4 @@
+import { linkedinProfile } from './linkedin-profile';
 import { candidateMarket, candidateAdminScope } from './candidate-workspace';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
 import { resolveCandidateName } from './candidate-name';
@@ -402,6 +403,7 @@ export class CandidatesService {
       fullName: row.fullName || (row.firstName ? `${row.firstName} ${row.lastName || ''}`.trim() : 'Unnamed Candidate'),
       email: row.email,
       phone: row.phone,
+      linkedinUrl: row.linkedinUrl ?? row.linkedin_url ?? null,
       city,
       state,
       source: row.source || 'Direct Upload',
@@ -455,10 +457,11 @@ export class CandidatesService {
   async saveUploadedCv(
     file: { originalname: string; mimetype: string; buffer: Buffer; size?: number },
     tenantId: string,
-    meta: { uploadedByUserId?: string; uploadedByName?: string; totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string; preferredLocationMode?: string } = {},
+    meta: { uploadedByUserId?: string; uploadedByName?: string; totalExperienceYears?: string; source?: string; firstName?: string; lastName?: string; fullName?: string; email?: string; phone?: string; linkedinUrl?: string; branchId?: string; market?: string; relevantExperienceYears?: string; currentCompany?: string; availabilityToStart?: string; currentCtc?: string; expectedCtc?: string; noticePeriodDays?: string; skills?: string; location?: string; preferredLocations?: string; preferredLocationMode?: string } = {},
     user?: AuthUser,
   ): Promise<{ candidate: CandidateProfile; duplicate: boolean; parsed: boolean; updated?: boolean }> {
     if (!file?.buffer) throw new NotFoundException('No file uploaded.');
+    const linkedinUrl = linkedinProfile(meta.linkedinUrl);
     if (meta.phone) {
       const phone = parsePhoneNumberFromString(meta.phone);
       if (!phone?.isValid() || (phone.country === 'IN' && phone.nationalNumber.length !== 10)) throw new BadRequestException('Invalid mobile number for selected country.');
@@ -501,7 +504,7 @@ export class CandidatesService {
         if (existing.parsedJson) {
           parsed = existing.parsedJson;
         }
-      } else if (!Object.entries(meta).some(([key, value]) => ['firstName', 'lastName', 'location', 'currentCtc', 'expectedCtc', 'noticePeriodDays', 'relevantExperienceYears', 'totalExperienceYears', 'preferredLocations', 'currentCompany'].includes(key) && value != null && value !== '')) {
+      } else if (!Object.entries(meta).some(([key, value]) => ['linkedinUrl', 'firstName', 'lastName', 'location', 'currentCtc', 'expectedCtc', 'noticePeriodDays', 'relevantExperienceYears', 'totalExperienceYears', 'preferredLocations', 'currentCompany'].includes(key) && value != null && value !== '')) {
         const stored = await this.prisma.candidate.findFirst({
           where: { id: String(existing.dbId || existing.id), tenantId, deletedAt: null },
           select: { id: true, firstName: true, lastName: true, fullName: true },
@@ -589,6 +592,7 @@ export class CandidatesService {
             fullName,
             ...resolveCandidateName({ firstName: meta.firstName || existingCand.firstName, lastName: meta.lastName || existingCand.lastName }, parsed, meta.fullName || parsed?.candidate_name || existingCand.fullName),
             phone,
+            linkedinUrl,
             rawCurrentLocation: location,
             totalExperienceYears: meta.totalExperienceYears !== undefined ? Number(meta.totalExperienceYears) : expYears ? Number(expYears) : 0,
               currentCompany: currentCompany || undefined,
@@ -644,6 +648,7 @@ export class CandidatesService {
               ...resolvedNames,
               email,
               phone,
+              linkedinUrl,
               rawCurrentLocation: location,
               totalExperienceYears: meta.totalExperienceYears !== undefined ? Number(meta.totalExperienceYears) : expYears ? Number(expYears) : 0,
               currentCompany: currentCompany || undefined,
