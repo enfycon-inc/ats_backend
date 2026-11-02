@@ -94,9 +94,7 @@ export class UserManagementService {
     const loginTodayFilter = loginToday ? `AND EXISTS (SELECT 1 FROM ats.users login_user
       LEFT JOIN ats.branches login_branch ON login_branch.id=login_user.branch_id
       LEFT JOIN ats.business_units login_unit ON login_unit.id=login_user.business_unit_id
-      WHERE login_user.id=matches.id AND login_user.last_login_at IS NOT NULL
-        AND (login_user.last_login_at AT TIME ZONE COALESCE(login_unit.timezone,login_branch.timezone,'Asia/Kolkata'))::date
-          = (NOW() AT TIME ZONE COALESCE(login_unit.timezone,login_branch.timezone,'Asia/Kolkata'))::date)` : '';
+      WHERE login_user.id=matches.id AND ${this.usedToday('login_user', 'login_unit', 'login_branch')})` : '';
     const filter = `("fullName" ILIKE ${searchParam} OR email ILIKE ${searchParam})
       AND (${cityParam}='' OR city=${cityParam})
       AND (${roleParam}='' OR ${roleParam}=ANY("assignedRoles")) ${loginTodayFilter}`;
@@ -106,7 +104,7 @@ export class UserManagementService {
         ARRAY(SELECT DISTINCT role FROM scoped CROSS JOIN LATERAL unnest("assignedRoles") role ORDER BY role) AS roles
       FROM scoped matches`, ...values);
     const limit = `$${values.length + 1}`, offset = `$${values.length + 2}`;
-    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches WHERE ${filter} ORDER BY ${sorts[sort]} ${direction} NULLS LAST,id LIMIT ${limit} OFFSET ${values.length + 2}`, ...values, size, (page - 1) * size);
+    const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT * FROM (${combined}) matches WHERE ${filter} ORDER BY ${sorts[sort]} ${direction} NULLS LAST,id LIMIT ${limit} OFFSET ${offset}`, ...values, size, (page - 1) * size);
     let presence: Map<string, Presence> | null = null;
     let presenceTotal: number | null = null;
     if (presenceFilter) {
@@ -179,8 +177,7 @@ export class UserManagementService {
     requireCapability(actor, 'user:presence:view');
     const scope = managementScope(actor);
     const rows = await this.db.$queryRawUnsafe<any[]>(`SELECT u.id,u.full_name AS "fullName",u.email,u.last_login_at AS "lastLoginAt",
-      (u.last_login_at IS NOT NULL AND (u.last_login_at AT TIME ZONE COALESCE(bu.timezone,b.timezone,'Asia/Kolkata'))::date
-        = (NOW() AT TIME ZONE COALESCE(bu.timezone,b.timezone,'Asia/Kolkata'))::date) AS "loggedInToday"
+      ${this.usedToday('u', 'bu', 'b')} AS "loggedInToday"
       FROM ats.users u LEFT JOIN ats.branches b ON b.id=u.branch_id LEFT JOIN ats.business_units bu ON bu.id=u.business_unit_id
       WHERE ${scope.sql} AND u.is_approved=true AND u.is_active=true
       ORDER BY u.last_login_at DESC NULLS LAST,u.full_name ASC`, ...scope.values);
@@ -209,6 +206,15 @@ export class UserManagementService {
       if (recent.length < 8) recent.push({ id: row.id, fullName: row.fullName, email: row.email, presence, lastSeenAt: lastSeen.get(row.id) || null });
     }
     return { counts, recent, asOf: new Date().toISOString(), telemetryEnabled: this.tracking.enabled, telemetryAvailable };
+  }
+  private usedToday(user: string, unit: string, branch: string): string {
+    const timezone = `COALESCE(${unit}.timezone,${branch}.timezone,'Asia/Kolkata')`;
+    const start = `((NOW() AT TIME ZONE ${timezone})::date AT TIME ZONE ${timezone})`;
+    const end = `(((NOW() AT TIME ZONE ${timezone})::date + 1) AT TIME ZONE ${timezone})`;
+    return `(${user}.last_login_at >= ${start} AND ${user}.last_login_at < ${end}
+      OR EXISTS (SELECT 1 FROM ats.session_memberships today_membership
+        WHERE today_membership.tenant_id=${user}.tenant_id AND today_membership.user_id=${user}.id
+          AND today_membership.last_seen_at >= ${start} AND today_membership.last_seen_at < ${end}))`;
   }
   private integer(raw: string | undefined, fallback: number, min: number, max: number) {
     if (raw === undefined) return fallback;

@@ -113,10 +113,23 @@ describe('Security activity authorization and redaction', () => {
     expect(values).toContain(role);
     expect(values).toContain('BBSR');
     expect(values.slice(-2)).toEqual([50, 50]);
+    expect(sql).toContain('LIMIT $5 OFFSET $6');
     expect(sql).toContain('ORDER BY city desc NULLS LAST,id');
     expect(sql.indexOf('=ANY("assignedRoles")')).toBeLessThan(sql.lastIndexOf('LIMIT'));
     expect(result.filters).toEqual({ cities: ['BBSR'], roles: ['Recruiter'] });
     expect(db.$queryRawUnsafe.mock.calls[2][0]).toContain('FROM scoped');
+  });
+  it.each(['', 'Alex'])('binds a zero first-page offset for search %j', async search => {
+    const { db, service } = setup(false);
+    db.$queryRawUnsafe.mockResolvedValueOnce([{ active: 35, pending: 0, blocked: 0 }])
+      .mockResolvedValueOnce([{ count: 0 }])
+      .mockResolvedValueOnce([{ count: search ? 1 : 35, cities: [], roles: [] }])
+      .mockResolvedValueOnce([]);
+    await service.list({ ...actor, permissions: ['user:manage', 'tenant:manage'] }, { state: 'active', pageSize: '50', search });
+    const [sql, ...values] = db.$queryRawUnsafe.mock.calls[3];
+    expect(sql).toContain('LIMIT $5 OFFSET $6');
+    expect(values.slice(-2)).toEqual([50, 0]);
+    expect(values[1]).toBe(`%${search}%`);
   });
   it.each([{ sort: 'name; DROP TABLE users' }, { sort: 'toString' }, { direction: 'sideways' }, { city: 'x'.repeat(151) }])
     ('rejects invalid directory options before querying: %j', async query => {
