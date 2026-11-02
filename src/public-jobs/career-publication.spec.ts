@@ -4,7 +4,7 @@ import { PublicJobsService } from './public-jobs.service';
 describe('automatic careers publication', () => {
   const key = { id: 'client', tenantId: 'tenant', scope: 'TENANT' as const, branchId: null, businessUnitId: null };
   const user = { dbId: 'admin', tenantId: 'tenant', permissions: ['tenant:settings', 'job:manage_publication_tenant'] };
-  const application = { firstName: 'Alex', lastName: 'Morgan', email: 'alex@example.com', consent: 'true', totalExperienceYears: '5', relevantExperienceYears: '4', currentCompany: 'Example', currentLocation: 'Bengaluru', preferredLocations: 'Bengaluru', noticePeriodDays: '0', currentCompensation: '12', expectedCompensation: '15', compensationInputUnit: 'LPA', compensationCurrency: 'INR' };
+  const application = { firstName: 'Alex', lastName: 'Morgan', email: 'alex@example.com', phone: '+91 9876543210', consent: 'true', totalExperienceYears: '5', relevantExperienceYears: '4', currentCompany: 'Example', currentLocation: 'Bengaluru', preferredLocations: 'Bengaluru', noticePeriodDays: '0', currentCompensation: '12', expectedCompensation: '15', compensationInputUnit: 'LPA', compensationCurrency: 'INR' };
   const resume = { buffer: Buffer.from('%PDF-example'), size: 12, mimetype: 'application/pdf' };
   it('enrolls newly created jobs with unique slugs that fit the existing schema', () => {
     const first = careerPublicationDefaults('Engineer', 'JOB-001');
@@ -22,6 +22,14 @@ describe('automatic careers publication', () => {
     expect(response.data[0]).not.toHaveProperty('jobDescription');
     expect(response.data[0]).not.toHaveProperty('id');
     expect(findMany.mock.calls[0][0].where).toMatchObject({ tenantId: 'tenant', isPubliclyPublished: true, status: { in: ['ACTIVE', 'CLOSED'] } });
+  });
+  it('returns candidate pay range details without client billing rates', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ publicSlug: 'engineer-001', jobCode: 'JOB-001', jobTitle: 'Engineer', jobType: 'Full-time', jobDescription: '<p>Build things</p>', status: 'ACTIVE', skillsRequired: [], secondarySkills: [], state: 'Karnataka', city: 'Bengaluru', country: 'India', workMode: 'Hybrid', market: 'IND', expMin: 3, expMax: 5, industry: 'Technology', degree: 'Bachelor', duration: null, payRateMin: '12', payRateMax: '18', payCurrency: 'INR', payTerm: 'LPA', createdAt: new Date() });
+    const service = new PublicJobsService({ job: { findFirst } } as any);
+    const response = await service.getJob(key, 'engineer-001');
+    expect(response).toMatchObject({ payRateMin: '12', payRateMax: '18', payCurrency: 'INR', payTerm: 'LPA' });
+    expect(findFirst.mock.calls[0][0].select).not.toHaveProperty('clientBillRateMin');
+    expect(findFirst.mock.calls[0][0].select).not.toHaveProperty('clientBillRateMax');
   });
   it.each([true, false])('blocks publication changes on closed jobs (%s)', async publish => {
     const service = new PublicJobsService({ job: { findFirst: jest.fn().mockResolvedValue({ id: 'job', tenantId: 'tenant', status: 'Closed', approvalStatus: 'APPROVED' }) } } as any);
@@ -45,6 +53,10 @@ describe('automatic careers publication', () => {
     const findFirst = jest.fn().mockResolvedValue(null);
     await expect(new PublicJobsService({ job: { findFirst } } as any).apply(key, 'slug', application, resume)).rejects.toThrow('no longer accepting');
     expect(findFirst.mock.calls[0][0].where.status).toEqual({ equals: 'ACTIVE', mode: 'insensitive' });
+  });
+  it.each([undefined, '', '   '])('requires a non-blank phone number (%s)', async phone => {
+    const service = new PublicJobsService({ job: { findFirst: jest.fn() } } as any);
+    await expect(service.apply(key, 'slug', { ...application, phone }, resume)).rejects.toThrow('phone number');
   });
   it('rejects an application if a job closes between its initial lookup and submission transaction', async () => {
     const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };

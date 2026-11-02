@@ -23,6 +23,8 @@ Send the API key in `Authorization: Bearer <key>` over HTTPS. The server checks 
 
 Only active, approved, explicitly published, non-deleted jobs within the key's scope are returned. Results are paginated (maximum 50). Responses omit client details, recruiter information, internal rates, assignments, and tenant IDs. Descriptions are HTML-sanitized. A closed, deleted, or unpublished job immediately disappears from public reads.
 
+The job detail response includes the candidate-facing pay range (`payRateMin`, `payRateMax`, `payCurrency`, and `payTerm`) when set. Client billing rates are never returned.
+
 Only ATS users with job editing or tenant administration permission can publish/unpublish through `PATCH /api/jobs/{id}/publication` with `{ "published": true, "publicDescription": "..." }` or `{ "published": false }`. A separate sanitized public description is required; the internal job description is never copied into the public feed. This endpoint uses the ATS session, never the public API key.
 
 ## Submit an application
@@ -31,7 +33,8 @@ Only ATS users with job editing or tenant administration permission can publish/
 
 | Field | Validation |
 | --- | --- |
-| `fullName`, `email` | Candidate identity; email must be valid. |
+| `firstName`, `lastName`, `email` | Candidate identity; email must be valid. |
+| `phone` | Required, up to 50 characters. |
 | `consent` | Must be `true`. |
 | `resume` | PDF or DOCX, maximum 8 MB. |
 | `totalExperienceYears`, `relevantExperienceYears` | 0–100 years, up to one decimal; relevant cannot exceed total. |
@@ -42,7 +45,7 @@ Only ATS users with job editing or tenant administration permission can publish/
 | `currentCompensation`, `expectedCompensation` | Both required, positive amounts, up to two decimals. These are **Current CTC** and **Expected CTC**. |
 | `compensationCurrency`, `compensationInputUnit` | Required. Supported currencies: INR, USD, CAD, GBP, EUR. Units must match the job type: LPA (INR only) or YEAR for non-contract jobs; MONTH for contract jobs. |
 
-Optional `phone` may be supplied. `source`, recruiter assignment, ATS status, and internal `remarks` are not applicant-controlled fields; remarks are not accepted by this API. A website server should proxy the form submission and attach the API key; never send the key to the browser.
+`source`, recruiter assignment, ATS status, and internal `remarks` are not applicant-controlled fields; remarks are not accepted by this API. A website server should proxy the form submission and attach the API key; never send the key to the browser.
 
 The backend rechecks job publication and key scope when applying. It creates or reuses the tenant candidate profile, saves the submitted experience, company, location, notice period, preferred locations, and CTC details to the ATS candidate/submission, stores the resume privately, records source as `Company Website` / `Direct Application` / `Website`, and creates a `PENDING_APPROVAL` ATS submission. Duplicate applications for the same email and job return the existing receipt. The response includes only `{ "received": true, "reference": "..." }`.
 

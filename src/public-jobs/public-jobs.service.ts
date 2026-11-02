@@ -106,7 +106,7 @@ export class PublicJobsService {
   }
 
   async getJob(key: KeyContext, slug: string) {
-    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { publicSlug: true, jobCode: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, secondarySkills: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, industry: true, degree: true, duration: true, createdAt: true } });
+    const job = await this.prisma.job.findFirst({ where: { ...this.scopedWhere(key), publicSlug: slug }, select: { publicSlug: true, jobCode: true, jobTitle: true, jobType: true, jobDescription: true, status: true, skillsRequired: true, secondarySkills: true, state: true, city: true, country: true, workMode: true, market: true, expMin: true, expMax: true, industry: true, degree: true, duration: true, payRateMin: true, payRateMax: true, payCurrency: true, payTerm: true, createdAt: true } });
     if (!job) throw new NotFoundException('Published job not found.');
     const { jobDescription, publicSlug, ...publicJob } = job;
     return { ...publicJob, slug: publicSlug, description: sanitizeJobDescription(jobDescription || ''), acceptsApplications: job.status.toUpperCase() === 'ACTIVE', createdAt: job.createdAt.toISOString() };
@@ -122,7 +122,8 @@ export class PublicJobsService {
     const lastName = typeof body?.lastName === 'string' ? body.lastName.trim() : '';
     const name = [firstName, lastName].filter(Boolean).join(' ').slice(0, 255);
     const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase().slice(0, 255) : '';
-    const phone = typeof body?.phone === 'string' ? body.phone.trim().slice(0, 50) : '';
+    const phone = typeof body?.phone === 'string' ? body.phone.trim() : '';
+    if (!phone || phone.length > 50) throw new BadRequestException('Enter a phone number (maximum 50 characters).');
     if (!firstName || firstName.length > 120 || !lastName || lastName.length > 120 || name.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Enter valid first name, last name, and email address.');
     if (body?.consent !== 'true') throw new BadRequestException('Candidate privacy consent is required.');
     const experience = (value: unknown, field: string) => {
@@ -166,9 +167,9 @@ export class PublicJobsService {
         if (dup) return dup.id;
         await tx.resume.create({ data: { id: resumeId, filename: String(file.originalname || 'resume').slice(0, 255), candidateName: name, email, fileHash: createHash('sha256').update(file.buffer).digest('hex'), fileData: file.buffer, fileMime: file.mimetype, fileSize: file.size } });
         if (existing) {
-          await tx.candidate.update({ where: { id: candidateId }, data: { firstName, lastName, fullName: name, phone: phone || undefined, resumeRecordId: resumeId, totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations } });
+          await tx.candidate.update({ where: { id: candidateId }, data: { firstName, lastName, fullName: name, phone, resumeRecordId: resumeId, totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations } });
         } else {
-          await tx.candidate.create({ data: { id: candidateId, tenantId: key.tenantId, branchId: job.branchId, firstName, lastName, fullName: name, email, phone: phone || null, market: job.market || 'US', source: 'Company Website', totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations, skills: [], resumeRecordId: resumeId } });
+          await tx.candidate.create({ data: { id: candidateId, tenantId: key.tenantId, branchId: job.branchId, firstName, lastName, fullName: name, email, phone, market: job.market || 'US', source: 'Company Website', totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations, skills: [], resumeRecordId: resumeId } });
         }
         await tx.recruiterSubmission.create({ data: { id: submissionId, tenantId: key.tenantId, jobId: job.id, candidateId, recruiterId: null, submissionOrigin: 'WEBSITE', finalStatus: 'PENDING_APPROVAL', sourceCategory: 'Market', sourceChannel: 'Direct Application', sourceDetail: 'Website', l1Status: 'PENDING', l2Status: 'PENDING', l3Status: 'PENDING', ...normalizedCompensation, candidateCurrentCtc: currentCtcText, candidateExpectedCtc: expectedCtcText, candidateCtcCurrency: body.compensationCurrency, candidateCtcTerm: body.compensationInputUnit, candidateNoticePeriod: Number(noticePeriodText), candidateRelevantExperience: relevantExperience, candidatePreferredLocations: uniquePreferredLocations } });
         await tx.job.update({ where: { id: job.id }, data: { submissionDone: { increment: 1 } } });
