@@ -14,7 +14,17 @@ Scopes are `TENANT`, `BRANCH`, and `BUSINESS_UNIT`. Branch and unit IDs are chec
 
 ## Authentication
 
-Send the API key in `Authorization: Bearer <key>` over HTTPS. The server checks the hash, revocation, expiration, and tenant active state on every request. `Origin` allowlists and CORS are browser controls, not substitutes for the key. Prefer a server-side website proxy for all calls so the key is not exposed to visitors.
+Create a careers API client in the ATS, then exchange its client ID and secret for a short-lived token:
+
+```http
+POST /api/oauth/token
+Authorization: Basic base64(client_id:client_secret)
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+```
+
+Send the returned token as `Authorization: Bearer <access_token>` to public job routes over HTTPS. Tokens last up to 15 minutes and are capped by the client expiry. The server rechecks the token, client revocation/expiry, tenant state, scope, and origin on each request. Keep the client secret and token on the career-site server; do not put them in browser JavaScript, HTML, source control, or URLs. `Origin` allowlists and CORS are browser controls, not substitutes for server-side credential handling.
 
 ## Read published jobs
 

@@ -54,6 +54,7 @@ async function bootstrap() {
     )
     .setVersion('1.0')
     .addBearerAuth()
+    .addBasicAuth({ type: 'http', scheme: 'basic' }, 'careerClient')
     .addTag('Talent Sourcing & Job Board Integrations')
     .build();
 
