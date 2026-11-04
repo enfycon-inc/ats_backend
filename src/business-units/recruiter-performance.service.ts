@@ -513,6 +513,7 @@ export class RecruiterPerformanceService {
       (SELECT COUNT(*)::int FROM table_rows) AS total,(SELECT COUNT(*)::int FROM milestones m WHERE ${feedback}) AS feedback,(SELECT COUNT(*)::int FROM milestones m WHERE ${upcoming}) AS upcoming`);
     return {
       recruiter,
+      features: base.features,
       unit: base.unit,
       charts: base.charts,
       pipeline: base.charts?.pipeline[0] ?? null,

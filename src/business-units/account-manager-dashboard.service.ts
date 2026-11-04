@@ -71,8 +71,8 @@ export class AccountManagerDashboardService {
           AND (POSITION(LOWER(${search.trim()}) IN LOWER(r.full_name)) > 0 OR POSITION(LOWER(${search.trim()}) IN LOWER(r.email)) > 0)
       ), job_counts AS (
         SELECT account_manager_id, COUNT(*) FILTER (WHERE ${period(Prisma.sql`approved_at`)})::int AS posted,
-          COUNT(*) FILTER (WHERE UPPER(status) = 'ACTIVE')::int AS active,
-          COUNT(*) FILTER (WHERE UPPER(status) = 'CLOSED')::int AS closed,
+          COUNT(*) FILTER (WHERE ${period(Prisma.sql`approved_at`)} AND UPPER(status) = 'ACTIVE')::int AS active,
+          COUNT(*) FILTER (WHERE ${period(Prisma.sql`approved_at`)} AND UPPER(status) = 'CLOSED')::int AS closed,
           COUNT(*) FILTER (WHERE approved_at IS NULL)::int AS undated_posted,
           COALESCE(SUM(no_of_positions) FILTER (WHERE ${period(Prisma.sql`approved_at`)}), 0)::int AS positions
         FROM filtered_jobs GROUP BY account_manager_id

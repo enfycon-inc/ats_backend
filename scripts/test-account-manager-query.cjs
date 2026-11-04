@@ -83,7 +83,7 @@ async function main() {
   assert.equal(october.charts.pipeline[0].offers, 0); // Historical offer already joined; current queue has no offer.
   assert.equal((await service.dashboard(actor, { offset: 10 })).charts, null);
   const november = await service.dashboard(actor, { from: '2026-11-01T00:00:00.000Z', to: '2026-12-01T00:00:00.000Z' });
-  assert.equal(november.summary.joined, 0); assert.equal(november.summary.postedJobs, 0); assert.equal(november.summary.activeJobs, 1);
+  assert.equal(november.summary.joined, 0); assert.equal(november.summary.postedJobs, 0); assert.equal(november.summary.activeJobs, 0);
   assert.equal(november.charts.weekly.reduce((total, week) => total + week.count, 0), 0);
   const byEmail = await service.dashboard(actor, { search: 'MANAGER@EXAMPLE.TEST' });
   assert.equal(byEmail.total, 11);
@@ -109,6 +109,40 @@ async function main() {
   assert.equal(compact.performanceCities[0].summary.joined,compact.rows.reduce((sum,row)=>sum+(row.joined||0),0));
   const otherCity=await service.dashboard(actor,{performance:'1',cities:'VIZAG',sort:'postedJobs'});
   assert.equal(otherCity.total,0);
+  // Regression: selected-period statuses must be subsets of the approval cohort.
+  const range={from:'2026-11-01T00:00:00.000Z',to:'2026-12-01T00:00:00.000Z'};
+  const emptyDetails=await details.detail(actor,uuid(100),{...range,clientMode:'portfolio'});
+  assert.equal(emptyDetails.jobs.total,0);
+  assert.equal(emptyDetails.clients.rows[0].activeJobs,0);
+  assert.equal(emptyDetails.clients.rows[0].closedJobs,0);
+  sql(`UPDATE ats.users SET city='VIZAG' WHERE id='${uuid(101)}';
+    INSERT INTO ats.jobs(id,tenant_id,branch_id,business_unit_id,account_manager_id,client_id,market,job_type,status,approval_status,approved_at) VALUES
+    ${[
+      [310,100,'ACTIVE',"'2026-11-01T00:00:00Z'"],
+      [311,100,'CLOSED',"'2026-11-30T23:59:59.999Z'"],
+      [312,100,'ON_HOLD',"'2026-11-15T00:00:00Z'"],
+      [313,100,'ACTIVE','NULL'],
+      [314,100,'ACTIVE',"'2026-12-01T00:00:00Z'"],
+      [315,101,'ACTIVE',"'2026-11-10T00:00:00Z'"],
+    ].map(([job,owner,status,date])=>`('${uuid(job)}','${uuid(1)}','${uuid(2)}','${uuid(3)}','${uuid(owner)}','${uuid(20)}','INDIA','Full Time','${status}','APPROVED',${date})`).join(',')};`);
+  for(const city of ['', 'BBSR','VIZAG']) {
+    const result=await service.dashboard(actor,{...range,performance:'1',cities:city,limit:100});
+    for(const row of result.rows) assert.ok(row.postedJobs>=row.activeJobs+row.closedJobs);
+    assert.equal(result.summary.postedJobs,city==='BBSR'?3:city==='VIZAG'?1:4);
+    assert.equal(result.summary.activeJobs,city==='BBSR'||city==='VIZAG'?1:2);
+    for(const group of result.performanceCities) assert.ok(group.summary.postedJobs>=group.summary.activeJobs+group.summary.closedJobs);
+  }
+  const scopedDetails=await details.detail(actor,uuid(100),{...range,clientMode:'portfolio'});
+  assert.equal(scopedDetails.jobs.total,3);
+  assert.equal((await details.detail(actor,uuid(100),{...range,jobStatus:'ACTIVE'})).jobs.total,1);
+  assert.equal((await details.detail(actor,uuid(100),{...range,jobStatus:'CLOSED'})).jobs.total,1);
+  assert.equal(scopedDetails.clients.rows[0].postedJobs,3);
+  assert.equal(scopedDetails.clients.rows[0].activeJobs,1);
+  assert.equal(scopedDetails.clients.rows[0].closedJobs,1);
+  const allDates=await service.dashboard(actor,{limit:100});
+  assert.equal(allDates.summary.postedJobs,8);
+  assert.equal(allDates.summary.activeJobs,5);
+  assert.equal((await details.detail(actor,uuid(100),{...range,attention:'uncovered'})).jobs.total,3);
   console.log('PostgreSQL integration passed: scope isolation, separate job aggregation, canonical pipeline, derived roles, zero-result managers, filters, pagination and redaction.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

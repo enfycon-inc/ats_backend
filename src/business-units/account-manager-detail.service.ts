@@ -92,8 +92,8 @@ export class AccountManagerDetailService {
       const portfolio = jobsByClient.get(client.id) ?? [];
       const sum = (field: 'postedJobs' | 'postedPositions' | 'submissions' | 'review' | 'offers' | 'joined') => portfolio.reduce((total, job) => total + (job[field] ?? 0), 0);
       return { id: client.id, name: client.clientName, status: client.status, addedByManager: client.createdBy === managerId, addedAt: client.createdAt.toISOString(),
-        postedJobs: jobsAllowed ? sum('postedJobs') : null, activeJobs: jobsAllowed ? portfolio.filter(job => job.status.toUpperCase() === 'ACTIVE').length : null,
-        closedJobs: jobsAllowed ? portfolio.filter(job => job.status.toUpperCase() === 'CLOSED').length : null, positions: jobsAllowed ? sum('postedPositions') : null,
+        postedJobs: jobsAllowed ? sum('postedJobs') : null, activeJobs: jobsAllowed ? portfolio.filter(job => job.postedJobs > 0 && job.status.toUpperCase() === 'ACTIVE').length : null,
+        closedJobs: jobsAllowed ? portfolio.filter(job => job.postedJobs > 0 && job.status.toUpperCase() === 'CLOSED').length : null, positions: jobsAllowed ? sum('postedPositions') : null,
         submissions: submissionsAllowed ? sum('submissions') : null, review: reviewAllowed ? sum('review') : null,
         offers: submissionsAllowed ? sum('offers') : null, joined: submissionsAllowed ? sum('joined') : null };
     });
@@ -104,7 +104,8 @@ export class AccountManagerDetailService {
     for (const client of relevantClients) if (client.createdBy === managerId && client.createdAt >= start && client.createdAt < end) {
       const bucket = Math.floor((client.createdAt.getTime() - start.getTime()) / (7 * 86400000)); weekCounts.set(bucket, (weekCounts.get(bucket) ?? 0) + 1);
     }
-    const tableJobs = jobs.filter(job => (!jobStatus || normalizeJobStatus(job.status) === normalizeJobStatus(jobStatus))
+    // Attention queues intentionally cover the current portfolio, independent of approval date.
+    const tableJobs = jobs.filter(job => (attention || job.postedJobs > 0) && (!jobStatus || normalizeJobStatus(job.status) === normalizeJobStatus(jobStatus))
       && `${job.title} ${job.code} ${job.clientName ?? ''}`.toLowerCase().includes(jobSearch.trim().toLowerCase())
       && (!attention || (attention === 'review' ? (job.review ?? 0) > 0 : job.status.toUpperCase() === 'ACTIVE' && rawJobMap.get(job.id)?.allSubmissions === 0)));
     const limit = 20;

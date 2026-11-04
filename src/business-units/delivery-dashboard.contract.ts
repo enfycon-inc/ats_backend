@@ -35,6 +35,7 @@ export interface RecruiterDetailRow {
   submissions: number | null; review: number | null; offers: number | null; joined: number | null;
 }
 export interface RecruiterPerformance {
+  features?: RecruiterDashboard['features'];
   recruiter: RecruiterRow; unit: RecruiterDashboard['unit']; charts: RecruiterDashboard['charts'];
   pipeline: ManagerDashboardCharts['pipeline'][number] | null;
   attention: { review: number | null; feedback: number | null; upcoming: number | null };
