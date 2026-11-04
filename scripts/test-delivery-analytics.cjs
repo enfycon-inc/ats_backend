@@ -114,6 +114,28 @@ async function main() {
   }
   assert.throws(() => validateDeliveryPeriod({ period: 'custom', from: '2026-02-30', to: '2026-03-01' }));
   assert.throws(() => validateDeliveryPeriod({ cities: "BBSR' OR TRUE" }));
-  console.log('Delivery analytics PostgreSQL checks passed: date presets and midnight boundaries, city isolation, original submitter, offer deduplication, older submissions, round reachability, zero activity, staff pagination, employee views, permissions.');
+  const skipped=['SELECTED','OFFER','JOIN','REJECTED','NOT_SELECTED','WITHDRAWN'];
+  const cases=[...skipped.map((final,index)=>[200+index,final,'CLEARED','CLEARED',index%2?'PENDING':null]),
+    [210,'SUBMITTED','CLEARED','CLEARED',null],[211,'SUBMITTED','CLEARED','CLEARED','PENDING'],
+    [212,'SUBMITTED','CLEARED','CLEARED','SCHEDULED'],[213,'SUBMITTED','CLEARED','CLEARED','AWAITING_FEEDBACK'],
+    [214,'OFFER','CLEARED','CLEARED','CLEARED'],[215,'REJECTED','CLEARED','CLEARED','REJECTED'],
+    [216,'OFFER','PENDING',null,null],[217,'OFFER','CLEARED','PENDING',null]];
+  run(`INSERT INTO ats.recruiter_submissions VALUES ${cases.map(([n,final,l1,l2,l3])=>`('${id(n)}','${id(1)}','${id(21)}','${id(40)}','${id(10)}',NOW(),'${final}',${literal(l1)},${literal(l2)},${literal(l3)},'RECRUITER')`).join(',')};`);
+  const pending=await deliveryAnalytics(db,scope,access,{period:'today',cities:'BBSR',status:'PENDING'},'l3',1);
+  assert.equal(pending.rounds.l3.PENDING,2);
+  assert.deepEqual([...pending.submissionIds].sort(),[id(210),id(211)]);
+  assert.equal(pending.rounds.l3.SCHEDULED,1);
+  assert.equal(pending.rounds.l3.AWAITING_FEEDBACK,1);
+  assert.equal(pending.rounds.l3.CLEARED,1);
+  assert.equal(pending.rounds.l3.REJECTED,1);
+  for(const [status,n] of [['SCHEDULED',212],['AWAITING_FEEDBACK',213],['CLEARED',214],['REJECTED',215]]) {
+    const detail=await deliveryAnalytics(db,scope,access,{period:'today',cities:'BBSR',status},'l3',1);
+    assert.deepEqual(detail.submissionIds,[id(n)]);
+  }
+  for(const round of ['l1','l2']) {
+    const detail=await deliveryAnalytics(db,scope,access,{period:'today',cities:'BBSR',status:'PENDING'},round,1);
+    assert.ok(!detail.submissionIds.includes(id(216)) && !detail.submissionIds.includes(id(217)));
+  }
+  console.log('Delivery analytics PostgreSQL checks passed, including final bypass exclusion, active round queues, recorded results and count/drilldown agreement.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

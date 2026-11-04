@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { DeliveryAnalytics, DeliveryStage } from './delivery-dashboard.contract';
+import {deliveryRoundEligibility} from './delivery-round-eligibility';
 
 export function validateDeliveryPeriod(input: Record<string, string>) {
   if (Object.values(input).some(value => typeof value !== 'string')) throw new BadRequestException('Invalid dashboard filters.');
@@ -34,7 +35,7 @@ export async function deliveryAnalytics(db: PrismaService, scope: { tenantId: st
   const cityMatch = (column: Prisma.Sql) => cities.length ? Prisma.sql`${column} IN (${Prisma.join(cities)})` : Prisma.sql`TRUE`;
   const inPeriod = (column: Prisma.Sql) => Prisma.sql`(bounds.start_at IS NULL OR (${column}>=bounds.start_at AND ${column}<bounds.end_at))`;
   const round = stage === 'l1' ? Prisma.sql`s.l1_status` : stage === 'l2' ? Prisma.sql`s.l2_status` : Prisma.sql`s.l3_status`;
-  const reached = stage === 'l1' ? Prisma.sql`s.final_status<>'PENDING_APPROVAL'` : stage === 'l2' ? Prisma.sql`s.l1_status='CLEARED'` : Prisma.sql`s.l1_status='CLEARED' AND s.l2_status='CLEARED'`;
+  const reached = deliveryRoundEligibility(stage==='l1'?'l1':stage==='l2'?'l2':'l3','s');
   const stageMatch = stage === 'offers' ? Prisma.sql`s.offered_at IS NOT NULL AND ${inPeriod(Prisma.sql`s.offered_at`)}`
     : stage === 'review' ? Prisma.sql`${inPeriod(Prisma.sql`s.created_at`)} AND s.final_status='PENDING_APPROVAL'`
     : ['l1', 'l2', 'l3'].includes(stage) ? Prisma.sql`${inPeriod(Prisma.sql`s.created_at`)} AND (${reached}) AND (${!text('status')} OR COALESCE(${round},'PENDING')=${text('status')})`
@@ -109,9 +110,9 @@ export async function deliveryAnalytics(db: PrismaService, scope: { tenantId: st
       ROW_NUMBER() OVER(PARTITION BY city ORDER BY joined DESC NULLS LAST,name,id) AS joined_rank FROM staff_metrics),
     city_totals AS (SELECT city,COUNT(*)::int AS staff,SUM(jobs)::int AS jobs,SUM(submissions)::int AS submissions,SUM(offers)::int AS offers,SUM(joined)::int AS joined FROM staff_metrics GROUP BY city),
     round_values AS (
-      SELECT 'l1' AS round,COALESCE(l1_status,'PENDING') AS status FROM selected_submissions WHERE final_status<>'PENDING_APPROVAL'
-      UNION ALL SELECT 'l2',COALESCE(l2_status,'PENDING') FROM selected_submissions WHERE l1_status='CLEARED'
-      UNION ALL SELECT 'l3',COALESCE(l3_status,'PENDING') FROM selected_submissions WHERE l1_status='CLEARED' AND l2_status='CLEARED'
+      SELECT 'l1' AS round,COALESCE(l1_status,'PENDING') AS status FROM selected_submissions WHERE ${deliveryRoundEligibility('l1')}
+      UNION ALL SELECT 'l2',COALESCE(l2_status,'PENDING') FROM selected_submissions WHERE ${deliveryRoundEligibility('l2')}
+      UNION ALL SELECT 'l3',COALESCE(l3_status,'PENDING') FROM selected_submissions WHERE ${deliveryRoundEligibility('l3')}
     ), round_counts AS (SELECT round,status,COUNT(*)::int AS count FROM round_values GROUP BY round,status),
     matched AS (
       SELECT s.* FROM submissions s CROSS JOIN bounds WHERE ${stageMatch} AND ${cityMatch(Prisma.sql`s.member_city`)}
