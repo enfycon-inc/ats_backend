@@ -38,14 +38,14 @@ const literal = (v) =>
 sql(`CREATE SCHEMA ats;
 CREATE TABLE ats.system_roles(id uuid PRIMARY KEY,system_key text);
 CREATE TABLE ats.custom_roles(id uuid PRIMARY KEY,tenant_id uuid,system_role_id uuid,base_role_id uuid,permissions jsonb DEFAULT '[]');
-CREATE TABLE ats.users(id uuid PRIMARY KEY,tenant_id uuid,branch_id uuid,business_unit_id uuid,full_name text,email text,profile_picture text,pod_id uuid,role_id uuid,assigned_role_ids uuid[],is_active boolean DEFAULT true,is_approved boolean DEFAULT true);
+CREATE TABLE ats.users(id uuid PRIMARY KEY,tenant_id uuid,branch_id uuid,business_unit_id uuid,full_name text,email text,profile_picture text,pod_id uuid,role_id uuid,assigned_role_ids uuid[],is_active boolean DEFAULT true,is_approved boolean DEFAULT true,city text DEFAULT 'BBSR');
 CREATE TABLE ats.pods(id uuid PRIMARY KEY,tenant_id uuid,branch_id uuid,business_unit_id uuid,name text);
 CREATE TABLE ats.clients(id uuid PRIMARY KEY,tenant_id uuid,client_name text);
 CREATE TABLE ats.jobs(id uuid PRIMARY KEY,tenant_id uuid,branch_id uuid,business_unit_id uuid,job_title text,job_code text,status text DEFAULT 'Active',approval_status text DEFAULT 'APPROVED',client_id uuid,account_manager_id uuid,deleted_at timestamptz,keep_existing_submissions_open boolean DEFAULT false);
 CREATE TABLE ats.job_recruiters(job_id uuid,recruiter_id uuid,PRIMARY KEY(job_id,recruiter_id));
 CREATE TABLE ats.job_pods(job_id uuid,pod_id uuid,PRIMARY KEY(job_id,pod_id));
 CREATE TABLE ats.candidates(id uuid PRIMARY KEY,tenant_id uuid,full_name text,deleted_at timestamptz);
-CREATE TABLE ats.recruiter_submissions(id uuid PRIMARY KEY,tenant_id uuid,job_id uuid,candidate_id uuid,recruiter_id varchar(255),created_at timestamptz DEFAULT '2026-10-10',final_status text,l1_status text DEFAULT 'PENDING',l2_status text,l3_status text,l1_date timestamptz,l2_date timestamptz,l3_date timestamptz);
+CREATE TABLE ats.recruiter_submissions(id uuid PRIMARY KEY,tenant_id uuid,job_id uuid,candidate_id uuid,recruiter_id varchar(255),created_at timestamptz DEFAULT '2026-10-10',final_status text,l1_status text DEFAULT 'PENDING',l2_status text,l3_status text,l1_date timestamptz,l2_date timestamptz,l3_date timestamptz,submission_origin text DEFAULT 'RECRUITER');
 CREATE TABLE ats.submission_events(tenant_id uuid,submission_id uuid,kind text,created_at timestamptz,details jsonb);
 INSERT INTO ats.system_roles VALUES('${id(10)}','RECRUITER');
 INSERT INTO ats.custom_roles VALUES('${id(11)}','${id(1)}','${id(10)}',NULL,'["job:submit_pod_jobs"]'),('${id(12)}','${id(1)}',NULL,'${id(11)}','["job:submit_pod_jobs"]');
@@ -229,6 +229,18 @@ async function main() {
     () => service.dashboard(actor, { offset: 10, snapshot: all.snapshot }),
     /changed/,
   );
+  sql(`UPDATE ats.recruiter_submissions SET final_status='REJECTED',l1_status='REJECTED',l2_status='REJECTED' WHERE id='${id(401)}';
+    UPDATE ats.recruiter_submissions SET final_status='NOT_SELECTED' WHERE id='${id(409)}';
+    UPDATE ats.recruiter_submissions SET final_status='WITHDRAWN',l1_status='PENDING',l2_status='PENDING' WHERE id='${id(410)}';`);
+  const compact=await service.dashboard(actor,{performance:'1',cities:'BBSR',sort:'submissions',limit:100});
+  assert.equal(compact.performanceCities.length,1);
+  assert.equal(compact.performanceCities[0].total,compact.total);
+  assert.deepEqual(compact.performanceCities[0].rows.map(row=>row.id),compact.rows.slice(0,3).map(row=>row.id));
+  assert.equal(compact.rows.find(row=>row.id===id(100)).rejected,2);
+  assert.equal(compact.rows.find(row=>row.id===id(100)).assigned,2);
+  assert.equal(compact.performanceCities[0].summary.rejected,2);
+  const otherCity=await service.dashboard(actor,{performance:'1',cities:'VIZAG'});
+  assert.equal(otherCity.total,0);
   const plan = sql(
     `EXPLAIN SELECT s.id FROM ats.recruiter_submissions s JOIN ats.jobs j ON j.id=s.job_id WHERE s.tenant_id='${id(1)}' AND j.business_unit_id='${id(3)}';`,
   );

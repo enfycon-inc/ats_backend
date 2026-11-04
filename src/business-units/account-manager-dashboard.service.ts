@@ -1,3 +1,4 @@
+import { performanceCities, groupPerformanceCities } from './performance-cities';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
@@ -9,20 +10,21 @@ import { managerMilestones, metricPeriod, milestoneCondition, performanceTrendRa
 import { MANAGER_SORTS, type ManagerDashboard, type ManagerDashboardFilters, type ManagerComparisonRow } from './delivery-dashboard.contract';
 
 type PipelineGroups = Parameters<typeof aggregateDeliveryPipeline>[0];
-type AggregateRow = { id: string; name: string; email: string | null; avatar: string | null; postedJobs: number; activeJobs: number; closedJobs: number; positions: number; submissions: number; offers: number; joined: number; undated: number; undatedJoined: number; undatedPosted: number; groups: PipelineGroups };
-type QueryResult = { weekly: { bucket: number; count: number }[]; managers: AggregateRow[]; roster: { id: string; name: string }[]; unassignedJobs: number; clients: { id: string; name: string }[]; markets: string[]; employmentTypes: string[] };
+type AggregateRow = { city?: string; id: string; name: string; email: string | null; avatar: string | null; postedJobs: number; activeJobs: number; closedJobs: number; positions: number; submissions: number; offers: number; joined: number; undated: number; undatedJoined: number; undatedPosted: number; groups: PipelineGroups };
+type QueryResult = { weekly: { bucket: number; count: number }[]; managers: AggregateRow[]; roster: { id: string; name: string }[]; unassignedJobs: number; clients: { id: string; name: string }[]; markets: string[]; employmentTypes: string[]; cities?:string[] };
 
 @Injectable()
 export class AccountManagerDashboardService {
   constructor(private readonly prisma: PrismaService, private readonly delivery: DeliveryDashboardService) {}
 
   async dashboard(user: AuthUser, input: ManagerDashboardFilters, resolvedScope?: Awaited<ReturnType<DeliveryDashboardService['scope']>>): Promise<ManagerDashboard> {
+    const cities=performanceCities(input.cities);
     const { search = '', clientId = '', market = '', employmentType = '', accountManagerId = '', from = '', to = '', sort = 'joined', direction = sort === 'name' ? 'asc' : 'desc', offset = 0, limit = 10, snapshot } = input;
     const uuid = (value: unknown) => typeof value === 'string' && (!value || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
     const date = (value: unknown) => typeof value === 'string' && (!value || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value);
     if (typeof search !== 'string' || search.length > 100 || typeof market !== 'string' || market.length > 100 || typeof employmentType !== 'string' || employmentType.length > 100
       || typeof clientId !== 'string' || (clientId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientId))
-      || !uuid(accountManagerId) || !date(from) || !date(to) || Boolean(from) !== Boolean(to) || (from && (Date.parse(to) <= Date.parse(from) || Date.parse(to) - Date.parse(from) > 366 * 86400000))
+      || !uuid(accountManagerId) || !date(from) || !date(to) || Boolean(from) !== Boolean(to) || (from && (Date.parse(to) <= Date.parse(from) || (input.performance !== '1' && Date.parse(to) - Date.parse(from) > 366 * 86400000)))
       || !MANAGER_SORTS.includes(sort) || !['asc', 'desc'].includes(direction) || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100
       || (snapshot !== undefined && (typeof snapshot !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot)))) throw new BadRequestException('Invalid account manager dashboard filters.');
     const { where, unit } = resolvedScope ?? await this.delivery.scope(user);
@@ -58,14 +60,14 @@ export class AccountManagerDashboardService {
         WHERE (${clientId} = '' OR p.client_id::text = ${clientId})
           AND (${market} = '' OR p.market = ${market}) AND (${employmentType} = '' OR p.job_type = ${employmentType})
       ), roster AS (
-        SELECT u.id, u.full_name, u.email, u.profile_picture FROM ats.users u
+        SELECT u.id, u.full_name, u.email, u.profile_picture, COALESCE(u.city::text,'UNSPECIFIED') AS city FROM ats.users u
         WHERE u.tenant_id = ${where.tenantId}::uuid AND u.branch_id = ${where.branchId}::uuid
-          AND u.business_unit_id = ${where.businessUnitId}::uuid AND u.is_active AND u.is_approved
+          AND u.business_unit_id = ${where.businessUnitId}::uuid AND (${input.performance === '1'} OR u.is_active) AND u.is_approved
           AND (EXISTS (SELECT 1 FROM manager_roles r WHERE r.id = u.role_id OR r.id = ANY(u.assigned_role_ids))
             OR (${seeJobs} AND EXISTS (SELECT 1 FROM portfolio p WHERE p.account_manager_id = u.id)))
       ), managers AS (
-        SELECT r.id, r.full_name, r.email, r.profile_picture FROM roster r
-        WHERE (${accountManagerId} = '' OR r.id::text = ${accountManagerId})
+        SELECT r.id, r.full_name, r.email, r.profile_picture, r.city FROM roster r
+        WHERE ${cities.length ? Prisma.sql`r.city IN (${Prisma.join(cities)})` : Prisma.sql`TRUE`} AND (${accountManagerId} = '' OR r.id::text = ${accountManagerId})
           AND (POSITION(LOWER(${search.trim()}) IN LOWER(r.full_name)) > 0 OR POSITION(LOWER(${search.trim()}) IN LOWER(r.email)) > 0)
       ), job_counts AS (
         SELECT account_manager_id, COUNT(*) FILTER (WHERE ${period(Prisma.sql`approved_at`)})::int AS posted,
@@ -99,7 +101,7 @@ export class AccountManagerDashboardService {
           'l2Status', l2_status, 'l3Status', l3_status, '_count', jsonb_build_object('_all', count))) AS groups
         FROM submission_groups GROUP BY account_manager_id
       )
-      SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('id', m.id, 'name', m.full_name, 'email', m.email, 'avatar', m.profile_picture,
+      SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('id', m.id, 'name', m.full_name, 'email', m.email, 'avatar', m.profile_picture, 'city',m.city,
           'postedJobs', COALESCE(j.posted, 0), 'activeJobs', COALESCE(j.active, 0), 'closedJobs', COALESCE(j.closed, 0), 'positions', COALESCE(j.positions, 0), 'undatedPosted', COALESCE(j.undated_posted, 0),
           'submissions', COALESCE(o.submissions, 0), 'offers', COALESCE(o.offers, 0), 'joined', COALESCE(o.joined, 0), 'undated', COALESCE(o.undated, 0), 'undatedJoined', COALESCE(o.undated_joined, 0),
           'groups', COALESCE(p.groups, '[]'::jsonb)) ORDER BY m.id)
@@ -107,6 +109,7 @@ export class AccountManagerDashboardService {
         COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'name', full_name) ORDER BY full_name, id) FROM roster), '[]'::jsonb) AS roster,
         COALESCE((SELECT jsonb_agg(jsonb_build_object('bucket', bucket, 'count', count) ORDER BY bucket) FROM weekly), '[]'::jsonb) AS weekly,
         (SELECT COUNT(*)::int FROM filtered_jobs j WHERE j.account_manager_id IS NULL) AS "unassignedJobs",
+        COALESCE((SELECT jsonb_agg(city ORDER BY city) FROM (SELECT DISTINCT city FROM roster) city_options),'[]'::jsonb) AS cities,
         ${seeClients ? Prisma.sql`COALESCE((SELECT jsonb_agg(jsonb_build_object('id', c.id, 'name', c.client_name) ORDER BY c.client_name, c.id)
           FROM ats.clients c WHERE c.tenant_id = ${where.tenantId}::uuid AND EXISTS (SELECT 1 FROM portfolio p WHERE p.client_id = c.id)), '[]'::jsonb)` : Prisma.sql`'[]'::jsonb`} AS clients,
         ${seeJobs ? Prisma.sql`COALESCE((SELECT jsonb_agg(v.market ORDER BY v.market) FROM (SELECT DISTINCT market FROM portfolio WHERE market IS NOT NULL AND market <> '') v), '[]'::jsonb)` : Prisma.sql`'[]'::jsonb`} AS markets,
@@ -114,7 +117,7 @@ export class AccountManagerDashboardService {
     `);
     const rows: ManagerComparisonRow[] = result.managers.map(manager => {
       const pipeline = aggregateDeliveryPipeline(manager.groups);
-      return { id: manager.id, name: manager.name, email: manager.email, avatar: manager.avatar,
+      return { city:manager.city, id: manager.id, name: manager.name, email: manager.email, avatar: manager.avatar,
         postedJobs: seeJobs ? manager.postedJobs : null, activeJobs: seeJobs ? manager.activeJobs : null,
         closedJobs: seeJobs ? manager.closedJobs : null, positions: seeJobs ? manager.positions : null,
         submissions: seeSubmissions ? manager.submissions : null, review: seeReview ? pipeline.review : null,
@@ -135,13 +138,13 @@ export class AccountManagerDashboardService {
       weekly: performanceWeeks(trendFrom, trendTo, result.weekly), weeklyScope: from ? 'selected-period' as const : 'last-12-weeks' as const,
       undatedClosures: result.managers.reduce((total, manager) => total + manager.undatedJoined, 0),
     } : null;
-    const digest = createHash('sha256').update(JSON.stringify({ where, permissions: [...(user.permissions || [])].sort(), search, clientId, market, employmentType, accountManagerId, from, to, sort, direction, rows, charts })).digest('hex');
+    const digest = createHash('sha256').update(JSON.stringify({ where, permissions: [...(user.permissions || [])].sort(), search, clientId, market, employmentType, accountManagerId, from, to, cities, performance:input.performance, sort, direction, rows, charts })).digest('hex');
     if (snapshot && digest !== snapshot) throw new ConflictException('Dashboard changed. Refresh to load the latest comparison.');
     const sum = (key: 'postedJobs' | 'activeJobs' | 'joined') => rows.reduce((total, row) => total + (row[key] ?? 0), 0);
-    return { charts: offset === 0 ? charts : null, unit: { id: unit.id, name: unit.name, branchName: unit.branch?.name || '' }, rows: rows.slice(offset, offset + limit), total: rows.length, offset,
+    return { performanceCities: input.performance === '1' ? groupPerformanceCities(rows,['postedJobs','activeJobs','closedJobs','joined']) : undefined, charts: offset === 0 ? charts : null, unit: { id: unit.id, name: unit.name, branchName: unit.branch?.name || '' }, rows: rows.slice(offset, offset + limit), total: rows.length, offset,
       nextOffset: offset + limit < rows.length ? offset + limit : null, snapshot: digest, updatedAt: new Date().toISOString(),
       summary: { postedJobs: seeJobs ? sum('postedJobs') : null, activeJobs: seeJobs ? sum('activeJobs') : null, joined: seeSubmissions ? sum('joined') : null, unassignedJobs: seeJobs ? result.unassignedJobs : null },
-      options: { clients: result.clients, markets: result.markets, employmentTypes: result.employmentTypes }, managers: result.roster,
+      options: { cities:result.cities||[], clients: result.clients, markets: result.markets, employmentTypes: result.employmentTypes }, managers: result.roster,
       undatedOutcomes: seeSubmissions ? result.managers.reduce((total, manager) => total + manager.undated, 0) : null,
       undatedPostedJobs: seeJobs ? result.managers.reduce((total, manager) => total + manager.undatedPosted, 0) : null };
   }

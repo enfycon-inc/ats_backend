@@ -10,6 +10,7 @@ export function deliveryStage(row: { finalStatus: string; l1Status: string; l2St
 }
 
 export function deliveryStageWhere(stage: DeliveryStage): Prisma.RecruiterSubmissionWhereInput {
+  if (stage === 'offers') return { finalStatus: 'OFFER' };
   // Include legacy in-progress outcomes (for example POD_APPROVED) consistently
   // with deliveryStage, which lets explicit approval/terminal outcomes win first.
   const active = { finalStatus: { notIn: ['PENDING_APPROVAL', 'REJECTED', 'NOT_SELECTED', 'WITHDRAWN', 'SELECTED', 'OFFER', 'JOIN'] } };

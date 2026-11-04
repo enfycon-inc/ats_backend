@@ -602,15 +602,15 @@ export class RecruiterSubmissionsService {
         j.job_timezone AS job_timezone,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
-        r.email AS recruiter_email, r.profile_picture AS recruiter_avatar,
+        r.email AS recruiter_email, r.city AS recruiter_city, r.profile_picture AS recruiter_avatar,
         r.job_reviewer_id AS recruiter_job_reviewer_id,
         j.created_by_user_id AS job_creator_id, j.business_unit_id AS job_unit_id,
-        creator.full_name AS creator_name, creator.email AS creator_email, creator.profile_picture AS creator_avatar,
+        creator.full_name AS creator_name, creator.email AS creator_email, creator.city AS creator_city, creator.profile_picture AS creator_avatar,
         ${joinedDateSql} AS joined_at,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
         am.id AS am_id,
-        am.email AS am_email,
+        am.email AS am_email, am.city AS am_city,
         (SELECT cr.name
          FROM ats.custom_roles cr
          LEFT JOIN ats.custom_roles base ON base.id = cr.base_role_id AND base.tenant_id = cr.tenant_id
@@ -1154,11 +1154,11 @@ export class RecruiterSubmissionsService {
         j.market,
         j.branch_id AS branch_id,
         r.full_name AS recruiter_name,
-        r.email AS recruiter_email, r.profile_picture AS recruiter_avatar,
+        r.email AS recruiter_email, r.city AS recruiter_city, r.profile_picture AS recruiter_avatar,
         ph.full_name AS pod_head_name,
         COALESCE(am.full_name, am.email) AS am_name,
         am.id AS am_id,
-        am.email AS am_email,
+        am.email AS am_email, am.city AS am_city,
         (SELECT cr.name
          FROM ats.custom_roles cr
          LEFT JOIN ats.custom_roles base ON base.id = cr.base_role_id AND base.tenant_id = cr.tenant_id
@@ -1817,6 +1817,9 @@ export class RecruiterSubmissionsService {
       } : null,
       clientCommissionPct: canViewCommission && row.placement_commission_pct != null ? String(row.placement_commission_pct) : null,
       recruiterAvatar: row.recruiter_avatar ?? null,
+      recruiterCity:row.submission_origin === 'WEBSITE' ? null : row.recruiter_city ?? null,
+      accountManagerCity:row.am_city ?? null,
+      creatorCity:row.creator_city ?? null,
       candidateName: row.candidate_name || row.candidateName,
       candidateEmail: row.candidate_email || row.candidateEmail,
       candidatePhone: row.candidate_phone || row.candidatePhone,

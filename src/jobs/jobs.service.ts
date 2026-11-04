@@ -1,4 +1,5 @@
 import type { JobCatalogResponse } from "./job-catalog.contract";
+import { deliveryCatalogPredicate, deliveryJobStatusSql, deliveryJobPrioritySql, deliveryJobTypeSql } from '../business-units/delivery-job-filters';
 import { normalizeJobUrgency } from './job-urgency-contract';
 import { assertPermanentDeletion } from '../auth/utils/permanent-deletion';
 import { effectiveJobAssignmentPolicy } from '../auth/job-assignment-policy';
@@ -63,6 +64,8 @@ export interface JobProfile {
   createdAt?: string;
   updatedAt?: string;
   creatorEmail?: string | null;
+  creatorCity?:string|null;
+  accountManagerCity?:string|null;
   createdByUserId?: string | null;
 
   // Co-Sourcing fields
@@ -141,6 +144,7 @@ export interface JobProfile {
 }
 
 export interface AssignedRecruiterProfile {
+  city?:string|null;
   id: string;
   fullName: string;
   email?: string | null;
@@ -1377,9 +1381,9 @@ export class JobsService {
                COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
                COALESCE(recruiter_info.recruiter_details, '[]'::json) AS recruiter_details,
              COALESCE(cr.full_name, uc.full_name) AS creator_name,
-             COALESCE(cr.email, uc.email) AS creator_email,
+             COALESCE(cr.email, uc.email) AS creator_email, (CASE WHEN cr.full_name IS NOT NULL THEN cr.city ELSE uc.city END)::text AS creator_city,
              uc.full_name AS account_manager_name,
-             uc.email AS account_manager_email,
+             uc.email AS account_manager_email, uc.city AS account_manager_city,
              b.name AS branch_name,
              b.code AS branch_code,
              cl.client_name AS mapped_client_name,
@@ -1394,7 +1398,7 @@ export class JobsService {
             jr.job_id,
             STRING_AGG(u.id::text, ',') AS recruiter_ids,
             STRING_AGG(u.full_name, ', ') AS recruiter_names,
-            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
+            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture, 'city', u.city) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
           WHERE u.tenant_id = $1::uuid
@@ -1686,11 +1690,13 @@ export class JobsService {
     const params = [...scope.params];
     const bind = (value: string | number | string[]) => { params.push(value); return '$' + params.length; };
     let sql = scope.sql;
+    if (query.delivery === '1') sql += deliveryCatalogPredicate(context.actor, query, bind);
     if (query.search?.trim()) {
       const value = bind(query.search.trim());
       sql += ` AND POSITION(LOWER(${value}) IN LOWER(CONCAT_WS(' ', j.job_title, j.job_code, cl.client_name, ecl.client_name, bu.name, j.city, j.state, j.country, recruiter_info.recruiter_names))) > 0`;
     }
-    if (query.status === 'Draft') sql += ` AND UPPER(j.status) IN ('DRAFT', 'PENDING APPROVAL', 'PENDING_APPROVAL')`;
+    if (query.delivery === '1' && query.status) sql += ` AND (${deliveryJobStatusSql}) = UPPER(${bind(query.status)})`;
+    else if (query.status === 'Draft') sql += ` AND UPPER(j.status) IN ('DRAFT', 'PENDING APPROVAL', 'PENDING_APPROVAL')`;
     else if (query.status) sql += ` AND UPPER(j.status) = UPPER(${bind(query.status)})`;
     const fields: Record<string, string> = { branch: 'b.name', unit: 'bu.name', creator: 'COALESCE(cr.full_name, uc.full_name)' };
     if (query.client) { const client = bind(query.client); sql += ` AND (cl.client_name = ${client} OR ecl.client_name = ${client})`; }
@@ -1703,7 +1709,8 @@ export class JobsService {
       if (!Number.isFinite(date.getTime())) throw new BadRequestException('Invalid job date range.');
       sql += ` AND j.created_at ${operator} ${bind(date.toISOString())}::timestamptz`;
     }
-    if (query.priority) sql += ` AND UPPER(j.urgency) = UPPER(${bind(query.priority)})`;
+    if (query.priority) sql += query.delivery === '1' ? ` AND (${deliveryJobPrioritySql}) = UPPER(${bind(query.priority)}) AND (${deliveryJobStatusSql})='ACTIVE'` : ` AND UPPER(j.urgency) = UPPER(${bind(query.priority)})`;
+    if (query.delivery === '1' && query.jobType) sql += ` AND (${deliveryJobTypeSql}) = ${bind(query.jobType)}`;
     if (query.workMode) sql += ` AND UPPER(j.work_mode) = UPPER(${bind(query.workMode)})`;
     const idList = (value?: string) => (value || '').split(',').map(id => id.trim()).filter(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)).slice(0, 50);
     const accountManagerIds = idList(query.accountManagers);
@@ -1801,8 +1808,8 @@ export class JobsService {
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
                COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
                COALESCE(recruiter_info.recruiter_details, '[]'::json) AS recruiter_details,
-                COALESCE(cr.full_name, uc.full_name) AS creator_name, COALESCE(cr.email, uc.email) AS creator_email,
-                uc.full_name AS account_manager_name, uc.email AS account_manager_email,
+                COALESCE(cr.full_name, uc.full_name) AS creator_name, COALESCE(cr.email, uc.email) AS creator_email, (CASE WHEN cr.full_name IS NOT NULL THEN cr.city ELSE uc.city END)::text AS creator_city,
+                uc.full_name AS account_manager_name, uc.email AS account_manager_email, uc.city AS account_manager_city,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
@@ -1813,7 +1820,7 @@ export class JobsService {
             jr.job_id,
             STRING_AGG(u.id::text, ',') AS recruiter_ids,
             STRING_AGG(u.full_name, ', ') AS recruiter_names,
-            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
+            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture, 'city', u.city) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
           WHERE u.tenant_id = $1::uuid
@@ -1843,8 +1850,8 @@ export class JobsService {
                COALESCE(recruiter_info.recruiter_ids, '') AS recruiter_ids,
                COALESCE(recruiter_info.recruiter_names, '') AS multi_recruiter_names,
                COALESCE(recruiter_info.recruiter_details, '[]'::json) AS recruiter_details,
-                COALESCE(cr.full_name, uc.full_name) AS creator_name, COALESCE(cr.email, uc.email) AS creator_email,
-                uc.full_name AS account_manager_name, uc.email AS account_manager_email,
+                COALESCE(cr.full_name, uc.full_name) AS creator_name, COALESCE(cr.email, uc.email) AS creator_email, (CASE WHEN cr.full_name IS NOT NULL THEN cr.city ELSE uc.city END)::text AS creator_city,
+                uc.full_name AS account_manager_name, uc.email AS account_manager_email, uc.city AS account_manager_city,
                 cl.client_name AS mapped_client_name, ecl.client_name AS mapped_end_client_name, bu.name AS mapped_business_unit_name
          FROM ats.jobs j
          LEFT JOIN ats.users rm ON rm.id = j.recruitment_manager_id
@@ -1855,7 +1862,7 @@ export class JobsService {
             jr.job_id,
             STRING_AGG(u.id::text, ',') AS recruiter_ids,
             STRING_AGG(u.full_name, ', ') AS recruiter_names,
-            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture) ORDER BY u.full_name) AS recruiter_details
+            JSON_AGG(JSON_BUILD_OBJECT('id', u.id::text, 'fullName', u.full_name, 'email', u.email, 'avatar', u.profile_picture, 'city', u.city) ORDER BY u.full_name) AS recruiter_details
           FROM ats.job_recruiters jr
           JOIN ats.users u ON u.id = jr.recruiter_id
           WHERE u.tenant_id = $1::uuid
@@ -1931,6 +1938,7 @@ export class JobsService {
             id: String(recruiter.id),
             fullName: String(recruiter.fullName || recruiter.full_name || 'Recruiter'),
             email: recruiter.email || null,
+            city:recruiter.city || null,
             avatar: recruiter.avatar || recruiter.profilePicture || recruiter.profile_picture || null,
           }))
       : [];
@@ -2002,6 +2010,8 @@ export class JobsService {
         recruiterDetails,
       createdBy: row.creator_name ?? row.creatorName ?? 'System',
       creatorEmail: row.creator_email ?? row.creatorEmail ?? null,
+      creatorCity:row.creator_city ?? row.creatorCity ?? null,
+      accountManagerCity:row.account_manager_city ?? row.accountManagerCity ?? null,
       createdByUserId: row.created_by_user_id ?? row.createdByUserId ?? null,
 
       industry: row.industry || '',

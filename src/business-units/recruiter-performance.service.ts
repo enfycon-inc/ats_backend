@@ -1,3 +1,4 @@
+import { performanceCities, groupPerformanceCities } from './performance-cities';
 import {
   BadRequestException,
   ConflictException,
@@ -31,6 +32,7 @@ import {
 
 type Groups = Parameters<typeof aggregateDeliveryPipeline>[0];
 type RawRow = {
+  city?:string; rejected?:number;
   id: string;
   name: string;
   email: string;
@@ -47,6 +49,7 @@ type RawRow = {
 type Aggregate = {
   rows: RawRow[];
   roster: { id: string; name: string }[];
+  cities?:string[];
   pods: { id: string; name: string }[];
   activeJobs: number;
   unattributed: number;
@@ -93,7 +96,7 @@ export class RecruiterPerformanceService {
       Boolean(from) !== Boolean(to) ||
       (from &&
         (Date.parse(to) <= Date.parse(from) ||
-          Date.parse(to) - Date.parse(from) > 366 * 86400000)) ||
+          (input.performance !== '1' && Date.parse(to) - Date.parse(from) > 366 * 86400000))) ||
       !RECRUITER_SORTS.includes(sort) ||
       !['asc', 'desc'].includes(direction) ||
       !Number.isSafeInteger(offset) ||
@@ -109,6 +112,7 @@ export class RecruiterPerformanceService {
 
   private async context(user: AuthUser, input: RecruiterFilters) {
     this.validate(input);
+    performanceCities(input.cities);
     const scope = await this.delivery.scope(user);
     const has = (p: string) => user.permissions?.includes(p) === true;
     if (!has('user:manage'))
@@ -155,14 +159,14 @@ export class RecruiterPerformanceService {
       WHERE ${jobs || subs} AND j.tenant_id = ${where.tenantId}::uuid AND j.branch_id = ${where.branchId}::uuid AND j.business_unit_id = ${where.businessUnitId}::uuid
         AND j.deleted_at IS NULL AND UPPER(COALESCE(j.approval_status, '')) = 'APPROVED' AND UPPER(j.status) NOT IN ('DRAFT', 'REJECTED')
     ), unit_users AS (
-      SELECT u.id, u.full_name, u.email, u.profile_picture, u.pod_id, u.role_id, u.assigned_role_ids FROM ats.users u
-      WHERE u.tenant_id = ${where.tenantId}::uuid AND u.branch_id = ${where.branchId}::uuid AND u.business_unit_id = ${where.businessUnitId}::uuid AND u.is_active AND u.is_approved
+      SELECT u.id, u.full_name, u.email, u.profile_picture, COALESCE(u.city::text,'UNSPECIFIED') AS city, u.pod_id, u.role_id, u.assigned_role_ids FROM ats.users u
+      WHERE u.tenant_id = ${where.tenantId}::uuid AND u.branch_id = ${where.branchId}::uuid AND u.business_unit_id = ${where.businessUnitId}::uuid AND (${input.performance === '1'} OR u.is_active) AND u.is_approved
     ), roster AS (
       SELECT u.* FROM unit_users u WHERE EXISTS (SELECT 1 FROM recruiter_roles r WHERE r.id = u.role_id OR r.id = ANY(u.assigned_role_ids))
         OR (${jobs} AND EXISTS (SELECT 1 FROM ats.job_recruiters jr JOIN scoped_jobs j ON j.id = jr.job_id WHERE jr.recruiter_id = u.id))
         OR (${subs} AND EXISTS (SELECT 1 FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id WHERE s.tenant_id = ${where.tenantId}::uuid AND s.submission_origin = 'RECRUITER' AND s.recruiter_id = u.id::text))
     ), members AS (
-      SELECT r.* FROM roster r WHERE (${input.recruiterId ?? ''} = '' OR r.id::text = ${input.recruiterId ?? ''}) AND (${input.podId ?? ''} = '' OR r.pod_id::text = ${input.podId ?? ''})
+      SELECT r.* FROM roster r WHERE ${performanceCities(input.cities).length ? Prisma.sql`r.city IN (${Prisma.join(performanceCities(input.cities))})` : Prisma.sql`TRUE`} AND (${input.recruiterId ?? ''} = '' OR r.id::text = ${input.recruiterId ?? ''}) AND (${input.podId ?? ''} = '' OR r.pod_id::text = ${input.podId ?? ''})
         AND (POSITION(LOWER(${input.search?.trim() ?? ''}) IN LOWER(r.full_name)) > 0 OR POSITION(LOWER(${input.search?.trim() ?? ''}) IN LOWER(r.email)) > 0)
     ), assignments AS (
       SELECT m.id AS recruiter_id, j.id AS job_id, BOOL_OR(a.direct) AS direct FROM members m
@@ -175,7 +179,7 @@ export class RecruiterPerformanceService {
     ), attributed AS (
       SELECT s.id, s.job_id, s.candidate_id, s.recruiter_id, s.created_at, s.final_status, s.l1_status, s.l2_status, s.l3_status,
         s.l1_date, s.l2_date, s.l3_date, m.id AS member_id
-      FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id JOIN members m ON m.id::text = s.recruiter_id AND s.submission_origin = 'RECRUITER'
+      FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id = s.job_id JOIN members m ON m.id::text = s.recruiter_id::text AND s.submission_origin = 'RECRUITER'
       JOIN ats.candidates c ON c.id = s.candidate_id AND c.tenant_id = s.tenant_id AND c.deleted_at IS NULL WHERE ${subs} AND s.tenant_id = ${where.tenantId}::uuid
     ), milestones AS (
       SELECT s.*, ev.offered_at, ev.joined_at FROM attributed s LEFT JOIN LATERAL (
@@ -212,6 +216,7 @@ export class RecruiterPerformanceService {
       Aggregate[]
     >(Prisma.sql`${this.ctes(ctx, input)}, counts AS (
       SELECT member_id, COUNT(*) FILTER (WHERE ${period(Prisma.sql`created_at`)})::int AS submissions,
+        COUNT(*) FILTER (WHERE ${period(Prisma.sql`created_at`)} AND (final_status IN ('REJECTED','NOT_SELECTED') OR l1_status='REJECTED' OR l2_status='REJECTED' OR l3_status='REJECTED'))::int AS rejected,
         COUNT(*) FILTER (WHERE ${milestoneCondition('OFFER', from, to)})::int AS offers, COUNT(*) FILTER (WHERE ${milestoneCondition('JOIN', from, to)})::int AS joined,
         COUNT(*) FILTER (WHERE (final_status = 'OFFER' AND offered_at IS NULL) OR (final_status = 'JOIN' AND joined_at IS NULL))::int AS undated
       FROM milestones GROUP BY member_id
@@ -227,11 +232,12 @@ export class RecruiterPerformanceService {
         COUNT(*) FILTER (WHERE d.kind='submission')::int AS submissions, COUNT(*) FILTER (WHERE d.kind='closure')::int AS closures
       FROM milestones m CROSS JOIN LATERAL (VALUES (m.created_at,'submission'),(m.joined_at,'closure')) d(date,kind)
       WHERE d.date >= ${start} AND d.date < ${end} GROUP BY bucket
-    ) SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('id',m.id,'name',m.full_name,'email',m.email,'avatar',m.profile_picture,'pod',${ctx.pods ? Prisma.sql`p.name` : Prisma.sql`NULL`},
+    ) SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('id',m.id,'name',m.full_name,'email',m.email,'avatar',m.profile_picture,'city',m.city,'rejected',COALESCE(c.rejected,0),'pod',${ctx.pods ? Prisma.sql`p.name` : Prisma.sql`NULL`},
       'directActive',COALESCE(j.direct,0),'sharedJobs',COALESCE(j.shared,0),'submissions',COALESCE(c.submissions,0),'offers',COALESCE(c.offers,0),'joined',COALESCE(c.joined,0),'undated',COALESCE(c.undated,0),'groups',COALESCE(g.groups,'[]'::jsonb)))
       FROM members m LEFT JOIN jobs j ON j.recruiter_id=m.id LEFT JOIN counts c ON c.member_id=m.id LEFT JOIN pipelines g ON g.member_id=m.id
       LEFT JOIN ats.pods p ON p.id=m.pod_id AND p.tenant_id=${ctx.where.tenantId}::uuid AND p.branch_id=${ctx.where.branchId}::uuid AND p.business_unit_id=${ctx.where.businessUnitId}::uuid),'[]'::jsonb) AS rows,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('id',id,'name',full_name) ORDER BY full_name,id) FROM roster),'[]'::jsonb) AS roster,
+      COALESCE((SELECT jsonb_agg(city ORDER BY city) FROM (SELECT DISTINCT city FROM roster) city_options),'[]'::jsonb) AS cities,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('bucket',bucket,'submissions',submissions,'closures',closures)) FROM weekly),'[]'::jsonb) AS weekly,
       (SELECT COUNT(DISTINCT a.job_id)::int FROM assignments a JOIN scoped_jobs j ON j.id=a.job_id WHERE UPPER(j.status)='ACTIVE') AS "activeJobs",
       (SELECT COUNT(*)::int FROM ats.recruiter_submissions s JOIN scoped_jobs j ON j.id=s.job_id JOIN ats.candidates c ON c.id=s.candidate_id AND c.tenant_id=s.tenant_id AND c.deleted_at IS NULL
@@ -240,6 +246,9 @@ export class RecruiterPerformanceService {
     const rows: RecruiterRow[] = raw.rows.map((r) => {
       const p = aggregateDeliveryPipeline(r.groups);
       return {
+        city:r.city,
+        rejected:ctx.subs ? (r.rejected ?? 0) : null,
+        assigned:ctx.jobs ? r.directActive + (ctx.pods ? r.sharedJobs : 0) : null,
         id: r.id,
         name: r.name,
         email: r.email,
@@ -329,6 +338,7 @@ export class RecruiterPerformanceService {
     const sum = (key: 'submissions' | 'offers' | 'joined') =>
       rows.reduce((n, r) => n + (r[key] ?? 0), 0);
     return {
+      performanceCities:input.performance === '1' ? groupPerformanceCities(rows,['assigned','submissions','rejected','joined']) : undefined,
       unit: {
         id: ctx.unit.id,
         name: ctx.unit.name,
@@ -344,7 +354,8 @@ export class RecruiterPerformanceService {
         offers: ctx.subs ? sum('offers') : null,
         joined: ctx.subs ? sum('joined') : null,
       },
-      options: { recruiters: raw.roster, pods: raw.pods },
+      features:{podsEnabled:ctx.features.podsEnabled},
+      options: { cities:raw.cities||[], recruiters: raw.roster, pods: raw.pods },
       charts: offset === 0 ? charts : null,
       undatedOutcomes: ctx.subs
         ? raw.rows.reduce((n, r) => n + r.undated, 0)

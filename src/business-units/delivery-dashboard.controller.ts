@@ -15,6 +15,16 @@ import type { RecruiterFilters, RecruiterDetailFilters } from './delivery-dashbo
 export class DeliveryDashboardController {
   constructor(private readonly dashboardService: DeliveryDashboardService, private readonly managers: AccountManagerDashboardService, private readonly managerDetail: AccountManagerDetailService, private readonly recruiters: RecruiterPerformanceService) {}
 
+  @Get('filter-options')
+  filterOptions(@CurrentUser() user: AuthUser, @Query('kind') kind: string, @Query('search') search?: string, @Query('page') page?: string) {
+    return this.dashboardService.filterOptions(user, kind, search, page === undefined ? 1 : Number(page));
+  }
+
+  @Get('jobs')
+  jobs(@CurrentUser() user: AuthUser, @Query() filters: Record<string, string>) {
+    return this.dashboardService.jobDrilldown(user, filters);
+  }
+
   @Get('recruiters/:id')
   recruiterDetail(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Query() query: Record<string, string>) {
     return this.recruiters.detail(user, id, { from: query.from, to: query.to, tab: query.tab as RecruiterDetailFilters['tab'], page: query.page === undefined ? 1 : Number(query.page),
@@ -23,7 +33,7 @@ export class DeliveryDashboardController {
 
   @Get('recruiters')
   recruiterComparison(@CurrentUser() user: AuthUser, @Query() query: Record<string, string>) {
-    return this.recruiters.dashboard(user, { search: query.search, recruiterId: query.recruiterId, podId: query.podId, from: query.from, to: query.to,
+    return this.recruiters.dashboard(user, { cities:query.cities, performance:query.performance, search: query.search, recruiterId: query.recruiterId, podId: query.podId, from: query.from, to: query.to,
       sort: query.sort as RecruiterFilters['sort'], direction: query.direction as RecruiterFilters['direction'], offset: query.offset === undefined ? 0 : Number(query.offset), limit: query.limit === undefined ? 10 : Number(query.limit), snapshot: query.snapshot });
   }
 
@@ -36,15 +46,15 @@ export class DeliveryDashboardController {
 
   @Get('account-managers')
   accountManagers(@CurrentUser() user: AuthUser, @Query() query: Record<string, string>) {
-    return this.managers.dashboard(user, { search: query.search, clientId: query.clientId, market: query.market,
+    return this.managers.dashboard(user, { cities:query.cities, performance:query.performance, search: query.search, clientId: query.clientId, market: query.market,
       employmentType: query.employmentType, accountManagerId: query.accountManagerId, from: query.from, to: query.to,
       sort: query.sort as ManagerDashboardFilters['sort'], direction: query.direction as ManagerDashboardFilters['direction'],
       offset: query.offset === undefined ? 0 : Number(query.offset), limit: query.limit === undefined ? 10 : Number(query.limit), snapshot: query.snapshot });
   }
 
   @Get()
-  dashboard(@CurrentUser() user: AuthUser, @Query('stage') stage?: string, @Query('page') page?: string, @Query('memberPage') memberPage?: string) {
-    return this.dashboardService.dashboard(user, stage, page === undefined ? 1 : Number(page), memberPage === undefined ? 1 : Number(memberPage));
+  dashboard(@CurrentUser() user: AuthUser, @Query('stage') stage?: string, @Query('page') page?: string, @Query('memberPage') memberPage?: string, @Query() filters?: Record<string, string>) {
+    return this.dashboardService.dashboard(user, stage, page === undefined ? 1 : Number(page), memberPage === undefined ? 1 : Number(memberPage), filters);
   }
 
   @Patch('members/:id')

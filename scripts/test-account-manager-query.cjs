@@ -22,7 +22,7 @@ sql(`
   CREATE TABLE ats.system_roles(id uuid PRIMARY KEY, system_key text);
   CREATE TABLE ats.custom_roles(id uuid PRIMARY KEY, tenant_id uuid, system_role_id uuid, base_role_id uuid);
   CREATE TABLE ats.users(id uuid PRIMARY KEY, tenant_id uuid, branch_id uuid, business_unit_id uuid, full_name text,
-    is_active boolean, is_approved boolean, role_id uuid, assigned_role_ids uuid[], email text DEFAULT 'manager@example.test', profile_picture text);
+    is_active boolean, is_approved boolean, role_id uuid, assigned_role_ids uuid[], email text DEFAULT 'manager@example.test', profile_picture text, city text DEFAULT 'BBSR');
   CREATE TABLE ats.clients(id uuid PRIMARY KEY, tenant_id uuid, client_name text, created_by uuid, created_at timestamptz DEFAULT '2026-10-03', status text DEFAULT 'Active', branch_id uuid, primary_owner text, deleted_at timestamptz);
   CREATE TABLE ats.jobs(id uuid PRIMARY KEY, tenant_id uuid, branch_id uuid, business_unit_id uuid, account_manager_id uuid,
     client_id uuid, market text, job_type text, status text, approval_status text, deleted_at timestamptz, no_of_positions int DEFAULT 2, approved_at timestamptz DEFAULT '2026-10-01T00:00:00Z', job_title text DEFAULT 'Synthetic Job', job_code text DEFAULT 'JOB-TEST');
@@ -102,6 +102,13 @@ async function main() {
   assert.equal(portfolio.clients.rows[0].postedJobs, 2); assert.equal(portfolio.clients.rows[0].joined, 1);
   assert.equal(portfolio.jobs.rows.reduce((sum, job) => sum + job.submissions, 0), portfolio.manager.submissions);
   await assert.rejects(() => details.detail(actor, uuid(200), {}), /unavailable/);
+  const compact=await service.dashboard(actor,{performance:'1',cities:'BBSR',sort:'postedJobs',limit:100});
+  assert.equal(compact.performanceCities.length,1);
+  assert.equal(compact.performanceCities[0].total,compact.total);
+  assert.deepEqual(compact.performanceCities[0].rows.map(row=>row.id),compact.rows.slice(0,3).map(row=>row.id));
+  assert.equal(compact.performanceCities[0].summary.joined,compact.rows.reduce((sum,row)=>sum+(row.joined||0),0));
+  const otherCity=await service.dashboard(actor,{performance:'1',cities:'VIZAG',sort:'postedJobs'});
+  assert.equal(otherCity.total,0);
   console.log('PostgreSQL integration passed: scope isolation, separate job aggregation, canonical pipeline, derived roles, zero-result managers, filters, pagination and redaction.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

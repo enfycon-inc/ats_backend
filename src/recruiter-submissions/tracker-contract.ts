@@ -72,6 +72,9 @@ export interface SubmissionCapabilities {
   rate: boolean;
 }
 export interface TrackerSubmission {
+  recruiterCity?: string | null;
+  accountManagerCity?: string | null;
+  creatorCity?: string | null;
   creatorName?: string | null; creatorEmail?: string | null; creatorAvatar?: string | null; joinedAt?: string | null;
   jobStatus?: string | null;
   keepExistingSubmissionsOpen?: boolean;
