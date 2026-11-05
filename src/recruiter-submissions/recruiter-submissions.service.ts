@@ -80,6 +80,7 @@ export interface SubmissionDetails extends TrackerSubmission {
   candidateName?: string;
   candidateEmail?: string;
   candidatePhone?: string;
+  candidateLinkedinUrl?: string | null;
   candidateCurrentLocation?: string;
   candidateExperience?: number | null;
   candidateDesignation?: string | null;
@@ -332,7 +333,7 @@ export class RecruiterSubmissionsService {
     // 2. Verify candidate exists and belongs to the tenant
     const candidate = await this.prisma.candidate.findFirst({
       where: { id: dto.candidateId, tenantId },
-      select: { id: true, fullName: true, firstName: true, lastName: true, email: true, currentCtc: true, expectedCtc: true, ctcCurrency: true, ctcTerm: true, noticePeriodDays: true, relevantExperienceYears: true, preferredLocations: true },
+      select: { id: true, fullName: true, firstName: true, lastName: true, email: true, linkedinUrl: true, currentCtc: true, expectedCtc: true, ctcCurrency: true, ctcTerm: true, noticePeriodDays: true, relevantExperienceYears: true, preferredLocations: true },
     });
 
     if (!candidate) {
@@ -487,6 +488,7 @@ export class RecruiterSubmissionsService {
       ...submission,
       candidate_name: candName,
       candidate_email: candidate.email,
+      candidate_linkedin_url: verifiedCandidate?.linkedinUrl ?? candidate.linkedinUrl,
       job_code: job.jobCode,
       job_title: job.jobTitle,
     });
@@ -555,7 +557,7 @@ export class RecruiterSubmissionsService {
         s.created_at,
         s.updated_at,
         c.full_name AS candidate_name, c.first_name AS candidate_first_name, c.last_name AS candidate_last_name, c.current_company AS candidate_current_company,
-        c.email AS candidate_email,
+        c.email AS candidate_email, c.linkedin_url AS candidate_linkedin_url,
         c.phone AS candidate_phone,
         c.raw_current_location AS candidate_current_location,
         c.total_experience_years AS candidate_experience,
@@ -1116,7 +1118,7 @@ export class RecruiterSubmissionsService {
         s.created_at,
         s.updated_at,
         c.full_name AS candidate_name, c.first_name AS candidate_first_name, c.last_name AS candidate_last_name, c.current_company AS candidate_current_company,
-        c.email AS candidate_email,
+        c.email AS candidate_email, c.linkedin_url AS candidate_linkedin_url,
         c.phone AS candidate_phone,
         c.raw_current_location AS candidate_current_location,
         c.total_experience_years AS candidate_experience,
@@ -1822,6 +1824,7 @@ export class RecruiterSubmissionsService {
       creatorCity:row.creator_city ?? null,
       candidateName: row.candidate_name || row.candidateName,
       candidateEmail: row.candidate_email || row.candidateEmail,
+      candidateLinkedinUrl: row.candidate_linkedin_url ?? row.candidateLinkedinUrl ?? null,
       candidatePhone: row.candidate_phone || row.candidatePhone,
       candidateCurrentLocation: row.candidate_current_location || row.candidateCurrentLocation,
       candidateExperience: row.candidate_experience ?? row.candidateExperience,

@@ -12,6 +12,14 @@ function setup() {
   return { prisma, notifications, service };
 }
 describe('submission tracker API', () => {
+  it('carries the stored candidate LinkedIn field for website and ATS submission origins', () => {
+    const {service}=setup();
+    for(const submission_origin of ['WEBSITE','RECRUITER']) {
+      const result=(service as any).mapRowToDetails({submission_origin,candidate_linkedin_url:'https://www.linkedin.com/in/alex-test'});
+      expect(result.candidateLinkedinUrl).toBe('https://www.linkedin.com/in/alex-test');
+    }
+    expect((service as any).mapRowToDetails({}).candidateLinkedinUrl).toBeNull();
+  });
   it('enriches history actors by tenant-scoped IDs while preserving recorded email snapshots', async () => {
     const {service, prisma} = setup();
     const actorId = '11111111-1111-4111-8111-111111111111';
