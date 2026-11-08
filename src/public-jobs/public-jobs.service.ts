@@ -1,3 +1,4 @@
+import { ResumeStorageService } from '../resume-storage/resume-storage.service';
 import { linkedinProfile } from '../candidates/linkedin-profile';
 import { assertJobAction } from '../jobs/job-action-policy';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
@@ -12,7 +13,7 @@ type KeyContext = { id: string; tenantId: string; scope: Scope; branchId: string
 
 @Injectable()
 export class PublicJobsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly resumeStorage: ResumeStorageService = new ResumeStorageService()) {}
 
   private assertTenantAdmin(user: any) {
     const permissions: string[] = Array.isArray(user?.permissions) ? user.permissions : [];
@@ -167,7 +168,8 @@ export class PublicJobsService {
         const candidateId = existing?.id || randomUUID();
         const dup = await tx.recruiterSubmission.findFirst({ where: { tenantId: key.tenantId, jobId: job.id, candidateId }, select: { id: true } });
         if (dup) return dup.id;
-        await tx.resume.create({ data: { id: resumeId, filename: String(file.originalname || 'resume').slice(0, 255), candidateName: name, email, fileHash: createHash('sha256').update(file.buffer).digest('hex'), fileData: file.buffer, fileMime: file.mimetype, fileSize: file.size } });
+        const stored = await this.resumeStorage.store(resumeId, file.buffer);
+        await tx.resume.create({ data: { id: resumeId, storageKey: stored.storageKey, filename: String(file.originalname || 'resume').slice(0, 255), candidateName: name, email, fileHash: createHash('sha256').update(file.buffer).digest('hex'), fileMime: file.mimetype, fileSize: file.size } });
         if (existing) {
           await tx.candidate.update({ where: { id: candidateId }, data: { firstName, lastName, fullName: name, phone, linkedinUrl, resumeRecordId: resumeId, totalExperienceYears: totalExperience, relevantExperienceYears: relevantExperience, currentCompany, rawCurrentLocation: currentLocation, noticePeriodDays: Number(noticePeriodText), currentCtc: currentCtcText, expectedCtc: expectedCtcText, preferredLocations: uniquePreferredLocations } });
         } else {

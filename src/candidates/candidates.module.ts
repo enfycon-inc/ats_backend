@@ -1,3 +1,4 @@
+import { ResumeStorageModule } from '../resume-storage/resume-storage.module';
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { CandidatesController } from './candidates.controller';
@@ -8,7 +9,7 @@ import { ResumePreviewService } from './resume-preview.service';
 import { JobsModule } from '../jobs/jobs.module';
 
 @Module({
-  imports: [
+  imports: [ResumeStorageModule,
     AuthModule,
     JobsModule,
     BullModule.registerQueue({ name: 'bulk_cv' }),

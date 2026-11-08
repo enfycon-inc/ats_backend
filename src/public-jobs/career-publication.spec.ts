@@ -64,4 +64,27 @@ describe('automatic careers publication', () => {
     await expect(new PublicJobsService(prisma as any).apply(key, 'slug', application, resume)).rejects.toThrow('no longer accepting');
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
   });
+  it('stores a website resume in the private folder and persists only its reference', async () => {
+    const storage = { store: jest.fn().mockResolvedValue({ storageKey: 'private-key' }) };
+    const tx: any = { $queryRaw: jest.fn().mockResolvedValue([{ id: 'job' }]), $executeRawUnsafe: jest.fn(),
+      candidate: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      recruiterSubmission: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      resume: { create: jest.fn() }, job: { update: jest.fn() }, submissionEvent: { create: jest.fn() } };
+    const db: any = { job: { findFirst: jest.fn().mockResolvedValue({ id: 'job', jobType: 'Full-Time', branchId: 'branch', businessUnitId: 'unit', market: 'IN' }) }, $transaction: (run: any) => run(tx) };
+    await new PublicJobsService(db, storage as any).apply(key, 'slug', application, resume);
+    const saved = tx.resume.create.mock.calls[0][0].data;
+    expect(saved.storageKey).toBe('private-key'); expect(saved).not.toHaveProperty('fileData');
+    expect(storage.store).toHaveBeenCalledWith(saved.id, resume.buffer);
+    expect(tx.candidate.create.mock.calls[0][0].data.resumeRecordId).toBe(saved.id);
+  });
+  it('does not write another file for a duplicate website application', async () => {
+    const storage = { store: jest.fn() };
+    const tx: any = { $queryRaw: jest.fn().mockResolvedValue([{ id: 'job' }]), $executeRawUnsafe: jest.fn(),
+      candidate: { findFirst: jest.fn().mockResolvedValue({ id: 'candidate' }) },
+      recruiterSubmission: { findFirst: jest.fn().mockResolvedValue({ id: 'existing' }) } };
+    const db: any = { job: { findFirst: jest.fn().mockResolvedValue({ id: 'job', jobType: 'Full-Time' }) }, $transaction: (run: any) => run(tx) };
+    expect(await new PublicJobsService(db, storage as any).apply(key, 'slug', application, resume)).toMatchObject({ reference: 'existing' });
+    expect(storage.store).not.toHaveBeenCalled();
+  });
+
 });

@@ -1,3 +1,4 @@
+import { ResumeStorageService, RESUME_FILE_SELECT } from '../resume-storage/resume-storage.service';
 import { linkedinProfile } from './linkedin-profile';
 import { candidateMarket, candidateAdminScope } from './candidate-workspace';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/max';
@@ -44,7 +45,7 @@ export class CandidatesService {
   private readonly logger = new Logger(CandidatesService.name);
   private readonly tenantPoolModeCache = new Map<string, { mode: string; expiresAt: number }>();
 
-  constructor(private readonly prisma: PrismaService, private readonly jobs: JobsService) {}
+  constructor(private readonly prisma: PrismaService, private readonly jobs: JobsService, private readonly resumeStorage: ResumeStorageService = new ResumeStorageService()) {}
 
   /**
    * Safe transaction to create a candidate and link their resume record in one step
@@ -572,15 +573,17 @@ export class CandidatesService {
         this.logger.log(`Candidate with email ${email} already exists (ID=${existingCand.id}). Updating profile with new CV.`);
 
         // Standalone resume insert avoids interactive transaction timeout on large bytea buffers
+        const resumeId = crypto.randomUUID();
+        const stored = await this.resumeStorage.store(resumeId, file.buffer);
         const resume = await this.prisma.resume.create({
           data: {
+            id: resumeId, storageKey: stored.storageKey,
             filename: file.originalname,
             candidateName: fullName,
             email,
             fileHash,
             parsedJson: parsed || { candidate_name: fullName, skills },
             rawText,
-            fileData: new Uint8Array(file.buffer),
             fileMime: file.mimetype || 'application/octet-stream',
             fileSize: file.size ?? file.buffer.length,
           },
@@ -625,15 +628,17 @@ export class CandidatesService {
     const market = candidateMarket(meta.market);
     // 4. Create new candidate
     // Save resume first outside interactive transaction to prevent transaction timeout (P2028) on large file writes
+    const resumeId = crypto.randomUUID();
+    const stored = await this.resumeStorage.store(resumeId, file.buffer);
     const resume = await this.prisma.resume.create({
       data: {
+        id: resumeId, storageKey: stored.storageKey,
         filename: file.originalname,
         candidateName: fullName,
         email,
         fileHash,
         parsedJson: parsed || { candidate_name: fullName, skills },
         rawText,
-        fileData: new Uint8Array(file.buffer),
         fileMime: file.mimetype || 'application/octet-stream',
         fileSize: file.size ?? file.buffer.length,
       },
@@ -690,8 +695,8 @@ export class CandidatesService {
       this.logger.log(`Saved CV for "${fullName}" (${created.candidateCode}, ID=${created.id}, uploadedBy=${uploaderName}, parsed=${!!parsed}).`);
       return { candidate: candidateProfile, duplicate: false, parsed: !!parsed };
     } catch (err: any) {
-      // Clean up orphaned resume record if candidate creation fails
-      await this.prisma.resume.delete({ where: { id: resume.id } }).catch(() => {});
+      // Preserve the original and its record on linking failure; reconcile without deleting data.
+      this.logger.error('Candidate linking failed; the stored resume is preserved for reconciliation.');
       throw err;
     }
   }
@@ -702,19 +707,13 @@ export class CandidatesService {
   async getResumeFile(candidateId: string, tenantId: string): Promise<StoredResumeFile> {
     const candidate = await this.prisma.candidate.findFirst({
       where: { id: candidateId, tenantId, deletedAt: null },
-      include: { resumeRecord: true },
+      select: { resumeRecord: { select: RESUME_FILE_SELECT } },
     });
-
-    if (!candidate || !candidate.resumeRecord?.fileData) {
-      throw new NotFoundException(`No stored CV file for candidate ${candidateId}.`);
-    }
-
-    const resume = candidate.resumeRecord;
-    return {
-      data: Buffer.from(resume.fileData!),
-      mime: resume.fileMime || 'application/octet-stream',
-      filename: resume.filename || `candidate-${candidateId}-cv`,
-    };
+    return this.resumeStorage.read(candidate?.resumeRecord, async () => {
+      if (!candidate?.resumeRecord?.id) return null;
+      const original = await this.prisma.resume.findUnique({ where: { id: candidate!.resumeRecord!.id }, select: { fileData: true } });
+      return original?.fileData;
+    });
   }
 
   /**

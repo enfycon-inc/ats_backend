@@ -1,3 +1,4 @@
+import { RESUME_FILE_SELECT } from '../resume-storage/resume-storage.service';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { RecruiterSubmissionsService } from './recruiter-submissions.service';
 import { RecruiterSubmissionsController } from './recruiter-submissions.controller';
@@ -64,7 +65,7 @@ describe('submission-scoped resume download', () => {
     const fileData = Buffer.from('original document');
     prisma.candidate.findFirst.mockResolvedValue({ resumeRecord: { fileData, filename: 'CV.docx', fileMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' } });
     const file = await service.resume('submission', 'tenant', user, 'branch');
-    expect(prisma.candidate.findFirst).toHaveBeenCalledWith({ where: { id: 'candidate', tenantId: 'tenant', deletedAt: null, submissions: { some: { id: 'submission', tenantId: 'tenant', finalStatus: { in: ['SUBMITTED', 'SELECTED', 'OFFER', 'JOIN'] } } } }, select: { resumeRecord: { select: { fileData: true, fileMime: true, filename: true } } } });
+    expect(prisma.candidate.findFirst).toHaveBeenCalledWith({ where: { id: 'candidate', tenantId: 'tenant', deletedAt: null, submissions: { some: { id: 'submission', tenantId: 'tenant', finalStatus: { in: ['SUBMITTED', 'SELECTED', 'OFFER', 'JOIN'] } } } }, select: { resumeRecord: { select: RESUME_FILE_SELECT } } });
     expect(file.data).toEqual(fileData); expect(file.filename).toBe('CV.docx');
     expect(file.mime).toContain('wordprocessingml');
   });

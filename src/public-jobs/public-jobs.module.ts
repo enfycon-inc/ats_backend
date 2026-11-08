@@ -1,3 +1,4 @@
+import { ResumeStorageModule } from '../resume-storage/resume-storage.module';
 import { Module } from '@nestjs/common';
 import { CareerOauthClientController, CareerOauthTokenController, JobPublicationController, PublicJobsController, PublicJobsKeyController } from './public-jobs.controller';
 import { PublicJobsService } from './public-jobs.service';
@@ -6,7 +7,7 @@ import { CareerOauthService } from './career-oauth.service';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [ResumeStorageModule,AuthModule],
   controllers: [CareerOauthClientController, CareerOauthTokenController, PublicJobsController, PublicJobsKeyController, JobPublicationController],
   providers: [CareerOauthService, PublicJobsService, PublicJobsKeyGuard],
 })

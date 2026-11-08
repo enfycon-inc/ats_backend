@@ -68,3 +68,4 @@ scratch/
 .tmp-release-tests/
 /node-compile-cache
 /src/.tmp-assignment-tests/
+/uploads/resumes/

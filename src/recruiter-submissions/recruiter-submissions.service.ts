@@ -1,3 +1,4 @@
+import { ResumeStorageService, RESUME_FILE_SELECT } from '../resume-storage/resume-storage.service';
 import { clientReadWhere } from '../clients/client-visibility';
 import { TRACKER_OPTION_FIELDS, trackerFilterAccess, validateTrackerFilters, trackerExtraPredicates, joinedDateSql } from './tracker-filters';
 import type { TrackerListFilters, TrackerOptionKind, TrackerFilterOptions, TrackerResponse, TrackerDashboardSummary } from './tracker-contract';
@@ -114,6 +115,7 @@ export class RecruiterSubmissionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly resumeStorage: ResumeStorageService = new ResumeStorageService(),
   ) {}
 
   async dashboard(tenantId: string, user: AuthUser, month: string, range: number) { return recruiterDashboard(this.prisma, user, tenantId, month, range); }
@@ -565,7 +567,7 @@ export class RecruiterSubmissionsService {
         c.work_authorization AS candidate_work_auth,
         c.source AS candidate_source,
         c.candidate_code AS candidate_code,
-        EXISTS (SELECT 1 FROM ats.resumes cv WHERE cv.id = c.resume_record_id AND cv.file_data IS NOT NULL AND c.deleted_at IS NULL AND c.tenant_id = s.tenant_id) AS resume_available,
+        EXISTS (SELECT 1 FROM ats.resumes cv WHERE cv.id = c.resume_record_id AND (cv.storage_key IS NOT NULL OR cv.file_data IS NOT NULL) AND c.deleted_at IS NULL AND c.tenant_id = s.tenant_id) AS resume_available,
         (SELECT cv.filename FROM ats.resumes cv WHERE cv.id = c.resume_record_id AND c.deleted_at IS NULL AND c.tenant_id = s.tenant_id) AS resume_filename,
         COALESCE(c.uploaded_by_name, 'System') AS candidate_uploader_name,
         COALESCE(s.candidate_current_ctc, c.current_ctc) AS candidate_current_ctc,
@@ -1060,11 +1062,14 @@ export class RecruiterSubmissionsService {
       where: { id: submission.candidateId, tenantId, deletedAt: null,
         submissions: { some: { id, tenantId, finalStatus: { in: RESUME_HANDOFF_STATUSES } } },
       },
-      select: { resumeRecord: { select: { fileData: true, fileMime: true, filename: true } } },
+      select: { resumeRecord: { select: RESUME_FILE_SELECT } },
     });
     const file = candidate?.resumeRecord;
-    if (!file?.fileData) throw new NotFoundException('No resume is on file for this candidate.');
-    return { data: Buffer.from(file.fileData), mime: file.fileMime || 'application/octet-stream', filename: file.filename || 'resume' };
+    return this.resumeStorage.read(file, async () => {
+      if (!file?.id) return null;
+      const original = await this.prisma.resume.findUnique({ where: { id: file!.id }, select: { fileData: true } });
+      return original?.fileData;
+    });
   }
 
   async findOne(id: string, tenantId: string, user?: AuthUser, branchId?: string | null): Promise<SubmissionDetails> {
