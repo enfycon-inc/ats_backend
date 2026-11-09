@@ -5,8 +5,33 @@ describe('resume access separation', () => {
   const response = () => ({ setHeader: jest.fn(), send: jest.fn(), json: jest.fn(), type: jest.fn().mockReturnThis() }) as any;
   const files: any = { getResumeFile: jest.fn().mockResolvedValue({ data: Buffer.from('pdf'), mime: 'application/pdf', filename: 'cv.pdf' }) };
   const renderer: any = { render: jest.fn().mockResolvedValue({ pages: 2 }) };
-  const controller = new CandidatesController(files, {} as any, {} as any, renderer);
-  beforeEach(() => jest.clearAllMocks());
+  const submissions = { findFirst: jest.fn() };
+  const controller = new CandidatesController(files, { recruiterSubmission: submissions } as any, {} as any, renderer);
+  beforeEach(() => { jest.clearAllMocks(); submissions.findFirst.mockReset(); });
+  const reviewer = { permissions: ['submission:internal_screening'], tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit' } as any;
+  it.each(['WEBSITE', 'RECRUITER'])('allows a scoped pending %s submission for screening', async (origin) => {
+    const rows = [{ id: 'submission', tenantId: 'tenant', candidateId: 'candidate', finalStatus: 'PENDING_APPROVAL', submissionOrigin: origin, job: { tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit' } }];
+    submissions.findFirst.mockImplementation(async ({ where }) => rows.find(row =>
+      Object.entries(where).every(([key, value]) => key === 'job'
+        ? Object.entries(value as object).every(([field, expected]) => row.job[field] === expected)
+        : row[key] === value)) || null);
+    await controller.downloadResume('candidate', response(), reviewer);
+    expect(submissions.findFirst).toHaveBeenCalledWith({ where: {
+      tenantId: 'tenant', candidateId: 'candidate', finalStatus: 'PENDING_APPROVAL',
+      job: { tenantId: 'tenant', branchId: 'branch', businessUnitId: 'unit' },
+    }, select: { id: true } });
+    expect(files.getResumeFile).toHaveBeenCalledWith('candidate', 'tenant');
+  });
+  it('rejects screening without a branch before querying or reading files', async () => {
+    await expect(controller.downloadResume('candidate', response(), { ...reviewer, branchId: null })).rejects.toThrow('assigned branch');
+    expect(submissions.findFirst).not.toHaveBeenCalled();
+    expect(files.getResumeFile).not.toHaveBeenCalled();
+  });
+  it('rejects screening when no scoped pending submission matches', async () => {
+    submissions.findFirst.mockResolvedValue(null);
+    await expect(controller.downloadResume('candidate', response(), reviewer)).rejects.toThrow('authorized reviewer');
+    expect(files.getResumeFile).not.toHaveBeenCalled();
+  });
   it('rejects original download without exact capability before reading file', async () => {
     await expect(controller.downloadResume('candidate', response(), { permissions: ['candidate:view'], tenantId: 'tenant' } as any)).rejects.toThrow('download permission');
     expect(files.getResumeFile).not.toHaveBeenCalled();

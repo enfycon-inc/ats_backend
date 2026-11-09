@@ -304,13 +304,13 @@ export class CandidatesController {
       if (!permissions.includes('submission:internal_screening')) throw new ForbiddenException('Original resume download permission is required.');
       const tenantWide = permissions.some((permission: string) => ['tenant:settings', 'tenant:manage', 'platform:manage', '*'].includes(permission));
       if (!tenantWide && !user.branchId) throw new ForbiddenException('An assigned branch is required to review this resume.');
-      const visibleWebsiteApplication = await this.prisma.recruiterSubmission.findFirst({
+      const visiblePendingSubmission = await this.prisma.recruiterSubmission.findFirst({
         where: {
-          tenantId: activeTenantId, candidateId: id, submissionOrigin: 'WEBSITE', finalStatus: 'PENDING_APPROVAL',
+          tenantId: activeTenantId, candidateId: id, finalStatus: 'PENDING_APPROVAL',
           job: { tenantId: activeTenantId, ...(tenantWide ? {} : { branchId: user.branchId, ...(user.businessUnitId ? { businessUnitId: user.businessUnitId } : {}) }) },
         }, select: { id: true },
       });
-      if (!visibleWebsiteApplication) throw new ForbiddenException('Resume is available only to an authorized reviewer for this website application.');
+      if (!visiblePendingSubmission) throw new ForbiddenException('Resume is available only to an authorized reviewer for this pending submission.');
     }
     const cv = await this.candidatesService.getResumeFile(id, activeTenantId);
     res.setHeader('Content-Type', cv.mime);
