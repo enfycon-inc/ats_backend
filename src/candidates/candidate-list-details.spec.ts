@@ -38,6 +38,17 @@ describe('candidate list details', () => {
     jobs.candidateJobLinks.mockRejectedValue(new Error('private database error'));
     await expect(service.findAll({} as any, 'tenant', user)).rejects.toThrow('Unable to load candidates. Please try again.');
   });
+  it('summarizes activity from one batched visible-job result without leaking count fields into job links', async () => {
+    const { service, jobs } = setup();
+    jobs.candidateJobLinks.mockResolvedValue([
+      { candidateId: 'c1', id: 'j1', jobCode: 'JOB-1', jobTitle: 'Engineer', activeCount: 2, pendingCount: 1, joinedCount: 1, submissionCount: 4 },
+      { candidateId: 'c2', id: 'j2', jobCode: 'JOB-2', jobTitle: 'Analyst', activeCount: 0, pendingCount: 0, joinedCount: 0, submissionCount: 1 },
+    ] as any);
+    const rows = await service.findAll({} as any, 'tenant', user);
+    expect(jobs.candidateJobLinks).toHaveBeenCalledTimes(1);
+    expect(rows.map(row => row.status)).toEqual(['In progress · 2 / Awaiting screening · 1', 'No active submissions', 'No visible submissions']);
+    expect(rows[0].assignedJobs).toEqual([{ id: 'j1', jobCode: 'JOB-1', jobTitle: 'Engineer' }]);
+  });
 });
 
 describe('candidate job visibility', () => {

@@ -1574,7 +1574,7 @@ export class JobsService {
     return { sql, params };
   }
 
-  async candidateJobLinks(tenantId: string, user: AuthUser, candidateIds: string[], activeBranchId?: string | null): Promise<{ candidateId: string; id: string; jobCode: string; jobTitle: string }[]> {
+  async candidateJobLinks(tenantId: string, user: AuthUser, candidateIds: string[], activeBranchId?: string | null): Promise<{ candidateId: string; id: string; jobCode: string; jobTitle: string; pendingCount?: number; activeCount?: number; joinedCount?: number; submissionCount?: number }[]> {
     if (!candidateIds.length) return [];
     const context = await loadJobActor(this.prisma, user);
     const scope = this.buildJobListQuery(tenantId, context.actor, activeBranchId, undefined, context.podsEnabled);
@@ -1583,10 +1583,14 @@ export class JobsService {
     const where = scope.sql.slice(scope.sql.indexOf('WHERE j.tenant_id'));
     const params = [...scope.params, candidateIds];
     return this.prisma.$queryRawUnsafe(
-      `SELECT DISTINCT s.candidate_id AS "candidateId", j.id, j.job_code AS "jobCode", j.job_title AS "jobTitle"
+      `SELECT DISTINCT s.candidate_id AS "candidateId", j.id, j.job_code AS "jobCode", j.job_title AS "jobTitle",
+         COUNT(*)::int AS "submissionCount",
+         COUNT(*) FILTER (WHERE s.final_status = 'PENDING_APPROVAL')::int AS "pendingCount",
+         COUNT(*) FILTER (WHERE s.final_status IN ('SUBMITTED', 'SELECTED', 'OFFER'))::int AS "activeCount",
+         COUNT(*) FILTER (WHERE s.final_status = 'JOIN')::int AS "joinedCount"
        FROM ats.jobs j JOIN ats.recruiter_submissions s ON s.job_id = j.id AND s.tenant_id = j.tenant_id
        ${where} AND s.candidate_id = ANY($${params.length}::uuid[])
-       ORDER BY j.job_code`, ...params,
+       GROUP BY s.candidate_id, j.id, j.job_code, j.job_title ORDER BY j.job_code`, ...params,
     );
   }
 

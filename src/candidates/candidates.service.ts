@@ -1,3 +1,4 @@
+import { recruitmentActivity } from './recruitment-activity';
 import { ResumeStorageService, RESUME_FILE_SELECT } from '../resume-storage/resume-storage.service';
 import { linkedinProfile } from './linkedin-profile';
 import { candidateMarket, candidateAdminScope } from './candidate-workspace';
@@ -233,8 +234,11 @@ export class CandidatesService {
 
       ]);
       const uploaderById = new Map<string, { fullName: string | null; email: string; profilePicture: string | null }>(uploaders.map(uploader => [uploader.id, uploader] as const));
+      const activityByCandidate = new Map<string, typeof links>();
       const jobsByCandidate = new Map<string, CandidateProfile['assignedJobs']>();
-      for (const { candidateId, ...job } of links) {
+      for (const link of links) {
+        const { candidateId, pendingCount, activeCount, joinedCount, submissionCount, ...job } = link;
+        activityByCandidate.set(candidateId, [...(activityByCandidate.get(candidateId) || []), link]);
         const jobs = jobsByCandidate.get(candidateId) || [];
         jobs.push(job);
         jobsByCandidate.set(candidateId, jobs);
@@ -244,6 +248,7 @@ export class CandidatesService {
         const assignedJobs = jobsByCandidate.get(row.id) || [];
         return {
           ...this.mapCandidateToProfile(row, true),
+          status: recruitmentActivity(activityByCandidate.get(row.id) || []),
           market: row.market,
           uploadedByName: uploader?.fullName || row.uploadedByName || null,
           uploadedByEmail: uploader?.email || null,
