@@ -33,6 +33,55 @@ export class AuthRbacService {
 
 
 
+  private async validateRoleScope(tenantId: string, branchId: string | null, unitId: string | null, requester?: AuthUser) {
+    if (unitId) {
+      const result = await this.authQuery.query(
+        'SELECT id, branch_id FROM ats.business_units WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1',
+        [unitId, tenantId],
+      );
+      const unit = result.rows[0];
+      if (!unit) throw new BadRequestException('The selected branch unit does not belong to this tenant.');
+      if (branchId && branchId !== unit.branch_id) throw new BadRequestException('The selected branch does not contain this branch unit.');
+      branchId = unit.branch_id;
+    } else if (branchId) {
+      const result = await this.authQuery.query('SELECT id FROM branches WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1', [branchId, tenantId]);
+      if (!result.rows.length) throw new BadRequestException('The selected branch does not belong to this tenant.');
+    }
+    if (requester) {
+      validateBranchAccess(requester, branchId, 'manage roles');
+      if (!isTenantAdmin(requester) && !requester.permissions?.includes('branch_admin:manage') &&
+          (!unitId || unitId !== requester.businessUnitId)) {
+        throw new ForbiddenException('Access denied. You can only manage roles for your assigned branch unit.');
+      }
+    }
+    return branchId;
+  }
+
+  private async assertUniqueRoleName(tenantId: string, name: string, branchId: string | null, unitId: string | null, roleId?: string) {
+    const result = await this.authQuery.query(
+      `SELECT id FROM custom_roles WHERE tenant_id = $1::uuid AND UPPER(BTRIM(name)) = $2
+       AND is_system = false AND branch_id IS NOT DISTINCT FROM $3::uuid
+       AND business_unit_id IS NOT DISTINCT FROM $4::uuid AND ($5::uuid IS NULL OR id <> $5::uuid) LIMIT 1`,
+      [tenantId, name.trim().toUpperCase(), branchId, unitId, roleId || null],
+    );
+    if (result.rows.length) throw this.roleNameConflict(unitId);
+  }
+
+  private roleNameConflict(unitId: string | null) {
+    return new ConflictException(`A custom role with this name already exists in this ${unitId ? 'branch unit' : 'scope'}.`);
+  }
+
+  private rethrowRoleConflict(error: any, unitId: string | null, podLead: boolean): never {
+    if (error?.meta?.code === '23505' || error?.code === '23505' || error?.code === 'P2002') {
+      const detail = String(error?.meta?.message || error?.message || '');
+      if (podLead && !detail.includes('idx_custom_roles_')) {
+        throw new ConflictException('A custom Pod Lead role already exists for this branch unit. Edit the existing role.');
+      }
+      throw this.roleNameConflict(unitId);
+    }
+    throw error;
+  }
+
   async seedTenantRoles(tenantId: string): Promise<Record<string, string>> {
     const roleMap: Record<string, string> = {};
 
@@ -267,28 +316,9 @@ export class AuthRbacService {
     let effectiveBusinessUnitId = businessUnitId || null;
     if (resolvedSystemRole === 'POD_LEAD') {
       if (!effectiveBusinessUnitId) throw new BadRequestException('Select a branch unit for the Pod Lead role.');
-      const unitResult = await this.authQuery.query(
-        'SELECT id, branch_id FROM ats.business_units WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1',
-        [effectiveBusinessUnitId, tenantId],
-      );
-      if (!unitResult.rows.length) throw new BadRequestException('The selected branch unit does not belong to this tenant.');
-      const unit = unitResult.rows[0] as any;
-      if (effectiveBranchId && effectiveBranchId !== unit.branch_id) throw new BadRequestException('The selected branch does not contain this branch unit.');
-      effectiveBranchId = unit.branch_id;
-      effectiveBusinessUnitId = unit.id;
     }
-    if (!effectiveBranchId && resolvedSystemRole !== 'POD_LEAD') {
-      const defaultBranchRes = await this.authQuery.query(
-        'SELECT id FROM branches WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1',
-        [tenantId]
-      );
-      effectiveBranchId = (defaultBranchRes.rows[0] as any)?.id || null;
-    }
-
-    // Branch isolation: branch admins can only create roles in their assigned branches
-    if (requester && effectiveBranchId) {
-      validateBranchAccess(requester, effectiveBranchId, 'create roles');
-    }
+    if (!effectiveBranchId && !effectiveBusinessUnitId) throw new BadRequestException('Select a branch or branch unit for the custom role.');
+    effectiveBranchId = await this.validateRoleScope(tenantId, effectiveBranchId, effectiveBusinessUnitId, requester);
 
     const sysRolesRes = await this.authQuery.query('SELECT system_key, permissions FROM system_roles');
     const DEFAULT_PERMS: Record<string, string[]> = {};
@@ -303,19 +333,13 @@ export class AuthRbacService {
     }
     resolvedPermissions = resolvedPermissions.filter(p => allowedBaseCeiling.has(p));
 
-    const exists = await this.authQuery.query(
-      'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) LIMIT 1',
-      [tenantId, nameUpper, effectiveBranchId]
-    );
-    if (exists.rows.length > 0) {
-      throw new ConflictException(`A custom role with name "${name}" already exists in this branch.`);
-    }
+    await this.assertUniqueRoleName(tenantId, name, effectiveBranchId, effectiveBusinessUnitId);
 
     const insertRole = async (query: (sql: string, params: any[]) => Promise<any>) => query(
       `INSERT INTO custom_roles (tenant_id, branch_id, business_unit_id, name, description, is_system, system_role_id, base_role_id, created_by, permissions)
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, false, $6::uuid, $7::uuid, $8::uuid, $9::jsonb)
        RETURNING id, tenant_id, branch_id as "branchId", business_unit_id as "businessUnitId", name, description, is_system as "isSystem", system_role_id as "systemRoleId", base_role_id as "baseRoleId", created_at as "createdAt", updated_at as "updatedAt", created_by as "createdById", permissions`,
-      [tenantId, effectiveBranchId, effectiveBusinessUnitId, name, description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
+      [tenantId, effectiveBranchId, effectiveBusinessUnitId, name.trim(), description, resolvedSystemRoleId, resolvedBaseRoleId, createdById || null, JSON.stringify(resolvedPermissions)]
     );
     let roleRes: any;
     try {
@@ -334,8 +358,7 @@ export class AuthRbacService {
         }, { isolationLevel: 'ReadCommitted' });
       } else roleRes = await insertRole(this.authQuery.query.bind(this.authQuery));
     } catch (error: any) {
-      if (error?.meta?.code === '23505' || error?.code === 'P2002') throw new ConflictException('A custom Pod Lead role already exists for this branch unit. Edit the existing role.');
-      throw error;
+      this.rethrowRoleConflict(error, effectiveBusinessUnitId, resolvedSystemRole === 'POD_LEAD');
     }
     const role: any = roleRes.rows[0];
 
@@ -351,7 +374,7 @@ export class AuthRbacService {
   async updateCustomRole(
     tenantId: string,
     roleId: string,
-    body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string; businessUnitId?: string; permissions?: string[] },
+    body: { name?: string; description?: string; systemRole?: string; baseRoleId?: string; branchId?: string | null; businessUnitId?: string; permissions?: string[] },
     userId?: string,
     requester?: AuthUser,
   ) {
@@ -370,21 +393,15 @@ export class AuthRbacService {
       if (body.systemRole && body.systemRole !== 'POD_LEAD') throw new BadRequestException('The Pod Lead base archetype cannot be changed.');
       const targetBusinessUnitId = body.businessUnitId !== undefined ? body.businessUnitId || null : existingRole.business_unit_id;
       if (!targetBusinessUnitId) throw new BadRequestException('Select a branch unit for the Pod Lead role.');
-      const unitResult = await this.authQuery.query(
-        'SELECT id, branch_id FROM ats.business_units WHERE id = $1::uuid AND tenant_id = $2::uuid LIMIT 1',
-        [targetBusinessUnitId, tenantId],
-      );
-      if (!unitResult.rows.length) throw new BadRequestException('The selected branch unit does not belong to this tenant.');
-      const targetBranchId = (unitResult.rows[0] as any).branch_id;
-      if (body.branchId && body.branchId !== targetBranchId) throw new BadRequestException('The selected branch does not contain this branch unit.');
-      body.branchId = targetBranchId;
-      body.businessUnitId = targetBusinessUnitId;
     } else if (body.systemRole === 'POD_LEAD') throw new BadRequestException('Create a unit-scoped Pod Lead custom role instead of converting an existing role.');
     if (existingRole.system_role === 'POD_LEAD' && body.baseRoleId !== undefined && body.baseRoleId !== existingRole.base_role_id) throw new BadRequestException('The base role cannot be changed.');
 
-    // Branch isolation: branch admins can only update roles in their assigned branches
-    if (requester && existingRole.branch_id) {
-      validateBranchAccess(requester, existingRole.branch_id, 'update roles');
+    await this.validateRoleScope(tenantId, existingRole.branch_id, existingRole.business_unit_id, requester);
+    const targetUnitId = body.businessUnitId !== undefined ? body.businessUnitId || null : existingRole.business_unit_id;
+    const targetBranchId = await this.validateRoleScope(tenantId, body.branchId !== undefined ? body.branchId || null : existingRole.branch_id, targetUnitId, requester);
+    if (body.branchId !== undefined || body.businessUnitId !== undefined) body.branchId = targetBranchId;
+    if (body.name !== undefined || body.branchId !== undefined || body.businessUnitId !== undefined) {
+      await this.assertUniqueRoleName(tenantId, body.name ?? existingRole.name, targetBranchId, targetUnitId, roleId);
     }
 
     const updates: string[] = ['updated_at = NOW()'];
@@ -393,12 +410,6 @@ export class AuthRbacService {
     if (body.name !== undefined) {
       const nameUpper = body.name.toUpperCase().trim();
       if (nameUpper === 'SUPER_ADMIN') throw new BadRequestException('Role name SUPER_ADMIN is reserved.');
-      const targetBranchId = body.branchId !== undefined ? body.branchId : existingRole.branch_id;
-      const exists = await this.authQuery.query(
-        'SELECT id FROM custom_roles WHERE tenant_id = $1 AND UPPER(name) = $2 AND is_system = false AND (branch_id = $3::uuid OR ($3::uuid IS NULL AND branch_id IS NULL)) AND id <> $4 LIMIT 1',
-        [tenantId, nameUpper, targetBranchId, roleId]
-      );
-      if (exists.rows.length > 0) throw new ConflictException(`A custom role with name "${body.name}" already exists in this branch.`);
       params.push(body.name.trim());
       updates.push(`name = $${params.length}`);
     }
@@ -425,17 +436,17 @@ export class AuthRbacService {
       try {
         await this.authQuery.query(`UPDATE custom_roles SET ${updates.join(', ')} WHERE id = $1::uuid AND tenant_id = $2::uuid`, params);
       } catch (error: any) {
-        if (error?.meta?.code === '23505' || error?.code === 'P2002') throw new ConflictException('A custom Pod Lead role already exists for this branch unit.');
-        throw error;
+        this.rethrowRoleConflict(error, targetUnitId, existingRole.system_role === 'POD_LEAD');
       }
 
       if (body.name !== undefined && body.name.trim() !== existingRole.name) {
         const oldName = existingRole.name;
-        const usersToUpdate = await this.authQuery.query('SELECT id, branch_roles FROM users WHERE tenant_id = $1', [tenantId]);
+        const usersToUpdate = await this.authQuery.query('SELECT id, branch_roles FROM users WHERE tenant_id = $1 AND ($2::uuid IS NULL OR business_unit_id = $2::uuid)', [tenantId, existingRole.business_unit_id]);
         for (const u of usersToUpdate.rows as any[]) {
           let needsUpdate = false;
           let branchRoles: Record<string, string[]> = u.branch_roles || {};
           for (const [bId, rList] of Object.entries(branchRoles)) {
+            if (existingRole.branch_id && bId !== existingRole.branch_id) continue;
             if (Array.isArray(rList) && rList.some((r: string) => r.toUpperCase() === oldName.toUpperCase())) {
               branchRoles[bId] = rList.map((r: string) => r.toUpperCase() === oldName.toUpperCase() ? roleId : r);
               needsUpdate = true;

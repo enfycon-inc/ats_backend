@@ -169,9 +169,16 @@ export class AuthInitService implements OnModuleInit {
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS base_role_id UUID REFERENCES custom_roles(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;
       ALTER TABLE custom_roles DROP CONSTRAINT IF EXISTS custom_roles_tenant_id_name_key;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_branch_name 
-        ON custom_roles (tenant_id, branch_id, UPPER(name)) 
-        WHERE is_system = false AND branch_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_unit_name
+        ON custom_roles (tenant_id, branch_id, business_unit_id, UPPER(BTRIM(name)))
+        WHERE is_system = false AND business_unit_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_legacy_branch_name
+        ON custom_roles (tenant_id, branch_id, UPPER(BTRIM(name)))
+        WHERE is_system = false AND business_unit_id IS NULL AND branch_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_legacy_tenant_name
+        ON custom_roles (tenant_id, UPPER(BTRIM(name)))
+        WHERE is_system = false AND business_unit_id IS NULL AND branch_id IS NULL;
+      DROP INDEX IF EXISTS idx_custom_roles_branch_name;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_system_name 
         ON custom_roles (tenant_id, UPPER(name)) 
         WHERE is_system = true;
